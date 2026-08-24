@@ -109,7 +109,7 @@ describe('local inference runtime control', () => {
       updated_by: 42,
       model_manifest_version: '2026-08-24.1',
       active_model_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      skill_profile_version: 'nexus-skill-inference-v4',
+      skill_profile_version: 'nexus-skill-inference-v5',
     });
     expect(db.prepare(`SELECT previous_mode, mode, rollout_percent, actor_type,
       actor_user_id, reason FROM local_inference_control_events`).get()).toEqual({
@@ -485,7 +485,7 @@ describe('local inference runtime control', () => {
         SET mode = 'active', rollout_percent = 100,
             model_manifest_version = '2026-08-24.1',
             active_model_digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            skill_profile_version = 'nexus-skill-inference-v4', updated_by = 42
+            skill_profile_version = 'nexus-skill-inference-v5', updated_by = 42
         WHERE environment = 'production'`).run();
 
       localPrimaryConfigMock.autoRollbackEnabled = false;

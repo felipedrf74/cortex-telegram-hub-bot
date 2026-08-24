@@ -9,7 +9,7 @@ import {
 
 describe('skill inference profiles', () => {
   it('defines one output-only profile for every Nexus skill', () => {
-    expect(SKILL_INFERENCE_PROFILE_VERSION).toBe('nexus-skill-inference-v4');
+    expect(SKILL_INFERENCE_PROFILE_VERSION).toBe('nexus-skill-inference-v5');
     expect(listSkillInferenceProfiles().map((profile) => profile.skillId).sort()).toEqual([
       'content', 'cooking', 'finance', 'secretary', 'training', 'triathlon',
     ]);
@@ -34,6 +34,9 @@ describe('skill inference profiles', () => {
       expect(profile.systemPolicy).toContain("user's language");
     }
     expect(getSkillInferenceProfile('content').maximumOutputTokens).toBe(6144);
+    expect(getSkillInferenceProfile('triathlon').systemPolicy).toContain('Pare a atividade');
+    expect(getSkillInferenceProfile('triathlon').systemPolicy)
+      .toContain('procure assistência médica urgente');
     expect(listSkillInferenceProfiles()
       .filter((profile) => profile.skillId !== 'content')
       .every((profile) => profile.maximumOutputTokens === 4096)).toBe(true);

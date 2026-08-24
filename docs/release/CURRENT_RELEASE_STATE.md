@@ -8,20 +8,25 @@
 
 ## Current signed state — 2026-08-24
 
-- The active completed backend receipt is `74e063e907d74a8b5fb54e11ce1a3316`
-  at protected-main source `5ab56a6a08e4344353d8b594dad608008a1c88bf`.
+- The active completed backend receipt is `e9d222cca5723c5fa22aa23d76c3547f`
+  at protected-main source `aa4bfae2b96c98f20df72067c524538ba3318b66`.
   It runs backend digest
   `sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78`
   and Content Engine digest
   `sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`.
   Its signed release-payload digest is
-  `sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0`;
+  `sha256:c3cb013af7530df9c031aebec7e808e00abe22297ab77cdebbf733bc3fd3e636`;
   the v3 receipt is provable and no release block is active.
-- iOS 1.5.0 build 279 from source
-  `bb26ef7ee849833442e855c69033ff1c63194427` is distributed through
-  TestFlight. App Store review submission
-  `8fbed07b-db86-4679-9f2c-be8fbcda3c42` contains that build plus all three
-  consumable credit packs and was submitted through the required website flow.
+- iOS 1.5.0 build 289 from protected-main source
+  `3647dcf1447fa1530fe542dbf6bfb979398f1ad2` completed the Xcode Cloud App
+  Store Release workflow and is assigned to the internal TestFlight group.
+  App Store review submission `9f222cb7-fec9-47c9-988a-5f58cbe9184b`
+  contains exactly that build plus the 100-, 250-, and 600-credit consumables;
+  all four items are `Waiting for Review` after the required website flow.
+  iOS pull request 54 subsequently merged as
+  `e2f8e65537fbfa804f292bcf832653d1cfcf3d24`; protected `main` now carries
+  build 290 as the next source carrier. Build 290 is not uploaded or submitted
+  and does not change the exact build-289 App Review identity above.
 - The production website authority is [`https://nexushub.me/`](https://nexushub.me/).
   Prototype or preview deployments are not design or production references.
 - Hybrid credits, subscription checkout, Stripe pack fulfillment, Apple pack
