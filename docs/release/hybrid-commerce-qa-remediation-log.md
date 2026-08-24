@@ -300,6 +300,27 @@ later disclosed the live API key in an operator chat; rotation is therefore a
 security prerequisite before public commerce, but remains explicitly deferred
 under the owner's no-rotation instruction.
 
+### Account-specific Stripe economics and tax posture (2026-08-24)
+
+The live account's **Plans and fees** view now supplies the Stripe-specific
+economics inputs that were previously missing: Billing is `Pay as you go` at
+`0.7%` of Billing volume, Radar Standard is `EUR 0.05` per screened
+transaction, and Tax Basic is `0.5%` for Checkout/Billing transactions. These
+charges are additive to the applicable Portugal Payments schedule. The
+conservative card-rate envelope is therefore built from the live account plan
+plus the applicable standard, premium, UK, international, and currency-
+conversion schedules; it must not model only the headline card-processing
+fee.
+
+The account has no live transaction or fee samples yet, so an empirical card
+mix, effective refund rate, and realized fixed-fee currency conversion cannot
+be claimed. The Tax **Locations** view also shows no collecting registration.
+Because the product creates Checkout Sessions with automatic tax and every
+Price is tax-exclusive, public checkout remains fail-closed until the owner or
+their accountant confirms the company's Portugal/OSS registration posture and
+the corresponding Stripe Tax registration is recorded. Stripe monitoring does
+not infer the account's home-jurisdiction obligation.
+
 Do not enable public controls until an eligible signed local-model winner
 completes the full VPS bakeoff, the actual-account rate card and economics
 simulation pass, the ten-script acceptance cycle completes, and applicable
@@ -411,3 +432,56 @@ fulfillment/replay/retry; and public activation only after those pass. The
 backend and iOS signed-release gate is closed. The owner's no-rotation decision
 leaves the disclosed Stripe live key as an explicit security exception to the
 canonical plan rather than a completed gate.
+
+## Governed final release candidate and fail-closed production posture (2026-08-24)
+
+Protected-main source `4b475e1bc078af9a7116cc1de4333b2b1486429b`
+completed CI run `32690312328`, security run `32690312329`, and signed release
+run `32690840203`. The release published backend digest
+`sha256:a7f44e8f4c1e2667d3d891eb17fff5affe70aa434a82477650e99217c85775a8`,
+Content Engine digest
+`sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`,
+and signed payload digest
+`sha256:13baa951b5f83d99f5818dc9df56bdd0ff2173e3f7f5497af5dd7245361e18e0`.
+The manifest resolved to release
+`ead21b94c6d080c6c8884e800f918809`, was predecessor-compatible, and was
+unattended-CD eligible because it carried no migration changes.
+
+The first staging rehearsal failed before any production mutation. Its
+immutable receipt records `staging unhealthy`: the migrator and Content Engine
+passed, while the backend health request failed. A content-free reproduction
+proved the backend was waiting on the signed Ollama Unix gateway, which refused
+the host-created `/run/nexus-inference/staging` boundary because Docker had
+created it as `root:root 0755` instead of the reviewed UID/GID `10001:10001`
+mode `0700`. The poller timer was stopped, the empty incorrect directory was
+removed, and the exact installed `nexus-local-inference-sockets.conf` bytes were
+copied into tmpfiles policy. `systemd-tmpfiles` then created both staging and
+production leaves with the reviewed numeric ownership and mode. A bounded
+gateway probe reached `ollama_gateway_ready` and removed its socket on exit.
+The failed immutable release remains non-retryable by design; the next signed
+source must carry the corrected host prerequisite through a fresh release ID.
+
+The public runtime remains deliberately fail-closed while that transaction and
+acceptance evidence are pending. A live authenticated catalog read returned the
+canonical Pro, Max, and three credit-pack prices with every item
+`purchasable=false`, and the anonymous website checkout returned HTTP `410`.
+Production reports healthy while keeping hybrid credits, subscription checkout,
+Stripe pack fulfillment, Apple pack fulfillment, and local-primary rollout OFF.
+The isolated staging backend alone keeps Apple sandbox grants and pack
+fulfillment enabled for the required real signed-JWS proof.
+
+The complete local verification tier, governed changed-area pre-commit tier,
+pre-push tier, migration checks, docs audit, protected-main CI, and security
+workflow passed for this source. The immutable workflow records retain their
+exact case counts. The staging failure is operational evidence, not a reason to
+weaken the gateway ownership check or retry rejected bytes. It also is not a
+substitute for the nine pre-release scripts, production smoke, economics gate,
+attended local-model evidence, or Apple sandbox transaction.
+
+The paired physical iPad remains available but has Developer Mode disabled, so
+the Foundation Models 24-case run and staging sandbox-proof app installation
+cannot begin until that on-device setting is enabled. The App Store Connect web
+session requires a fresh owner passkey sign-in; the individual API key currently
+returns `401 NOT_AUTHORIZED`, so it cannot replace the website-only DAC7 status
+check or final legal declaration. No declaration or tax registration was
+inferred or submitted automatically.
