@@ -29,6 +29,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 // our test values.
 vi.mock('../../src/config', () => ({
   config: {
+    get isStaging() { return process.env.STAGING === 'true'; },
     ollama: {
       enabled: true,
       baseUrl: 'http://127.0.0.1:11434',
@@ -2719,6 +2720,39 @@ describe('OllamaProvider — scoped state context', () => {
 });
 
 describe('OllamaProvider — explicit workload roles', () => {
+  it.each(['validated_local_chat', 'skill_inference'] as const)(
+    'blocks noncommercial active model dispatch in live production for %s',
+    async (workloadRole) => {
+      const previousNodeEnv = process.env.NODE_ENV;
+      const previousStaging = process.env.STAGING;
+      process.env.NODE_ENV = 'production';
+      delete process.env.STAGING;
+      try {
+        const activeModel = getActiveLocalModel();
+        await expect(new OllamaProvider().chatPrimitive({
+          taskType: 'localReasoning',
+          workloadRole,
+          category: 'commercial_policy_test',
+          request: {
+            model: activeModel.ollamaTag,
+            messages: [{ role: 'user', content: 'must not reach a noncommercial local model' }],
+            think: false,
+            stream: false,
+          },
+        })).rejects.toMatchObject({
+          kind: 'unsupported_capability',
+          meta: expect.objectContaining({ reason: 'commercial_use_not_approved' }),
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+        if (previousStaging === undefined) delete process.env.STAGING;
+        else process.env.STAGING = previousStaging;
+      }
+    },
+  );
+
   it('reports manifest unavailability without probing the gateway or throwing from diagnostics', async () => {
     const provider = new OllamaProvider();
     resetLocalModelManifestCacheForTests();
@@ -2993,6 +3027,7 @@ describe('OllamaProvider — explicit workload roles', () => {
 
   it('maps a real missing Unix gateway socket to typed transport unavailability before generation', async () => {
     const previousNodeEnv = process.env.NODE_ENV;
+    const previousStaging = process.env.STAGING;
     const previousSocketPath = process.env.OLLAMA_GATEWAY_SOCKET_PATH;
     const requestSpy = vi.spyOn(http, 'request');
     const missingSocketPath = path.join(
@@ -3000,6 +3035,7 @@ describe('OllamaProvider — explicit workload roles', () => {
       `nexus-ollama-provider-missing-${process.pid}-${Date.now()}.sock`,
     );
     process.env.NODE_ENV = 'production';
+    process.env.STAGING = 'true';
     process.env.OLLAMA_GATEWAY_SOCKET_PATH = missingSocketPath;
     vi.resetModules();
     try {
@@ -3028,6 +3064,8 @@ describe('OllamaProvider — explicit workload roles', () => {
       requestSpy.mockRestore();
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = previousNodeEnv;
+      if (previousStaging === undefined) delete process.env.STAGING;
+      else process.env.STAGING = previousStaging;
       if (previousSocketPath === undefined) delete process.env.OLLAMA_GATEWAY_SOCKET_PATH;
       else process.env.OLLAMA_GATEWAY_SOCKET_PATH = previousSocketPath;
       vi.resetModules();

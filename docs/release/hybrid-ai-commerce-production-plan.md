@@ -389,3 +389,14 @@ Payments/Adaptive Pricing on top of the legacy Nexus Points scheme, including
 only. Section 2 remains authoritative for launch: purchased credits never
 expire, and existing purchased lots migrate to nonexpiring per Section 3. No
 new purchased lot may ship with an expiry after the credit-ledger cutover.
+
+### Addendum D — owner-deferred credential rotation (2026-08-24)
+
+The owner explicitly instructed the release operator not to rotate credentials
+during this plan closeout. The live Stripe credential later disclosed in an
+operator chat therefore remains a documented security exception to §4 and
+execution-sequence step 1, not evidence that the rotation control passed. Never
+copy that credential into source, documentation, receipts, tests, commands, or
+logs. Continue to enforce exact Stripe account binding, root-owned runtime
+storage, webhook verification, checkout kill switches, and least privilege;
+only the owner may later withdraw this exception and authorize rotation.

@@ -268,11 +268,13 @@ const selectionValid = manifest.schemaVersion === 'nexus.local-model-manifest.v1
     : winners.length === 1 && winners[0]?.id === active?.id)
   && productionEvidenceValid
   && active?.productionEligible === true
+  && typeof active?.commercialUseApproved === 'boolean'
   && active?.evidenceStatus === 'verified'
   && typeof active?.ollamaTag === 'string'
   && active.ollamaTag.length > 0
   && /^sha256:[0-9a-f]{64}$/u.test(digest)
-  && (manifest.selectionStatus !== 'production_selected' || active.role === 'winner');
+  && (manifest.selectionStatus !== 'production_selected'
+    || (active.role === 'winner' && active.commercialUseApproved === true));
 if (!selectionValid) process.exit(2);
 process.stdout.write(`${active.ollamaTag}\n${digest.slice('sha256:'.length)}\n`);
 NODE

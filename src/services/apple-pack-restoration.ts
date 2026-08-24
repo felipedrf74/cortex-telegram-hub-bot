@@ -26,7 +26,8 @@
 
 import { verifyAppleJws } from './apple-jws-verifier';
 import { resolveBillingCatalogItemByAppleProductId } from './billing-catalog';
-import { grantPurchasedAiCredits } from './ai-credit-ledger';
+import { findAiCreditLotByProviderTransaction, grantPurchasedAiCredits } from './ai-credit-ledger';
+import { isCreditPackPurchaseEligible } from './credit-pack-entitlement';
 import {
   lookupAppleReversalForTransaction,
   isSandboxGrantAllowed,
@@ -48,6 +49,7 @@ export type ApplePackRestorationOutcome =
   | 'not_a_pack'
   | 'wrong_bundle'
   | 'wrong_account'
+  | 'paid_plan_required'
   | 'environment_refused'
   | 'revoked'
   | 'reversal_check_unavailable'
@@ -173,6 +175,13 @@ function restoreOne(
       catalogItemId: packItem.id,
       transactionId,
     };
+  }
+
+  const existingLot = findAiCreditLotByProviderTransaction('apple', transactionId);
+  if (!existingLot && !isCreditPackPurchaseEligible({
+    userId,
+  })) {
+    return { outcome: 'paid_plan_required', catalogItemId: packItem.id, transactionId };
   }
 
   const granted = grantPurchasedAiCredits({

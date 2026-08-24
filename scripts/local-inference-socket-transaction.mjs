@@ -200,9 +200,11 @@ function selectedModel() {
       || !productionEvidenceValid
       || typeof manifest.manifestVersion !== 'string'
       || !active?.productionEligible
+      || typeof active?.commercialUseApproved !== 'boolean'
       || active.evidenceStatus !== 'verified'
       || typeof active.ollamaTag !== 'string'
-      || (manifest.selectionStatus === 'production_selected' && active.role !== 'winner')
+      || (manifest.selectionStatus === 'production_selected'
+        && (active.role !== 'winner' || active.commercialUseApproved !== true))
       || !/^sha256:[0-9a-f]{64}$/u.test(active.digest || '')) {
     fail('signed local-model manifest has no verified digest-pinned active model');
   }

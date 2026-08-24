@@ -2508,6 +2508,20 @@ export class OllamaProvider implements AIProvider {
       }
       const manifest = getLocalModelManifest({ fresh: true });
       const activeModel = manifest.models.find((model) => model.id === manifest.activeModelId)!;
+      // The runtime-control transition protects governed local-primary modes,
+      // but legacy Ollama routing is still available while that control is
+      // OFF. Enforce commercial-use approval again at the one shared dispatch
+      // boundary so no live-production role can reach a noncommercial model.
+      if (process.env.NODE_ENV === 'production'
+          && !config.isStaging
+          && !activeModel.commercialUseApproved) {
+        throw new LocalLLMError('unsupported_capability', {
+          taskType,
+          workloadRole,
+          model: activeModel.ollamaTag,
+          reason: 'commercial_use_not_approved',
+        });
+      }
       // Bind the mutable tag, pinned digest, and selection status to this one
       // fresh manifest snapshot. A queued request may have been admitted under
       // an older manifest; it must not dispatch that old tag after activation

@@ -406,6 +406,14 @@ export function setLocalInferenceRuntimeControl(input: {
         409,
       );
     }
+    const activeModel = manifest!.models.find((model) => model.id === manifest!.activeModelId)!;
+    if (environment === 'production' && !activeModel.commercialUseApproved) {
+      throw new LocalInferenceRuntimeControlError(
+        'LOCAL_MODEL_COMMERCIAL_USE_NOT_APPROVED',
+        'Production local inference requires a model with approved commercial use.',
+        409,
+      );
+    }
     if (environment === 'production'
         && input.mode === 'active'
         && !localPrimaryInferenceConfig.autoRollbackEnabled) {

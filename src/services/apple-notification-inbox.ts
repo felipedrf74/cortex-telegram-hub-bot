@@ -33,6 +33,7 @@ import {
   grantPurchasedAiCredits,
   revokeAiCreditLot,
 } from './ai-credit-ledger';
+import { isCreditPackPurchaseEligible } from './credit-pack-entitlement';
 
 const MAX_PROCESS_ATTEMPTS = 5;
 const MAX_REVERSAL_INDEX_ATTEMPTS = 3;
@@ -535,6 +536,14 @@ function applyStoredNotification(row: RawRow): boolean {
     const rawQuantity = typeof inner.quantity === 'number' ? inner.quantity : 1;
     if (!Number.isInteger(rawQuantity) || rawQuantity < 1 || rawQuantity > MAX_CONSUMABLE_QUANTITY) {
       throw new NonRetryableInboxError(`pack purchase has an unsupported quantity: ${String(inner.quantity)}`);
+    }
+    const existingLot = findAiCreditLotByProviderTransaction('apple', transactionId);
+    if (!existingLot && !isCreditPackPurchaseEligible({
+      userId,
+    })) {
+      // Keep the row retryable because Apple may deliver the pack before the
+      // subscription webhook that establishes the paid billing period.
+      throw new Error('pack purchase requires an active Pro or Max billing period');
     }
     const granted = grantPurchasedAiCredits({
       userId,

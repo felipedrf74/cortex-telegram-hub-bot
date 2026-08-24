@@ -93,7 +93,7 @@ function database(): Database.Database {
       ('pro', 1, '2026-01-01T00:00:00.000Z'),
       ('max', 1, '2026-01-01T00:00:00.000Z');
     INSERT INTO local_inference_runtime_control VALUES (
-      'staging', 'off', 0, '2026-08-12.1',
+      'staging', 'off', 0, '2026-08-24.1',
       'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
       'nexus-skill-inference-v1', NULL, NULL, NULL, NULL, NULL,
       'test_default_off', '2026-08-12T00:00:00.000Z'

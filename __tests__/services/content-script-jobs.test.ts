@@ -58,7 +58,7 @@ vi.mock('../../src/services/local-inference-runtime-control', async () => ({
       mode: row?.mode ?? 'active',
       rolloutPercent: row?.rollout_percent ?? 100,
       environment: 'staging',
-      manifestVersion: '2026-08-12.1',
+      manifestVersion: '2026-08-24.1',
       activeModelId: 'qwen2.5-3b-control',
       activeModelDigest: ACTIVE_MODEL_DIGEST,
       reason: 'test_control',
@@ -180,7 +180,7 @@ function database(): Database.Database {
   `);
   db.exec(migrationSql);
   db.prepare(`UPDATE local_inference_runtime_control
-    SET mode = 'active', rollout_percent = 100, model_manifest_version = '2026-08-12.1',
+    SET mode = 'active', rollout_percent = 100, model_manifest_version = '2026-08-24.1',
         active_model_digest = 'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
         skill_profile_version = 'nexus-skill-inference-v1'
     WHERE environment = 'staging'`).run();
@@ -438,7 +438,7 @@ describe('durable Content script jobs', () => {
     expect(stored.request_json).not.toContain('Durable local script');
     const { decryptContentScriptJobJson } = await import('../../src/services/content-script-job-encryption');
     expect(decryptContentScriptJobJson(stored.request_json, 42)).toMatchObject({
-      pinnedManifestVersion: '2026-08-12.1',
+      pinnedManifestVersion: '2026-08-24.1',
       pinnedModelId: 'qwen2.5-3b-control',
       pinnedModelTag: ACTIVE_MODEL_TAG,
       pinnedModelDigest: ACTIVE_MODEL_DIGEST,

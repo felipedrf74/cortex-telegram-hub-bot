@@ -127,17 +127,24 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
         model_digest TEXT, created_at TEXT NOT NULL, completed_at TEXT NOT NULL
       );
       CREATE TABLE api_usage (
-        run_id TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+        id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
         cost_usd REAL NOT NULL, provider_tool_cost_usd REAL NOT NULL
+      );
+      CREATE TABLE skill_inference_runs (
+        run_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL
       );`);
       const insertJob = db.prepare('INSERT INTO content_script_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-      const insertUsage = db.prepare('INSERT INTO api_usage VALUES (?, ?, ?, ?, ?)');
+      const insertInference = db.prepare('INSERT INTO skill_inference_runs VALUES (?, ?)');
+      const insertUsage = db.prepare('INSERT INTO api_usage (run_id, input_tokens, output_tokens, cost_usd, provider_tool_cost_usd) VALUES (?, ?, ?, ?, ?)');
       state.scenarios.forEach((scenario, index) => {
+        const operationId = `op-${index}`;
+        const runId = `run-${index}`;
         insertJob.run(
-          scenario.jobId, `op-${index}`, 'completed', scenario.deliveryMode, '[]',
+          scenario.jobId, operationId, 'completed', scenario.deliveryMode, '[]',
           'cloud', digest('model'), '2026-08-23T00:00:00Z', '2026-08-23T00:01:00Z',
         );
-        insertUsage.run(`op-${index}`, 1_000 + index, 4_000 + index, 0.01, 0);
+        insertInference.run(runId, operationId);
+        insertUsage.run(runId, 1_000 + index, 4_000 + index, 0.01, 0);
       });
     } finally {
       db.close();

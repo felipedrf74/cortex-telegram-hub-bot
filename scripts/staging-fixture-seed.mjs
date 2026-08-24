@@ -13,6 +13,26 @@ export const DEFAULT_FIXTURE_DEVICE_ID = 'staging-fixture-device';
 export const DEFAULT_FELIPE_VOLUME_CALENDAR_EVENT_COUNT = 100;
 export const MAX_FIXTURE_CALENDAR_EVENT_COUNT = 250;
 
+export function advanceUsersAutoincrementPastFixtureRange(db, floor = FIXTURE_USER_ID_MAX) {
+  if (!Number.isSafeInteger(floor) || floor < 0) {
+    throw new TypeError('User autoincrement floor must be a non-negative safe integer');
+  }
+
+  const sequenceTable = db.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'",
+  ).get();
+  if (!sequenceTable) return false;
+
+  const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'users'").get();
+  if (!sequence) return false;
+
+  const current = Number(sequence.seq);
+  if (!Number.isSafeInteger(current) || current >= floor) return false;
+
+  db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'users'").run(floor);
+  return true;
+}
+
 export function assertFixtureUserId(userId) {
   if (!Number.isInteger(userId) || userId < FIXTURE_USER_ID_MIN || userId > FIXTURE_USER_ID_MAX) {
     const err = new Error(`Synthetic user id must be in ${FIXTURE_USER_ID_MIN}-${FIXTURE_USER_ID_MAX}`);
@@ -113,6 +133,8 @@ const deviceId = ${JSON.stringify(deviceId)};
 const tier = ${JSON.stringify(tier)};
 const seedAppleHealth = ${JSON.stringify(seedAppleHealth)};
 const calendarEventCount = ${JSON.stringify(normalizedCalendarEventCount)};
+const ordinaryUserSequenceFloor = ${JSON.stringify(FIXTURE_USER_ID_MAX)};
+${advanceUsersAutoincrementPastFixtureRange.toString()}
 const now = new Date();
 const today = now.toISOString().slice(0, 10);
 const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
@@ -573,6 +595,12 @@ db.transaction(() => {
   }
 
   seedFixtureCalendarEvents(userId, calendarEventCount);
+
+  // Explicit fixture IDs live in a reserved high range. SQLite AUTOINCREMENT
+  // otherwise assigns the next ordinary staging account another reserved ID,
+  // which the JWT tenancy boundary correctly rejects. Advance only to the end
+  // of that range and never decrease an already-higher production-like value.
+  advanceUsersAutoincrementPastFixtureRange(db, ordinaryUserSequenceFloor);
 })();
 
 const token = signIosJwt({

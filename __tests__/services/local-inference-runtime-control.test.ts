@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-const { runtimeConfigMock, localPrimaryConfigMock } = vi.hoisted(() => ({
+const { runtimeConfigMock, localPrimaryConfigMock, modelLicenseMock } = vi.hoisted(() => ({
   runtimeConfigMock: {
     isStaging: true,
     ollama: {
@@ -18,6 +18,9 @@ const { runtimeConfigMock, localPrimaryConfigMock } = vi.hoisted(() => ({
     autoRollbackEnabled: true,
     gatewaySocketPath: '/run/nexus-inference/staging/ollama.sock',
     staffUserIds: [42],
+  },
+  modelLicenseMock: {
+    commercialUseApproved: true,
   },
 }));
 
@@ -34,12 +37,13 @@ vi.mock('../../src/services/ollama-model-policy', async () => {
     '../../src/services/ollama-model-policy',
   );
   const manifest = () => ({
-    manifestVersion: '2026-08-12.1',
+    manifestVersion: '2026-08-24.1',
     activeModelId: 'production-winner',
     selectionStatus: 'production_selected',
     models: [{
       id: 'production-winner',
       digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      commercialUseApproved: modelLicenseMock.commercialUseApproved,
     }],
   });
   return {
@@ -103,9 +107,9 @@ describe('local inference runtime control', () => {
       FROM local_inference_runtime_control WHERE environment = 'staging'`).get()).toEqual({
       reason: 'staff cohort evidence',
       updated_by: 42,
-      model_manifest_version: '2026-08-12.1',
+      model_manifest_version: '2026-08-24.1',
       active_model_digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      skill_profile_version: 'nexus-skill-inference-v3',
+      skill_profile_version: 'nexus-skill-inference-v4',
     });
     expect(db.prepare(`SELECT previous_mode, mode, rollout_percent, actor_type,
       actor_user_id, reason FROM local_inference_control_events`).get()).toEqual({
@@ -136,7 +140,7 @@ describe('local inference runtime control', () => {
     const control = await import('../../src/services/local-inference-runtime-control');
     db.prepare(`UPDATE local_inference_runtime_control
       SET mode = 'canary', rollout_percent = 100,
-          model_manifest_version = '2026-08-12.1',
+          model_manifest_version = '2026-08-24.1',
           active_model_digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           skill_profile_version = 'nexus-skill-inference-v1'
       WHERE environment = 'staging'`).run();
@@ -246,7 +250,7 @@ describe('local inference runtime control', () => {
       mode: 'off',
       rolloutPercent: 0,
       reason: 'manifest_version_changed_requires_reactivation',
-      manifestVersion: '2026-08-12.1',
+      manifestVersion: '2026-08-24.1',
     });
     db.close();
   });
@@ -364,6 +368,28 @@ describe('local inference runtime control', () => {
     }
   });
 
+  it('refuses every production local-inference mode when commercial use is not approved', async () => {
+    const db = database();
+    const control = await import('../../src/services/local-inference-runtime-control');
+    const previousNodeEnv = process.env.NODE_ENV;
+    runtimeConfigMock.isStaging = false;
+    modelLicenseMock.commercialUseApproved = false;
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(() => control.setLocalInferenceRuntimeControl({
+        mode: 'shadow', rolloutPercent: 0, reason: 'must remain legally blocked', updatedBy: 42,
+      }, db)).toThrowError(expect.objectContaining({
+        code: 'LOCAL_MODEL_COMMERCIAL_USE_NOT_APPROVED',
+      }));
+    } finally {
+      modelLicenseMock.commercialUseApproved = true;
+      runtimeConfigMock.isStaging = true;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      db.close();
+    }
+  });
+
   it('requires production auto-rollback and acceptance evidence before active/100%', async () => {
     const db = database();
     const control = await import('../../src/services/local-inference-runtime-control');
@@ -457,9 +483,9 @@ describe('local inference runtime control', () => {
     try {
       db.prepare(`UPDATE local_inference_runtime_control
         SET mode = 'active', rollout_percent = 100,
-            model_manifest_version = '2026-08-12.1',
+            model_manifest_version = '2026-08-24.1',
             active_model_digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            skill_profile_version = 'nexus-skill-inference-v3', updated_by = 42
+            skill_profile_version = 'nexus-skill-inference-v4', updated_by = 42
         WHERE environment = 'production'`).run();
 
       localPrimaryConfigMock.autoRollbackEnabled = false;
