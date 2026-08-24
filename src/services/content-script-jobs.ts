@@ -122,7 +122,7 @@ export interface ContentScriptJobRequest {
   pinnedScriptRoute?: 'cloud_primary';
   pinnedCloudProvider?: 'openai';
   pinnedCloudModel?: string;
-  pinnedCloudServiceTier?: 'flex' | 'batch' | 'priority';
+  pinnedCloudServiceTier?: 'default' | 'flex' | 'batch' | 'priority';
   /** Encrypted immutable snapshots captured when the authenticated job is created. */
   pinnedCreatorVoice: string | null;
   pinnedSources: Array<{
@@ -471,15 +471,18 @@ function runtimeAdmitsContentScriptUser(
 function pinnedCloudBinding(deliveryMode: 'standard' | 'scheduled' | 'priority'): {
   provider: 'openai';
   model: string;
-  serviceTier: 'flex' | 'batch' | 'priority';
+  serviceTier: 'default' | 'flex' | 'batch';
 } {
   const binding = config.cloudReasoningFallback.scriptDeliveryBindings[deliveryMode];
   const provider = String(binding.provider || '').trim().toLowerCase();
   const model = String(binding.model || '').trim();
   const serviceTier = String(binding.serviceTier || '').trim().toLowerCase();
+  // The plan's "Luna Standard/Fast" choice resolves to Standard (`default`)
+  // at launch: Nexus queue priority remains immediate, while OpenAI's 2x
+  // processing tier fails the locked Apple/blended contribution-margin gate.
   const expectedTier = deliveryMode === 'standard'
     ? 'flex'
-    : deliveryMode === 'scheduled' ? 'batch' : 'priority';
+    : deliveryMode === 'scheduled' ? 'batch' : 'default';
   if (provider !== 'openai' || !model || serviceTier !== expectedTier) {
     throw new ContentScriptJobError(
       'CONTENT_SCRIPT_CLOUD_BINDING_INVALID',

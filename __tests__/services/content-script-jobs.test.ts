@@ -369,7 +369,7 @@ describe('durable Content script jobs', () => {
 
   it.each([
     ['scheduled', 'CLOUD_SCRIPT_SCHEDULED', 'batch'],
-    ['priority', 'CLOUD_SCRIPT_PRIORITY', 'priority'],
+    ['priority', 'CLOUD_SCRIPT_PRIORITY', 'default'],
   ] as const)('pins the %s OpenAI delivery class independently of the local manifest', async (
     deliveryMode,
     envPrefix,
@@ -405,6 +405,30 @@ describe('durable Content script jobs', () => {
       pinnedCloudServiceTier: serviceTier,
     });
     expect(stored.model_digest).toBeNull();
+    db.close();
+  });
+
+  it('rejects the 2x OpenAI processing tier for Priority when it violates the launch economics binding', async () => {
+    vi.stubEnv('CLOUD_SCRIPT_PRIORITY_PROVIDER', 'openai');
+    vi.stubEnv('CLOUD_SCRIPT_PRIORITY_MODEL', 'gpt-5.6-luna');
+    vi.stubEnv('CLOUD_SCRIPT_PRIORITY_SERVICE_TIER', 'priority');
+    localPrimaryConfigMock.scriptJobsCloudPrimaryEnabled = true;
+    localPrimaryConfigMock.staffUserIds = [42];
+
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'priority-tier-economics-refusal',
+      request: {
+        topic: 'Priority must use the approved Standard tier',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'priority',
+      },
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_CLOUD_BINDING_INVALID' }));
     db.close();
   });
 
