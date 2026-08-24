@@ -89,6 +89,7 @@
     "training:e2e:live-calendar": "npx tsx scripts/training-e2e-live-calendar.ts",
     "training:e2e:down": "scripts/training-e2e-down.sh",
     "lint": "npm run typecheck",
+    "preflight:trust": "npm run lint && npm run docs:audit && node scripts/preflight-trust.mjs",
     "verify": "npm run typecheck && npm run science-policy:check && npm run test",
     "release:prepare": "scripts/release-operator.sh prepare",
     "release:promote": "scripts/release-operator.sh promote",

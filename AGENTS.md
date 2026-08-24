@@ -58,6 +58,7 @@ AGENTS.md as the process bootloader; the brief is product truth.
 - Use `npm run test:migration-hook-lint` after database-test changes.
 - Use `npm run docs:audit` after documentation, agent, or skill changes.
 - Use `npm run verify` or the focused commands selected by the risk gate.
+- Run `npm run preflight:trust` before a trust-wide PR: lint → docs:audit → mutation with `--base origin/main` when the test-cleanup classifier requires it.
 - Before ending non-trivial work, run the `verifiable-reward-check` skill.
   Verdict and hard failures outrank numeric score.
 
