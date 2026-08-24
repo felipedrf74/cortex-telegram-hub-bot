@@ -47,8 +47,8 @@ describe('lean required CI contracts', () => {
     expect(workflow).toContain('Record docs-only exact selection without Vitest');
     expect(workflow).not.toContain('selection_metadata:');
     expect(workflow).toContain("PROTECTED_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
-    expect(workflow).toContain('if [ "$PROTECTED_MAIN" = "true" ]; then');
-    expect(workflow).toContain('test "$FOCUSED_RESULT" = "skipped"');
+    expect(workflow).toContain('skip|focused)');
+    expect(workflow).toContain('test "$FOCUSED_RESULT" = "success"');
     expect(workflow).toContain('test_focused:');
     expect(workflow).toMatch(/test_focused:[\s\S]*?\n\s{6}- run: npm ci/);
   });

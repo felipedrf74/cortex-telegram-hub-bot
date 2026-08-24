@@ -10,6 +10,7 @@ import {
   isProductionMigrationArchivePath,
   migrationSafetyGovernanceReason,
 } from './migration-safety-policy-classifier.mjs';
+import { isDocsOnly } from './test-groups.mjs';
 
 export function normalizeChangedFiles(inputFiles) {
   const normalized = [];
@@ -144,8 +145,8 @@ export function classifyChangedFiles({
     trainingEntitlement: false,
     contentPromptCleanliness: false,
   };
-  let docsOnly = true;
-  let nonDoc = false;
+  let docsOnly = impactResolved && isDocsOnly(files);
+  let nonDoc = !docsOnly;
   let iosNotification = false;
   let voiceEvolutionMultiTenant = false;
   let videoStudyPromptCleanliness = false;
@@ -158,15 +159,6 @@ export function classifyChangedFiles({
   let registryRealEval = false;
   let localPrimaryInference = false;
 
-  if (files.some((file) => !(/\.md$/.test(file) || /^docs\//.test(file) || /\/docs\//.test(file)
-    || file === 'CHANGELOG.md' || /^prompts\/.*\.md$/.test(file)))) {
-    nonDoc = true;
-    docsOnly = false;
-  }
-  if (files.some(isProductionMigrationArchivePath)) {
-    nonDoc = true;
-    docsOnly = false;
-  }
   if (!impactResolved) {
     nonDoc = true;
     docsOnly = false;

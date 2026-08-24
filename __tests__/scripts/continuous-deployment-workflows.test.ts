@@ -51,6 +51,7 @@ const continuousDeploymentDoc = readFileSync(join(root, 'docs/release/continuous
 const releaseOperatorRunbook = readFileSync(join(root, 'ops/nexus-release/README.md'), 'utf8');
 
 const iosContractOwners = [
+  'docs/contracts/',
   'src/release/backend-ios-contract-fixture.ts',
   'src/services/dashboard-home-view-state.ts',
   'src/services/training-home-view-state.ts',
@@ -73,6 +74,14 @@ function classifyIosContract(files: readonly string[]) {
   ], { cwd: root, encoding: 'utf8' });
   expect(result.status, result.stderr).toBe(0);
   return JSON.parse(result.stdout);
+}
+
+function expectedCiGate(eventName: 'pull_request' | 'push', docsOnly: boolean) {
+  const docsPrGate = eventName === 'pull_request' && docsOnly;
+  return {
+    docsPrGate: docsPrGate ? 'success' : 'skipped',
+    codeGate: docsPrGate ? 'skipped' : 'success',
+  } as const;
 }
 
 function jobBlock(source: string, jobId: string): string {
@@ -203,8 +212,50 @@ describe('CI test-runner routing', () => {
     expect(ci).not.toMatch(/\bssh\s|\brsync\b|\bscp\b/);
   });
 
-  it('keeps the required aggregate check name stable', () => {
-    expect(ci).toContain('name: 🧪 Tests');
+  it('keeps one fail-closed required aggregate check name stable', () => {
+    expect(ci.match(/^    name: 🧪 Tests$/gm)).toHaveLength(1);
+    expect(ci).not.toContain('name: 🧪 Code tests');
+    const aggregate = jobBlock(ci, 'test');
+    expect(aggregate).toContain('if: ${{ always() }}');
+    expect(aggregate).toContain(
+      'needs: [runner, runner_guardrails, classify, docs_pr_gate, code_gate]',
+    );
+    expect(aggregate).toContain('test "$DOCS_PR_GATE_RESULT" = "success"');
+    expect(aggregate).toContain('test "$DOCS_PR_GATE_RESULT" = "skipped"');
+    expect(aggregate).toContain('test "$CODE_GATE_RESULT" = "success"');
+    expect(aggregate).toContain('test "$CODE_GATE_RESULT" = "skipped"');
+  });
+
+  it.each([
+    ['docs-only PR', 'pull_request', true, 'success', 'skipped'],
+    ['code PR', 'pull_request', false, 'skipped', 'success'],
+    ['docs delta pushed to main', 'push', true, 'skipped', 'success'],
+    ['code delta pushed to main', 'push', false, 'skipped', 'success'],
+  ] as const)(
+    'routes %s through exactly one expected gate',
+    (_name, eventName, docsOnly, docsPrGate, codeGate) => {
+      expect(expectedCiGate(eventName, docsOnly)).toEqual({ docsPrGate, codeGate });
+    },
+  );
+
+  it('encodes the gate truth table in the workflow without treating skip as pass', () => {
+    const docsPrGate = jobBlock(ci, 'docs_pr_gate');
+    const codeGate = jobBlock(ci, 'code_gate');
+    const aggregate = jobBlock(ci, 'test');
+    const codeLaneCondition = "if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}";
+    expect(docsPrGate).toContain(
+      "if: ${{ always() && github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true' }}",
+    );
+    expect(codeGate).toContain(
+      "if: ${{ always() && !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}",
+    );
+    expect(aggregate).toContain(
+      'if [ "$EVENT_NAME" = "pull_request" ] && [ "$DOCS_ONLY" = "true" ]; then',
+    );
+    expect(aggregate).not.toMatch(/(?:DOCS_PR_GATE_RESULT|CODE_GATE_RESULT).*!= "failure"/);
+    for (const jobId of ['lint', 'test_focused', 'build', 'science_policy']) {
+      expect(jobBlock(ci, jobId), jobId).toContain(codeLaneCondition);
+    }
   });
 
   it('checks committed Python release-lock metadata in required CI', () => {
@@ -218,19 +269,20 @@ describe('CI test-runner routing', () => {
     expect(installAt).toBeGreaterThan(lockCheckAt);
   });
 
-  it('binds lint/typecheck and build into the required aggregate context', () => {
-    const aggregate = jobBlock(ci, 'test');
-    const needs = aggregate.match(/^    needs: \[(.+)\]$/m)?.[1] ?? '';
+  it('binds lint/typecheck and build into the code gate feeding the aggregate', () => {
+    const codeGate = jobBlock(ci, 'code_gate');
+    const needs = codeGate.match(/^    needs: \[(.+)\]$/m)?.[1] ?? '';
     expect(needs.split(',').map((entry) => entry.trim())).toEqual(
       expect.arrayContaining(['lint', 'build']),
     );
-    expect(aggregate).toContain('LINT_RESULT: ${{ needs.lint.result }}');
-    expect(aggregate).toContain('BUILD_RESULT: ${{ needs.build.result }}');
-    expect(aggregate).toContain('test "$LINT_RESULT" = "success"');
-    expect(aggregate).toContain('test "$BUILD_RESULT" = "success"');
-    expect(aggregate).toContain('test "$LINT_RESULT" = "skipped"');
-    expect(aggregate).toContain('test "$BUILD_RESULT" = "skipped"');
-    expect(aggregate).toContain('[ "$PROTECTED_MAIN" != "true" ]');
+    expect(codeGate).toContain('LINT_RESULT: ${{ needs.lint.result }}');
+    expect(codeGate).toContain('BUILD_RESULT: ${{ needs.build.result }}');
+    expect(codeGate).toContain('test "$LINT_RESULT" = "success"');
+    expect(codeGate).toContain('test "$BUILD_RESULT" = "success"');
+    expect(codeGate).not.toContain('test "$LINT_RESULT" = "skipped"');
+    expect(codeGate).not.toContain('test "$BUILD_RESULT" = "skipped"');
+    expect(codeGate).toContain('skip|focused)');
+    expect(codeGate).toContain('test "$FOCUSED_RESULT" = "success"');
   });
 });
 
@@ -700,7 +752,7 @@ describe('SonarQube decommissioning', () => {
 });
 
 describe('iOS decoupling from backend releases', () => {
-  it('runs the six-example fixture test only for exact fixture owners', () => {
+  it('runs the six-example fixture test only for governed fixture-owner prefixes', () => {
     const block = jobBlock(ci, 'ios_contract');
     expect(block).toContain("needs.classify.outputs.ios_contract == 'true'");
     expect(block).toContain('scripts/ios-contract-change-check.mjs');
@@ -713,6 +765,11 @@ describe('iOS decoupling from backend releases', () => {
         watchedPrefixes: iosContractOwners,
       });
     }
+    expect(classifyIosContract(['docs/contracts/openapi-v1.yaml'])).toMatchObject({
+      required: true,
+      matchedPaths: ['docs/contracts/openapi-v1.yaml'],
+      watchedPrefixes: iosContractOwners,
+    });
   });
 
   it('does not claim fixture coverage for auth, push, health, or capabilities', () => {

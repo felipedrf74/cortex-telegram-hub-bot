@@ -117,6 +117,7 @@
     ]
   },
   "iosContractPaths": [
+    "docs/contracts/",
     "src/release/backend-ios-contract-fixture.ts",
     "src/services/dashboard-home-view-state.ts",
     "src/services/training-home-view-state.ts",
