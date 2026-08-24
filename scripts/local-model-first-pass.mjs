@@ -29,19 +29,6 @@ const PROFILE_VERSION = PROFILE_POLICY.version;
 const REQUIRED_SKILLS = ['secretary', 'content', 'training', 'triathlon', 'cooking', 'finance'];
 const REQUIRED_LANGUAGES = ['en', 'pt-BR', 'pt-PT'];
 const CGROUP_MEMORY_CURRENT = '/sys/fs/cgroup/system.slice/ollama.service/memory.current';
-const RESPONSE_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    action: { type: 'string', enum: ['answer', 'refuse'] },
-    answer: { type: 'string', minLength: 1 },
-    data: { type: 'object' },
-    language: { type: 'string', enum: REQUIRED_LANGUAGES },
-    skill: { type: 'string', enum: REQUIRED_SKILLS },
-  },
-  required: ['action', 'answer', 'data', 'language', 'skill'],
-};
-
 function fail(message, exitCode = 1) {
   const error = new Error(message);
   error.exitCode = exitCode;
@@ -60,6 +47,57 @@ function stableJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+}
+
+function schemaForExpectedValue(value) {
+  if (Array.isArray(value)) {
+    const itemSchemas = [...new Map(
+      value.map((item) => {
+        const schema = schemaForExpectedValue(item);
+        return [stableJson(schema), schema];
+      }),
+    ).values()];
+    return {
+      type: 'array',
+      items: itemSchemas.length === 0
+        ? {}
+        : itemSchemas.length === 1 ? itemSchemas[0] : { anyOf: itemSchemas },
+    };
+  }
+  if (value !== null && typeof value === 'object') {
+    const properties = Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, schemaForExpectedValue(child)]),
+    );
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties,
+      required: Object.keys(properties),
+    };
+  }
+  if (typeof value === 'number') return { type: Number.isInteger(value) ? 'integer' : 'number' };
+  if (typeof value === 'boolean') return { type: 'boolean' };
+  if (value === null) return { type: 'null' };
+  return { type: 'string' };
+}
+
+export function buildFirstPassResponseSchema(testCase) {
+  const expectedData = testCase?.expectedData;
+  const dataSchema = expectedData !== null && typeof expectedData === 'object' && !Array.isArray(expectedData)
+    ? schemaForExpectedValue(expectedData)
+    : schemaForExpectedValue({});
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      action: { type: 'string', enum: ['answer', 'refuse'] },
+      answer: { type: 'string', minLength: 1 },
+      data: dataSchema,
+      language: { type: 'string', enum: REQUIRED_LANGUAGES },
+      skill: { type: 'string', enum: REQUIRED_SKILLS },
+    },
+    required: ['action', 'answer', 'data', 'language', 'skill'],
+  };
 }
 
 function exactSubset(actual, expected) {
@@ -430,6 +468,10 @@ export function resolveCandidate(manifest, candidateId, inventory) {
 
 export function buildFirstPassSystemPrompt(testCase) {
   const profilePolicy = [...PROFILE_POLICY.sharedPolicy, PROFILE_POLICY.skillPolicy[testCase.skillId]].join(' ');
+  const hasStructuredFields = testCase.expectedData !== null
+    && typeof testCase.expectedData === 'object'
+    && !Array.isArray(testCase.expectedData)
+    && Object.keys(testCase.expectedData).length > 0;
   const evaluationOverlay = [
     'This is a synthetic evaluation; no private or external data is available.',
     'Return exactly one JSON object and no markdown or surrounding text.',
@@ -437,8 +479,8 @@ export function buildFirstPassSystemPrompt(testCase) {
     'action must be answer or refuse. data must be a JSON object.',
     `language must be ${testCase.language}. skill must be ${testCase.skillId}.`,
     'Never claim that you executed an action or accessed private data.',
-    testCase.expectedData === undefined
-      ? 'Use an empty data object.'
+    !hasStructuredFields
+      ? 'This operation has no structured fields; data must be exactly {}.'
       : 'For this extraction case, put only the fields requested by the user in data.',
     'Keep answer under 120 words.',
   ].join(' ');
@@ -463,7 +505,7 @@ async function runCase(candidate, testCase) {
           { role: 'user', content: testCase.prompt },
         ],
         stream: true,
-        format: RESPONSE_SCHEMA,
+        format: buildFirstPassResponseSchema(testCase),
         think: candidate.thinkMode,
         keep_alive: '5m',
         options: { temperature: 0, seed: 42, num_ctx: 4096, num_predict: 512 },
