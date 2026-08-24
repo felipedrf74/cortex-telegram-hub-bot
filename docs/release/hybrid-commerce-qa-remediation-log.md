@@ -585,3 +585,57 @@ until those nine pre-release cases pass. The root-owned
 `nexus-content-acceptance-v3.timer` is enabled and active, and its oneshot
 automatically runs the production smoke when ready. The jobs must not be moved
 early or replaced with extra completed scripts merely to accelerate the gate.
+
+## Final evidence refresh and policy-v5 safety candidate (2026-08-24)
+
+The current provable production receipt is signed release
+`e9d222cca5723c5fa22aa23d76c3547f` at protected-main source
+`aa4bfae2b96c98f20df72067c524538ba3318b66`. It binds backend digest
+`sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78`,
+Content Engine digest
+`sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`,
+and signed payload digest
+`sha256:c3cb013af7530df9c031aebec7e808e00abe22297ab77cdebbf733bc3fd3e636`.
+The receipt completed at `2026-08-24T14:24:48.491Z`; both runtimes are healthy
+and no release block is active. Public hybrid credits, checkout, Stripe packs,
+Apple packs, free-tier local-only routing, and local-primary activation remain
+OFF as required while the acceptance gates are incomplete.
+
+The rejected policy-v4 GPT-OSS first pass exposed one substantive safety gap:
+the Portuguese acute-symptom triathlon response refused the unsafe workout but
+did not explicitly tell the user to stop activity and seek urgent medical care.
+The policy-v5 candidate now makes both instructions mandatory in the user's
+language, including `Pare a atividade` and
+`procure assistência médica urgente` for Portuguese. The profile artifact
+version and all exact-version fixtures moved from v4 to v5; no benchmark case,
+score, gate, or threshold changed. The version mismatch keeps any persisted v4
+activation fail-closed. The governed risk-gate tier and TypeScript passed, the
+strict docs audit reported no issues, and an independent QA round returned GO
+with 0 blockers, majors, or minors. This candidate is not merged, signed,
+deployed, or live; protected main
+still requires the repository's GitHub-hosted checks, which cannot be replaced
+with locally manufactured release evidence.
+
+App Store Connect submission `9f222cb7-fec9-47c9-988a-5f58cbe9184b` now
+contains exactly iOS 1.5.0 build 289 and the 100-, 250-, and 600-credit
+consumables. All four items report `Waiting for Review`. Xcode Cloud archive
+build `20599cf5-141d-4198-9e7d-7aadeaf839cf` succeeded from exact iOS source
+`3647dcf1447fa1530fe542dbf6bfb979398f1ad2`; upload
+`9b385e92-0e6d-418b-aa53-a852150199e7` is complete and assigned to the
+internal `Nexus Hub Betinha` TestFlight group.
+
+On the connected iPhone 17 Pro Max, the attended StoreKit harness authenticated
+the ordinary isolated staging identity at user ID `1100000`, loaded its
+server-backed wallet at zero, resolved the real
+`me.nexushub.credits.pack100` product, and opened Apple's account/purchase
+sheet. App Store Connect currently contains zero Sandbox Test Accounts, so the
+bounded run ended without a transaction or wallet mutation. The remaining
+signed-JWS grant, exact replay, and retained-retry proof requires the owner to
+create one Sandbox Test Account and enter its credentials on-device. Production
+Apple fulfillment remains OFF.
+
+The immutable ten-case acceptance inventory remains at six completed, three
+queued, and one pending production smoke. The three scheduled cases remain
+fixed for `2026-08-25T03:00:00Z`; the root-owned timer is enabled and active.
+The smoke and measured-p95 economics gate must follow those executions. The
+owner's no-rotation decision remains the only explicit security exception.
