@@ -1072,6 +1072,7 @@ describe('skill inference service', () => {
       expect(infrastructureReasons.includes(kind)).toBe(accounting === 'exempt');
     }
     expect(infrastructureReasons).toContain('INFERENCE_EMPTY_OUTPUT');
+    expect(infrastructureReasons).toContain('CONTENT_SCRIPT_CLOUD_GATE_UNAVAILABLE');
     expect(infrastructureReasons).toContain('model_manifest_unavailable');
     expect(infrastructureReasons).toContain('skill_profile_version_changed_requires_reactivation');
 

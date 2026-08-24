@@ -1673,6 +1673,8 @@ async function generateSection(
   const continuity = prior.length > 0
     ? prior[prior.length - 1].text.slice(-1_500)
     : '';
+  const minimumWords = Math.max(5, Math.floor(section.wordBudget * 0.92));
+  const maximumWords = Math.ceil(section.wordBudget * 1.08);
   const basePrompt = JSON.stringify({
     task: request.scriptStyle === 'bullets'
       ? 'Write exactly one section of concise bullet-point speaking notes.'
@@ -1695,7 +1697,7 @@ async function generateSection(
       request.scriptStyle === 'bullets'
         ? 'Return at least three complete bullet lines; begin every non-empty line with -, *, •, or a numbered marker.'
         : 'Return only spoken script prose for this section and finish every sentence.',
-      'Stay within 8 percent of the target word count.',
+      `Return between ${minimumWords} and ${maximumWords} words, inclusive.`,
       'Do not repeat earlier material or add markdown fences.',
       'Do not invent sources or claim access to current information.',
       ...(finalRepairWarnings.includes('unsupported_source_url')
@@ -1735,7 +1737,6 @@ async function generateSection(
     if (!continuationComplete) {
       const prefix = completeSectionPrefix(text, request.scriptStyle);
       const prefixWords = wordCount(prefix);
-      const maximumWords = Math.ceil(section.wordBudget * 1.08);
       if (prefixWords >= 20 && prefixWords < maximumWords) {
         const remainingWords = Math.max(20, section.wordBudget - prefixWords);
         const continuation = await runScriptStage(db, row, leaseToken, request, signal, {

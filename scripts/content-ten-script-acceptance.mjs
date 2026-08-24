@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const SCHEMA = 'nexus.content-ten-script-acceptance.v1';
-const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+export const TEN_SCRIPT_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v2';
+export const TEN_SCRIPT_ACCEPTANCE_REVISION = '2026-08-24-v2';
 export const TEN_SCRIPT_ACCEPTANCE_SCENARIOS = Object.freeze([
   { id: 'std-en-01', phase: 'pre-release', deliveryMode: 'standard', language: 'en', topic: 'Build a practical meal-prep system for busy professionals using timeless planning, food-safety, and consistency principles.' },
   { id: 'std-ptbr-01', phase: 'pre-release', deliveryMode: 'standard', language: 'pt-BR', topic: 'Crie um sistema prático de formação de hábitos para profissionais ocupados, com princípios atemporais, exemplos e passos acionáveis.' },
@@ -55,7 +55,8 @@ function atomicPrivateWrite(filename, value) {
 
 function initialState() {
   return {
-    schemaVersion: SCHEMA,
+    schemaVersion: TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+    acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
     createdAt: new Date().toISOString(),
     scenarios: TEN_SCRIPT_ACCEPTANCE_SCENARIOS.map(({ topic, ...scenario }) => ({
       ...scenario,
@@ -75,7 +76,9 @@ function readState(filename) {
   }
   assertPrivateRegularFile(filename, 'acceptance state');
   const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
-  if (state?.schemaVersion !== SCHEMA || !Array.isArray(state.scenarios)
+  if (state?.schemaVersion !== TEN_SCRIPT_ACCEPTANCE_SCHEMA
+      || state.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+      || !Array.isArray(state.scenarios)
       || state.scenarios.length !== TEN_SCRIPT_ACCEPTANCE_SCENARIOS.length
       || state.scenarios.some((row, index) => row.id !== TEN_SCRIPT_ACCEPTANCE_SCENARIOS[index].id
         || row.topicSha256 !== sha256(TEN_SCRIPT_ACCEPTANCE_SCENARIOS[index].topic))) {
@@ -120,17 +123,23 @@ function requestFor(scenario) {
     maxDurationMinutes: 15,
     targetDurationSeconds: 900,
     forceRefresh: true,
-    idempotencyKey: `hybrid-plan-acceptance-${scenario.id}-v1`,
+      idempotencyKey: `hybrid-plan-acceptance-${scenario.id}-${TEN_SCRIPT_ACCEPTANCE_REVISION}`,
   };
 }
 
-function updateFromView(row, view) {
+export function updateAcceptanceScenarioFromView(row, view) {
   row.status = view.status;
   row.stage = view.stage;
   row.progress = view.progress;
   row.updatedAt = view.updatedAt;
+  delete row.lastPollError;
+  delete row.lastPollErrorAt;
   if (view.errorCode) row.errorCode = view.errorCode;
-  if (view.status !== 'completed') return;
+  else delete row.errorCode;
+  if (view.status !== 'completed') {
+    row.output = null;
+    return;
+  }
   const script = view.result?.script;
   const words = countWords(script);
   const warnings = Array.isArray(view.warnings) ? view.warnings.filter((value) => typeof value === 'string') : [];
@@ -152,7 +161,8 @@ function summary(state) {
   const completed = rows.filter((row) => row.status === 'completed');
   const contractPasses = completed.filter((row) => row.output?.contractPass === true);
   return {
-    schemaVersion: SCHEMA,
+    schemaVersion: TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+    acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
     inventoryCount: rows.length,
     submitted: rows.filter((row) => row.jobId).length,
     completed: completed.length,
@@ -200,11 +210,13 @@ async function main() {
           row.submittedAt = new Date().toISOString();
           atomicPrivateWrite(statePath, state);
         }
-        if (!TERMINAL.has(row.status)) {
-          const view = await api(baseUrl, token, 'GET', `/api/v1/content/script-jobs/${encodeURIComponent(row.jobId)}`);
-          updateFromView(row, view);
-          atomicPrivateWrite(statePath, state);
-        }
+        // A failed or cancelled durable job may have been retried through the
+        // authenticated retry endpoint between acceptance passes. Always read
+        // the server-owned view so the private evidence state can resume that
+        // same immutable job identity instead of remaining terminal forever.
+        const view = await api(baseUrl, token, 'GET', `/api/v1/content/script-jobs/${encodeURIComponent(row.jobId)}`);
+        updateAcceptanceScenarioFromView(row, view);
+        atomicPrivateWrite(statePath, state);
       } catch (error) {
         row.lastPollError = error instanceof Error ? error.message.slice(0, 240) : 'unknown_error';
         row.lastPollErrorAt = new Date().toISOString();

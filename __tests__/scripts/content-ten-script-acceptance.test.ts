@@ -7,7 +7,12 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { TEN_SCRIPT_ACCEPTANCE_SCENARIOS } from '../../scripts/content-ten-script-acceptance.mjs';
+import {
+  TEN_SCRIPT_ACCEPTANCE_SCENARIOS,
+  TEN_SCRIPT_ACCEPTANCE_REVISION,
+  TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+  updateAcceptanceScenarioFromView,
+} from '../../scripts/content-ten-script-acceptance.mjs';
 
 describe('ten-script hybrid-plan acceptance inventory', () => {
   it('pins the global 4/3/3 delivery and 5/5 language budget with one production smoke', () => {
@@ -40,6 +45,8 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
           '--phase', 'status', '--state', state,
         ], { encoding: 'utf8' });
         expect(JSON.parse(output)).toMatchObject({
+          schemaVersion: TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+          acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
           inventoryCount: 10,
           submitted: 0,
           acceptancePass: false,
@@ -53,6 +60,37 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     }
   });
 
+  it('resumes the same acceptance identity after an authenticated durable-job retry', () => {
+    const row = {
+      id: 'std-en-01',
+      jobId: 'script_job_retry',
+      status: 'failed',
+      stage: 'failed',
+      errorCode: 'Error',
+      lastPollError: '/api/v1/content/script-jobs returned CONTENT_SCRIPT_JOBS_DISABLED',
+      lastPollErrorAt: '2026-08-24T05:19:00.000Z',
+      output: null,
+    };
+
+    updateAcceptanceScenarioFromView(row, {
+      status: 'running',
+      stage: 'outline',
+      progress: 7,
+      updatedAt: '2026-08-24T06:00:00.000Z',
+    });
+
+    expect(row).toMatchObject({
+      jobId: 'script_job_retry',
+      status: 'running',
+      stage: 'outline',
+      progress: 7,
+      output: null,
+    });
+    expect(row).not.toHaveProperty('errorCode');
+    expect(row).not.toHaveProperty('lastPollError');
+    expect(row).not.toHaveProperty('lastPollErrorAt');
+  });
+
   it('binds private evidence to the exact inventory, deployed SHA, and attributed usage', () => {
     const directory = mkdtempSync(join(tmpdir(), 'nexus-ten-script-evidence-'));
     const statePath = join(directory, 'state.json');
@@ -61,7 +99,8 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     const sourceSha = 'a'.repeat(40);
     const digest = (value: string) => `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
     const state = {
-      schemaVersion: 'nexus.content-ten-script-acceptance.v1',
+      schemaVersion: TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+      acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
       productionSmokeSourceSha: sourceSha,
       scenarios: TEN_SCRIPT_ACCEPTANCE_SCENARIOS.map((scenario, index) => ({
         id: scenario.id,
@@ -112,6 +151,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       expect(statSync(outputPath).mode & 0o777).toBe(0o600);
       expect(JSON.parse(readFileSync(outputPath, 'utf8'))).toMatchObject({
         sourceSha,
+        acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
         acceptancePass: true,
         inventory: { count: 10, preRelease: 9, productionSmoke: 1 },
       });
