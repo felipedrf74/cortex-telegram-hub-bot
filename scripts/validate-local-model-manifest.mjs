@@ -42,6 +42,7 @@ export function validateLocalModelManifest(
     }
     if (!positiveInteger(model.maxContextTokens)) errors.push(`${prefix}.maxContextTokens invalid`);
     if (typeof model.productionEligible !== 'boolean') errors.push(`${prefix}.productionEligible invalid`);
+    if (typeof model.commercialUseApproved !== 'boolean') errors.push(`${prefix}.commercialUseApproved invalid`);
   }
 
   const active = (manifest.models ?? []).find((model) => model.id === manifest.activeModelId);
@@ -57,6 +58,9 @@ export function validateLocalModelManifest(
   if (manifest.selectionStatus === 'production_selected'
       && (!active || active.role !== 'winner' || winners.length !== 1 || winners[0]?.id !== active.id)) {
     errors.push('production-selected active model must be the only verified, digest-pinned winner');
+  }
+  if (manifest.selectionStatus === 'production_selected' && active?.commercialUseApproved !== true) {
+    errors.push('production-selected active model must have approved commercial use');
   }
   if (manifest.selectionStatus === 'control_only') {
     if (manifest.selectionEvidence !== null) errors.push('control-only manifest must not claim selectionEvidence');

@@ -87,12 +87,14 @@ const jobQuery = db.prepare(`SELECT job_id, operation_id, status, delivery_mode,
     warning_codes_json, route, model_digest, created_at, completed_at
   FROM content_script_jobs WHERE job_id = ?`);
 const usageQuery = db.prepare(`SELECT
-    COALESCE(SUM(input_tokens), 0) AS input_tokens,
-    COALESCE(SUM(output_tokens), 0) AS output_tokens,
-    COALESCE(SUM(cost_usd), 0) AS cost_usd,
-    COALESCE(SUM(provider_tool_cost_usd), 0) AS tool_cost_usd,
-    COUNT(*) AS usage_rows
-  FROM api_usage WHERE run_id = ?`);
+    COALESCE(SUM(usage.input_tokens), 0) AS input_tokens,
+    COALESCE(SUM(usage.output_tokens), 0) AS output_tokens,
+    COALESCE(SUM(usage.cost_usd), 0) AS cost_usd,
+    COALESCE(SUM(usage.provider_tool_cost_usd), 0) AS tool_cost_usd,
+    COUNT(usage.id) AS usage_rows
+  FROM skill_inference_runs AS inference
+  INNER JOIN api_usage AS usage ON usage.run_id = inference.run_id
+  WHERE inference.operation_id = ?`);
 const evidenceRows = [];
 try {
   for (const scenario of state.scenarios) {

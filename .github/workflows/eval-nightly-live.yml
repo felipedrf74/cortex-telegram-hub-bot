@@ -1,8 +1,6 @@
 name: Nightly — Chat live evaluation
 
 on:
-  schedule:
-    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:

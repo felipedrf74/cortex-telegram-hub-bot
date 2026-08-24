@@ -1,19 +1,22 @@
 # Current Release State
 
 > **Process changed 2026-08-07** — see [`continuous-deployment.md`](continuous-deployment.md).
-> The signed summary below was observed on 2026-08-23. Superseded PM2 and iOS
+> The signed summary below was observed on 2026-08-24. Superseded PM2 and iOS
 > snapshots remain in Git history, not in this current-state document. Authority is VPS state at
 > `/var/lib/nexus-release/state/release-state.json` plus `/var/lib/nexus-release/receipts/`.
 > Machine-readable projection: `docs/release/release-state.json` (generated, non-authoritative).
 
-## Current signed state — 2026-08-23
+## Current signed state — 2026-08-24
 
-- The active completed backend receipt is `a6ef7c948da5999d0762475f80527855`
-  at protected-main source `8f75dfa2b2a9f387cf6a9a2999e8c37041605bce`.
+- The active completed backend receipt is `f8f69b081ab9932827c35e68e7fa212a`
+  at protected-main source `dc38ca45eefa2f798510158a3dc0b296be216539`.
   It runs backend digest
-  `sha256:ce38af676bf203c48075dd3b63847f439a2c3aefed629d2fff6604448b7089a0`
+  `sha256:f766105c209325ff75ae8db4e7d1b2cd4daef675ee310d6e992a937604808e75`
   and Content Engine digest
   `sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`.
+  Its signed release-payload digest is
+  `sha256:2b47ddf1dbf457949584471e6912c24d37c720865572467b1e89bacc87d38774`;
+  the v3 receipt is provable and no release block is active.
 - iOS 1.5.0 build 279 from source
   `bb26ef7ee849833442e855c69033ff1c63194427` is distributed through
   TestFlight. App Store review submission
@@ -25,6 +28,10 @@
   fulfillment, and local-primary rollout remain OFF pending the acceptance,
   economics, model, and real Apple sandbox evidence recorded in the canonical
   hybrid plan/remediation log. Correct deployment is not activation evidence.
+- The durable ten-script inventory is fixed at six completed scripts, three
+  scheduled for `2026-08-25T03:00:00Z`, and one post-release production smoke.
+  No additional complete acceptance scripts may be generated or the scheduled
+  jobs moved early merely to accelerate the gate.
 
 ## Historical container lineage — 2026-08-19
 

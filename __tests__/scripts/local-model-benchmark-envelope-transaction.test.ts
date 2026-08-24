@@ -17,7 +17,7 @@ function evidence() {
       completedAt: '2026-08-12T00:00:00.000Z',
     },
     manifest: {
-      manifestVersion: '2026-08-12.1',
+      manifestVersion: '2026-08-24.1',
       candidateModelId: 'candidate',
       candidateModelTag: 'candidate:tag',
       candidateModelDigest: `sha256:${'c'.repeat(64)}`,

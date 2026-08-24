@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let db: Database.Database;
 let packFulfillmentEnabled = true;
+let packPurchaseEligible = true;
 const jwsFixtures = new Map<string, Record<string, unknown>>();
 const mockHandleAppleNotification = vi.fn(() => true);
 
@@ -57,6 +58,10 @@ vi.mock('../../src/services/stripe-service', async (importOriginal) => {
     resolveUserIdFromAppleAppAccountToken: (token: unknown) => (token === 'token-40' ? 40 : null),
   };
 });
+
+vi.mock('../../src/services/credit-pack-entitlement', () => ({
+  isCreditPackPurchaseEligible: () => packPurchaseEligible,
+}));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -124,6 +129,7 @@ describe('apple-notification-inbox', () => {
     db = createMigratedTestDatabase();
     jwsFixtures.clear();
     packFulfillmentEnabled = true;
+    packPurchaseEligible = true;
     mockHandleAppleNotification.mockClear();
     mockHandleAppleNotification.mockReturnValue(true);
   });
@@ -159,6 +165,22 @@ describe('apple-notification-inbox', () => {
     expect(processStoredAppleNotification(second.row.id, NOW)).toMatchObject({ kind: 'processed', handled: true });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 1 });
+  });
+
+  it('keeps a paid pack retryable until its active Pro/Max billing period is visible', () => {
+    packPurchaseEligible = false;
+    seedPackNotification({ outerKey: 'outer-plan-lag', innerKey: 'inner-plan-lag', transactionId: 'apple-plan-lag' });
+    const stored = ingest('outer-plan-lag');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+
+    expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'failed' });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
+    expect(db.prepare('SELECT attempts, state FROM apple_notification_inbox WHERE id = ?').get(stored.row.id))
+      .toEqual({ attempts: 1, state: 'failed' });
+
+    packPurchaseEligible = true;
+    expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'processed', handled: true });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
   });
 
   it('multiplies pack credits by the transaction quantity within the bound (QA P2-11)', () => {

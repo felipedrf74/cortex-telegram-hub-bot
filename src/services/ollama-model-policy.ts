@@ -18,6 +18,7 @@ export interface LocalModelManifestEntry {
   ollamaTag: string;
   role: 'control' | 'candidate' | 'winner';
   license: string;
+  commercialUseApproved: boolean;
   quantization: string;
   promptTemplate: string;
   thinkMode: false | 'low';
@@ -222,6 +223,9 @@ function validateManifest(value: unknown): LocalModelManifest {
     if (typeof row.productionEligible !== 'boolean') {
       throw new Error(`Invalid local-model manifest models[${index}].productionEligible`);
     }
+    if (typeof row.commercialUseApproved !== 'boolean') {
+      throw new Error(`Invalid local-model manifest models[${index}].commercialUseApproved`);
+    }
     if (row.evidenceStatus !== 'candidate_unverified' && row.evidenceStatus !== 'verified') {
       throw new Error(`Invalid local-model manifest models[${index}].evidenceStatus`);
     }
@@ -235,6 +239,7 @@ function validateManifest(value: unknown): LocalModelManifest {
       ollamaTag,
       role: row.role,
       license,
+      commercialUseApproved: row.commercialUseApproved,
       quantization,
       promptTemplate,
       thinkMode: row.thinkMode,
@@ -259,6 +264,9 @@ function validateManifest(value: unknown): LocalModelManifest {
   if (raw.selectionStatus === 'production_selected'
       && (active.role !== 'winner' || winners.length !== 1 || winners[0]?.id !== active.id)) {
     throw new Error('Production-selected local model must be the only verified, digest-pinned winner');
+  }
+  if (raw.selectionStatus === 'production_selected' && !active.commercialUseApproved) {
+    throw new Error('Production-selected local model must have approved commercial use');
   }
   const selectionEvidence = validateSelectionEvidence(
     raw.selectionEvidence,

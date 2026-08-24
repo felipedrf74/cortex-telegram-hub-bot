@@ -20,6 +20,8 @@ describe('signed-image local-model manifest', () => {
     expect(getActiveLocalModel()).toMatchObject({
       id: 'qwen2.5-3b-control',
       ollamaTag: 'qwen2.5:3b-instruct-q4_K_M',
+      license: 'Qwen Research License',
+      commercialUseApproved: false,
       productionEligible: true,
       evidenceStatus: 'verified',
       digest: 'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
@@ -29,10 +31,13 @@ describe('signed-image local-model manifest', () => {
     expect(manifest.models.filter((model) => model.role === 'candidate')
       .every((model) => (
         model.productionEligible === false
+        && typeof model.commercialUseApproved === 'boolean'
         && /^sha256:[0-9a-f]{64}$/u.test(model.digest || '')
         && [false, 'low'].includes(model.thinkMode)
         && model.evidenceStatus === 'candidate_unverified'
       ))).toBe(true);
+    expect(manifest.models.filter((model) => model.commercialUseApproved).map((model) => model.id))
+      .toEqual(['gpt-oss-20b-candidate']);
   });
 
   it('rejects a missing or unsupported governed think mode', () => {
@@ -46,6 +51,34 @@ describe('signed-image local-model manifest', () => {
       manifest.models[1].thinkMode = true;
       writeFileSync(path, JSON.stringify(manifest));
       expect(() => validateLocalModelManifest(path)).toThrow('models[1].thinkMode invalid');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('requires explicit commercial-use review for every model and for a production winner', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nexus-local-model-license-'));
+    try {
+      const path = join(directory, 'manifest.json');
+      const manifest = JSON.parse(readFileSync('config/local-model-manifest.json', 'utf8'));
+      delete manifest.models[0].commercialUseApproved;
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => validateLocalModelManifest(path)).toThrow('commercialUseApproved invalid');
+
+      manifest.models[0].commercialUseApproved = false;
+      manifest.models[0].role = 'winner';
+      manifest.selectionStatus = 'production_selected';
+      manifest.selectionEvidence = {
+        winningCandidateId: manifest.activeModelId,
+        benchmarkReportDigest: `sha256:${'a'.repeat(64)}`,
+        benchmarkCompletedAt: '2026-08-24T08:00:00.000Z',
+        benchmarkHostRollbackReceiptDigest: `sha256:${'b'.repeat(64)}`,
+        corpusReference: 'nexus-corpus:v1',
+        licenseReviewReference: 'legal-review:rejected',
+        ownerApprovalReference: 'owner-review:approved',
+      };
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => validateLocalModelManifest(path)).toThrow('approved commercial use');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -145,7 +178,10 @@ describe('signed-image local-model manifest', () => {
       const path = join(directory, 'manifest.json');
       const manifest = JSON.parse(readFileSync('config/local-model-manifest.json', 'utf8'));
       manifest.selectionStatus = 'production_selected';
-      manifest.models[0].role = 'winner';
+      manifest.activeModelId = manifest.models[4].id;
+      manifest.models[4].role = 'winner';
+      manifest.models[4].productionEligible = true;
+      manifest.models[4].evidenceStatus = 'verified';
       writeFileSync(path, JSON.stringify(manifest));
       expect(() => validateLocalModelManifest(path)).toThrow('requires selectionEvidence');
 

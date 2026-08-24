@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import vm from 'node:vm';
 import { spawnSync } from 'node:child_process';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -128,6 +129,21 @@ describe('staging fixture harness safety boundaries', () => {
     expect(script).toContain('owner_user_id: userId');
     expect(script).not.toContain('\\`');
     expect(() => new vm.Script(script)).not.toThrow();
+  });
+
+  it('keeps ordinary staging accounts outside the reserved fixture id range', async () => {
+    const { advanceUsersAutoincrementPastFixtureRange } = await import('../../scripts/staging-fixture-seed.mjs');
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL)');
+    db.prepare('INSERT INTO users (id, email) VALUES (?, ?)').run(STAGING_FIXTURE_USER_ID_MIN + 1, 'fixture@nexushub.test');
+
+    expect(advanceUsersAutoincrementPastFixtureRange(db, STAGING_FIXTURE_USER_ID_MAX)).toBe(true);
+    const ordinary = db.prepare('INSERT INTO users (email) VALUES (?)').run('ordinary@nexushub.test');
+    expect(Number(ordinary.lastInsertRowid)).toBe(STAGING_FIXTURE_USER_ID_MAX + 1);
+    expect(isStagingFixtureUserId(Number(ordinary.lastInsertRowid))).toBe(false);
+
+    expect(advanceUsersAutoincrementPastFixtureRange(db, STAGING_FIXTURE_USER_ID_MAX)).toBe(false);
+    db.close();
   });
 
   it('recognizes only the reserved synthetic user-id range', () => {

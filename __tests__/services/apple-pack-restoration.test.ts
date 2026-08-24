@@ -38,6 +38,11 @@ vi.mock('../../src/services/billing-catalog', async (importOriginal) => {
   return { ...actual, resolveBillingCatalogItemByAppleProductId: catalogItemMock };
 });
 
+const packEligibleMock = vi.hoisted(() => vi.fn(() => true));
+vi.mock('../../src/services/credit-pack-entitlement', () => ({
+  isCreditPackPurchaseEligible: packEligibleMock,
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
@@ -58,6 +63,7 @@ beforeEach(() => {
   db = createMigratedTestDatabase();
   jwsFixtures.clear();
   packActiveMock.mockReturnValue(true);
+  packEligibleMock.mockReturnValue(true);
   resolveTokenMock.mockReturnValue(40);
   catalogItemMock.mockImplementation((productId: string) => (productId === 'me.nexushub.pack100' ? PACK : null));
 });
@@ -93,6 +99,27 @@ describe('apple pack restoration (NH-0041)', () => {
     });
     expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(100);
     expect(listAiCreditLots(40).filter((lot) => lot.sourceRef.includes('tx-restore-1'))).toHaveLength(1);
+  });
+
+  it('requires an active paid billing period for a new grant but preserves an idempotent replay', () => {
+    packEligibleMock.mockReturnValue(false);
+    const refusedJws = validTransaction({ transactionId: 'tx-no-paid-plan' });
+    expect(restoreApplePackTransactions({ userId: 40, signedTransactions: [refusedJws] })).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'paid_plan_required', catalogItemId: 'pack_100', transactionId: 'tx-no-paid-plan' }],
+    });
+    expect(listAiCreditLots(40)).toHaveLength(0);
+
+    packEligibleMock.mockReturnValue(true);
+    const replayJws = validTransaction({ transactionId: 'tx-paid-then-expired' });
+    expect(restoreApplePackTransactions({ userId: 40, signedTransactions: [replayJws] })).toMatchObject({
+      results: [{ outcome: 'credited' }],
+    });
+    packEligibleMock.mockReturnValue(false);
+    expect(restoreApplePackTransactions({ userId: 40, signedTransactions: [replayJws] })).toMatchObject({
+      results: [{ outcome: 'already_credited' }],
+    });
+    expect(listAiCreditLots(40).filter((lot) => lot.sourceRef.includes('tx-paid-then-expired'))).toHaveLength(1);
   });
 
   it('refuses a transaction bound to another account without leaking its existence', () => {

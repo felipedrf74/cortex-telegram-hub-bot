@@ -9,7 +9,7 @@ import {
 
 describe('skill inference profiles', () => {
   it('defines one output-only profile for every Nexus skill', () => {
-    expect(SKILL_INFERENCE_PROFILE_VERSION).toBe('nexus-skill-inference-v3');
+    expect(SKILL_INFERENCE_PROFILE_VERSION).toBe('nexus-skill-inference-v4');
     expect(listSkillInferenceProfiles().map((profile) => profile.skillId).sort()).toEqual([
       'content', 'cooking', 'finance', 'secretary', 'training', 'triathlon',
     ]);
@@ -26,6 +26,8 @@ describe('skill inference profiles', () => {
       expect(profile.systemPolicy).toContain('output-only inference boundary');
       expect(profile.systemPolicy).toContain('untrusted data');
       expect(profile.systemPolicy).toContain('another user or tenant');
+      expect(profile.systemPolicy).toContain("I cannot access another tenant's private data.");
+      expect(profile.systemPolicy).toContain('Não posso aceder a dados privados');
       expect(profile.systemPolicy).toContain('paid or copyrighted material');
       expect(profile.systemPolicy).toContain('acute symptoms');
       expect(profile.systemPolicy).toContain('severe allergy');

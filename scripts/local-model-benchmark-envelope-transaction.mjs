@@ -103,9 +103,11 @@ function readManifest(candidateId) {
       || manifest.selectionEvidence !== null
       || winners.length !== 0
       || !active?.productionEligible
+      || typeof active?.commercialUseApproved !== 'boolean'
       || active.evidenceStatus !== 'verified'
       || !/^sha256:[0-9a-f]{64}$/u.test(active.digest || '')
       || !candidate
+      || typeof candidate.commercialUseApproved !== 'boolean'
       || !['control', 'candidate'].includes(candidate.role)
       || typeof candidate.ollamaTag !== 'string'
       || candidate.ollamaTag.trim().length === 0

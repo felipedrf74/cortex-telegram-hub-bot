@@ -66,6 +66,13 @@ vi.mock('../../src/services/entitlement', async (importOriginal) => {
   };
 });
 
+vi.mock('../../src/services/credit-pack-entitlement', () => ({
+  isCreditPackPurchaseEligible: vi.fn(() => (
+    (entitlement.plan === 'pro' || entitlement.plan === 'max')
+      && entitlement.status === 'active'
+  )),
+}));
+
 vi.mock('../../src/services/plan-quotas', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/plan-quotas')>();
   return {

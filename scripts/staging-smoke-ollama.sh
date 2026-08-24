@@ -78,9 +78,11 @@ if ! jq -e '
     and (. as $root | any(.models[];
       .id == $root.activeModelId
       and .productionEligible == true
+      and (.commercialUseApproved | type == "boolean")
       and .evidenceStatus == "verified"
       and (.digest | test("^sha256:[0-9a-f]{64}$"))
-      and ($root.selectionStatus != "production_selected" or .role == "winner")))
+      and ($root.selectionStatus != "production_selected"
+        or (.role == "winner" and .commercialUseApproved == true))))
   ' "${MODEL_MANIFEST_PATH}" >/dev/null; then
   printf 'FAIL: signed local-model manifest has no verified digest-pinned active model\n' >&2
   exit 3

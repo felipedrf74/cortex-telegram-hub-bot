@@ -1059,6 +1059,7 @@
         "src/api/routes/billing*.ts",
         "src/api/routes/finance*.ts",
         "src/services/ai-credit-*.ts",
+        "src/services/credit-pack-*.ts",
         "src/services/apple-notification-inbox.ts",
         "src/services/billing-catalog.ts",
         "src/services/hybrid-runtime-kill-switches.ts",
@@ -1076,6 +1077,7 @@
       "tests": [
         "__tests__/api/billing-catalog.test.ts",
         "__tests__/services/ai-credit-*.test.ts",
+        "__tests__/services/credit-pack-*.test.ts",
         "__tests__/services/plan-allowance-conformance.test.ts",
         "__tests__/services/apple-notification-inbox.test.ts",
         "__tests__/services/hybrid-runtime-kill-switches.test.ts",

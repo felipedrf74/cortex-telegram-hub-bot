@@ -420,9 +420,9 @@ CD-eligible carrier for those unchanged reviewed application images.
 The CD-eligible carrier subsequently completed signed deployment as release
 `a6ef7c948da5999d0762475f80527855` at source
 `8f75dfa2b2a9f387cf6a9a2999e8c37041605bce`. Production therefore contains the
-reviewed Batch and Apple device-policy implementation. The paired physical iPad
-Pro is available but reports Developer Mode disabled, preventing the required
-physical 24-case run until the owner enables it on-device.
+reviewed Batch and Apple device-policy implementation. The earlier iPad
+constraint is superseded: device acceptance now targets a physical iPhone
+only, and no iPad result is accepted for the StoreKit proof.
 
 Remaining gates are unchanged where implementation cannot create external
 evidence: an eligible signed VPS local-model winner/full bakeoff; the physical
@@ -478,10 +478,68 @@ weaken the gateway ownership check or retry rejected bytes. It also is not a
 substitute for the nine pre-release scripts, production smoke, economics gate,
 attended local-model evidence, or Apple sandbox transaction.
 
-The paired physical iPad remains available but has Developer Mode disabled, so
-the Foundation Models 24-case run and staging sandbox-proof app installation
-cannot begin until that on-device setting is enabled. The App Store Connect web
-session requires a fresh owner passkey sign-in; the individual API key currently
-returns `401 NOT_AUTHORIZED`, so it cannot replace the website-only DAC7 status
-check or final legal declaration. No declaration or tax registration was
-inferred or submitted automatically.
+The earlier iPad constraint is superseded. A developer-enabled physical iPhone
+13 is connected and accepts signed test builds. Its attended Foundation Models
+probe returns Apple's `deviceNotEligible`, which is expected for that hardware;
+the 24-case device-lane bakeoff therefore still requires the paired iPhone 17
+Pro Max to be physically connected and unlocked. The StoreKit sandbox proof is
+explicitly restricted to the connected iPhone and rejects simulator/iPad runs.
+The authenticated App Store Connect website now confirms submission
+`8fbed07b-db86-4679-9f2c-be8fbcda3c42` contains iOS 1.5.0 build 279 and exactly
+the 100-, 250-, and 600-credit IAPs; all four items remain `Waiting for Review`.
+The Paid Apps Agreement, bank account, W-8BEN, Certificate of Foreign Status,
+DSA, and DAC7 rows all report `Active`. The individual API key's earlier
+`401 NOT_AUTHORIZED` no longer blocks website verification, and no new legal
+declaration was inferred or submitted automatically.
+
+The policy-v4 iOS carrier merged through PR 48 at protected-main source
+`1a94e7eed2d599308c8b9e68097be4099c648f80`. Governed Xcode Cloud workflow
+`App Store Release` completed build 285 successfully, App Store Connect reports
+the 1.5.0 (285) upload `Complete`, and the build is assigned to the internal
+`Nexus Hub Betinha` TestFlight group. The existing build-279 App Review
+submission was not cancelled or modified.
+
+## Policy-v4 and commerce-gate release candidate (2026-08-24)
+
+The next reviewed carrier shares one exact EN/PT refusal/profile artifact across
+the VPS candidate runner and iOS Foundation Models harness. The signed local
+model manifest now records commercial-use approval separately from license
+identity; installation, winner selection, runtime activation, and final Ollama
+dispatch all fail closed if the selected live-production model is not explicitly
+commercially approved. GPT-OSS 20B is the only approved challenger in this
+manifest revision; Qwen remains a research/control license and cannot become a
+production winner through legacy dispatch.
+
+Credit-pack purchase and first-time fulfillment now delegate eligibility to
+`getEffectiveEntitlement()`, the canonical billing-window authority. Only an
+active, non-trial Pro or Max entitlement from Apple, Stripe, or Founder with
+Nexus Points eligibility may start or receive a new pack grant. Malformed
+periods, Free/Beta/Owner rows, trialing/past-due/cancelled/expired rows, and
+unknown providers fail closed. An already-created provider transaction lot
+still replays idempotently, so later subscription expiry cannot make a settled
+purchase non-repeatable.
+
+The live Stripe account probe continues to resolve the expected account and the
+current five exclusive-tax prices. The downloaded `prices.csv` is historical:
+its Pro row names a superseded unspecified-tax Price; production is instead
+bound to the current exclusive-tax Pro Price verified by the provisioning
+dry-run. The owner continues to prohibit rotation of the disclosed live key;
+this remains a recorded security exception, not a completed canonical control.
+
+The iOS carrier hides credit packs unless the server-backed entitlement is
+active Pro/Max, rechecks before purchase, maps `paid_plan_required` as a
+retryable settlement outcome, and contains an opt-in real StoreKit harness that
+opens the isolated staging account, buys the 100-credit consumable on a physical
+iPhone, and waits for exactly one +100 server wallet grant. The harness skips
+simulators and every non-phone device. The real Apple sheet, signed-JWS binding,
+idempotent replay, and retained-retry assertions remain sequenced after this
+carrier and its matching backend reach signed staging.
+
+Provisioning that isolated account exposed a staging-only identity collision:
+the explicit synthetic fixture row advanced SQLite's `users` AUTOINCREMENT into
+the reserved `1000000-1099999` range, so the tenancy guard correctly rejected
+the next ordinary account's JWT. The fixture seeder now advances (and never
+decreases) the sequence to the end of the reserved range inside the same seed
+transaction. The next ordinary staging account therefore starts at `1100000`
+or later, while fixture JWTs retain their exact reserved-ID plus
+`staging_fixture=true` binding.

@@ -144,7 +144,7 @@ describe('local inference admin routes', () => {
       activeModel: 'qwen3.5:9b',
       activeModelDigest: 'sha256:signed',
       observedModelDigest: 'sha256:signed',
-      manifestVersion: '2026-08-12.1',
+      manifestVersion: '2026-08-24.1',
       transport: 'unix_socket_gateway',
     });
     mocks.getProvider.mockReturnValue({ getProviderHealth });
@@ -201,7 +201,7 @@ describe('local inference admin routes', () => {
     const after = {
       ...before,
       mode: 'shadow',
-      manifestVersion: '2026-08-12.1',
+      manifestVersion: '2026-08-24.1',
       activeModelId: 'qwen2.5-3b-control',
       activeModelDigest: 'sha256:signed-model',
       profileVersion: 'nexus-skill-inference-v1',

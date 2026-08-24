@@ -51,6 +51,7 @@ import {
   validateCurrentLegalAcceptance,
 } from '../../services/legal-consent';
 import { getEffectiveEntitlement } from '../../services/entitlement';
+import { isCreditPackPurchaseEligible } from '../../services/credit-pack-entitlement';
 import {
   BILLING_CATALOG_VERSION,
   getBillingCatalog,
@@ -208,10 +209,7 @@ export function billingRoutes(): Router {
       return;
     }
     if (item.requiresActivePaidPlan) {
-      const entitlement = getEffectiveEntitlement(userId);
-      const paidActive = (entitlement.plan === 'pro' || entitlement.plan === 'max')
-        && entitlement.status === 'active';
-      if (!paidActive) {
+      if (!isCreditPackPurchaseEligible({ userId })) {
         sendError(res, 'PACK_REQUIRES_PAID_PLAN', 'Credit packs require an active Pro or Max subscription', 403);
         return;
       }
