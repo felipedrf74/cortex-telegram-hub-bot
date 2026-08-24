@@ -23,6 +23,9 @@ import {
   resolveEffectiveRelease,
   sanitizeDetail,
 } from './release-state-store.mjs';
+import {
+  migrationSafetyGovernanceReason,
+} from './migration-safety-policy-classifier.mjs';
 import { RELEASE_NOTIFICATION_KINDS } from './release-notify.mjs';
 import { reconcileMigrationLedger } from './migration-cd-eligibility.mjs';
 import {
@@ -89,6 +92,7 @@ export const FAILURE_CODES = Object.freeze({
   DATABASE_INTEGRITY: 'production database integrity check failed',
   LEDGER_UNREADABLE: 'production migration ledger could not be read',
   PENDING_NOT_COMPATIBLE: 'a pending migration is not predecessor compatible',
+  GOVERNANCE_AUTHORIZATION_CHANGED: 'governance_evidence_changed',
   CRASH_RECOVERY: 'interrupted release has no terminal receipt',
   BOOTSTRAP_BASELINE_CHANGED: 'bootstrap baseline changed before production',
   PROTECTED_HEAD_CHANGED: 'protected main advanced before production',
@@ -110,6 +114,141 @@ function phase(result, checks, durationMs) {
     })),
     durationMs: Math.max(0, Math.round(durationMs)),
   };
+}
+
+const RELEASE_ID_RE = /^[0-9a-f]{32}$/u;
+const GOVERNANCE_REASON_SEPARATOR = ':irreversible:';
+
+/**
+ * Validate the deliberately narrow post-bootstrap authorization path.
+ *
+ * This path authorizes review-sensitive release-controller/packaging changes;
+ * it never authorizes a contract/destructive SQL migration. The one-shot
+ * operator command names the exact signed release id and the resulting digest
+ * is retained in the staging receipt. Production still passes the ordinary
+ * signed-ledger reconciliation, fresh backup, protected-head, health,
+ * observation, image-identity, and automatic rollback gates below.
+ */
+export function evaluateGovernanceOnlyReleaseAuthorization({
+  authorizedReleaseId,
+  ownerAuthorized,
+  releaseId,
+  predecessorReleaseId,
+  releasePayloadDigest,
+  manifestDigest,
+  migrations,
+  productionLedgerDigest,
+  productionReconciliation,
+}) {
+  if (authorizedReleaseId === null || authorizedReleaseId === undefined) {
+    return { requested: false, authorized: false, reason: null, digest: null };
+  }
+  if (ownerAuthorized !== true) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'owner_authorization_signal_required',
+      digest: null,
+    };
+  }
+  if (!RELEASE_ID_RE.test(authorizedReleaseId) || authorizedReleaseId !== releaseId) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'governance_only_authorization_release_mismatch',
+      digest: null,
+    };
+  }
+  if (!RELEASE_ID_RE.test(predecessorReleaseId ?? '')) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'governance_only_authorization_requires_predecessor',
+      digest: null,
+    };
+  }
+  if (migrations.cdEligibility.eligible === true) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'governance_only_authorization_not_required',
+      digest: null,
+    };
+  }
+  if (!productionReconciliation?.admitted) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'governance_only_authorization_pending_inventory_not_compatible',
+      digest: null,
+      core: null,
+    };
+  }
+  const reasons = migrations.cdEligibility.reasons;
+  const governed = reasons.length > 0 && reasons.every((reason) => {
+    const separator = reason.indexOf(GOVERNANCE_REASON_SEPARATOR);
+    if (separator <= 0) return false;
+    const file = reason.slice(0, separator);
+    const policyReason = reason.slice(separator + GOVERNANCE_REASON_SEPARATOR.length);
+    return migrationSafetyGovernanceReason(file) === policyReason;
+  });
+  if (!governed) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'governance_only_authorization_reason_not_governed',
+      digest: null,
+      core: null,
+    };
+  }
+  if (!/^[0-9a-f]{64}$/u.test(productionLedgerDigest ?? '')) {
+    return {
+      requested: true,
+      authorized: false,
+      reason: 'governance_only_authorization_ledger_unprovable',
+      digest: null,
+      core: null,
+    };
+  }
+  const core = {
+    releaseId,
+    predecessorReleaseId,
+    releasePayloadDigest,
+    manifestDigest,
+    migrationDigest: migrations.digest,
+    reasons,
+    productionLedgerDigest,
+    pendingFiles: productionReconciliation.pending,
+  };
+  return {
+    requested: true,
+    authorized: true,
+    reason: null,
+    digest: sha256(canonicalJson(core)),
+    core,
+  };
+}
+
+function isGovernanceOnlyReasonSet(migrations) {
+  if (migrations.cdEligibility.eligible === true) return false;
+  const reasons = migrations.cdEligibility.reasons;
+  return reasons.length > 0 && reasons.every((reason) => {
+    const separator = reason.indexOf(GOVERNANCE_REASON_SEPARATOR);
+    if (separator <= 0) return false;
+    const file = reason.slice(0, separator);
+    const policyReason = reason.slice(separator + GOVERNANCE_REASON_SEPARATOR.length);
+    return migrationSafetyGovernanceReason(file) === policyReason;
+  });
+}
+
+function governanceAuthorizationMatchesCore(authorization, core) {
+  const {
+    schema: _schema,
+    authorizedAt: _authorizedAt,
+    authorizationDigest: _authorizationDigest,
+    ...storedCore
+  } = authorization;
+  return canonicalJson(storedCore) === canonicalJson(core);
 }
 
 function projectBackupEvidence(verification) {
@@ -801,6 +940,29 @@ async function recoverUnprovableActiveRelease({
     );
   }
 
+  let recoveryGovernanceAuthorization = null;
+  if (active.rollbackTarget && isGovernanceOnlyReasonSet(payload.migrations)) {
+    try {
+      const authorization = store.readGovernanceOnlyAuthorization(active.releaseId);
+      if (!authorization
+          || authorization.releaseId !== active.releaseId
+          || authorization.predecessorReleaseId !== active.rollbackTarget.releaseId
+          || authorization.releasePayloadDigest !== active.payload.digest
+          || authorization.manifestDigest !== verified.manifestDigest
+          || authorization.migrationDigest !== payload.migrations.digest
+          || canonicalJson(authorization.reasons)
+            !== canonicalJson(payload.migrations.cdEligibility.reasons)) {
+        throw new Error('governance-only authorization does not match interrupted release');
+      }
+      recoveryGovernanceAuthorization = authorization;
+    } catch {
+      return failWithoutReceipt(
+        'governance-only authorization evidence could not be reverified',
+        'restore the exact root-owned authorization before recovery',
+      );
+    }
+  }
+
   const checks = [{
     name: 'crash_recovery_detected',
     result: 'failed',
@@ -819,6 +981,20 @@ async function recoverUnprovableActiveRelease({
     notifyRelease,
     restoredPredecessor = undefined,
   }) => {
+    const recoveryStagingChecks = [{
+      name: 'crash_recovery_write_ahead',
+      result: 'passed',
+      durationMs: 0,
+      detail: null,
+    }];
+    if (recoveryGovernanceAuthorization) {
+      recoveryStagingChecks.push({
+        name: 'owner_governance_only_authorization',
+        result: 'passed',
+        durationMs: 0,
+        detail: `sha256:${recoveryGovernanceAuthorization.authorizationDigest}`,
+      });
+    }
     const receipt = buildReceipt({
       payload,
       releaseId: active.releaseId,
@@ -826,12 +1002,7 @@ async function recoverUnprovableActiveRelease({
       verified,
       createdAt: active.startedAt,
       completedAt: new Date(clock()).toISOString(),
-      staging: phase('passed', [{
-        name: 'crash_recovery_write_ahead',
-        result: 'passed',
-        durationMs: 0,
-        detail: null,
-      }], 0),
+      staging: phase('passed', recoveryStagingChecks, 0),
       production: phase('failed', checks, rollback.incidentRecoveryDurationMs),
       backup: { result: 'passed', artifact: active.backupArtifact },
       rollback,
@@ -1173,6 +1344,8 @@ export async function runReleaseDeployment({
   bootstrap = null,
   protectedHead,
   allowFirstContainerBootstrap = false,
+  governanceOnlyReleaseId = null,
+  ownerAuthorized = false,
   clock = () => Date.now(),
   log = () => {},
   env = process.env,
@@ -1714,6 +1887,91 @@ export async function runReleaseDeployment({
     };
   }
 
+  let governanceOnlyAuthorization = {
+    requested: false,
+    authorized: false,
+    reason: null,
+    digest: null,
+    core: null,
+    record: null,
+  };
+  const governanceOnlyReasonSet = isGovernanceOnlyReasonSet(payload.migrations);
+  if (governanceOnlyReleaseId !== null && !governanceOnlyReasonSet) {
+    const reason = payload.migrations.cdEligibility.eligible
+      ? 'governance_only_authorization_not_required'
+      : 'governance_only_authorization_reason_not_governed';
+    log(`release ${releaseId} governance-only authorization refused: ${reason}`);
+    return { outcome: DEPLOYMENT_OUTCOMES.HALTED, reason, releaseId };
+  }
+  let governancePreflight = null;
+  if (governanceOnlyReasonSet
+      && (!firstContainerCutover || governanceOnlyReleaseId !== null)) {
+    const ledger = databaseProbe.readAppliedMigrations({ environment: 'production' });
+    if (!ledger.ok) {
+      const reason = 'governance_only_authorization_ledger_unreadable';
+      log(`release ${releaseId} governance-only preflight refused: ${reason}`);
+      return { outcome: DEPLOYMENT_OUTCOMES.HALTED, reason, releaseId };
+    }
+    governancePreflight = reconcileMigrationLedger({
+      inventory: payload.migrations.inventory,
+      appliedFiles: ledger.applied,
+      legacyRows: payload.migrations.reconciliation.environments.production.legacyRows,
+    });
+    if (governancePreflight.admitted) {
+      const productionLedgerDigest = sha256(canonicalJson({
+        schema: 'nexus.release-governance-production-ledger.v1',
+        appliedFiles: [...ledger.applied].sort(),
+        reconciliation: governancePreflight,
+      }));
+      const evaluated = evaluateGovernanceOnlyReleaseAuthorization({
+        authorizedReleaseId: governanceOnlyReleaseId ?? releaseId,
+        ownerAuthorized: governanceOnlyReleaseId === null ? true : ownerAuthorized,
+        releaseId,
+        predecessorReleaseId: state.predecessor?.releaseId ?? null,
+        releasePayloadDigest: payloadDigest,
+        manifestDigest: verified.manifestDigest,
+        migrations: payload.migrations,
+        productionLedgerDigest,
+        productionReconciliation: governancePreflight,
+      });
+      if (!evaluated.authorized) {
+        log(
+          `release ${releaseId} governance-only authorization refused: ${evaluated.reason}`,
+        );
+        return {
+          outcome: DEPLOYMENT_OUTCOMES.HALTED,
+          reason: evaluated.reason,
+          releaseId,
+        };
+      }
+      let record;
+      if (governanceOnlyReleaseId !== null) {
+        record = store.writeGovernanceOnlyAuthorization(evaluated.core);
+      } else {
+        record = store.readGovernanceOnlyAuthorization(releaseId);
+        if (record === null) {
+          const reason = 'governance_only_authorization_required';
+          log(`release ${releaseId} awaits exact owner governance-only authorization`);
+          return { outcome: DEPLOYMENT_OUTCOMES.HALTED, reason, releaseId };
+        }
+      }
+      if (!governanceAuthorizationMatchesCore(record, evaluated.core)) {
+        const reason = 'governance_only_authorization_evidence_mismatch';
+        log(`release ${releaseId} governance-only authorization refused: ${reason}`);
+        return { outcome: DEPLOYMENT_OUTCOMES.HALTED, reason, releaseId };
+      }
+      governanceOnlyAuthorization = {
+        ...evaluated,
+        digest: record.authorizationDigest,
+        record,
+      };
+    } else if (governanceOnlyReleaseId !== null) {
+      const reason = 'governance_only_authorization_pending_inventory_not_compatible';
+      log(`release ${releaseId} governance-only authorization refused: ${reason}`);
+      return { outcome: DEPLOYMENT_OUTCOMES.HALTED, reason, releaseId };
+    }
+  }
+
   if (firstContainerCutover) {
     try {
       const verifier = resumingAcceptedPayload
@@ -1895,7 +2153,8 @@ export async function runReleaseDeployment({
 
   if (!payload.migrations.cdEligibility.eligible
       && !bootstrapAuthorized
-      && !controllerOnlyAuthorized) {
+      && !controllerOnlyAuthorized
+      && !governanceOnlyAuthorization.authorized) {
     // Contract and destructive migrations require a separate owner-authorized
     // maintenance transaction. That container transaction is intentionally not
     // implemented until its authority, drain, and database-restore policy is
@@ -1949,6 +2208,12 @@ export async function runReleaseDeployment({
     log(
       `release ${releaseId} controller-only transition authorized by exact retained signed `
       + 'image, Compose, migration inventory, reconciliation, and count equality',
+    );
+  }
+  if (governanceOnlyAuthorization.authorized) {
+    log(
+      `release ${releaseId} admitted by exact one-shot governance-only authorization `
+      + `sha256:${governanceOnlyAuthorization.digest}`,
     );
   }
 
@@ -2036,6 +2301,14 @@ export async function runReleaseDeployment({
       result: 'passed',
       durationMs: 0,
       detail: `sha256:${bootstrapBaselineDigest}`,
+    });
+  }
+  if (governanceOnlyAuthorization.authorized) {
+    stagingChecks.push({
+      name: 'owner_governance_only_authorization',
+      result: 'passed',
+      durationMs: 0,
+      detail: `sha256:${governanceOnlyAuthorization.digest}`,
     });
   }
 
@@ -2378,6 +2651,52 @@ export async function runReleaseDeployment({
       ? sanitizeDetail(`${reconciliation.pending.length} pending, all predecessor compatible`)
       : sanitizeDetail(reconciliation.reasons[0] ?? 'reconciliation refused'),
   });
+
+  if (governanceOnlyAuthorization.authorized) {
+    const currentLedgerDigest = sha256(canonicalJson({
+      schema: 'nexus.release-governance-production-ledger.v1',
+      appliedFiles: [...ledger.applied].sort(),
+      reconciliation,
+    }));
+    const authorizationStillExact = reconciliation.admitted
+      && currentLedgerDigest === governanceOnlyAuthorization.record.productionLedgerDigest
+      && canonicalJson(reconciliation.pending)
+        === canonicalJson(governanceOnlyAuthorization.record.pendingFiles);
+    productionChecks.push({
+      name: 'governance_only_authorization_revalidation',
+      result: authorizationStillExact ? 'passed' : 'failed',
+      durationMs: 0,
+      detail: authorizationStillExact
+        ? `sha256:${governanceOnlyAuthorization.digest}`
+        : sanitizeDetail(FAILURE_CODES.GOVERNANCE_AUTHORIZATION_CHANGED),
+    });
+    if (!authorizationStillExact) {
+      store.block({ releaseId, reason: BLOCK_REASONS.MIGRATION_NOT_CD_ELIGIBLE });
+      return finish({
+        outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
+        failureCode: FAILURE_CODES.GOVERNANCE_AUTHORIZATION_CHANGED,
+        staging: stagingPhase,
+        production: phase('failed', productionChecks, clock() - productionStart),
+        backupResult,
+        rollbackResult: {
+          result: 'not_required', restored: null,
+          incidentRecoveryDurationMs: 0,
+          predecessorSwitchDurationMs: 0,
+          predecessorSwitchObjectiveSeconds: policy.timing.rollbackObjectiveSeconds,
+        },
+        notifyKind: RELEASE_NOTIFICATION_KINDS.FAILURE,
+        notifyRelease: {
+          releaseId,
+          sourceSha: payload.source.sha,
+          phase: 'ledger_reconciliation',
+          outcome: 'blocked',
+          failureCode: FAILURE_CODES.GOVERNANCE_AUTHORIZATION_CHANGED,
+          rollbackResult: 'not_required',
+          actionRequired: 'production was not modified; inspect and reauthorize the exact release',
+        },
+      });
+    }
+  }
 
   if (!reconciliation.admitted) {
     // Recorded on state so an acknowledgement of the block cannot erase the fact
