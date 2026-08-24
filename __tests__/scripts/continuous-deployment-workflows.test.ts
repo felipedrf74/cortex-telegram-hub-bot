@@ -1343,7 +1343,19 @@ fi
     expect(trackedModeNormalizer).toContain('after.ino !== before.ino');
     expect(provision).toContain('/usr/bin/pgrep -u "$BUILD_UID"');
     expect(provision).toContain("*) die 'cannot prove the dedicated build account is quiescent'");
-    expect(provision).toContain('/usr/bin/lsof -nP -F pfn +D "$candidate"');
+    expect(provision).toContain("test -x /usr/bin/findmnt || die '/usr/bin/findmnt is missing'");
+    expect(provision).toContain('/usr/bin/findmnt -rn -t fuse.portal -o TARGET');
+    expect(provision).toContain('0|1) ;;');
+    expect(provision).toContain("die 'portal-mount inventory failed before open-handle proof'");
+    expect(provision).toContain('[[ "$portal_mount" =~ ^/run/user/[0-9]+/doc$ ]]');
+    expect(provision).toContain(
+      '/usr/bin/findmnt -rn -M "$portal_mount" -o SOURCE,FSTYPE',
+    );
+    expect(provision).toContain('test "$portal_identity" = "portal fuse.portal"');
+    expect(provision).toContain('lsof_args+=(+e "$portal_mount")');
+    expect(provision).toContain('lsof_args+=(+D "$candidate")');
+    expect(provision).toContain('/usr/bin/lsof "${lsof_args[@]}"');
+    expect(provision).not.toContain('/usr/bin/lsof -nP -F pfn +D "$candidate"');
     expect(provision).toContain("test \"$handle_status\" -eq 1 \\\n    || die 'cannot prove the candidate has no open handles'");
     expect(provision).toContain("die 'open-handle proof emitted diagnostics'");
     const builderPreflight = provision.indexOf(

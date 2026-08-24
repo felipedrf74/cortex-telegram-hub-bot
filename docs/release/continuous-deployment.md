@@ -66,7 +66,13 @@ account in a collected systemd `Type=exec` service with
 `KillMode=control-group`, `SendSIGKILL=yes`, and a read-only host filesystem
 except for that staging tree. The installer waits for service termination, then
 fails closed unless the whole build account has zero processes and recursive
-`lsof` proves the candidate has zero open handles without diagnostics. Those
+`lsof` proves the candidate has zero open handles without diagnostics. Before
+that probe it inventories and identity-verifies only canonical
+`/run/user/<uid>/doc` mounts whose source/type is exactly
+`portal fuse.portal`; `lsof` receives narrow `+e` exemptions for those
+unrelated desktop mounts because root cannot stat them. An unexpected portal
+path or identity, candidate overlap, any other diagnostic, or any candidate
+handle remains a hard refusal. Those
 proofs precede the root `chown`, write-bit removal, immutable-version move, and
 active-link swap, so a lifecycle-script descendant or retained descriptor
 cannot mutate code after it becomes root-owned or executable by release units.
