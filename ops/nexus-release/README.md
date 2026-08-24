@@ -331,6 +331,7 @@ if test "$CONTROL_PLANE_MODE" != rollback; then
   test -x /usr/bin/systemd-run || die '/usr/bin/systemd-run is missing'
   test -x /usr/bin/pgrep || die '/usr/bin/pgrep is missing'
   test -x /usr/bin/lsof || die '/usr/bin/lsof is missing'
+  test -x /usr/bin/findmnt || die '/usr/bin/findmnt is missing'
   test -x /usr/bin/timeout || die '/usr/bin/timeout is missing'
   test -x /usr/bin/sleep || die '/usr/bin/sleep is missing'
 fi
@@ -1186,11 +1187,59 @@ require_root_readonly_candidate_tree() {
 }
 
 require_builder_quiescent() {
-  local candidate error_file handles handle_status
+  local candidate error_file handles handle_status portal_identity portal_mount
+  local portal_inventory_status portal_mount_file
+  local -a lsof_args
   candidate="$1"
   require_no_builder_processes
+  lsof_args=(-nP -F pfn)
+  portal_mount_file="$(mktemp)"
+  if /usr/bin/findmnt -rn -t fuse.portal -o TARGET >"$portal_mount_file"; then
+    portal_inventory_status=0
+  else
+    portal_inventory_status=$?
+  fi
+  case "$portal_inventory_status" in
+    0|1) ;;
+    *)
+      rm -f -- "$portal_mount_file"
+      die 'portal-mount inventory failed before open-handle proof'
+      ;;
+  esac
+  while IFS= read -r portal_mount; do
+    test -n "$portal_mount" || {
+      rm -f -- "$portal_mount_file"
+      die 'portal-mount inventory contains an empty path'
+    }
+    [[ "$portal_mount" =~ ^/run/user/[0-9]+/doc$ ]] || {
+      rm -f -- "$portal_mount_file"
+      die 'portal-mount inventory contains an unexpected path'
+    }
+    if ! portal_identity="$(
+      /usr/bin/findmnt -rn -M "$portal_mount" -o SOURCE,FSTYPE
+    )"; then
+      rm -f -- "$portal_mount_file"
+      die 'portal-mount identity proof failed'
+    fi
+    test "$portal_identity" = "portal fuse.portal" || {
+      rm -f -- "$portal_mount_file"
+      die 'portal-mount identity changed during open-handle proof'
+    }
+    case "$candidate" in
+      "$portal_mount"|"$portal_mount"/*)
+        rm -f -- "$portal_mount_file"
+        die 'candidate overlaps an exempt portal mount'
+        ;;
+    esac
+    # lsof cannot stat desktop portal mounts even as root. Exempt only the
+    # exact, independently verified fuse.portal mountpoints; every other
+    # diagnostic remains a hard refusal and the candidate stays fully scanned.
+    lsof_args+=(+e "$portal_mount")
+  done <"$portal_mount_file"
+  rm -f -- "$portal_mount_file"
+  lsof_args+=(+D "$candidate")
   error_file="$(mktemp)"
-  if handles="$(/usr/bin/lsof -nP -F pfn +D "$candidate" 2>"$error_file")"; then
+  if handles="$(/usr/bin/lsof "${lsof_args[@]}" 2>"$error_file")"; then
     handle_status=0
   else
     handle_status=$?
