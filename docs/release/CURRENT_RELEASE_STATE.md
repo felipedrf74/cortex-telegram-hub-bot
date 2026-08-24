@@ -8,14 +8,14 @@
 
 ## Current signed state — 2026-08-24
 
-- The active completed backend receipt is `e9d222cca5723c5fa22aa23d76c3547f`
-  at protected-main source `aa4bfae2b96c98f20df72067c524538ba3318b66`.
+- The active completed backend receipt is `89e2a36c0188af6371712d569ab7ba49`
+  at protected-main source `2c8d8333fa099ba9571bb2d714d2eba78382701f`.
   It runs backend digest
-  `sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78`
+  `sha256:8959d5aace45c544804d92f000f827833201a72e27d0a757ba4700ce27bad03e`
   and Content Engine digest
   `sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`.
   Its signed release-payload digest is
-  `sha256:c3cb013af7530df9c031aebec7e808e00abe22297ab77cdebbf733bc3fd3e636`;
+  `sha256:18dea1259fac2d8521c1f3075fc538f68517fb6f8ccc136069e387ba4c087e94`;
   the v3 receipt is provable and no release block is active.
 - iOS 1.5.0 build 289 from protected-main source
   `3647dcf1447fa1530fe542dbf6bfb979398f1ad2` completed the Xcode Cloud App
@@ -23,18 +23,31 @@
   App Store review submission `9f222cb7-fec9-47c9-988a-5f58cbe9184b`
   contains exactly that build plus the 100-, 250-, and 600-credit consumables;
   all four items are `Waiting for Review` after the required website flow.
-  iOS pull request 54 subsequently merged as
-  `e2f8e65537fbfa804f292bcf832653d1cfcf3d24`; protected `main` now carries
+  iOS pull request 55 subsequently merged as
+  `a4a8c267944cb15871393d189521dd0256b89f1b`; protected `main` now carries
   build 290 as the next source carrier. Build 290 is not uploaded or submitted
   and does not change the exact build-289 App Review identity above.
 - The production website authority is [`https://nexushub.me/`](https://nexushub.me/).
   Prototype or preview deployments are not design or production references.
-- Hybrid credits, subscription checkout, Stripe pack fulfillment, Apple pack
-  fulfillment, and local-primary rollout remain OFF pending the acceptance,
-  economics, and real Apple sandbox evidence recorded in the canonical hybrid
-  plan/remediation log. The governed GPT-OSS policy-v4 rerun produced no
-  eligible local-primary winner, so the model lane correctly remains OFF.
-  Correct deployment is not activation evidence.
+- The real Apple sandbox path is closed: a signed transaction bound to the
+  isolated staging account granted exactly 100 credits, replay returned
+  `already_credited` without changing the balance, and the corresponding
+  server notification was durably processed once. Production Apple fulfillment
+  remains OFF while build 289 and all three consumables are `Waiting for Review`.
+  Apple has also received the Small Business Program enrollment; approval and
+  its commission effective date remain external.
+- The governed policy-v5 final pass completed the full configured case set for
+  both GPT-OSS and Qwen. Report
+  `sha256:65c0cd97b35da7eb3f90d97681db02a444c4f6f5fc74510268114653a59ebe84`
+  rejected GPT-OSS despite score `76.32`: it won only `25%` of paired cases and
+  failed safety/tenant, output-contract, latency, memory, and critical-skill
+  gates. Its exact digest was removed. Qwen is the only resident model; both
+  gateways are healthy on Ollama `0.24.0` with the signed 8-CPU, 18GB/20GB,
+  zero-swap envelope. The manifest remains `control_only`, so local-primary
+  canary/active admission correctly remains impossible.
+- Hybrid credits, subscription checkout, and Stripe pack fulfillment remain
+  OFF pending ten-script/economics evidence and the seller's unresolved Stripe
+  Tax/legal-registration facts. Correct deployment is not activation evidence.
 - The durable ten-script inventory is fixed at six completed scripts, three
   scheduled for `2026-08-25T03:00:00Z`, and one post-release production smoke.
   No additional complete acceptance scripts may be generated or the scheduled
