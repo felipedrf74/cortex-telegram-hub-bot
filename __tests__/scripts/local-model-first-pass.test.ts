@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildFirstPassSummary,
+  buildFirstPassResponseSchema,
   buildFirstPassSystemPrompt,
   evaluateFirstPassResponse,
   atomicPrivateWrite,
@@ -13,6 +14,10 @@ import {
   validateFirstPassCases,
 } from '../../scripts/local-model-first-pass.mjs';
 import { buildSkillInferenceSystemPolicy } from '../../src/services/skill-inference-profiles';
+import {
+  validateStructuredOutputSchema,
+  validateStructuredOutputValue,
+} from '../../src/services/structured-output-schema';
 
 const casesDocument = JSON.parse(readFileSync('config/local-model-first-pass-cases.json', 'utf8'));
 
@@ -48,6 +53,73 @@ describe('local-model compact first-pass runner', () => {
     expect(prompt).toContain('severe allergy');
     expect(prompt).toContain('deterministic services own every read and write');
     expect(prompt).toContain('Return exactly one JSON object');
+    expect(prompt).toContain('data must be exactly {}');
+    expect(prompt).not.toContain('For this extraction case');
+  });
+
+  it('constrains refusal data to the server-owned empty object contract', () => {
+    const testCase = casesDocument.cases.find((row: any) => row.id === 'cooking-ptpt-allergy-safety');
+    const schema = buildFirstPassResponseSchema(testCase);
+    expect(schema.properties.data).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+      required: [],
+    });
+  });
+
+  it('derives a strict nested schema for structured extraction cases', () => {
+    const testCase = casesDocument.cases.find((row: any) => row.id === 'cooking-en-ingredient-parse');
+    const schema = buildFirstPassResponseSchema(testCase);
+    expect(schema.properties.data).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['ingredients'],
+      properties: {
+        ingredients: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'quantity', 'unit'],
+            properties: {
+              name: { type: 'string' },
+              quantity: { type: 'integer' },
+              unit: { type: 'string' },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it('keeps every governed case expected payload compatible with its generated schema', () => {
+    for (const testCase of casesDocument.cases) {
+      const schema = buildFirstPassResponseSchema(testCase);
+      expect(validateStructuredOutputSchema(schema), testCase.id).toEqual({ valid: true });
+      expect(validateStructuredOutputValue({
+        action: testCase.expectedAction,
+        answer: 'Synthetic governed response.',
+        data: testCase.expectedData === undefined ? {} : testCase.expectedData,
+        language: testCase.language,
+        skill: testCase.skillId,
+      }, schema), testCase.id).toEqual({ valid: true });
+    }
+  });
+
+  it('supports empty and heterogeneous arrays without making expected data impossible', () => {
+    const emptySchema = buildFirstPassResponseSchema({ expectedData: { values: [] } });
+    expect(validateStructuredOutputValue({
+      action: 'answer', answer: 'ok', data: { values: [] }, language: 'en', skill: 'content',
+    }, emptySchema)).toEqual({ valid: true });
+
+    const heterogeneousSchema = buildFirstPassResponseSchema({ expectedData: { values: [1, 'two'] } });
+    expect(heterogeneousSchema.properties.data.properties.values.items).toEqual({
+      anyOf: [{ type: 'integer' }, { type: 'string' }],
+    });
+    expect(validateStructuredOutputValue({
+      action: 'answer', answer: 'ok', data: { values: [1, 'two'] }, language: 'en', skill: 'content',
+    }, heterogeneousSchema)).toEqual({ valid: true });
   });
 
   it('accepts strict schema output and scores runtime thresholds independently', () => {
