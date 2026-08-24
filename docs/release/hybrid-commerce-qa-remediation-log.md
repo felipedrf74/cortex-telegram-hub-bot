@@ -492,6 +492,13 @@ DSA, and DAC7 rows all report `Active`. The individual API key's earlier
 `401 NOT_AUTHORIZED` no longer blocks website verification, and no new legal
 declaration was inferred or submitted automatically.
 
+The policy-v4 iOS carrier merged through PR 48 at protected-main source
+`1a94e7eed2d599308c8b9e68097be4099c648f80`. Governed Xcode Cloud workflow
+`App Store Release` completed build 285 successfully, App Store Connect reports
+the 1.5.0 (285) upload `Complete`, and the build is assigned to the internal
+`Nexus Hub Betinha` TestFlight group. The existing build-279 App Review
+submission was not cancelled or modified.
+
 ## Policy-v4 and commerce-gate release candidate (2026-08-24)
 
 The next reviewed carrier shares one exact EN/PT refusal/profile artifact across
