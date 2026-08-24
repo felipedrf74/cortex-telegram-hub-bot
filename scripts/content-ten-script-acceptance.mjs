@@ -7,7 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const TEN_SCRIPT_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v2';
-export const TEN_SCRIPT_ACCEPTANCE_REVISION = '2026-08-24-v2';
+export const TEN_SCRIPT_ACCEPTANCE_REVISION = '2026-08-24-v3';
 export const TEN_SCRIPT_ACCEPTANCE_SCENARIOS = Object.freeze([
   { id: 'std-en-01', phase: 'pre-release', deliveryMode: 'standard', language: 'en', topic: 'Build a practical meal-prep system for busy professionals using timeless planning, food-safety, and consistency principles.' },
   { id: 'std-ptbr-01', phase: 'pre-release', deliveryMode: 'standard', language: 'pt-BR', topic: 'Crie um sistema prático de formação de hábitos para profissionais ocupados, com princípios atemporais, exemplos e passos acionáveis.' },

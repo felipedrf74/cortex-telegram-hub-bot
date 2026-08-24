@@ -1734,7 +1734,12 @@ async function generateSection(
     let modelDigest = result.modelDigest ?? null;
     let continuationComplete = !stageWasTruncated(result);
     const stageResults = [result];
-    if (!continuationComplete) {
+    // Providers can stop normally before honoring the requested word budget.
+    // That is still an incomplete section even though the transport did not
+    // report a length stop. Continue from the last complete sentence in both
+    // cases so a resumable job does not exhaust its bounded full-section
+    // repair merely because the first response was short.
+    if (!continuationComplete || wordCount(text) < minimumWords) {
       const prefix = completeSectionPrefix(text, request.scriptStyle);
       const prefixWords = wordCount(prefix);
       if (prefixWords >= 20 && prefixWords < maximumWords) {
@@ -1742,7 +1747,7 @@ async function generateSection(
         const continuation = await runScriptStage(db, row, leaseToken, request, signal, {
           taskType: 'script_section_continuation',
           prompt: JSON.stringify({
-            task: 'Continue one truncated script section from its last complete sentence.',
+            task: 'Continue one under-length or truncated script section from its last complete sentence.',
             topic: request.topic,
             language: request.language,
             sectionTitle: section.title,
