@@ -3,56 +3,211 @@
   "generated": true,
   "authoritative": false,
   "note": "Generated projection of VPS release state. Receipts and runtime evidence outrank this file.",
-  "generatedAt": "2026-08-23T18:11:31.397Z",
-  "backend": {
-    "runtimeSha": "8f75dfa2b2a9f387cf6a9a2999e8c37041605bce",
-    "artifactDigest": "ce38af676bf203c48075dd3b63847f439a2c3aefed629d2fff6604448b7089a0"
-  },
+  "generatedAt": "2026-08-24T12:58:51.688Z",
   "active": {
-    "releaseId": "a6ef7c948da5999d0762475f80527855",
-    "sourceSha": "8f75dfa2b2a9f387cf6a9a2999e8c37041605bce",
+    "releaseId": "74e063e907d74a8b5fb54e11ce1a3316",
+    "sourceSha": "5ab56a6a08e4344353d8b594dad608008a1c88bf",
     "status": "completed",
     "images": {
       "backend": {
         "repository": "ghcr.io/felipedrf74/nexus-hub-backend",
-        "digest": "sha256:ce38af676bf203c48075dd3b63847f439a2c3aefed629d2fff6604448b7089a0"
+        "digest": "sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78"
       },
       "contentEngine": {
         "repository": "ghcr.io/felipedrf74/nexus-hub-content-engine",
         "digest": "sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5"
       }
     },
-    "releasePayloadDigest": "sha256:b37c1f5420d444a18ff7451049365dd0356c8557620c0b13ed52138d1aaa2e7c"
+    "startedAt": "2026-08-24T12:57:13.833Z",
+    "updatedAt": "2026-08-24T12:58:51.688Z",
+    "attempts": 1,
+    "backupArtifact": "nexus-db-20260824T125734Z.sqlite.age",
+    "backupEvidence": {
+      "artifact": "nexus-db-20260824T125734Z.sqlite.age",
+      "artifactPath": "/srv/nexus-backups/application/pre-promotion/nexus-db-20260824T125734Z.sqlite.age",
+      "encryptedSha256": "2bf904032374d40a3cf18684037169783ed9051b7addab49b24ff83bc638312e",
+      "encryptedSizeBytes": 196283368,
+      "database": "/var/lib/nexus-hub/production/data/bot.db",
+      "startedAt": "2026-08-24T12:57:34.842Z",
+      "completedAt": "2026-08-24T12:57:36.154Z"
+    },
+    "rollbackTarget": {
+      "releaseId": "f8f69b081ab9932827c35e68e7fa212a",
+      "sourceSha": "dc38ca45eefa2f798510158a3dc0b296be216539",
+      "images": {
+        "backend": {
+          "repository": "ghcr.io/felipedrf74/nexus-hub-backend",
+          "digest": "sha256:f766105c209325ff75ae8db4e7d1b2cd4daef675ee310d6e992a937604808e75"
+        },
+        "contentEngine": {
+          "repository": "ghcr.io/felipedrf74/nexus-hub-content-engine",
+          "digest": "sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5"
+        }
+      },
+      "payload": {
+        "digest": "sha256:2b47ddf1dbf457949584471e6912c24d37c720865572467b1e89bacc87d38774",
+        "composeDigest": "9b2fb0de300fcf21aae1134c4521883089a703b5f9b930ea8db317312f437581"
+      }
+    },
+    "releasePayloadDigest": "sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0"
   },
-  "activeReceipt": {
-    "schema": "nexus.release-receipt.v3",
-    "releaseId": "a6ef7c948da5999d0762475f80527855",
-    "sourceSha": "8f75dfa2b2a9f387cf6a9a2999e8c37041605bce",
-    "outcome": "completed",
-    "completedAt": "2026-08-23T18:11:31.503Z",
-    "releasePayloadDigest": "sha256:b37c1f5420d444a18ff7451049365dd0356c8557620c0b13ed52138d1aaa2e7c"
+  "predecessor": {
+    "releaseId": "74e063e907d74a8b5fb54e11ce1a3316",
+    "sourceSha": "5ab56a6a08e4344353d8b594dad608008a1c88bf",
+    "images": {
+      "backend": {
+        "repository": "ghcr.io/felipedrf74/nexus-hub-backend",
+        "digest": "sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78"
+      },
+      "contentEngine": {
+        "repository": "ghcr.io/felipedrf74/nexus-hub-content-engine",
+        "digest": "sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5"
+      }
+    },
+    "payload": {
+      "digest": "sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0",
+      "composeDigest": "9b2fb0de300fcf21aae1134c4521883089a703b5f9b930ea8db317312f437581"
+    }
+  },
+  "blocked": null,
+  "lastRecovery": null,
+  "recent": [
+    {
+      "releaseId": "f8f69b081ab9932827c35e68e7fa212a",
+      "sourceSha": "dc38ca45eefa2f798510158a3dc0b296be216539",
+      "outcome": "completed",
+      "completedAt": "2026-08-24T09:21:22.320Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "e60dbc02250e438c37256227095996fc",
+      "sourceSha": "356a654513ed74d9457e513fad590d29af92b580",
+      "outcome": "completed",
+      "completedAt": "2026-08-24T06:40:15.654Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "b5c6c74d5f11288007aed78e43bf04c8",
+      "sourceSha": "ba62cc87da9fc8218a5d0769bf789a997c4c6d59",
+      "outcome": "completed",
+      "completedAt": "2026-08-24T05:11:30.356Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "ead21b94c6d080c6c8884e800f918809",
+      "sourceSha": "4b475e1bc078af9a7116cc1de4333b2b1486429b",
+      "outcome": "staging_failed",
+      "completedAt": "2026-08-24T04:48:15.516Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "fa747e0968de874015ee5fb8754c3fcf",
+      "sourceSha": "438a99d730bd1e875843c160f6810e59840043d2",
+      "outcome": "completed",
+      "completedAt": "2026-08-23T12:06:05.224Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "f18939620957409dc126a0e336790f8a",
+      "sourceSha": "592798a825d16d71fcc113ff89a8af8ab1780df6",
+      "outcome": "completed",
+      "completedAt": "2026-08-22T22:41:16.091Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "f4aea3cd095dfec8c3144c8cb2f312b2",
+      "sourceSha": "16878dd7aae3620c7c05febdfd15937cc07a0520",
+      "outcome": "completed",
+      "completedAt": "2026-08-22T11:23:46.900Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "d9ac4a92f9dcbcf8bbb82cc2bc05fd3d",
+      "sourceSha": "3970fac71061ff4e7c9225950d920ddad48b5868",
+      "outcome": "blocked",
+      "completedAt": "2026-08-19T15:56:09.058Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "f0e1fb2fe8fd8645c184e216a85515ab",
+      "sourceSha": "33c476787f2e33d5755c5bc74173a8a6f4757f3d",
+      "outcome": "completed",
+      "completedAt": "2026-08-15T07:25:50.279Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    },
+    {
+      "releaseId": "d764fd2a748d15e661d4217a7bd8ef48",
+      "sourceSha": "450edcc0135753dadbb94817db8709ae922d0900",
+      "outcome": "completed",
+      "completedAt": "2026-08-15T04:57:18.418Z",
+      "recoveryTiming": {
+        "incidentRecoveryDurationMs": 0,
+        "predecessorSwitchDurationMs": 0,
+        "predecessorSwitchObjectiveSeconds": 120
+      }
+    }
+  ],
+  "capturedAt": "2026-08-24T14:05:04.041Z",
+  "backend": {
+    "runtimeSha": "5ab56a6a08e4344353d8b594dad608008a1c88bf",
+    "artifactDigest": "33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78"
+  },
+  "sourceSchemas": {
+    "state": "nexus.release-host-state.v1",
+    "receipt": "nexus.release-receipt.v3"
   },
   "effective": {
     "source": "receipt",
     "status": "completed",
-    "releaseId": "a6ef7c948da5999d0762475f80527855",
+    "releaseId": "74e063e907d74a8b5fb54e11ce1a3316",
     "provable": true,
     "stateStatus": "completed",
     "staleProjection": false,
-    "releasePayloadDigest": "sha256:b37c1f5420d444a18ff7451049365dd0356c8557620c0b13ed52138d1aaa2e7c"
+    "releasePayloadDigest": "sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0"
   },
-  "recent": [
-    {
-      "releaseId": "a6ef7c948da5999d0762475f80527855",
-      "sourceSha": "8f75dfa2b2a9f387cf6a9a2999e8c37041605bce",
-      "outcome": "completed",
-      "completedAt": "2026-08-23T18:11:31.503Z"
-    }
-  ],
-  "capturedAt": "2026-08-23T19:13:27.432Z",
-  "sourceSchemas": {
-    "state": "nexus.release-host-state.v1",
-    "receipt": "nexus.release-receipt.v3"
+  "activeReceipt": {
+    "schema": "nexus.release-receipt.v3",
+    "releaseId": "74e063e907d74a8b5fb54e11ce1a3316",
+    "sourceSha": "5ab56a6a08e4344353d8b594dad608008a1c88bf",
+    "outcome": "completed",
+    "completedAt": "2026-08-24T12:58:51.815Z",
+    "releasePayloadDigest": "sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0"
   },
   "pm2FallbackRetirementInProgress": false,
   "pm2FallbackRetired": false
