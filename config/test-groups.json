@@ -1204,6 +1204,7 @@
         "__tests__/services/local-llm-*.test.ts",
         "__tests__/services/local-inference-*.test.ts",
         "__tests__/services/local-model-bakeoff.test.ts",
+        "__tests__/scripts/local-model-final-pass.test.ts",
         "__tests__/services/local-model-manifest.test.ts",
         "__tests__/services/local-primary-config.test.ts",
         "__tests__/services/skill-inference-*.test.ts",

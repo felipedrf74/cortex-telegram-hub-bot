@@ -25,7 +25,7 @@ export interface LocalModelBakeoffObservation {
   structuredCorrectness: number;
   languageQuality: number;
   runtimePerformance: number;
-  cloudCriticalQualityDeltaPercent: number;
+  cloudCriticalQualityDeltaPercent?: number;
   schemaValid: boolean;
   safetyFailure: boolean;
   tenantIsolationFailure: boolean;
@@ -39,6 +39,18 @@ export interface LocalModelBakeoffObservation {
   sourceConsistent?: boolean;
 }
 
+export interface LocalModelBakeoffCaseContract {
+  caseId: string;
+  skillId: SkillInferenceSkill;
+  workload: LocalModelBakeoffObservation['workload'];
+  language: LocalModelBakeoffObservation['language'];
+}
+
+export interface LocalModelBakeoffEvidence {
+  canonicalCases: readonly LocalModelBakeoffCaseContract[];
+  approvedCloudEvidenceDigest?: string;
+}
+
 export interface LocalModelBakeoffResult {
   candidateId: string;
   ollamaTag: string;
@@ -47,6 +59,13 @@ export interface LocalModelBakeoffResult {
   observationCount: number;
   uniqueCaseCount: number;
   contentSampleCount: number;
+  controlCandidateId: string | null;
+  pairedCaseCount: number;
+  pairedWins: number;
+  pairedWinPercent: number | null;
+  scoreDeltaToControlPercent: number | null;
+  worstCriticalSkillDeltaToControlPercent: number | null;
+  approvedCloudEvidenceDigest: string | null;
   languageCoverage: string[];
   score: number;
   eligible: boolean;
@@ -69,7 +88,7 @@ export interface LocalModelBakeoffResult {
     peakInferenceMemoryBytes: number;
     minimumHostAvailableBytes: number;
     maximumSwapBytes: number;
-    worstCloudCriticalQualityDeltaPercent: number;
+    worstCloudCriticalQualityDeltaPercent: number | null;
   };
 }
 
@@ -87,6 +106,23 @@ function percent(value: number): number {
   return Number((value * 100).toFixed(2));
 }
 
+type BlindPairQuality = Pick<LocalModelBakeoffObservation,
+  'skillAccuracy' | 'contentQuality' | 'structuredCorrectness' | 'languageQuality'>;
+
+export function compareIdentityBlindFocusedQuality(
+  left: BlindPairQuality,
+  right: BlindPairQuality,
+): -1 | 0 | 1 {
+  const score = (row: BlindPairQuality): number => (
+    row.skillAccuracy * 0.35
+    + row.contentQuality * 0.30
+    + row.structuredCorrectness * 0.15
+    + row.languageQuality * 0.10
+  ) / 0.90;
+  const difference = score(left) - score(right);
+  return difference > 0 ? 1 : difference < 0 ? -1 : 0;
+}
+
 function boundedScore(value: number, field: string): number {
   if (!Number.isFinite(value) || value < 0 || value > 1) {
     throw new Error(`${field} must be between 0 and 1`);
@@ -97,7 +133,23 @@ function boundedScore(value: number, field: string): number {
 export function buildLocalModelBakeoff(
   observations: LocalModelBakeoffObservation[],
   manifest: LocalModelManifest = getLocalModelManifest({ fresh: true }),
+  evidence?: LocalModelBakeoffEvidence,
 ): LocalModelBakeoffResult[] {
+  const canonicalCases = evidence?.canonicalCases ?? [];
+  const canonicalCasesById = new Map(canonicalCases.map((row) => [row.caseId, row]));
+  const canonicalContractValid = canonicalCases.length === (
+    MINIMUM_FINAL_PASS_ORDINARY_CASES
+    + MINIMUM_FINAL_PASS_CONTENT_SAMPLES
+    + MINIMUM_FINAL_PASS_STRUCTURED_CASES
+  ) && canonicalCasesById.size === canonicalCases.length
+    && canonicalCases.filter((row) => row.workload === 'ordinary').length === MINIMUM_FINAL_PASS_ORDINARY_CASES
+    && canonicalCases.filter((row) => row.workload === 'content_sample').length === MINIMUM_FINAL_PASS_CONTENT_SAMPLES
+    && canonicalCases.filter((row) => row.workload === 'structured_tool_plan').length === MINIMUM_FINAL_PASS_STRUCTURED_CASES;
+  const approvedCloudEvidenceDigest = evidence?.approvedCloudEvidenceDigest;
+  if (approvedCloudEvidenceDigest !== undefined
+      && !/^sha256:[0-9a-f]{64}$/u.test(approvedCloudEvidenceDigest)) {
+    throw new Error('approvedCloudEvidenceDigest must be a normalized SHA-256 digest');
+  }
   const byCandidate = new Map<string, LocalModelBakeoffObservation[]>();
   for (const observation of observations) {
     if (!observation || typeof observation !== 'object') {
@@ -138,7 +190,6 @@ export function buildLocalModelBakeoff(
       throw new Error('Bakeoff schema and safety observations must be boolean');
     }
     for (const field of [
-      'cloudCriticalQualityDeltaPercent',
       'firstTokenMs',
       'totalDurationMs',
       'generatedTokensPerSecond',
@@ -146,10 +197,13 @@ export function buildLocalModelBakeoff(
       'minimumHostAvailableBytes',
       'swapBytes',
     ] as const) {
-      if (!Number.isFinite(observation[field])
-          || (field !== 'cloudCriticalQualityDeltaPercent' && observation[field] < 0)) {
-        throw new Error(`${field} must be finite${field === 'cloudCriticalQualityDeltaPercent' ? '' : ' and non-negative'}`);
+      if (!Number.isFinite(observation[field]) || observation[field] < 0) {
+        throw new Error(`${field} must be finite and non-negative`);
       }
+    }
+    if (observation.cloudCriticalQualityDeltaPercent !== undefined
+        && !Number.isFinite(observation.cloudCriticalQualityDeltaPercent)) {
+      throw new Error('cloudCriticalQualityDeltaPercent must be finite when supplied');
     }
     if (observation.workload === 'content_sample') {
       if (typeof observation.contentSampleComplete !== 'boolean'
@@ -162,6 +216,24 @@ export function buildLocalModelBakeoff(
       observation,
     ]);
   }
+
+  const controlCandidate = manifest.models.find((candidate) => candidate.role === 'control') ?? null;
+  const controlRows = controlCandidate ? (byCandidate.get(controlCandidate.id) ?? []) : [];
+  const controlRowsByCase = new Map(controlRows.map((row) => [row.caseId, row]));
+  const qualityScore = (row: BlindPairQuality): number => (
+    row.skillAccuracy * 0.35
+    + row.contentQuality * 0.30
+    + row.structuredCorrectness * 0.15
+    + row.languageQuality * 0.10
+  ) / 0.90;
+  const aggregateScore = (rows: LocalModelBakeoffObservation[]): number => percent(
+    mean(rows.map((row) => row.skillAccuracy)) * 0.35
+    + mean(rows.map((row) => row.contentQuality)) * 0.30
+    + mean(rows.map((row) => row.structuredCorrectness)) * 0.15
+    + mean(rows.map((row) => row.languageQuality)) * 0.10
+    + mean(rows.map((row) => row.runtimePerformance)) * 0.10,
+  );
+  const controlScore = controlRows.length > 0 ? aggregateScore(controlRows) : null;
 
   return manifest.models.map((candidate): LocalModelBakeoffResult => {
     const rows = byCandidate.get(candidate.id) ?? [];
@@ -200,10 +272,48 @@ export function buildLocalModelBakeoff(
       ? Math.min(...rows.map((row) => row.minimumHostAvailableBytes))
       : 0;
     const maximumSwap = Math.max(0, ...rows.map((row) => row.swapBytes));
-    const worstCloudDelta = rows.length > 0
-      ? Math.min(...rows.map((row) => row.cloudCriticalQualityDeltaPercent))
-      : -100;
+    const cloudDeltas = rows
+      .map((row) => row.cloudCriticalQualityDeltaPercent)
+      .filter((value): value is number => value !== undefined);
+    const worstCloudDelta = cloudDeltas.length > 0 ? Math.min(...cloudDeltas) : null;
+    const score = aggregateScore(rows);
+    const allPairedRows = candidate.role === 'control'
+      ? rows
+      : rows.filter((row) => controlRowsByCase.has(row.caseId));
+    const pairedRows = allPairedRows.filter((row) => row.workload !== 'structured_tool_plan');
+    const pairedWins = candidate.role === 'control'
+      ? pairedRows.length
+      : pairedRows.filter((row) => (
+        compareIdentityBlindFocusedQuality(row, controlRowsByCase.get(row.caseId)!) > 0
+      )).length;
+    const pairedWinPercent = pairedRows.length > 0
+      ? percent(pairedWins / pairedRows.length)
+      : null;
+    const scoreDeltaToControlPercent = controlScore === null
+      ? null
+      : Number((score - controlScore).toFixed(2));
+    const criticalSkillDeltas = candidate.role === 'control'
+      ? REQUIRED_SKILLS.map(() => 0)
+      : REQUIRED_SKILLS.flatMap((skillId) => {
+        const candidateSkillRows = rows.filter((row) => row.skillId === skillId);
+        const controlSkillRows = controlRows.filter((row) => row.skillId === skillId);
+        if (candidateSkillRows.length === 0 || controlSkillRows.length === 0) return [];
+        return [Number((
+          (mean(candidateSkillRows.map(qualityScore)) - mean(controlSkillRows.map(qualityScore))) * 100
+        ).toFixed(2))];
+      });
+    const worstCriticalSkillDeltaToControlPercent = criticalSkillDeltas.length === REQUIRED_SKILLS.length
+      ? Math.min(...criticalSkillDeltas)
+      : null;
     const disqualifiers: string[] = [];
+    if (!canonicalContractValid) disqualifiers.push('canonical_final_pass_contract_unverified');
+    if (canonicalContractValid && (rows.length !== canonicalCases.length || rows.some((row) => {
+      const expected = canonicalCasesById.get(row.caseId);
+      return !expected
+        || expected.skillId !== row.skillId
+        || expected.workload !== row.workload
+        || expected.language !== row.language;
+    }))) disqualifiers.push('canonical_final_pass_case_identity_mismatch');
     if (observedModelDigests.size !== 1) disqualifiers.push('model_digest_missing_or_changed_during_bakeoff');
     if (candidate.digest !== null && !observedModelDigests.has(candidate.digest)) {
       disqualifiers.push('model_digest_does_not_match_manifest_candidate');
@@ -234,7 +344,6 @@ export function buildLocalModelBakeoff(
       disqualifiers.push('fewer_than_100_structured_schema_cases');
     }
     if (schemaValidity < 0.99) disqualifiers.push('schema_validity_below_99_percent');
-    if (worstCloudDelta < -5) disqualifiers.push('critical_quality_more_than_5_percent_below_cloud');
     if (rows.some((row) => row.safetyFailure || row.tenantIsolationFailure)) {
       disqualifiers.push('safety_or_tenant_isolation_failure');
     }
@@ -256,13 +365,28 @@ export function buildLocalModelBakeoff(
       disqualifiers.push('minimum_host_headroom_not_preserved');
     }
     if (maximumSwap > manifest.productionEnvelope.memorySwapMaxBytes) disqualifiers.push('swap_detected');
-    const score = percent(
-      skill * 0.35
-      + content * 0.30
-      + structured * 0.15
-      + language * 0.10
-      + runtime * 0.10,
-    );
+    if (candidate.role !== 'control') {
+      if (allPairedRows.length !== canonicalCases.length
+          || pairedRows.length !== MINIMUM_FINAL_PASS_ORDINARY_CASES + MINIMUM_FINAL_PASS_CONTENT_SAMPLES) {
+        disqualifiers.push('blind_paired_control_inventory_incomplete');
+      }
+      if (score < 75) disqualifiers.push('overall_score_below_75');
+      if (scoreDeltaToControlPercent === null
+          || (scoreDeltaToControlPercent < 8
+            && (approvedCloudEvidenceDigest === undefined
+              || cloudDeltas.length !== rows.length
+              || worstCloudDelta === null
+              || worstCloudDelta < -5))) {
+        disqualifiers.push('challenger_did_not_beat_control_or_match_approved_cloud');
+      }
+      if (pairedWinPercent === null || pairedWinPercent < 60) {
+        disqualifiers.push('blind_paired_win_rate_below_60_percent');
+      }
+      if (worstCriticalSkillDeltaToControlPercent === null
+          || worstCriticalSkillDeltaToControlPercent < -5) {
+        disqualifiers.push('critical_skill_more_than_5_percent_below_control');
+      }
+    }
     return {
       candidateId: candidate.id,
       ollamaTag: candidate.ollamaTag,
@@ -271,6 +395,13 @@ export function buildLocalModelBakeoff(
       observationCount: rows.length,
       uniqueCaseCount: uniqueCases.size,
       contentSampleCount: contentSamples.length,
+      controlCandidateId: controlCandidate?.id ?? null,
+      pairedCaseCount: pairedRows.length,
+      pairedWins,
+      pairedWinPercent,
+      scoreDeltaToControlPercent,
+      worstCriticalSkillDeltaToControlPercent,
+      approvedCloudEvidenceDigest: approvedCloudEvidenceDigest ?? null,
       languageCoverage: [...new Set(rows.map((row) => row.language))].sort(),
       score,
       eligible: disqualifiers.length === 0,

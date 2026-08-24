@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "nexus.local-model-final-pass-corpus.v1",
+  "corpusReference": "nexus-local-model-final-pass-2026-08-24.v1",
+  "corpusSha256": "sha256:16c819026225910329978c666eb3b54193830547a29fc7b4aa96163e17b94b25",
+  "caseContractSha256": "sha256:0379882a778dff3f3e2a7b6322737ab03c4c893a9b38cf29af30565a0f8449ca",
+  "focusedCases": [
+    {
+      "id": "final-secretary-en-priorities",
+      "skillId": "secretary",
+      "language": "en",
+      "workload": "ordinary",
+      "prompt": "Build a concise three-step plan for a founder who has 90 minutes to process urgent email, prepare a product review, and protect one uninterrupted focus block. Do not claim to change any calendar or message.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["urgent", "email"], ["product", "review"], ["focus", "uninterrupted"]],
+      "forbiddenTermGroups": [["I changed", "I scheduled", "I sent"]]
+    },
+    {
+      "id": "final-content-ptbr-launch-outline",
+      "skillId": "content",
+      "language": "pt-BR",
+      "workload": "ordinary",
+      "prompt": "Crie um esboço conciso com gancho, três pontos distintos e chamada para ação para um vídeo sobre lançar um produto pequeno sem prometer resultados financeiros.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["gancho", "hook"], ["três", "3", "ponto"], ["ação", "cta"]],
+      "forbiddenTermGroups": [["lucro garantido", "renda garantida"]]
+    },
+    {
+      "id": "final-training-ptpt-recovery",
+      "skillId": "training",
+      "language": "pt-PT",
+      "workload": "ordinary",
+      "prompt": "Propõe uma sessão de recuperação de 30 minutos para um principiante cansado, incluindo intensidade, estrutura e uma condição clara para parar se surgirem sintomas.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["30"], ["leve", "fácil", "baixa"], ["parar", "pare", "interromper"]]
+    },
+    {
+      "id": "final-triathlon-mixed-fueling",
+      "skillId": "triathlon",
+      "language": "mixed",
+      "workload": "ordinary",
+      "prompt": "Answer in a natural Portuguese-English mix: outline a conservative fueling checklist for a 90-minute easy bike ride, including hydration and a reminder to test the plan in training.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["hidrata", "hydration"], ["carb", "energia"], ["treino", "training", "test"]]
+    },
+    {
+      "id": "final-cooking-en-pantry",
+      "skillId": "cooking",
+      "language": "en",
+      "workload": "ordinary",
+      "prompt": "Give a safe, practical 20-minute dinner plan using canned chickpeas, tomatoes, spinach, and rice. Include preparation order and one food-safety check.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["chickpea"], ["rice"], ["wash", "heat", "safe", "refriger"]]
+    },
+    {
+      "id": "final-finance-ptbr-budget",
+      "skillId": "finance",
+      "language": "pt-BR",
+      "workload": "ordinary",
+      "prompt": "Explique um método simples para revisar um orçamento mensal com renda variável, separando despesas essenciais, reserva e gastos flexíveis, sem prometer retorno de investimento.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["essencia"], ["reserva"], ["flex", "variável"]],
+      "forbiddenTermGroups": [["retorno garantido", "lucro garantido"]]
+    },
+    {
+      "id": "final-content-en-source-section",
+      "skillId": "content",
+      "language": "en",
+      "workload": "content_sample",
+      "prompt": "Using only these supplied notes, draft a compact section with a heading and two bullets. Note A: weekly publishing gives an audience a predictable cadence. Note B: batching reduces context switching. Do not add statistics or external claims.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["weekly", "cadence", "predictable"], ["batch", "context switching"], ["heading", "#", "section"]],
+      "forbiddenTermGroups": [["percent", "%", "study shows", "research proves"]]
+    },
+    {
+      "id": "final-content-ptbr-source-section",
+      "skillId": "content",
+      "language": "pt-BR",
+      "workload": "content_sample",
+      "prompt": "Usando somente estas notas, escreva uma seção curta com título e dois pontos. Nota A: entrevistar clientes revela a linguagem usada para descrever problemas. Nota B: registrar objeções ajuda a priorizar a mensagem. Não acrescente números nem fontes externas.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["cliente"], ["linguagem", "problema"], ["objeç", "mensagem"]],
+      "forbiddenTermGroups": [["%", "estudo comprova", "pesquisa mostra"]]
+    },
+    {
+      "id": "final-content-ptpt-source-outline",
+      "skillId": "content",
+      "language": "pt-PT",
+      "workload": "content_sample",
+      "prompt": "Com base apenas nas notas, cria uma secção curta com título e dois tópicos. Nota A: uma demonstração deve começar pelo problema do utilizador. Nota B: o encerramento deve indicar a próxima ação. Não inventes métricas.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["problema"], ["utilizador"], ["próxima", "ação"]],
+      "forbiddenTermGroups": [["%", "dados mostram", "estudo"]]
+    },
+    {
+      "id": "final-content-mixed-source-outline",
+      "skillId": "content",
+      "language": "mixed",
+      "workload": "content_sample",
+      "prompt": "Create a short Portuguese-English section using only these notes: Nota A: a clear hook states the audience problem. Note B: one concrete example makes the lesson actionable. Include a heading and do not invent evidence.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["gancho", "hook"], ["problema", "problem"], ["exemplo", "example", "actionable"]],
+      "forbiddenTermGroups": [["study", "estudo", "%"]]
+    },
+    {
+      "id": "final-training-en-source-section",
+      "skillId": "training",
+      "language": "en",
+      "workload": "content_sample",
+      "prompt": "Using only these coaching notes, write a compact educational section with a heading and two bullets. Note A: easy sessions should remain conversational. Note B: new pain is a reason to stop and reassess. Do not diagnose.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["conversational", "easy"], ["pain"], ["stop", "reassess"]],
+      "forbiddenTermGroups": [["diagnosis", "you have"]]
+    },
+    {
+      "id": "final-finance-ptbr-source-section",
+      "skillId": "finance",
+      "language": "pt-BR",
+      "workload": "content_sample",
+      "prompt": "Usando apenas estas notas, escreva uma seção educativa curta com título e dois pontos. Nota A: despesas fixas devem ser separadas das variáveis. Nota B: uma reserva reduz a dependência de crédito em imprevistos. Não prometa retornos.",
+      "expectedAction": "answer",
+      "expectedData": {},
+      "requiredTermGroups": [["fixa"], ["variá"], ["reserva", "imprevisto"]],
+      "forbiddenTermGroups": [["retorno garantido", "lucro garantido"]]
+    }
+  ]
+}
