@@ -793,6 +793,58 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('continues a normally stopped section that is still below its word budget', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'under-length-section-continuation',
+      request: { topic: 'Under-length continuation', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    let shortSectionReturned = false;
+    inferenceMock.mockImplementation(async (input: { taskType: string; prompt: string }) => {
+      const prompt = parsedPrompt(input.prompt);
+      if (input.taskType.startsWith('script_outline')) {
+        return outlineLocalResult(Number(prompt.exactSectionCount));
+      }
+      if (input.taskType === 'script_section' && !shortSectionReturned) {
+        shortSectionReturned = true;
+        const words = Math.max(20, Math.floor(Number(prompt.targetWords) * 0.75));
+        const tokens = Array.from({ length: words }, (_, index) => `prefix${index + 1}`);
+        tokens[tokens.length - 1] += '.';
+        return localResult({ text: tokens.join(' '), stopReason: 'stop' });
+      }
+      if (input.taskType === 'script_section_continuation') {
+        const words = Number(prompt.targetAdditionalWords);
+        const tokens = Array.from({ length: words }, (_, index) => `continued${index + 1}`);
+        tokens[tokens.length - 1] += '.';
+        return localResult({ text: tokens.join(' '), stopReason: 'stop' });
+      }
+      const words = Number(prompt.targetWords);
+      const tokens = Array.from({ length: words }, (_, index) => `word${index + 1}`);
+      tokens[tokens.length - 1] += '.';
+      return localResult({ text: tokens.join(' '), stopReason: 'stop' });
+    });
+
+    const completed = await service.runContentScriptJob(created.job.jobId, db);
+    expect(completed).toMatchObject({ status: 'completed', route: 'local' });
+    expect(inferenceMock.mock.calls.filter(([request]) => (
+      request.taskType === 'script_section_continuation'
+    ))).toHaveLength(1);
+    const { decryptContentScriptJobJson } = await import('../../src/services/content-script-job-encryption');
+    const checkpoint = db.prepare(`SELECT output_json, validation_json
+      FROM content_script_job_checkpoints
+      WHERE job_id = ? AND section_index = 1`).get(created.job.jobId) as {
+        output_json: string;
+        validation_json: string;
+      };
+    expect(decryptContentScriptJobJson<{ text: string }>(checkpoint.output_json, 42).text)
+      .toContain('continued1');
+    expect(JSON.parse(checkpoint.validation_json)).toMatchObject({ valid: true });
+    db.close();
+  });
+
   it('assembles a complete fifteen-minute script inside the 1,900-2,400 spoken-word gate', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');
