@@ -80,26 +80,37 @@ describe('owner-confirmed subscription price display contract', () => {
     expect(read('src/portal/portal.html')).toContain("Number(pkg.priceUsd || 0).toFixed(2)");
   });
 
-  it('keeps the canonical quota contract aligned without rewriting release history', () => {
-    expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
+  it('keeps the canonical quota contract and product brief aligned without rewriting release history', () => {
+    const quotaContract = read('docs/TOKEN-QUOTA-CONTRACT.md');
+    expect(quotaContract).toContain(
       `Pro at \`${CANONICAL.proUsd}\` and Max at \`${CANONICAL.maxUsd}\``,
     );
-    expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
+    expect(quotaContract).not.toContain('not active pricing');
+    expect(quotaContract).toContain('The 600-credit pack remains `$19.99`.');
+    expect(quotaContract).toContain(
       '| Small | `me.nexushub.points.small` | $5 | 300 | $0.30 | 30 days |',
     );
+
+    const productBrief = read('docs/NEXUS_HUB_PRODUCT_BRIEF.md');
+    expect(productBrief).toContain('**RESOLVED — pricing (owner lock 2026-08-24).**');
+    expect(productBrief).not.toContain('**UNRESOLVED — pricing.**');
   });
 
   it('does not keep stale pre-confirmation plan prices in active pricing surfaces', () => {
     const activePricingSurfaces = [
       '.env.example',
       'src/portal/landing.html',
+      'docs/NEXUS_HUB_PRODUCT_BRIEF.md',
       'docs/TOKEN-QUOTA-CONTRACT.md',
+      'docs/engineering/local-primary-inference-standard.md',
     ];
 
     const staleAmounts = ['$24.99', 'R$69.99', 'R$69,99', 'R$119.99', 'R$119,99', '$74.99', '$99.99'];
+    const staleSubscriptionPair = /Pro[^\n]{0,80}\$14\.99[^\n]{0,80}Max[^\n]{0,80}\$19\.99/u;
 
     for (const surface of activePricingSurfaces) {
       const contents = read(surface);
+      expect(contents, `${surface} still presents the stale Pro/Max subscription pair`).not.toMatch(staleSubscriptionPair);
       for (const staleAmount of staleAmounts) {
         expect(contents, `${surface} still contains stale amount ${staleAmount}`).not.toContain(staleAmount);
       }

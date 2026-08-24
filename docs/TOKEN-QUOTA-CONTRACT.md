@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend cost-guardrail lead (Felipe)
-Last verified: 2026-08-18
+Last verified: 2026-08-24
 Update policy: update when entitlement eligibility, AI budget windows, public
 quota fields, Nexus Points rules, or provider-call attribution changes.
 
@@ -163,11 +163,11 @@ or remains resumable. With local routing OFF or outside the enrolled cohort,
 the pre-existing cloud path retains its normal entitlement, privacy, and
 atomic budget guard.
 
-The proposed `$9.99` Pro and `$14.99` Max prices are not active pricing. They
-require the separately governed 30-day quality, reliability, local-share,
-fallback, contribution-margin, and live Stripe/App Store proof. Until that
-owner transaction succeeds, the display prices and billing products remain
-`$14.99` and `$19.99`.
+Current new-sale subscription prices are Pro at `$9.99` and Max at `$14.99`.
+The separately governed quality, reliability, local-share, fallback,
+contribution-margin, and live Stripe/App Store evidence gates local-primary
+inference activation and economics validation, not the subscription display
+contract. The 600-credit pack remains `$19.99`.
 
 Chat, Content specialist batching, script jobs, and automatic rollback have
 separate default-OFF environment controls documented in

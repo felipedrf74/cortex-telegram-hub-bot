@@ -871,11 +871,12 @@ approval reference, approval status, the exact challenger ID/model/raw artifact,
 the exact local sanitized artifact, and per-case quality deltas. Partial,
 duplicate, alternate-corpus, digest-only, or unapproved cloud claims fail closed.
 
-Target Pro `$9.99` and Max `$14.99` prices use the canonical pre-release gate:
-actual provider-account rates, the ten measured complete scripts, existing
-usage data, conservative simulations, at least 80% blended contribution margin,
-and at least 80% web-subscription contribution margin. Apple is reported
-separately under the canonical 70-75% initial floor. The former 30-day,
+Current new-sale prices are Pro `$9.99` and Max `$14.99`. The canonical
+local-primary activation and economics gate uses actual provider-account rates,
+the ten measured complete scripts, existing usage data, conservative
+simulations, at least 80% blended contribution margin, and at least 80%
+web-subscription contribution margin. Apple is reported separately under the
+canonical 70-75% initial floor. The former 30-day,
 500-completion, 100-script, tester-day, and percentage-cohort launch gates are
 retired and must not block activation.
 
