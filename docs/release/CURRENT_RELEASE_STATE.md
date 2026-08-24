@@ -8,14 +8,14 @@
 
 ## Current signed state — 2026-08-24
 
-- The active completed backend receipt is `f8f69b081ab9932827c35e68e7fa212a`
-  at protected-main source `dc38ca45eefa2f798510158a3dc0b296be216539`.
+- The active completed backend receipt is `74e063e907d74a8b5fb54e11ce1a3316`
+  at protected-main source `5ab56a6a08e4344353d8b594dad608008a1c88bf`.
   It runs backend digest
-  `sha256:f766105c209325ff75ae8db4e7d1b2cd4daef675ee310d6e992a937604808e75`
+  `sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78`
   and Content Engine digest
   `sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`.
   Its signed release-payload digest is
-  `sha256:2b47ddf1dbf457949584471e6912c24d37c720865572467b1e89bacc87d38774`;
+  `sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0`;
   the v3 receipt is provable and no release block is active.
 - iOS 1.5.0 build 279 from source
   `bb26ef7ee849833442e855c69033ff1c63194427` is distributed through
@@ -26,8 +26,10 @@
   Prototype or preview deployments are not design or production references.
 - Hybrid credits, subscription checkout, Stripe pack fulfillment, Apple pack
   fulfillment, and local-primary rollout remain OFF pending the acceptance,
-  economics, model, and real Apple sandbox evidence recorded in the canonical
-  hybrid plan/remediation log. Correct deployment is not activation evidence.
+  economics, and real Apple sandbox evidence recorded in the canonical hybrid
+  plan/remediation log. The governed GPT-OSS policy-v4 rerun produced no
+  eligible local-primary winner, so the model lane correctly remains OFF.
+  Correct deployment is not activation evidence.
 - The durable ten-script inventory is fixed at six completed scripts, three
   scheduled for `2026-08-25T03:00:00Z`, and one post-release production smoke.
   No additional complete acceptance scripts may be generated or the scheduled

@@ -543,3 +543,45 @@ decreases) the sequence to the end of the reserved range inside the same seed
 transaction. The next ordinary staging account therefore starts at `1100000`
 or later, while fixture JWTs retain their exact reserved-ID plus
 `staging_fixture=true` binding.
+
+## Policy-v4 VPS and physical-iPhone activation evidence (2026-08-24)
+
+Protected-main source `5ab56a6a08e4344353d8b594dad608008a1c88bf`
+completed as signed release `74e063e907d74a8b5fb54e11ce1a3316`. The
+provable v3 receipt binds backend digest
+`sha256:33ccf5f8dfaf6c9b585fec6d1600e4d7f57f6e71d20ec34b197af3cae16e9f78`,
+the unchanged Content Engine digest
+`sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`,
+and signed payload digest
+`sha256:f0bbb7a63a57a7c7b698a7b624430454e386484f813f4591a24c4e211a1951c0`.
+The controller's Git virtual-filesystem proof is present on the VPS, staging
+and production are healthy, and no release block is active.
+
+The exact 24-case governed GPT-OSS 20B policy-v4 first pass completed against
+that release. It scored 84.76 with 100% schema validity, 6.19 generated
+tokens/second, 22,449 ms p95 first token, and 46,663 ms p95 total duration.
+The run remained ineligible because a safety or tenant-isolation case failed.
+Its root-only raw artifact digest is
+`bdf1cc4a28827a9d650089c0c5cb00f97ac809ced2d774ab47a818ce530d3211`.
+The full blind-paired bakeoff therefore did not run, the benchmark envelope
+rolled back with both gateways healthy, the rejected GPT-OSS tag was removed,
+and only the signed Qwen control remains installed. Local-primary remains OFF;
+this is the required fail-closed outcome, not an unfinished activation.
+
+On the physical iPhone 13, StoreKit returned the real
+`me.nexushub.credits.pack100` product and opened Apple's purchase sheet. This
+closes product-discovery and UI reachability, but not fulfillment: App Store
+Connect currently has no Sandbox Tester, so there is no transaction JWS to
+bind, grant, replay, or retry. Production Apple fulfillment remains OFF until
+an attended tester purchase completes against the isolated staging account.
+The app now keeps the server-owned pack catalog mounted while StoreKit loads
+and renders an explicit disabled card when Apple omits a product, preventing a
+conditional `EmptyView` from suppressing its own catalog task.
+
+The ten-script acceptance inventory remains immutable at ten cases: six are
+completed, three scheduled cases are queued for exactly
+`2026-08-25T03:00:00Z`, and the post-release production smoke remains pending
+until those nine pre-release cases pass. The root-owned
+`nexus-content-acceptance-v3.timer` is enabled and active, and its oneshot
+automatically runs the production smoke when ready. The jobs must not be moved
+early or replaced with extra completed scripts merely to accelerate the gate.
