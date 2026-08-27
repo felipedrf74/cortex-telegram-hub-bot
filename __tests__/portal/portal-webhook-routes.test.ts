@@ -150,6 +150,7 @@ describe('portal webhook routes', () => {
       'GET /api/webhooks/events',
       'POST /api/webhooks/events/:id/replay',
     ]);
+    expect(routes.slice(3).every((route) => route.handlers.length === 3)).toBe(true);
   });
 
   it('mounts public raw callbacks before parsing/auth and management after portal auth', () => {

@@ -130,14 +130,9 @@ export function registerPortalCookingRoutes(app: Express): void {
       });
     },
   });
-  if (typeof app.use === 'function') {
-    app.use('/api/users/:userId/cooking/preferences', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/cooking/pantry', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/cooking/meal-plan/substitutions/apply', authorizationRateLimitMiddleware);
-  }
-
   app.get(
     '/api/users/:userId/cooking/preferences',
+    authorizationRateLimitMiddleware,
     requirePortalAdminToken,
     requireOperatorTargetUser('userId'),
     (req: Request, res: Response) => {
@@ -175,6 +170,7 @@ export function registerPortalCookingRoutes(app: Express): void {
 
   app.post(
     '/api/users/:userId/cooking/preferences',
+    authorizationRateLimitMiddleware,
     requirePortalAdminToken,
     requireOperatorTargetUser('userId'),
     (req: Request, res: Response) => {
@@ -228,6 +224,7 @@ export function registerPortalCookingRoutes(app: Express): void {
 
   app.get(
     '/api/users/:userId/cooking/pantry',
+    authorizationRateLimitMiddleware,
     requirePortalAdminToken,
     requireOperatorTargetUser('userId'),
     (req: Request, res: Response) => {
@@ -263,6 +260,7 @@ export function registerPortalCookingRoutes(app: Express): void {
 
   app.post(
     '/api/users/:userId/cooking/pantry',
+    authorizationRateLimitMiddleware,
     requirePortalAdminToken,
     requireOperatorTargetUser('userId'),
     (req: Request, res: Response) => {
@@ -311,6 +309,7 @@ export function registerPortalCookingRoutes(app: Express): void {
 
   app.delete(
     '/api/users/:userId/cooking/pantry/:itemId',
+    authorizationRateLimitMiddleware,
     requirePortalAdminToken,
     requireOperatorTargetUser('userId'),
     (req: Request, res: Response) => {
@@ -350,6 +349,7 @@ export function registerPortalCookingRoutes(app: Express): void {
 
   app.post(
     '/api/users/:userId/cooking/meal-plan/substitutions/apply',
+    authorizationRateLimitMiddleware,
     requirePortalAdminToken,
     requireOperatorTargetUser('userId'),
     (req: Request, res: Response) => {

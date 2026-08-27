@@ -214,20 +214,20 @@ describe('portal cooking routes', () => {
 
     registerPortalCookingRoutes(app as any);
 
-    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/cooking/preferences', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/preferences', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.delete).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry/:itemId', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/meal-plan/substitutions/apply', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(routes.get('GET /api/users/:userId/cooking/preferences')?.[0]).toBe(hoisted.requirePortalAdminToken);
-    expect(routes.get('GET /api/users/:userId/cooking/preferences')?.[1]).toBe(hoisted.targetUserGuard);
+    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/cooking/preferences', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/preferences', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.delete).toHaveBeenCalledWith('/api/users/:userId/cooking/pantry/:itemId', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/cooking/meal-plan/substitutions/apply', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(routes.get('GET /api/users/:userId/cooking/preferences')?.[1]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('GET /api/users/:userId/cooking/preferences')?.[2]).toBe(hoisted.targetUserGuard);
   });
 
   it('reads Cooking preferences without returning raw private memory values', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('GET /api/users/:userId/cooking/preferences')?.[2]!;
+    const handler = routes.get('GET /api/users/:userId/cooking/preferences')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '42' }, query: { tenantId: '42' }, ip: '127.0.0.1' }, res);
@@ -254,7 +254,7 @@ describe('portal cooking routes', () => {
   it('rejects cross-tenant Cooking portal reads before service access', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('GET /api/users/:userId/cooking/preferences')?.[2]!;
+    const handler = routes.get('GET /api/users/:userId/cooking/preferences')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '42' }, query: { tenantId: '99' } }, res);
@@ -283,7 +283,7 @@ describe('portal cooking routes', () => {
     };
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/cooking/preferences')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/cooking/preferences')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -308,7 +308,7 @@ describe('portal cooking routes', () => {
   it('reads pantry through scoped Cooking services and audits access', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('GET /api/users/:userId/cooking/pantry')?.[2]!;
+    const handler = routes.get('GET /api/users/:userId/cooking/pantry')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '42' }, query: { tenantId: '42', includeExpired: 'true', limit: '20' } }, res);
@@ -333,8 +333,8 @@ describe('portal cooking routes', () => {
   it('upserts and deletes pantry items through tenant-scoped services', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.[2]!;
-    const remove = routes.get('DELETE /api/users/:userId/cooking/pantry/:itemId')?.[2]!;
+    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.at(-1)!;
+    const remove = routes.get('DELETE /api/users/:userId/cooking/pantry/:itemId')?.at(-1)!;
     const upsertResponse = makeResponse();
     const deleteResponse = makeResponse();
 
@@ -375,7 +375,7 @@ describe('portal cooking routes', () => {
     };
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -405,7 +405,7 @@ describe('portal cooking routes', () => {
   it('rejects cross-tenant substitution apply before service access', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({
@@ -429,7 +429,7 @@ describe('portal cooking routes', () => {
   it('rejects invalid substitution reasons before mutation', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({
@@ -461,7 +461,7 @@ describe('portal cooking routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({

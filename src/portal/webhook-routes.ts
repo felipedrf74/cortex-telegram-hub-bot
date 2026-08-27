@@ -577,13 +577,7 @@ export function registerPortalWebhookManagementRoutes(app: Express, deps: Portal
       });
     },
   });
-  if (typeof app.use === 'function') {
-    app.use('/api/webhooks/stats', authorizationRateLimitMiddleware);
-    app.use('/api/webhooks/subscriptions', authorizationRateLimitMiddleware);
-    app.use('/api/webhooks/events', authorizationRateLimitMiddleware);
-  }
-
-  app.get('/api/webhooks/stats', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/webhooks/stats', authorizationRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const ownerUserId = resolveWebhookManagementOwner(req, res, deps);
       if (ownerUserId === null) return;
@@ -595,7 +589,7 @@ export function registerPortalWebhookManagementRoutes(app: Express, deps: Portal
     }
   });
 
-  app.get('/api/webhooks/subscriptions', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/webhooks/subscriptions', authorizationRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const ownerUserId = resolveWebhookManagementOwner(req, res, deps);
       if (ownerUserId === null) return;
@@ -621,7 +615,7 @@ export function registerPortalWebhookManagementRoutes(app: Express, deps: Portal
     }
   });
 
-  app.post('/api/webhooks/subscriptions', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/webhooks/subscriptions', authorizationRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     const { provider, event_types, secret, external_id, metadata, expires_at, owner_user_id } = req.body || {};
     if (!isWebhookProvider(provider)) {
       res.status(400).json({ ok: false, message: 'supported provider is required' });
@@ -682,7 +676,7 @@ export function registerPortalWebhookManagementRoutes(app: Express, deps: Portal
     }
   });
 
-  app.delete('/api/webhooks/subscriptions/:id', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.delete('/api/webhooks/subscriptions/:id', authorizationRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     const id = parsePositiveRouteId(req.params.id);
     if (id === null) {
       res.status(400).json({ ok: false, message: 'Invalid subscription ID' });
@@ -713,7 +707,7 @@ export function registerPortalWebhookManagementRoutes(app: Express, deps: Portal
     }
   });
 
-  app.get('/api/webhooks/events', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/webhooks/events', authorizationRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const ownerUserId = resolveWebhookManagementOwner(req, res, deps);
       if (ownerUserId === null) return;
@@ -738,7 +732,7 @@ export function registerPortalWebhookManagementRoutes(app: Express, deps: Portal
     }
   });
 
-  app.post('/api/webhooks/events/:id/replay', requirePortalAdminToken, async (req: Request, res: Response) => {
+  app.post('/api/webhooks/events/:id/replay', authorizationRateLimitMiddleware, requirePortalAdminToken, async (req: Request, res: Response) => {
     const id = parsePositiveRouteId(req.params.id);
     if (id === null) {
       res.status(400).json({ ok: false, message: 'Invalid event ID' });

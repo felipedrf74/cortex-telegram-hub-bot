@@ -262,20 +262,20 @@ describe('portal user routes', () => {
     registerPortalUserRoutes(app as any);
 
     expect(app.get).toHaveBeenCalledWith('/api/users', expect.any(Function));
-    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/ai-budget', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/suspend', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
-    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/tier', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
-    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/limits', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/ai-budget', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/suspend', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/tier', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
+    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/limits', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
     expect(app.get).toHaveBeenCalledWith('/api/billing/nexus-points/packages', hoisted.requirePortalAdminToken, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/billing/nexus-points/stripe-checkout', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function), expect.any(Function));
-    expect(routes.get('POST /api/users/:userId/suspend')?.[0]).toBe(hoisted.requirePortalAdminToken);
-    expect(routes.get('POST /api/users/:userId/suspend')?.[1]).toBe(hoisted.targetUserGuard);
-    expect(routes.get('POST /api/users/:userId/activate')?.[0]).toBe(hoisted.requirePortalAdminToken);
-    expect(routes.get('PUT /api/users/:userId/tier')?.[0]).toBe(hoisted.requirePortalAdminToken);
-    expect(routes.get('PUT /api/users/:userId/limits')?.[0]).toBe(hoisted.requirePortalAdminToken);
-    expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[0]).toBe(hoisted.requirePortalAdminToken);
-    expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[1]).toBe(hoisted.targetUserGuard);
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/billing/nexus-points/stripe-checkout', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function), expect.any(Function));
+    expect(routes.get('POST /api/users/:userId/suspend')?.[1]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/suspend')?.[2]).toBe(hoisted.targetUserGuard);
+    expect(routes.get('POST /api/users/:userId/activate')?.[1]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('PUT /api/users/:userId/tier')?.[1]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('PUT /api/users/:userId/limits')?.[1]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[1]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[2]).toBe(hoisted.targetUserGuard);
     expect(hoisted.requireOperatorTargetUser).toHaveBeenCalledWith('userId');
   });
 
@@ -298,7 +298,7 @@ describe('portal user routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('GET /api/users/:userId/ai-budget')?.[2]!;
+    const handler = routes.get('GET /api/users/:userId/ai-budget')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '12' } }, res);
@@ -332,7 +332,7 @@ describe('portal user routes', () => {
   it('lists Nexus Points packages for portal admins', () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('GET /api/billing/nexus-points/packages')?.[1]!;
+    const handler = routes.get('GET /api/billing/nexus-points/packages')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({}, res);
@@ -347,7 +347,7 @@ describe('portal user routes', () => {
   it('creates portal Stripe Nexus Points checkout only with a required note', async () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[4]!;
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     await handler({
@@ -379,7 +379,7 @@ describe('portal user routes', () => {
   it('caps and sanitizes portal Stripe Nexus Points checkout notes before persistence/metadata', async () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[4]!;
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.at(-1)!;
     const { res } = makeResponse();
     const dirtyNote = `beta\u0000 ${'x'.repeat(400)}`;
 
@@ -403,7 +403,7 @@ describe('portal user routes', () => {
   it('rejects portal Stripe Nexus Points checkout without a note', async () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[4]!;
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     await handler({
@@ -424,7 +424,7 @@ describe('portal user routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[4]!;
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     await handler({
@@ -465,7 +465,7 @@ describe('portal user routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.[4]!;
+    const handler = routes.get('POST /api/users/:userId/billing/nexus-points/stripe-checkout')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     await handler({
@@ -483,7 +483,7 @@ describe('portal user routes', () => {
   it('lists safe portal users', () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('GET /api/users')?.[0]!;
+    const handler = routes.get('GET /api/users')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({}, res);
@@ -499,7 +499,7 @@ describe('portal user routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('GET /api/users')?.[0]!;
+    const handler = routes.get('GET /api/users')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({}, res);
@@ -517,7 +517,7 @@ describe('portal user routes', () => {
   it('rejects invalid user ids before status mutations', () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/suspend')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/suspend')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '0' } }, res);
@@ -532,7 +532,7 @@ describe('portal user routes', () => {
     const req = { params: { userId: '42' } };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/suspend')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/suspend')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -548,7 +548,7 @@ describe('portal user routes', () => {
     const req = { params: { userId: '42' } };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/activate')?.[2]!;
+    const handler = routes.get('POST /api/users/:userId/activate')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -566,7 +566,7 @@ describe('portal user routes', () => {
     const req = { params: { userId: '7' }, body: { tier: 'MAX' } };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/tier')?.[3]!;
+    const handler = routes.get('PUT /api/users/:userId/tier')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -584,7 +584,7 @@ describe('portal user routes', () => {
     hoisted.getDb.mockReturnValue(recorder.db);
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/tier')?.[3]!;
+    const handler = routes.get('PUT /api/users/:userId/tier')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '7' }, body: { tier: 'enterprise' } }, res);
@@ -607,7 +607,7 @@ describe('portal user routes', () => {
     };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/limits')?.[3]!;
+    const handler = routes.get('PUT /api/users/:userId/limits')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -637,7 +637,7 @@ describe('portal user routes', () => {
     hoisted.getDb.mockReturnValue(recorder.db);
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/limits')?.[3]!;
+    const handler = routes.get('PUT /api/users/:userId/limits')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({
@@ -671,7 +671,7 @@ describe('portal user routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/tier')?.[3]!;
+    const handler = routes.get('PUT /api/users/:userId/tier')?.at(-1)!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '7' }, body: { tier: 'pro' } }, res);

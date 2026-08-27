@@ -79,15 +79,6 @@ export function registerPortalUserRoutes(app: express.Express): void {
       });
     },
   });
-  if (typeof app.use === 'function') {
-    app.use('/api/users/:userId/ai-budget', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/billing/nexus-points/stripe-checkout', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/suspend', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/activate', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/tier', authorizationRateLimitMiddleware);
-    app.use('/api/users/:userId/limits', authorizationRateLimitMiddleware);
-  }
-
   app.get('/api/users', (_req: Request, res: Response) => {
     try {
       res.json({ users: listUsers() });
@@ -96,7 +87,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.get('/api/users/:userId/ai-budget', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
+  app.get('/api/users/:userId/ai-budget', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -186,7 +177,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     });
   });
 
-  app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken, requireOperatorTargetUser('userId'), rejectOversizedPortalStripeCheckoutBody, express.json({ limit: '8kb' }), async (req: Request, res: Response) => {
+  app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId'), rejectOversizedPortalStripeCheckoutBody, express.json({ limit: '8kb' }), async (req: Request, res: Response) => {
     try {
       if (!isStripeNexusPointsConfigured()) {
         res.status(503).json({ ok: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe Nexus Points checkout is not configured' } });
@@ -248,7 +239,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/users/:userId/suspend', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
+  app.post('/api/users/:userId/suspend', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -264,7 +255,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/users/:userId/activate', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
+  app.post('/api/users/:userId/activate', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -280,7 +271,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.put('/api/users/:userId/tier', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/tier', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -303,7 +294,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.put('/api/users/:userId/limits', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/limits', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {

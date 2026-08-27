@@ -55,12 +55,12 @@ describe('portal admin scope hardening', () => {
   });
 
   it('protects sensitive user and invite mutations with the admin token middleware', () => {
-    expect(portalRouteSource).toContain("app.post('/api/users/:userId/suspend', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/users/:userId/activate', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.put('/api/users/:userId/tier', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.put('/api/users/:userId/limits', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/suspend', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/activate', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/tier', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/limits', authorizationRateLimitMiddleware, requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.get('/api/billing/nexus-points/packages', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', authorizationRateLimitMiddleware, requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/invite-codes', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.delete('/api/invite-codes/:code', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/users/:userId/skills', requirePortalAdminToken");
@@ -87,12 +87,12 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/disable', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/subskills/:sub/enable', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/subskills/:sub/disable', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/webhooks/subscriptions', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.delete('/api/webhooks/subscriptions/:id', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.get('/api/webhooks/stats', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.get('/api/webhooks/subscriptions', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.get('/api/webhooks/events', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/webhooks/events/:id/replay', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/webhooks/subscriptions', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.delete('/api/webhooks/subscriptions/:id', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/webhooks/stats', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/webhooks/subscriptions', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/webhooks/events', authorizationRateLimitMiddleware, requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/webhooks/events/:id/replay', authorizationRateLimitMiddleware, requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/settings', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.delete('/api/settings', requirePortalAdminToken");
   });
@@ -152,14 +152,14 @@ describe('portal admin scope hardening', () => {
   // guard after the admin token guard so we consistently validate existence
   // and (when configured) per-operator scope before mutating user data.
   it('chains the operator target-user guard on every :userId admin route', () => {
-    expect(portalRouteSource).toContain("app.post('/api/users/:userId/suspend', requirePortalAdminToken, requireOperatorTargetUser('userId')");
-    expect(portalRouteSource).toContain("app.post('/api/users/:userId/activate', requirePortalAdminToken, requireOperatorTargetUser('userId')");
-    expect(portalRouteSource).toContain("app.put('/api/users/:userId/tier', requirePortalAdminToken, requireOperatorTargetUser('userId')");
-    expect(portalRouteSource).toContain("app.put('/api/users/:userId/limits', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/suspend', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/activate', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/tier', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/limits', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId')");
     expect(portalRouteSource).toContain("app.put('/api/users/:userId/skills', requirePortalAdminToken, requireOperatorTargetUser('userId')");
     expect(portalRouteSource).toContain("app.post('/api/users/:userId/skills/reset', requirePortalAdminToken, requireOperatorTargetUser('userId')");
     expect(portalRouteSource).toContain("app.get('/api/users/:userId/data-summary', requirePortalAdminToken, requireOperatorTargetUser('userId')");
-    expect(portalRouteSource).toContain("app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/billing/nexus-points/stripe-checkout', authorizationRateLimitMiddleware, requirePortalAdminToken, requireOperatorTargetUser('userId')");
   });
 
   // Gap 5: the server composition root must call the beta-readiness preflight
