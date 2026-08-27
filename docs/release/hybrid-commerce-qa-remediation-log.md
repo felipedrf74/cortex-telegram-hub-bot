@@ -1199,3 +1199,27 @@ distinct producer receipt. The governance-only authorization does not admit
 contract or destructive SQL. The currently untracked obsolete launcher and its
 test are Release B material and must be excluded from Release A's commit and
 generated project map until Release A's exact SHA exists.
+
+### Release A2 live-config preflight recovery (2026-08-27)
+
+The signed Release A2 candidate at protected-main source
+`3b97339c8ec14b3a72f1a5c49b49e50f799f666f` passed staging and exact
+governance-only admission after the attended immutable-controller upgrade. Its
+production migrator then exited before opening SQLite because live production
+did not yet carry the newly required `APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET`.
+The immutable v3 receipt is blocked and that exact release identity must not be
+retried. Read-only verification proved the predecessor container remained
+healthy, production integrity and foreign-key checks passed, none of migrations
+297–301 entered the ledger, and none of migration 299's six release-identity
+columns appeared.
+
+The production backend environment now pins the Apple ownership HMAC to the
+existing strong legacy iOS JWT secret, as required before the first rollout.
+No credential was printed, generated, or rotated. The exact A2 staging image
+then ran its compiled production migrator against a fresh SQLite backup clone
+with the production environment and signed production reconciliation. The
+clone applied all five pending migrations, exposed all six migration-299
+columns, and passed integrity and foreign-key checks. The clone and diagnostic
+output were deleted. Production remains on the healthy predecessor and the
+ten-script smoke remains locked. A distinct protected-main Release A3 identity
+is required because the failed A2 identity is terminal and non-retryable.
