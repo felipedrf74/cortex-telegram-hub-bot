@@ -247,4 +247,44 @@ describe('local inference admin routes', () => {
     }));
     expect(response.body.data.runtimeControl).toEqual(after);
   });
+
+  it('captures both pre-activation baselines for a direct production OFF-to-active transition', async () => {
+    const db = {
+      transaction: (callback: () => unknown) => ({ immediate: callback }),
+    };
+    mocks.getDb.mockReturnValue(db);
+    mocks.getControl.mockReturnValue({
+      environment: 'production',
+      mode: 'off',
+      rolloutPercent: 0,
+    });
+    mocks.getOwnerTarget.mockReturnValue({ tenantId: 42, telegramId: 99 });
+    mocks.getNonAiLatency.mockReturnValue({ sampleCount: 25, p95Ms: 18 });
+    mocks.getEndUserErrors.mockReturnValue({ sampleCount: 30, serverErrorRatePercent: 0.2 });
+    mocks.setControl.mockReturnValue({
+      environment: 'production',
+      mode: 'active',
+      rolloutPercent: 100,
+    });
+
+    const response = await dispatch('/runtime-control', {
+      method: 'POST',
+      body: {
+        mode: 'active',
+        rolloutPercent: 100,
+        reason: 'owner activates accepted release',
+        evidenceReference: 'sha256:accepted-economics-v6',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.setControl).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'active',
+      rolloutPercent: 100,
+      nonAiP95BaselineMs: 18,
+      nonAiBaselineSampleCount: 25,
+      endUserErrorRateBaselinePercent: 0.2,
+      endUserErrorBaselineSampleCount: 30,
+    }), db, { deferInMemoryQueueDrain: true });
+  });
 });

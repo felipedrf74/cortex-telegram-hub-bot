@@ -37,9 +37,20 @@ function filing(userId: number, overrides: Partial<Parameters<typeof recordFilin
   };
 }
 
+function insertStoredObjectManifest(tenantId: number, userId: number, objectKey: string): void {
+  const timestamp = '2026-04-30T12:00:00.000Z';
+  testDb.prepare(`INSERT INTO invoice_artifact_manifests (
+    tenant_id, user_id, artifact_kind, artifact_locator, storage_backend,
+    state, write_token, write_lease_expires_at, created_at, updated_at, stored_at
+  ) VALUES (?, ?, 'stored_object', ?, 'filesystem', 'stored', ?, 0, ?, ?, ?)`)
+    .run(tenantId, userId, objectKey, `fixture-${userId}`, timestamp, timestamp, timestamp);
+}
+
 describe('state/invoice-filings isolation contract', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
+    const insertUser = testDb.prepare("INSERT INTO users (id, status) VALUES (?, 'active')");
+    for (const userId of VALID_USER_IDS) insertUser.run(userId);
   });
 
   afterEach(() => {
@@ -84,6 +95,7 @@ describe('state/invoice-filings isolation contract', () => {
   });
 
   it('includes filed invoices dated on an end-of-day period boundary', () => {
+    insertStoredObjectManifest(1, 1, 'invoices/1/1/2026/Abr-2026/apr-end.pdf');
     recordFiling(filing(1, {
       document_date: '2026-04-30',
       invoice_number: 'APR-END',
@@ -121,6 +133,15 @@ describe('state/invoice-filings isolation contract', () => {
       bytes: 7,
       storage_backend: 'filesystem',
     });
+  });
+
+  it('rejects an object key without an exact same-scope stored manifest', () => {
+    insertStoredObjectManifest(2, 2, 'invoices/2/2/2026/Mai-2026/foreign.pdf');
+
+    expect(() => recordFiling(filing(1, {
+      object_key: 'invoices/2/2/2026/Mai-2026/foreign.pdf',
+      storage_backend: 'filesystem',
+    }))).toThrow(/exact stored-object ownership manifest/);
   });
 
   it('delete helpers are scoped and idempotent', () => {

@@ -23,7 +23,16 @@ vi.mock('../../src/services/apple-jws-verifier', () => ({
 const resolveTokenMock = vi.hoisted(() => vi.fn());
 vi.mock('../../src/services/stripe-service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/stripe-service')>();
-  return { ...actual, resolveUserIdFromAppleAppAccountToken: resolveTokenMock };
+  return {
+    ...actual,
+    resolveAppleAppAccountTokenForAuthenticatedScope: (input: {
+      userId: number;
+      tenantId: number;
+      appAccountToken: unknown;
+    }) => input.tenantId === input.userId && resolveTokenMock(input.appAccountToken) === input.userId
+      ? input.userId
+      : null,
+  };
 });
 
 const packActiveMock = vi.hoisted(() => vi.fn(() => true));
@@ -49,10 +58,22 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
-import { restoreApplePackTransactions } from '../../src/services/apple-pack-restoration';
-import { getAiCreditWallet, listAiCreditLots } from '../../src/services/ai-credit-ledger';
+import {
+  restoreApplePackTransactions as restoreApplePackTransactionsService,
+} from '../../src/services/apple-pack-restoration';
+import {
+  getAiCreditWallet,
+  grantPurchasedAiCredits,
+  listAiCreditLots,
+} from '../../src/services/ai-credit-ledger';
 
 const PACK = { id: 'pack_100', kind: 'credit_pack', credits: 100 } as never;
+
+function restoreApplePackTransactions(
+  input: Omit<Parameters<typeof restoreApplePackTransactionsService>[0], 'tenantId'>,
+) {
+  return restoreApplePackTransactionsService({ ...input, tenantId: input.userId });
+}
 
 function fixture(jws: string, payload: Record<string, unknown>): string {
   jwsFixtures.set(jws, payload);
@@ -127,6 +148,39 @@ describe('apple pack restoration (NH-0041)', () => {
     const result = restoreApplePackTransactions({
       userId: 40,
       signedTransactions: [validTransaction({ transactionId: 'tx-foreign' })],
+    });
+    expect(result).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'wrong_account', catalogItemId: 'pack_100' }],
+    });
+    expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(0);
+    expect(getAiCreditWallet(99, 'pro').purchasedRemaining).toBe(0);
+  });
+
+  it('refuses a cross-owner replay even when its signed token resolves locally', () => {
+    expect(grantPurchasedAiCredits({
+      userId: 99,
+      provider: 'apple',
+      providerTransactionId: 'tx-existing-owner',
+      credits: 100,
+    }).kind).toBe('granted');
+
+    expect(restoreApplePackTransactions({
+      userId: 40,
+      signedTransactions: [validTransaction({ transactionId: 'tx-existing-owner' })],
+    })).toEqual({
+      kind: 'processed',
+      results: [{ outcome: 'wrong_account', catalogItemId: 'pack_100' }],
+    });
+    expect(getAiCreditWallet(40, 'pro').purchasedRemaining).toBe(0);
+    expect(getAiCreditWallet(99, 'pro').purchasedRemaining).toBe(100);
+  });
+
+  it('refuses restoration when authenticated tenant and user scopes disagree', () => {
+    const result = restoreApplePackTransactionsService({
+      userId: 40,
+      tenantId: 99,
+      signedTransactions: [validTransaction({ transactionId: 'tx-wrong-tenant' })],
     });
     expect(result).toEqual({
       kind: 'processed',

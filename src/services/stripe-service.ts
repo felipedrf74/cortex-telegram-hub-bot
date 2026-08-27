@@ -37,6 +37,7 @@ import {
   STRIPE_MANAGED_PAYMENTS_CHECKOUT_OPTIONS,
 } from './stripe-managed-payments';
 import { STRIPE_HISTORICAL_MONTHLY_PRICE_IDS } from './stripe-price-identity';
+import { isAppleValueGrantEnvironmentAllowed } from './apple-value-grant-policy';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
@@ -356,7 +357,10 @@ function getBillingEmailContextForSubscription(subscriptionId: string): BillingE
 
 function queuePaymentEmail(kind: string, to: string, send: Promise<boolean>): void {
   send.catch((err) => {
-    logger.warn({ err, kind, toHash: hashEmail(to, 16) }, 'Stripe payment email send failed');
+    logger.warn(
+      { kind, ...safeStripeErrorDiagnostics(err) },
+      'Stripe payment email send failed',
+    );
   });
 }
 
@@ -679,7 +683,11 @@ export function fulfillStripeCreditPackCheckout(session: any): boolean {
     : '';
   if (sessionCurrency !== 'usd') {
     logger.error(
-      { sessionId: session?.id, catalogItemId, sessionCurrency },
+      {
+        catalogItemId,
+        currencyMismatch: true,
+        currencyPresent: sessionCurrency.length > 0,
+      },
       'Stripe pack checkout currency is not the catalog currency; deferring to reconciliation',
     );
     return false;
@@ -689,7 +697,10 @@ export function fulfillStripeCreditPackCheckout(session: any): boolean {
   const paidAmountCents = typeof session?.amount_total === 'number' ? session.amount_total : null;
   if (paidAmountCents === null || paidAmountCents !== expectedAmountCents) {
     logger.error(
-      { sessionId: session?.id, catalogItemId, paidAmountCents, expectedAmountCents },
+      {
+        catalogItemId,
+        failureKind: paidAmountCents === null ? 'amount_missing' : 'amount_mismatch',
+      },
       'Stripe pack checkout amount is absent or does not match the catalog price; refusing to grant',
     );
     return false;
@@ -725,7 +736,11 @@ export function handleStripeCreditPackReversal(charge: any, reason: 'refund' | '
   // are left for manual/reconciliation handling.
   if (reason === 'refund' && charge?.refunded !== true) {
     logger.warn(
-      { paymentIntent, amountRefunded: charge?.amount_refunded, amount: charge?.amount },
+      {
+        paymentIntentPresent: true,
+        refundAmountPresent: typeof charge?.amount_refunded === 'number',
+        chargeAmountPresent: typeof charge?.amount === 'number',
+      },
       'Stripe partial refund on a pack charge; lot left intact for reconciliation',
     );
     return false;
@@ -823,10 +838,8 @@ export async function createPublicCheckoutSession(input: {
   );
 
   logger.info({
-    emailHash: hashEmail(normalizedEmail, 16),
     plan: resolved.plan,
-    currency: resolved.currency,
-    sessionId: session.id,
+    publicCheckoutCreated: true,
   }, 'Public Stripe checkout session created');
 
   return session.url;
@@ -940,11 +953,14 @@ function updatePublicCheckoutStatus(
            stripe_subscription_id = COALESCE(?, stripe_subscription_id),
            updated_at = datetime('now')
      WHERE stripe_checkout_session_id = ?
+       AND (status NOT IN ('canceled', 'cancelled', 'expired', 'incomplete_expired')
+         OR status = ?)
   `).run(
     status,
     customerId || null,
     subscriptionId || null,
     sessionId,
+    status,
   );
 }
 
@@ -983,6 +999,10 @@ function updatePublicCheckoutForSubscription(input: {
   ) as { id: number; status: string } | undefined;
   if (!row) return;
 
+  if (['canceled', 'cancelled', 'expired', 'incomplete_expired'].includes(row.status)
+      && row.status !== input.status) {
+    return;
+  }
   if (
     row.status === 'payment_failed'
     && ['created', 'pending', 'incomplete'].includes(input.status)
@@ -1161,8 +1181,19 @@ export function handleSubscriptionDeleted(subscription: any): void {
   let userId = parseInt(subscription.metadata?.userId || '0', 10);
 
   const db = getDb();
+  const customerId = typeof subscription.customer === 'string'
+    ? subscription.customer
+    : subscription.customer?.id ?? null;
+  // A signed terminal webhook must close the anonymous compatibility row even
+  // when no Nexus account has claimed it yet. Otherwise a stale `completed`
+  // checkout could later mint an active entitlement during the claim window.
+  updatePublicCheckoutForSubscription({
+    subscriptionId: subscription.id,
+    customerId,
+    emailHash: null,
+    status: 'canceled',
+  });
   if (!userId) {
-    const customerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id;
     const row = db.prepare(`
       SELECT user_id FROM stripe_web_checkouts
       WHERE stripe_subscription_id = ? OR stripe_customer_id = ?
@@ -1191,7 +1222,10 @@ export function handleSubscriptionDeleted(subscription: any): void {
   try {
     db.prepare("UPDATE users SET tier = 'free' WHERE id = ? AND tier IN ('pro', 'max')").run(userId);
   } catch (err) {
-    logger.warn({ err, userId }, 'Stripe subscription deleted: failed to reconcile stale users.tier');
+    logger.warn(
+      { userId, ...safeStripeErrorDiagnostics(err) },
+      'Stripe subscription deleted: failed to reconcile stale users.tier',
+    );
   }
 
   if (billingEmail?.email) {
@@ -1215,6 +1249,12 @@ export function handleInvoicePaymentFailed(invoice: any): void {
   }
 
   const db = getDb();
+  updatePublicCheckoutForSubscription({
+    subscriptionId,
+    customerId: customerId || null,
+    emailHash: null,
+    status: 'past_due',
+  });
   const billingEmail = getBillingEmailContextForSubscription(subscriptionId);
   const result = db.prepare(`
     UPDATE subscriptions SET status = 'past_due', updated_at = datetime('now')
@@ -1248,6 +1288,13 @@ export function handleInvoicePaid(invoice: any): void {
     return;
   }
 
+  updatePublicCheckoutForSubscription({
+    subscriptionId,
+    customerId: customerId || null,
+    emailHash: null,
+    status: 'active',
+  });
+
   const result = getDb().prepare(`
     UPDATE subscriptions
        SET status = 'active', updated_at = datetime('now')
@@ -1275,42 +1322,85 @@ export function markStripeWebhookEventProcessed(eventId: string, eventType: stri
 }
 
 export function claimWebsiteStripeSubscriptionForUser(userId: number): boolean {
+  const claimWindowStartedAt = config.hybridCommerce.anonymousCheckoutClaimWindowStartedAt;
+  const claimSunsetAt = config.hybridCommerce.anonymousCheckoutClaimSunsetAt;
+  const claimWindowStartMs = Date.parse(claimWindowStartedAt);
+  const claimSunsetMs = Date.parse(claimSunsetAt);
+  const exactThirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  if (!config.hybridCommerce.anonymousCheckoutClaimEnabled
+      || !Number.isFinite(claimWindowStartMs) || !Number.isFinite(claimSunsetMs)
+      || new Date(claimWindowStartMs).toISOString() !== claimWindowStartedAt
+      || new Date(claimSunsetMs).toISOString() !== claimSunsetAt
+      || claimSunsetMs - claimWindowStartMs !== exactThirtyDaysMs
+      || Date.now() < claimWindowStartMs || Date.now() >= claimSunsetMs) {
+    return false;
+  }
   const db = getDb();
   const user = db.prepare('SELECT email, email_verified FROM users WHERE id = ?').get(userId) as
     | { email: string | null; email_verified: number | null }
     | undefined;
   const normalizedEmail = normalizePublicEmail(user?.email || '');
   if (!normalizedEmail || user?.email_verified !== 1) return false;
+  const normalizedEmailHash = hashEmail(normalizedEmail);
 
-  const row = db.prepare(`
-    SELECT plan, stripe_customer_id, stripe_subscription_id
-    FROM stripe_web_checkouts
-    WHERE email_hash = ?
-      AND stripe_subscription_id IS NOT NULL
-      AND (user_id IS NULL OR user_id = ?)
-      AND status IN ('completed', 'active', 'trialing')
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 1
-  `).get(hashEmail(normalizedEmail), userId) as
-    | { plan: string; stripe_customer_id: string | null; stripe_subscription_id: string | null }
-    | undefined;
-
-  if (!row?.stripe_subscription_id) return false;
-
-  upsertStripeSubscription({
-    userId,
-    plan: row.plan || 'pro',
-    period: 'monthly',
-    status: 'active',
-    subscriptionId: row.stripe_subscription_id,
-    customerId: row.stripe_customer_id,
-  });
-
-  db.prepare(`
-    UPDATE stripe_web_checkouts
-       SET user_id = ?, updated_at = datetime('now')
-     WHERE email_hash = ?
-  `).run(userId, hashEmail(normalizedEmail));
+  const attached = db.transaction(() => {
+    const currentUser = db.prepare('SELECT email, email_verified FROM users WHERE id = ?').get(userId) as
+      | { email: string | null; email_verified: number | null }
+      | undefined;
+    if (currentUser?.email_verified !== 1
+        || normalizePublicEmail(currentUser.email || '') !== normalizedEmail) {
+      return false;
+    }
+    const row = db.prepare(`
+      SELECT id, plan, stripe_customer_id, stripe_subscription_id
+      FROM stripe_web_checkouts
+      WHERE email_hash = ?
+        AND stripe_subscription_id IS NOT NULL
+        AND user_id IS NULL
+        AND status IN ('completed', 'active', 'trialing')
+        AND plan IN ('pro', 'max')
+        AND julianday(created_at) <= julianday(?)
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `).get(normalizedEmailHash, claimWindowStartedAt) as
+      | {
+        id: number;
+        plan: 'pro' | 'max';
+        stripe_customer_id: string | null;
+        stripe_subscription_id: string | null;
+      }
+      | undefined;
+    if (!row?.stripe_subscription_id) return false;
+    const claim = db.prepare(`
+      UPDATE stripe_web_checkouts
+         SET user_id = ?, updated_at = datetime('now')
+       WHERE id = ?
+         AND email_hash = ?
+         AND user_id IS NULL
+         AND stripe_subscription_id = ?
+         AND status IN ('completed', 'active', 'trialing')
+         AND plan = ?
+         AND julianday(created_at) <= julianday(?)
+    `).run(
+      userId,
+      row.id,
+      normalizedEmailHash,
+      row.stripe_subscription_id,
+      row.plan,
+      claimWindowStartedAt,
+    );
+    if (claim.changes !== 1) return false;
+    upsertStripeSubscription({
+      userId,
+      plan: row.plan,
+      period: 'monthly',
+      status: 'active',
+      subscriptionId: row.stripe_subscription_id,
+      customerId: row.stripe_customer_id,
+    });
+    return true;
+  }).immediate();
+  if (!attached) return false;
 
   logger.info({ userId, emailHash: hashEmail(normalizedEmail, 16) }, 'Claimed website Stripe checkout for verified Nexus user');
   return true;
@@ -1382,21 +1472,18 @@ export function isAppleTransactionAlreadyClaimedError(
 // not a credential: recovery still requires an Apple-signed notification, and
 // the worst a forged token could do is donate someone else's purchase away.
 //
-// Rotating IOS_API_JWT_SECRET invalidates outstanding tokens. That is safe —
-// the client re-reads the token from GET /billing/status on every launch, and
-// notifications for an already-verified transaction still resolve by
-// originalTransactionId.
-//
-// IOS_API_JWT_SECRET is the ONLY accepted key. A source-literal fallback would
-// make every token derivable — and therefore forgeable — by anyone who can read
-// this repo, on any host that never set the env var (its default is empty).
-// Without the secret the token is simply unavailable, so a misconfigured host
-// loses notification-based recovery instead of accepting spoofed user mappings.
+// APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET is deliberately independent from JWT
+// signing material: StoreKit transactions and delayed notifications can
+// outlive a JWT rotation. Live production requires the dedicated key at boot.
+// Operators migrate by initially pinning it to the current effective legacy
+// JWT secret and then keeping it unchanged across future JWT rotations.
+// Without the secret the token is unavailable, so a misconfigured host loses
+// notification-based recovery instead of accepting spoofed user mappings.
 
 const APPLE_APP_ACCOUNT_TOKEN_VERSION = 0x01;
 
 function appleAppAccountTokenTag(body: Buffer): Buffer | null {
-  const key = config.ios.jwtSecret;
+  const key = config.ios.appAccountTokenHmacSecret;
   if (!key) return null;
   return crypto.createHmac('sha256', key).update(body).digest().subarray(0, 11);
 }
@@ -1415,7 +1502,7 @@ export function deriveAppleAppAccountToken(userId: number): string | null {
 }
 
 export function resolveUserIdFromAppleAppAccountToken(token: unknown): number | null {
-  if (typeof token !== 'string' || !config.ios.jwtSecret) return null;
+  if (typeof token !== 'string' || !config.ios.appAccountTokenHmacSecret) return null;
   const hex = token.replace(/-/g, '').toLowerCase();
   if (!/^[0-9a-f]{32}$/.test(hex)) return null;
   const bytes = Buffer.from(hex, 'hex');
@@ -1426,8 +1513,50 @@ export function resolveUserIdFromAppleAppAccountToken(token: unknown): number | 
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(hex)) ? userId : null;
 }
 
+/** Shared ownership proof used by verify, restore, and direct grant paths. */
+export function resolveAppleAppAccountTokenForAuthenticatedScope(input: {
+  userId: number;
+  tenantId: number;
+  appAccountToken: unknown;
+}): number | null {
+  if (!Number.isSafeInteger(input.userId) || input.userId <= 0
+      || !Number.isSafeInteger(input.tenantId) || input.tenantId !== input.userId) return null;
+  const resolvedUserId = resolveUserIdFromAppleAppAccountToken(input.appAccountToken);
+  return resolvedUserId === input.userId ? resolvedUserId : null;
+}
+
+export class AppleTransactionAccountMismatchError extends Error {
+  constructor() {
+    super('APPLE_TRANSACTION_ACCOUNT_MISMATCH');
+    this.name = 'AppleTransactionAccountMismatchError';
+  }
+}
+
+export class AppleTransactionEnvironmentRefusedError extends Error {
+  constructor() {
+    super('APPLE_TRANSACTION_ENVIRONMENT_REFUSED');
+    this.name = 'AppleTransactionEnvironmentRefusedError';
+  }
+}
+
+export function isAppleTransactionAccountMismatchError(
+  error: unknown,
+): error is AppleTransactionAccountMismatchError {
+  return error instanceof AppleTransactionAccountMismatchError
+    || (error instanceof Error && error.name === 'AppleTransactionAccountMismatchError');
+}
+
+export function isAppleTransactionEnvironmentRefusedError(
+  error: unknown,
+): error is AppleTransactionEnvironmentRefusedError {
+  return error instanceof AppleTransactionEnvironmentRefusedError
+    || (error instanceof Error && error.name === 'AppleTransactionEnvironmentRefusedError');
+}
+
 export interface AppleTransactionContext {
-  /** Apple's `environment` claim ('Production' | 'Sandbox' | 'Xcode'). Provenance only. */
+  /** Authenticated request tenant; canonical personal tenants equal userId. */
+  tenantId?: number | null;
+  /** Apple's `environment` claim ('Production' | 'Sandbox' | 'Xcode'). */
   environment?: string | null;
   /** Opaque per-user token echoed by Apple so notifications can be mapped back. */
   appAccountToken?: string | null;
@@ -1522,6 +1651,16 @@ export function handleAppleTransaction(
   const appAccountToken = typeof context.appAccountToken === 'string' && context.appAccountToken.trim()
     ? context.appAccountToken.trim()
     : null;
+  if (!resolveAppleAppAccountTokenForAuthenticatedScope({
+    userId,
+    tenantId: Number(context.tenantId),
+    appAccountToken,
+  })) {
+    throw new AppleTransactionAccountMismatchError();
+  }
+  if (!isAppleValueGrantEnvironmentAllowed(environment, userId)) {
+    throw new AppleTransactionEnvironmentRefusedError();
+  }
 
   const db = getDb();
   const previousOwner = db.prepare(`
@@ -1843,12 +1982,44 @@ function applyAppleNotification(
     ? new Date(payload.purchaseDate).toISOString()
     : null;
   // The inner transaction JWS is Apple-signed, so its environment claim beats
-  // the outer envelope's. Both are provenance only — never an access gate.
+  // the outer envelope's. Active grants gate on this resolved value below.
   const environment = normalizeAppleEnvironment(payload.environment)
     ?? normalizeAppleEnvironment(context.environment);
   const appAccountToken = typeof payload.appAccountToken === 'string' && payload.appAccountToken.trim()
     ? payload.appAccountToken.trim()
     : null;
+
+  // Every notification that can attach or renew value must carry Apple's
+  // signed account binding. Resolve it before touching an existing row, then
+  // include that user in the UPDATE predicate so a transaction replay cannot
+  // reactivate a different Nexus account that happens to share the original
+  // transaction id. Terminal and renewal-preference events remove or annotate
+  // value and therefore retain their transaction-id-only reconciliation path.
+  let activeGrantUserId: number | null = null;
+  if (newStatus === 'active') {
+    activeGrantUserId = resolveUserIdFromAppleAppAccountToken(appAccountToken);
+    if (!activeGrantUserId) {
+      logger.warn({
+        notificationType,
+        originalTransactionId,
+        hasAppAccountToken: !!appAccountToken,
+      }, 'Apple notification: active grant has no valid appAccountToken');
+      return false;
+    }
+    if (!isAppleValueGrantEnvironmentAllowed(environment, activeGrantUserId)) {
+      logger.warn({
+        notificationType,
+        originalTransactionId,
+        environment,
+        userId: activeGrantUserId,
+      }, 'Apple notification: active grant environment refused');
+      return false;
+    }
+    if (!expiresDate) {
+      logger.warn({ notificationType, originalTransactionId }, 'Apple notification: active subscription grant has no expiry');
+      return false;
+    }
+  }
 
   const db = getDb();
   if (!periodStart && expiresDate) {
@@ -1884,7 +2055,7 @@ function applyAppleNotification(
   // only come from an actual renewal or a RESUBSCRIBE, neither of which Apple
   // reliably pairs with DID_CHANGE_RENEWAL_STATUS/AUTO_RENEW_ENABLED — so a
   // stale cancellation flag is cleared here rather than latched forever.
-  const update = newStatus === 'active' && expiresDate
+  const update = newStatus === 'active'
     ? db.prepare(`
         UPDATE subscriptions
         SET status = 'active',
@@ -1896,8 +2067,15 @@ function applyAppleNotification(
             current_period_end = ?,
             environment = COALESCE(?, environment),
             updated_at = datetime('now')
-        WHERE provider_subscription_id = ? AND provider = 'apple'
-      `).run(periodStart, expiresDate, expiresDate, environment, String(originalTransactionId))
+        WHERE provider_subscription_id = ? AND provider = 'apple' AND user_id = ?
+      `).run(
+        periodStart,
+        expiresDate,
+        expiresDate,
+        environment,
+        String(originalTransactionId),
+        activeGrantUserId,
+      )
     : db.prepare(`
         UPDATE subscriptions
         SET status = ?, environment = COALESCE(?, environment), updated_at = datetime('now')
@@ -1913,6 +2091,7 @@ function applyAppleNotification(
     periodStart,
     environment,
     appAccountToken,
+    boundUserId: activeGrantUserId,
   })) {
     return false;
   }
@@ -1952,6 +2131,7 @@ function recoverAppleSubscriptionFromNotification(input: {
   periodStart: string | null;
   environment: string | null;
   appAccountToken: string | null;
+  boundUserId: number | null;
 }): boolean {
   if (input.newStatus !== 'active') {
     logger.warn({
@@ -1961,7 +2141,7 @@ function recoverAppleSubscriptionFromNotification(input: {
     return false;
   }
 
-  const userId = resolveUserIdFromAppleAppAccountToken(input.appAccountToken);
+  const userId = input.boundUserId;
   if (!userId) {
     logger.warn({
       notificationType: input.notificationType,
@@ -1982,6 +2162,18 @@ function recoverAppleSubscriptionFromNotification(input: {
   }
 
   const db = getDb();
+  const transactionOwner = db.prepare(`SELECT user_id
+    FROM subscriptions
+    WHERE provider = 'apple' AND provider_subscription_id = ?
+    LIMIT 1`).get(input.originalTransactionId) as { user_id: number } | undefined;
+  if (transactionOwner && transactionOwner.user_id !== userId) {
+    logger.warn({
+      notificationType: input.notificationType,
+      originalTransactionId: input.originalTransactionId,
+      boundUserId: userId,
+    }, 'Apple notification: transaction is already bound to another account');
+    return false;
+  }
   const existing = db.prepare(
     'SELECT provider, status FROM subscriptions WHERE user_id = ?',
   ).get(userId) as { provider: string | null; status: string | null } | undefined;

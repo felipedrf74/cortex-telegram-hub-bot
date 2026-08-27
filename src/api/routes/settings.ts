@@ -17,6 +17,7 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/te
 import {
   deleteAllUserDataForAccountDeletion,
   exportContentWorkspaceData,
+  exportUserInvoiceData,
   exportSkillInferenceData,
   getAccountDeletionInventoryForUser,
 } from '../../services/user-data-export';
@@ -44,6 +45,10 @@ function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' 
 function parseExportJson(value: unknown): unknown {
   if (typeof value !== 'string') return value ?? null;
   try { return JSON.parse(value); } catch { return value; }
+}
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 export function settingsRoutes(): Router {
@@ -108,7 +113,7 @@ export function settingsRoutes(): Router {
         lastMessageAt: runtime.lastMessageAt,
       });
     } catch (err: any) {
-      logger.error({ err }, 'iOS settings status failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS settings status failed');
       sendInternalError(res, 'Unable to load runtime status right now.');
     }
   });
@@ -143,7 +148,7 @@ export function settingsRoutes(): Router {
     try {
       sendSuccess(res, getProviderPreferences(userId, tenantId));
     } catch (err: any) {
-      logger.error({ err, userId, tenantId }, 'iOS provider preferences load failed');
+      logger.error({ errorName: safeErrorName(err), userId, tenantId }, 'iOS provider preferences load failed');
       sendInternalError(res, 'Unable to load provider preferences right now.');
     }
   });
@@ -186,7 +191,7 @@ export function settingsRoutes(): Router {
       });
       sendSuccess(res, preferences);
     } catch (err: any) {
-      logger.error({ err, userId, tenantId }, 'iOS provider preferences update failed');
+      logger.error({ errorName: safeErrorName(err), userId, tenantId }, 'iOS provider preferences update failed');
       sendInternalError(res, 'Unable to save provider preferences right now.');
     }
   });
@@ -207,7 +212,7 @@ export function settingsRoutes(): Router {
       setUserLanguage(userId, normalizedLanguage);
       sendSuccess(res, { language: normalizedLanguage });
     } catch (err: any) {
-      logger.error({ err }, 'iOS set language failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS set language failed');
       sendInternalError(res, 'Unable to save language right now.');
     }
   });
@@ -235,7 +240,7 @@ export function settingsRoutes(): Router {
       setUserTimezone(userId, timezone);
       sendSuccess(res, { timezone });
     } catch (err: any) {
-      logger.error({ err }, 'iOS set timezone failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS set timezone failed');
       sendInternalError(res, 'Unable to save timezone right now.');
     }
   });
@@ -262,7 +267,7 @@ export function settingsRoutes(): Router {
       });
       sendSuccess(res, { updated: true });
     } catch (err: any) {
-      logger.error({ err }, 'iOS push-token update failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS push-token update failed');
       sendInternalError(res, 'Unable to update the push token right now.');
     }
   });
@@ -291,7 +296,7 @@ export function settingsRoutes(): Router {
       }
       res.status(204).send();
     } catch (err: any) {
-      logger.error({ err }, 'iOS push-token revoke failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS push-token revoke failed');
       sendInternalError(res, 'Unable to revoke the push token right now.');
     }
   });
@@ -317,7 +322,7 @@ export function settingsRoutes(): Router {
           const table = /\bFROM\s+([a-zA-Z0-9_]+)/i.exec(sql)?.[1] ?? 'unknown';
           exportErrors.push(table);
           logger.error(
-            { err, table, sql: sql.slice(0, 80) },
+            { errorName: safeErrorName(err), table },
             'GDPR export query failed',
           );
           return [];
@@ -435,7 +440,9 @@ export function settingsRoutes(): Router {
 
       // ── Finance ──
       userData.financeTransactions = safeAll('SELECT * FROM finance_transactions WHERE user_id = ? ORDER BY date DESC', userId);
-      userData.invoiceFilings = safeAll('SELECT * FROM invoice_filings WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.invoices = exportUserInvoiceData(userId, { failClosed: true });
+      // Additive legacy alias retained without exposing raw storage locators.
+      userData.invoiceFilings = userData.invoices.filings;
 
       // ── Subscription ──
       userData.subscriptions = safeAll('SELECT * FROM subscriptions WHERE user_id = ?', userId);
@@ -478,7 +485,7 @@ export function settingsRoutes(): Router {
 
       sendSuccess(res, userData);
     } catch (err: any) {
-      logger.error({ err }, 'iOS data export failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS data export failed');
       sendInternalError(res, 'Unable to export account data right now.');
     }
   });
@@ -536,7 +543,7 @@ export function settingsRoutes(): Router {
         );
         return;
       }
-      logger.error({ err }, 'iOS account deletion failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS account deletion failed');
       sendInternalError(res, 'Unable to delete the account right now.');
     }
   });
@@ -556,7 +563,7 @@ export function settingsRoutes(): Router {
       const prefs = getPushPreferences(userId);
       sendSuccess(res, { preferences: prefs });
     } catch (err: any) {
-      logger.error({ err }, 'iOS push preferences load failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS push preferences load failed');
       sendInternalError(res, 'Unable to load push preferences right now.');
     }
   });
@@ -582,7 +589,7 @@ export function settingsRoutes(): Router {
       setPushPreference(userId, category, enabled);
       sendSuccess(res, { category, enabled });
     } catch (err: any) {
-      logger.error({ err }, 'iOS push preferences save failed');
+      logger.error({ errorName: safeErrorName(err) }, 'iOS push preferences save failed');
       sendInternalError(res, 'Unable to save push preferences right now.');
     }
   };

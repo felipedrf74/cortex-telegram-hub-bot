@@ -34,6 +34,7 @@ import {
 describe('invoice state isolation', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
+    testDb.prepare("INSERT INTO users (id, status) VALUES (11, 'active'), (22, 'active')").run();
   });
 
   afterEach(() => {

@@ -72,7 +72,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
-import { getAiCreditWallet } from '../../src/services/ai-credit-ledger';
+import { getAiCreditWallet, grantPurchasedAiCredits } from '../../src/services/ai-credit-ledger';
 import {
   backfillAppleReversalIndex,
   ingestVerifiedAppleNotification,
@@ -167,6 +167,31 @@ describe('apple-notification-inbox', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 1 });
   });
 
+  it('fails closed when an Apple transaction was already bound to another user', () => {
+    expect(grantPurchasedAiCredits({
+      userId: 99,
+      provider: 'apple',
+      providerTransactionId: 'apple-txn-cross-owner',
+      credits: 100,
+      now: NOW,
+    }).kind).toBe('granted');
+    seedPackNotification({
+      outerKey: 'outer-cross-owner',
+      innerKey: 'inner-cross-owner',
+      transactionId: 'apple-txn-cross-owner',
+    });
+    const stored = ingest('outer-cross-owner');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+
+    expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({
+      kind: 'failed',
+      error: 'APPLE_PACK_TRANSACTION_OWNER_MISMATCH',
+      row: { attempts: 5 },
+    });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
+    expect(getAiCreditWallet(99, 'pro', NOW).purchasedRemaining).toBe(100);
+  });
+
   it('keeps a paid pack retryable until its active Pro/Max billing period is visible', () => {
     packPurchaseEligible = false;
     seedPackNotification({ outerKey: 'outer-plan-lag', innerKey: 'inner-plan-lag', transactionId: 'apple-plan-lag' });
@@ -214,7 +239,28 @@ describe('apple-notification-inbox', () => {
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 
-  it('refuses sandbox pack notifications by default and allows them only via the explicit flag (QA3 P2-9)', () => {
+  it('refuses contradictory signed transaction and notification environments', () => {
+    seedPackNotification({
+      outerKey: 'outer-environment-mismatch',
+      innerKey: 'inner-environment-mismatch',
+      transactionId: 'apple-txn-environment-mismatch',
+    });
+    jwsFixtures.set('inner-environment-mismatch', {
+      bundleId: 'me.nexushub.app',
+      productId: 'nx.pack.100.v1',
+      transactionId: 'apple-txn-environment-mismatch',
+      originalTransactionId: 'apple-txn-environment-mismatch',
+      appAccountToken: 'token-40',
+      environment: 'Sandbox',
+    });
+    const stored = ingest('outer-environment-mismatch');
+    if (stored.kind !== 'stored') throw new Error('unreachable');
+
+    expect(processStoredAppleNotification(stored.row.id, NOW)).toMatchObject({ kind: 'failed' });
+    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
+  });
+
+  it('limits sandbox pack notifications to the configured review account (QA3 P2-9)', () => {
     const sandboxIngest = (uuid: string, outerKey: string) => {
       const stored = ingestVerifiedAppleNotification({
         notificationUuid: uuid,
@@ -247,6 +293,7 @@ describe('apple-notification-inbox', () => {
       data: { signedTransactionInfo: 'inner-sbx2', environment: 'Sandbox' },
     });
     vi.stubEnv('APPLE_ALLOW_SANDBOX_GRANTS', 'true');
+    vi.stubEnv('APPLE_APP_REVIEW_SANDBOX_USER_ID', '40');
     try {
       expect(processStoredAppleNotification(sandboxIngest('uuid-outer-sbx2', 'outer-sbx2'), NOW))
         .toMatchObject({ kind: 'processed', handled: true });
@@ -331,7 +378,7 @@ describe('apple-notification-inbox', () => {
     const row = db.prepare("SELECT state, attempts, last_error FROM apple_notification_inbox WHERE notification_uuid = 'uuid-late'").get() as any;
     expect(row.state).toBe('failed');
     expect(row.attempts).toBe(1);
-    expect(row.last_error).toContain('unverifiable');
+    expect(row.last_error).toBe('Error');
 
     seedPackNotification({ outerKey: 'outer-late', innerKey: 'inner-late', transactionId: 'apple-txn-late' });
     jwsFixtures.set('outer-late', {
@@ -417,7 +464,7 @@ describe('apple-notification-inbox', () => {
     expect(mockHandleAppleNotification).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps an unmatched pack reversal retryable until its purchase lands', () => {
+  it('never grants a pack after durable reversal evidence arrives first', () => {
     // REFUND arrives before its purchase was ever processed.
     seedPackNotification({ outerKey: 'outer-refund-first', innerKey: 'inner-refund-first', notificationType: 'REFUND', transactionId: 'apple-txn-race' });
     const refund = ingest('outer-refund-first', 'REFUND');
@@ -425,16 +472,16 @@ describe('apple-notification-inbox', () => {
     const refunded = processStoredAppleNotification(refund.row.id, NOW);
     expect(refunded.kind).toBe('failed');
     if (refunded.kind !== 'failed') throw new Error('unreachable');
-    expect(refunded.error).toContain('reconciliation');
+    expect(refunded.error).toBe('APPLE_PACK_REVERSAL_LOT_NOT_FOUND');
 
-    // The purchase lands later; the retried reversal then revokes it.
+    // Even if the reversal exhausts before the purchase lands, its durable
+    // transaction identity permanently closes the minting window.
+    db.prepare("UPDATE apple_notification_inbox SET attempts = 5, state = 'failed' WHERE id = ?")
+      .run(refund.row.id);
     seedPackNotification({ outerKey: 'outer-late-purchase', innerKey: 'inner-late-purchase', transactionId: 'apple-txn-race' });
     const purchase = ingest('outer-late-purchase');
     if (purchase.kind !== 'stored') throw new Error('unreachable');
     expect(processStoredAppleNotification(purchase.row.id, NOW).kind).toBe('processed');
-    expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
-
-    expect(processPendingAppleNotifications({ now: NOW })).toEqual({ processed: 1, failed: 0, exhausted: 0, deferred: 0, stuckExhausted: 0 });
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(0);
   });
 

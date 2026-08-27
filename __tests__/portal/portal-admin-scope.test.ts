@@ -89,6 +89,9 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/subskills/:sub/disable', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/webhooks/subscriptions', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.delete('/api/webhooks/subscriptions/:id', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/webhooks/stats', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/webhooks/subscriptions', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/webhooks/events', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/webhooks/events/:id/replay', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/settings', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.delete('/api/settings', requirePortalAdminToken");

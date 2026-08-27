@@ -3,6 +3,7 @@
 import { getDb } from '../services/database';
 import { InvoiceFiling } from '../domains/types';
 import { DateTime } from 'luxon';
+import { assertInvoiceAccountAvailable } from '../services/invoice-artifact-admission';
 
 function assertPositiveUserId(userId: number): void {
   if (!Number.isSafeInteger(userId) || userId <= 0) {
@@ -20,6 +21,44 @@ function effectiveTenantId(userId: number, tenantId?: number): number {
   const resolved = tenantId ?? userId;
   assertPositiveTenantId(resolved);
   return resolved;
+}
+
+function assertStoredObjectOwnership(
+  db: ReturnType<typeof getDb>,
+  tenantId: number,
+  userId: number,
+  objectKey: string | null | undefined,
+  storageBackend: string | null | undefined,
+): void {
+  if (!objectKey) return;
+  const manifest = db.prepare(`SELECT storage_backend
+    FROM invoice_artifact_manifests
+    WHERE tenant_id = ? AND user_id = ?
+      AND artifact_kind = 'stored_object' AND artifact_locator = ?
+      AND state = 'stored' AND deleted_at IS NULL`).get(
+    tenantId,
+    userId,
+    objectKey,
+  ) as { storage_backend: string } | undefined;
+  if (!manifest || !storageBackend || manifest.storage_backend !== storageBackend) {
+    throw new Error('Invoice filing requires an exact stored-object ownership manifest.');
+  }
+}
+
+export function hasStoredInvoiceObjectOwnership(
+  tenantId: number,
+  userId: number,
+  objectKey: string,
+  storageBackend: string | null | undefined,
+): boolean {
+  assertPositiveUserId(userId);
+  const resolvedTenantId = effectiveTenantId(userId, tenantId);
+  try {
+    assertStoredObjectOwnership(getDb(), resolvedTenantId, userId, objectKey, storageBackend);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Insert a new filing record (photo, email, or amazon source). */
@@ -48,39 +87,51 @@ export function recordFiling(data: {
   assertPositiveUserId(data.user_id);
   const tenantId = effectiveTenantId(data.user_id, data.tenant_id);
   const db = getDb();
-  const stmt = db.prepare(`
-    INSERT INTO invoice_filings
-      (tenant_id, user_id, vendor, amount, document_date, invoice_number, source, source_ref,
-       remote_path, folder_path, filename, file_size_bytes, compressed_size_bytes,
-       object_key, checksum, mime, bytes, storage_backend, status, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
   const fileSizeBytes = data.file_size_bytes ?? null;
   const compressedSizeBytes = data.compressed_size_bytes ?? null;
-  const result = stmt.run(
-    tenantId,
-    data.user_id,
-    data.vendor,
-    data.amount ?? null,
-    data.document_date ?? null,
-    data.invoice_number ?? null,
-    data.source,
-    data.source_ref ?? null,
-    data.remote_path ?? null,
-    data.folder_path ?? null,
-    data.filename ?? null,
-    fileSizeBytes,
-    compressedSizeBytes,
-    data.object_key ?? null,
-    data.checksum ?? null,
-    data.mime ?? null,
-    data.bytes ?? fileSizeBytes ?? compressedSizeBytes,
-    data.storage_backend ?? null,
-    data.status ?? 'filed',
-    data.error_message ?? null,
-  );
-  return db.prepare('SELECT * FROM invoice_filings WHERE id = ?')
-    .get(result.lastInsertRowid) as InvoiceFiling;
+  return db.transaction(() => {
+    // The fence check and metadata insert share one writer transaction. If
+    // erasure wins the lock this insert is rejected; if this insert wins,
+    // erasure subsequently observes and removes the row.
+    assertInvoiceAccountAvailable(data.user_id, db);
+    assertStoredObjectOwnership(
+      db,
+      tenantId,
+      data.user_id,
+      data.object_key,
+      data.storage_backend,
+    );
+    const result = db.prepare(`
+      INSERT INTO invoice_filings
+        (tenant_id, user_id, vendor, amount, document_date, invoice_number, source, source_ref,
+         remote_path, folder_path, filename, file_size_bytes, compressed_size_bytes,
+         object_key, checksum, mime, bytes, storage_backend, status, error_message)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      tenantId,
+      data.user_id,
+      data.vendor,
+      data.amount ?? null,
+      data.document_date ?? null,
+      data.invoice_number ?? null,
+      data.source,
+      data.source_ref ?? null,
+      data.remote_path ?? null,
+      data.folder_path ?? null,
+      data.filename ?? null,
+      fileSizeBytes,
+      compressedSizeBytes,
+      data.object_key ?? null,
+      data.checksum ?? null,
+      data.mime ?? null,
+      data.bytes ?? fileSizeBytes ?? compressedSizeBytes,
+      data.storage_backend ?? null,
+      data.status ?? 'filed',
+      data.error_message ?? null,
+    );
+    return db.prepare('SELECT * FROM invoice_filings WHERE id = ?')
+      .get(result.lastInsertRowid) as InvoiceFiling;
+  }).immediate();
 }
 
 /**

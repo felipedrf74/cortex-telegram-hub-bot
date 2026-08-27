@@ -12,6 +12,27 @@ export interface ActiveContentScriptJobLease {
 /** Shared by workers and account erasure without importing provider routing. */
 export const activeContentScriptJobLeases = new Map<string, ActiveContentScriptJobLease>();
 
+const ACCOUNT_DELETION_SCRIPT_DRAIN_TIMEOUT_MS = 15_000;
+const ACCOUNT_DELETION_SCRIPT_DRAIN_POLL_MS = 25;
+
+export async function waitForContentScriptJobsForAccountDeletionToDrain(
+  userId: number,
+  db: Database.Database = getDb(),
+): Promise<void> {
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new Error('A positive account owner id is required to drain script jobs.');
+  }
+  const ownedJobIds = new Set((db.prepare(`SELECT job_id FROM content_script_jobs
+    WHERE owner_user_id = ?`).all(userId) as Array<{ job_id: string }>).map((row) => row.job_id));
+  const deadline = Date.now() + ACCOUNT_DELETION_SCRIPT_DRAIN_TIMEOUT_MS;
+  while ([...ownedJobIds].some((jobId) => activeContentScriptJobLeases.has(jobId))) {
+    if (Date.now() >= deadline) {
+      throw new Error('Active Content script work did not stop before account deletion.');
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, ACCOUNT_DELETION_SCRIPT_DRAIN_POLL_MS));
+  }
+}
+
 /**
  * Fence and abort every unfinished script operation owned by an account that
  * is about to be erased. Exact lease matching prevents an old cancellation
@@ -31,8 +52,6 @@ export function cancelContentScriptJobsForAccountDeletion(
       WHERE owner_user_id = ?
         AND status IN ('queued', 'running', 'waiting_capacity')`)
       .all(userId) as Array<{ job_id: string; tenant_id: number; lease_token: string | null }>;
-    if (rows.length === 0) return { changes: 0, rows };
-
     db.prepare(`UPDATE content_script_job_checkpoints
       SET state = 'cancelled', updated_at = ?
       WHERE state = 'generating'
@@ -49,6 +68,11 @@ export function cancelContentScriptJobsForAccountDeletion(
       WHERE owner_user_id = ?
         AND status IN ('queued', 'running', 'waiting_capacity')`)
       .run(timestamp, timestamp, userId);
+    db.prepare(`UPDATE content_script_provider_batches
+      SET status = 'cancellation_requested', updated_at = ?
+      WHERE owner_user_id = ? AND provider_batch_id IS NOT NULL
+        AND status NOT IN ('completed', 'cancelled', 'failed', 'expired')`)
+      .run(timestamp, userId);
     return { changes: result.changes, rows };
   }).immediate();
 

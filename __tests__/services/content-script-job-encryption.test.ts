@@ -12,12 +12,26 @@ vi.mock('../../src/services/local-primary-config', () => ({
 
 import {
   ContentScriptJobEncryptionError,
+  contentScriptJobPrunedTombstone,
   decryptContentScriptJobJson,
   encryptContentScriptJobJson,
+  parseContentScriptJobPrunedTombstone,
 } from '../../src/services/content-script-job-encryption';
 import { encryptValue } from '../../src/utils/encryption';
 
 describe('content script job encryption', () => {
+  it('uses an explicit content-free tombstone for retention-pruned payloads', () => {
+    const tombstone = contentScriptJobPrunedTombstone(new Date('2026-08-26T12:00:00.000Z'));
+    expect(parseContentScriptJobPrunedTombstone(tombstone)).toEqual({
+      schema: 'nexus.content-script-job-pruned.v1',
+      prunedAt: '2026-08-26T12:00:00.000Z',
+    });
+    expect(parseContentScriptJobPrunedTombstone('{"schema":"nexus.content-script-job-pruned.v1"}'))
+      .toBeNull();
+    expect(tombstone).not.toContain('"topic"');
+    expect(tombstone).not.toContain('"script"');
+  });
+
   it('stores valid JSON envelopes without retaining private plaintext', () => {
     const stored = encryptContentScriptJobJson({ topic: 'private launch', script: 'private draft' }, 42);
     expect(JSON.parse(stored)).toMatchObject({

@@ -679,9 +679,13 @@ export const config = {
   // ── Webhook Infrastructure ─────────────────────────────────────────
   webhooks: {
     enabled: (process.env.WEBHOOKS_ENABLED || 'true') === 'true',
-    secret: process.env.WEBHOOK_SECRET || '',
     maxPayloadBytes: optionalInt('WEBHOOK_MAX_PAYLOAD', 1048576, { min: 1 }),
     eventRetentionDays: optionalInt('WEBHOOK_RETENTION_DAYS', 30, { min: 1 }),
+    // Compatibility phase A defaults to plaintext writes so its predecessor
+    // can remain the rollback target. Enable only after A is verified and the
+    // protected release policy advances its rollback floor.
+    ownerEncryptionWritesEnabled:
+      process.env.WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED === 'true',
   },
   // ── Public Waitlist ────────────────────────────────────────────────
   // Salt used to hash visitor IPs before storing waitlist abuse signals.
@@ -719,6 +723,13 @@ export const config = {
     enabled: (process.env.IOS_API_ENABLED || 'false') === 'true',
     websocketEnabled: (process.env.IOS_WS_ENABLED || 'false') === 'true',
     jwtSecret: process.env.IOS_API_JWT_SECRET || '',
+    // StoreKit ownership survives JWT signing-key rotation. Existing live
+    // deployments must pin this to the current effective legacy JWT secret
+    // before the first rollout; local/test environments retain a migration
+    // fallback unless JWT keyring rotation is enabled.
+    appAccountTokenHmacSecret:
+      process.env.APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET
+      || (IS_LIVE_PRODUCTION ? '' : process.env.IOS_API_JWT_SECRET || ''),
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
     rateLimit: optionalInt('IOS_API_RATE_LIMIT', 60, { min: 1 }),
     readRateLimit: optionalInt('IOS_API_READ_RATE_LIMIT', 300, { min: 1 }),
@@ -931,6 +942,19 @@ export const config = {
     // production (QA5 P1-6). Opt back in only with an explicit 'true'.
     get anonymousCheckoutEnabled(): boolean {
       return (process.env.ANONYMOUS_CHECKOUT_ENABLED || 'false') === 'true';
+    },
+    // Existing pre-launch anonymous sessions may be claimed only during one
+    // explicit, exact 30-day compatibility window. Creation and claiming are
+    // separate switches so closing new checkout cannot strand already-paid
+    // sessions, while an operator cannot extend claims indefinitely.
+    get anonymousCheckoutClaimEnabled(): boolean {
+      return (process.env.ANONYMOUS_CHECKOUT_CLAIM_ENABLED || 'false') === 'true';
+    },
+    get anonymousCheckoutClaimWindowStartedAt(): string {
+      return (process.env.ANONYMOUS_CHECKOUT_CLAIM_WINDOW_STARTED_AT || '').trim();
+    },
+    get anonymousCheckoutClaimSunsetAt(): string {
+      return (process.env.ANONYMOUS_CHECKOUT_CLAIM_SUNSET_AT || '').trim();
     },
   },
 
@@ -1181,6 +1205,17 @@ if (config.ios.enabled && !config.ios.jwtSecret) {
 }
 if (config.ios.enabled && !isStrongIosJwtSecret(config.ios.jwtSecret)) {
   throw new Error('IOS_API_JWT_SECRET must be at least 32 bytes and cannot contain known placeholder text.');
+}
+if (IS_LIVE_PRODUCTION && !config.ios.appAccountTokenHmacSecret) {
+  throw new Error(
+    'Live production requires APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET for delayed StoreKit notification ownership. Pin it to the current effective legacy JWT secret before rollout.',
+  );
+}
+if (config.ios.appAccountTokenHmacSecret
+  && !isStrongIosJwtSecret(config.ios.appAccountTokenHmacSecret)) {
+  throw new Error(
+    'APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET must be at least 32 bytes and cannot contain known placeholder text.',
+  );
 }
 if (config.ios.enabled && !config.ios.inviteCode) {
   throw new Error('IOS_API_ENABLED=true but IOS_INVITE_CODE is not set.');

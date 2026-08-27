@@ -25,6 +25,8 @@ import {
   StructuredGenerationResult,
   StructuredGenerationBatchCancellationRequest,
   StructuredGenerationBatchFileCleanupRequest,
+  StructuredGenerationBatchIntentReconciliationRequest,
+  StructuredGenerationBatchIntentReconciliationResult,
   getModelRouting,
   isProviderRequestCancellation,
   normalizeCallDomainOptions,
@@ -104,6 +106,8 @@ function openAIServiceTierCostMultiplier(serviceTier: unknown): number {
 
 const OPENAI_BATCH_POLL_INTERVAL_MS = 15_000;
 const OPENAI_BATCH_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
+const OPENAI_BATCH_RECONCILIATION_PAGE_SIZE = 100;
+const OPENAI_BATCH_RECONCILIATION_MAX_PAGES = 5;
 
 export const _openAIBatchSleep = {
   fn: (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
@@ -247,7 +251,11 @@ async function trackedCompletion(
           timeoutMs: AI_CALL_TIMEOUT_MS,
         });
         void settleNexusPointOverageForUser(userId, apiUsageId).catch((settleErr) => {
-          logger.warn({ err: settleErr, apiUsageId, category }, 'nexus_points: OpenAI timeout estimate settlement failed');
+          logger.warn({
+            errorName: settleErr instanceof Error ? settleErr.name : typeof settleErr,
+            apiUsageId,
+            category,
+          }, 'nexus_points: OpenAI timeout estimate settlement failed');
         });
       },
     },
@@ -322,7 +330,10 @@ async function trackedCompletion(
         });
       } catch (fallbackErr) {
         const persistenceError = tripApiUsagePersistenceFailure('openai', category);
-        logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log OpenAI usage; AI usage persistence degraded');
+        logger.error({
+          errorName: fallbackErr instanceof Error ? fallbackErr.name : typeof fallbackErr,
+          code: persistenceError.code,
+        }, 'Failed to log OpenAI usage; AI usage persistence degraded');
         throw persistenceError;
       }
     }
@@ -331,11 +342,15 @@ async function trackedCompletion(
       pushEvent({
         ts: new Date().toISOString(),
         type: 'api_call',
-        summary: `OpenAI ${model} [${category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
-        detail: `$${costUsd.toFixed(4)} in ${durationMs}ms`,
+        summary: `OpenAI API call metered [${category}]`,
+        detail: `${durationMs}ms`,
       });
     } catch (eventErr) {
-      logger.warn({ err: eventErr, userId, category }, 'Failed to publish OpenAI usage telemetry');
+      logger.warn({
+        errorName: eventErr instanceof Error ? eventErr.name : typeof eventErr,
+        userId,
+        category,
+      }, 'Failed to publish OpenAI usage telemetry');
     }
     // April 2026 follow-up: per-user metering for OpenAI mirrors
     // anthropic-hook and gemini-provider so quota enforcement sees
@@ -344,12 +359,19 @@ async function trackedCompletion(
       const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
       recordUsage(userId, usage.prompt_tokens, usage.completion_tokens, costUsd, false);
     } catch (meterErr) {
-      logger.warn({ err: meterErr, userId }, 'Failed to record OpenAI usage_metering');
+      logger.warn({
+        errorName: meterErr instanceof Error ? meterErr.name : typeof meterErr,
+        userId,
+      }, 'Failed to record OpenAI usage_metering');
     }
     try {
       await settleNexusPointOverageForUser(userId, apiUsageId);
     } catch (settleErr) {
-      logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: OpenAI usage settlement failed');
+      logger.warn({
+        errorName: settleErr instanceof Error ? settleErr.name : typeof settleErr,
+        apiUsageId,
+        userId,
+      }, 'nexus_points: OpenAI usage settlement failed');
     }
   }
 
@@ -491,7 +513,11 @@ export async function completeOneShotWithWebSearch(
             webSearchRequests: maxToolCalls,
           });
           void settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId).catch((settleErr) => {
-            logger.warn({ err: settleErr, apiUsageId, category }, 'nexus_points: OpenAI search timeout estimate settlement failed');
+            logger.warn({
+              errorName: settleErr instanceof Error ? settleErr.name : typeof settleErr,
+              apiUsageId,
+              category,
+            }, 'nexus_points: OpenAI search timeout estimate settlement failed');
           });
         },
       },
@@ -694,7 +720,10 @@ async function recordOpenAIResponseUsage(input: {
       });
     } catch (fallbackErr) {
       const persistenceError = tripApiUsagePersistenceFailure('openai', input.category);
-      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log OpenAI Responses usage; AI usage persistence degraded');
+      logger.error({
+        errorName: fallbackErr instanceof Error ? fallbackErr.name : typeof fallbackErr,
+        code: persistenceError.code,
+      }, 'Failed to log OpenAI Responses usage; AI usage persistence degraded');
       throw persistenceError;
     }
   }
@@ -702,11 +731,15 @@ async function recordOpenAIResponseUsage(input: {
     pushEvent({
       ts: new Date().toISOString(),
       type: 'api_call',
-      summary: `OpenAI ${input.model} [${input.category}] — ${inputTokens}+${outputTokens} tokens`,
-      detail: `$${priced.costUsd.toFixed(4)} in ${input.durationMs}ms`,
+      summary: `OpenAI API call metered [${input.category}]`,
+      detail: `${input.durationMs}ms`,
     });
   } catch (eventErr) {
-    logger.warn({ err: eventErr, userId: input.userId, category: input.category }, 'Failed to publish OpenAI Responses usage telemetry');
+    logger.warn({
+      errorName: eventErr instanceof Error ? eventErr.name : typeof eventErr,
+      userId: input.userId,
+      category: input.category,
+    }, 'Failed to publish OpenAI Responses usage telemetry');
   }
   // Analytics remains calendar-aligned in usage_metering, while api_usage
   // above is the sole blocking truth. Keep this best-effort and outside the
@@ -715,10 +748,17 @@ async function recordOpenAIResponseUsage(input: {
     const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
     recordUsage(input.userId, inputTokens, outputTokens, priced.costUsd, false);
   } catch (meterErr) {
-    logger.warn({ err: meterErr, userId: input.userId }, 'Failed to record OpenAI Responses usage_metering');
+    logger.warn({
+      errorName: meterErr instanceof Error ? meterErr.name : typeof meterErr,
+      userId: input.userId,
+    }, 'Failed to record OpenAI Responses usage_metering');
   }
   await settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
-    logger.warn({ err: settleErr, apiUsageId, userId: input.userId }, 'nexus_points: OpenAI Responses usage settlement failed');
+    logger.warn({
+      errorName: settleErr instanceof Error ? settleErr.name : typeof settleErr,
+      apiUsageId,
+      userId: input.userId,
+    }, 'nexus_points: OpenAI Responses usage settlement failed');
   });
 }
 
@@ -943,6 +983,93 @@ function batchError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+interface OpenAIBoundedPage<T> {
+  data: T[];
+  hasNextPage(): boolean;
+  getNextPage(): Promise<OpenAIBoundedPage<T>>;
+}
+
+async function collectOpenAIReconciliationPages<T>(
+  firstPage: Promise<OpenAIBoundedPage<T>>,
+  exhaustionCode: string,
+): Promise<T[]> {
+  const items: T[] = [];
+  let page = await firstPage;
+  for (let pageNumber = 0; pageNumber < OPENAI_BATCH_RECONCILIATION_MAX_PAGES; pageNumber += 1) {
+    items.push(...page.data);
+    if (!page.hasNextPage()) return items;
+    if (pageNumber === OPENAI_BATCH_RECONCILIATION_MAX_PAGES - 1) {
+      throw batchError(exhaustionCode, 'OpenAI Batch intent reconciliation exceeded its bounded provider inventory scan.');
+    }
+    page = await page.getNextPage();
+  }
+  throw batchError(exhaustionCode, 'OpenAI Batch intent reconciliation did not terminate.');
+}
+
+async function reconcileOpenAIBatchIntent(
+  client: OpenAI,
+  request: StructuredGenerationBatchIntentReconciliationRequest,
+): Promise<StructuredGenerationBatchIntentReconciliationResult> {
+  if (!/^[0-9a-f]{64}$/u.test(request.stageKey)
+      || !/^[0-9a-f]{64}$/u.test(request.requestDigest)
+      || request.customId !== request.stageKey) {
+    throw batchError('OPENAI_BATCH_RECONCILIATION_IDENTITY_INVALID', 'OpenAI Batch intent identity is invalid.');
+  }
+  const expectedFilename = `${request.stageKey}.jsonl`;
+  if (request.inputFileIntentFilename
+      && request.inputFileIntentFilename !== expectedFilename) {
+    throw batchError('OPENAI_BATCH_FILE_INTENT_IDENTITY_MISMATCH', 'OpenAI Batch file intent identity does not match its stage.');
+  }
+
+  let inputFileId = request.inputFileId;
+  if (request.inputFileIntentFilename && !inputFileId) {
+    const files = await collectOpenAIReconciliationPages(
+      client.files.list(
+        { purpose: 'batch', order: 'desc', limit: OPENAI_BATCH_RECONCILIATION_PAGE_SIZE },
+        { maxRetries: 0, ...(request.abortSignal ? { signal: request.abortSignal } : {}) },
+      ),
+      'OPENAI_BATCH_FILE_RECONCILIATION_EXHAUSTED',
+    );
+    const matching = files.filter((file) => file.purpose === 'batch'
+      && file.filename === request.inputFileIntentFilename);
+    if (matching.length > 1) {
+      throw batchError('OPENAI_BATCH_FILE_RECONCILIATION_AMBIGUOUS', 'OpenAI Batch file intent matched more than one provider object.');
+    }
+    inputFileId = matching[0]?.id;
+  }
+
+  if (!request.batchCreateIntent) {
+    return inputFileId ? { inputFileId } : {};
+  }
+  if (!inputFileId) {
+    throw batchError('OPENAI_BATCH_CREATE_INTENT_INPUT_MISSING', 'OpenAI Batch create intent has no reconciled input file.');
+  }
+  const batches = await collectOpenAIReconciliationPages(
+    client.batches.list(
+      { limit: OPENAI_BATCH_RECONCILIATION_PAGE_SIZE },
+      { maxRetries: 0, ...(request.abortSignal ? { signal: request.abortSignal } : {}) },
+    ),
+    'OPENAI_BATCH_CREATE_RECONCILIATION_EXHAUSTED',
+  );
+  const matching = batches.filter((batch) => batch.input_file_id === inputFileId
+    && batch.endpoint === '/v1/chat/completions'
+    && batch.metadata?.nexus_stage_key === request.stageKey
+    && batch.metadata?.nexus_request_digest === request.requestDigest);
+  if (matching.length > 1) {
+    throw batchError('OPENAI_BATCH_CREATE_RECONCILIATION_AMBIGUOUS', 'OpenAI Batch create intent matched more than one provider object.');
+  }
+  const batch = matching[0];
+  if (!batch) return { inputFileId };
+  return {
+    inputFileId,
+    providerBatchId: batch.id,
+    status: batch.status,
+    ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
+    ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
+    ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
+  };
+}
+
 async function recordOpenAIBatchUsage(input: {
   response: OpenAI.ChatCompletion;
   requestedModel: string;
@@ -970,7 +1097,6 @@ async function recordOpenAIBatchUsage(input: {
       code: persistenceError.code,
       category: input.category,
       model: input.response.model || input.requestedModel,
-      providerBatchId: input.providerBatchId,
     }, 'OpenAI Batch output omitted valid usage metadata; AI usage persistence degraded');
     throw persistenceError;
   }
@@ -1031,7 +1157,6 @@ async function recordOpenAIBatchUsage(input: {
     logger.error({
       errorName: error instanceof Error ? error.name : typeof error,
       code: persistenceError.code,
-      providerBatchId: input.providerBatchId,
     }, 'Failed to persist exactly-once OpenAI Batch usage');
     throw persistenceError;
   }
@@ -1040,8 +1165,8 @@ async function recordOpenAIBatchUsage(input: {
     pushEvent({
       ts: new Date().toISOString(),
       type: 'api_call',
-      summary: `OpenAI ${model} [${input.category}] — ${usage.prompt_tokens}+${usage.completion_tokens} tokens`,
-      detail: `$${costUsd.toFixed(4)} in ${input.durationMs}ms (batch)`,
+      summary: `OpenAI Batch API call metered [${input.category}]`,
+      detail: `${input.durationMs}ms`,
     });
   } catch (eventError) {
     logger.warn({ errorName: eventError instanceof Error ? eventError.name : typeof eventError }, 'Failed to publish OpenAI Batch usage telemetry');
@@ -1129,13 +1254,55 @@ async function runOpenAIBatchStructuredGeneration(
   const startedAt = Date.now();
   try {
     if (!state.inputFileId) {
+      const inputFileIntentFilename = `${control.stageKey}.jsonl`;
+      const createdIntent = state.inputFileIntentFilename === undefined;
+      let uploadMutationAuthorized = createdIntent;
+      if (state.inputFileIntentFilename
+          && state.inputFileIntentFilename !== inputFileIntentFilename) {
+        throw batchError('OPENAI_BATCH_FILE_INTENT_IDENTITY_MISMATCH', 'Persisted OpenAI Batch file intent does not match this stage.');
+      }
+      if (createdIntent) {
+        state = { ...state, inputFileIntentFilename };
+        control.persist(state);
+      }
+      if (!createdIntent) {
+        const recovered = await reconcileOpenAIBatchIntent(client, {
+          stageKey: control.stageKey,
+          requestDigest,
+          customId,
+          inputFileIntentFilename,
+          ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+        });
+        if (recovered.inputFileId) {
+          state = { ...state, inputFileId: recovered.inputFileId };
+          control.persist(state);
+        } else if (control.observeIntentAbsence) {
+          const observation = control.observeIntentAbsence('input_file');
+          state = observation.state;
+          uploadMutationAuthorized = observation.mutationAuthorized;
+          if (state.requestDigest !== requestDigest || state.customId !== customId) {
+            throw batchError(
+              'OPENAI_BATCH_REQUEST_IDENTITY_MISMATCH',
+              'Observed OpenAI Batch upload intent no longer matches this request.',
+            );
+          }
+        }
+        if (!state.inputFileId && !uploadMutationAuthorized) {
+          throw batchError(
+            'OPENAI_BATCH_FILE_INTENT_PENDING',
+            'OpenAI Batch upload intent is pending provider reconciliation.',
+          );
+        }
+      }
+    }
+    if (!state.inputFileId) {
       const jsonl = `${JSON.stringify({
         custom_id: customId,
         method: 'POST',
         url: '/v1/chat/completions',
         body,
       })}\n`;
-      const file = await toFile(Buffer.from(jsonl, 'utf8'), `${control.stageKey}.jsonl`, {
+      const file = await toFile(Buffer.from(jsonl, 'utf8'), state.inputFileIntentFilename!, {
         type: 'application/jsonl',
       });
       const uploaded = await client.files.create(
@@ -1150,14 +1317,64 @@ async function runOpenAIBatchStructuredGeneration(
       control.persist(state);
     }
     if (!state.providerBatchId) {
+      if (request.abortSignal?.aborted) {
+        throw request.abortSignal.reason instanceof Error
+          ? request.abortSignal.reason
+          : Object.assign(new Error('OpenAI Batch request was cancelled.'), { name: 'AbortError' });
+      }
       if (!state.inputFileId) {
         throw batchError('OPENAI_BATCH_INPUT_FILE_MISSING', 'OpenAI Batch input file identity was not persisted.');
+      }
+      const createdIntent = state.batchCreateIntent !== true;
+      let createMutationAuthorized = createdIntent;
+      if (createdIntent) {
+        state = { ...state, batchCreateIntent: true };
+        control.persist(state);
+      }
+      if (!createdIntent) {
+        const recovered = await reconcileOpenAIBatchIntent(client, {
+          stageKey: control.stageKey,
+          requestDigest,
+          customId,
+          inputFileIntentFilename: state.inputFileIntentFilename,
+          batchCreateIntent: true,
+          inputFileId: state.inputFileId,
+          ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+        });
+        if (recovered.providerBatchId) {
+          state = { ...state, ...recovered };
+          control.persist(state);
+        } else if (control.observeIntentAbsence) {
+          const observation = control.observeIntentAbsence('batch_create');
+          state = observation.state;
+          createMutationAuthorized = observation.mutationAuthorized;
+          if (state.requestDigest !== requestDigest || state.customId !== customId) {
+            throw batchError(
+              'OPENAI_BATCH_REQUEST_IDENTITY_MISMATCH',
+              'Observed OpenAI Batch create intent no longer matches this request.',
+            );
+          }
+        }
+        if (!state.providerBatchId && !createMutationAuthorized) {
+          throw batchError(
+            'OPENAI_BATCH_CREATE_INTENT_PENDING',
+            'OpenAI Batch create intent is pending provider reconciliation.',
+          );
+        }
+      }
+    }
+    if (!state.providerBatchId) {
+      if (!state.inputFileId) {
+        throw batchError('OPENAI_BATCH_INPUT_FILE_MISSING', 'OpenAI Batch create intent lost its input file identity.');
       }
       const batch = await client.batches.create({
         input_file_id: state.inputFileId,
         endpoint: '/v1/chat/completions',
         completion_window: '24h',
-        metadata: { nexus_stage_key: control.stageKey },
+        metadata: {
+          nexus_stage_key: control.stageKey,
+          nexus_request_digest: requestDigest,
+        },
       }, {
         maxRetries: 0,
         idempotencyKey: `nexus-batch-${control.stageKey}`,
@@ -1166,7 +1383,7 @@ async function runOpenAIBatchStructuredGeneration(
       state = {
         ...state,
         providerBatchId: batch.id,
-        status: batch.status === 'validating' ? 'validating' : 'submitted',
+        status: batch.status,
         ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
         ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
       };
@@ -1224,8 +1441,20 @@ async function runOpenAIBatchStructuredGeneration(
       providerBatchId: state.providerBatchId!,
       durationMs: Date.now() - startedAt,
     });
+    const text = batchOutput.response.choices[0]?.message?.content;
+    if (typeof text !== 'string' || !text.trim()) {
+      // A completed Batch output is immutable. Classifying this as the
+      // generic INFERENCE_EMPTY_OUTPUT infrastructure failure would replay the
+      // same poisoned result until the parent job exhausted its automatic
+      // retries. Fail this generation attempt explicitly so a user retry gets
+      // a new durable stage identity and therefore a new Batch request.
+      throw batchError(
+        'OPENAI_BATCH_EMPTY_OUTPUT',
+        'Completed OpenAI Batch returned no generated text.',
+      );
+    }
     return {
-      text: batchOutput.response.choices[0]?.message?.content ?? '',
+      text,
       stopReason: batchOutput.response.choices[0]?.finish_reason ?? 'stop',
       serviceTier: 'batch',
     };
@@ -1245,7 +1474,6 @@ async function runOpenAIBatchStructuredGeneration(
         control.persist(state);
       } catch (cancelError) {
         logger.warn({
-          providerBatchId: state.providerBatchId,
           errorName: cancelError instanceof Error ? cancelError.name : typeof cancelError,
         }, 'OpenAI Batch cancellation remains durably pending');
       }
@@ -1355,7 +1583,6 @@ export class OpenAIProvider implements AIProvider {
       } catch (error) {
         if (batch.status === 'completed') throw error;
         logger.info({
-          providerBatchId: request.providerBatchId,
           outcome: 'cancelled_without_completed_request',
         }, 'OpenAI Batch cancellation produced no billable output for this stage');
       }
@@ -1366,6 +1593,12 @@ export class OpenAIProvider implements AIProvider {
       ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
       ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
     };
+  }
+
+  async reconcileStructuredGenerationBatchIntent(
+    request: StructuredGenerationBatchIntentReconciliationRequest,
+  ): Promise<StructuredGenerationBatchIntentReconciliationResult> {
+    return reconcileOpenAIBatchIntent(getClient(), request);
   }
 
   async deleteStructuredGenerationBatchFiles(
@@ -1435,7 +1668,9 @@ ${message}`;
     } catch (err) {
       if (isProviderRequestCancellation(err)) throw err;
       rethrowAiUsageFailClosedError(err);
-      logger.error({ err }, 'OpenAI classification failed, defaulting to secretary');
+      logger.error({
+        errorName: err instanceof Error ? err.name : typeof err,
+      }, 'OpenAI classification failed, defaulting to secretary');
       return { domain: 'secretary', confidence: 0 };
     }
   }

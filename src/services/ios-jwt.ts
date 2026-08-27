@@ -200,6 +200,11 @@ export function validateIosJwtConfiguration(nowMs: number = Date.now()): void {
   parseIosJwtExpirySeconds(readJwtExpiry());
   getIosJwtKeyring(nowMs);
   if (process.env.IOS_API_JWT_KEYS?.trim()) {
+    const appleAccountTokenSecret = process.env.APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET;
+    if (!appleAccountTokenSecret) {
+      throw new Error('APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET must be pinned before enabling the iOS JWT keyring');
+    }
+    assertStrongIosJwtSecret(appleAccountTokenSecret, 'APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET');
     const confirmationSecret = process.env.CHAT_CONFIRMATION_HMAC_SECRET;
     if (!confirmationSecret) {
       throw new Error('CHAT_CONFIRMATION_HMAC_SECRET must be pinned before enabling the iOS JWT keyring');

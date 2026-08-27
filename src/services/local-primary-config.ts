@@ -33,6 +33,14 @@ export const localPrimaryInferenceConfig = Object.freeze({
       .filter(Boolean),
   ),
   gatewaySocketPath: String(process.env.OLLAMA_GATEWAY_SOCKET_PATH || '').trim(),
+  // Production active/100% admission resolves this server-selected private
+  // artifact and requires the owner request to pin its exact byte digest.
+  activationEvidencePath: String(
+    process.env.LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH || '',
+  ).trim(),
+  activationEvidenceHmacSecret: String(
+    process.env.LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET || '',
+  ),
   staffUserIds: Object.freeze(
     String(process.env.LOCAL_PRIMARY_STAFF_USER_IDS || '')
       .split(',')

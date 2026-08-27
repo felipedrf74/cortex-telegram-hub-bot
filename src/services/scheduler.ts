@@ -38,7 +38,7 @@ import { isTaskMsDeltaSyncEnabled } from './task-store/task-sync-flags';
 import { createNotificationIntent, releaseDueNotificationDeliveries } from './notification-orchestrator';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
-import { flushQueue, getPendingCount } from './invoice-queue';
+import { flushQueue } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../api/routes/chat-message-context';
 import { addToConversation } from '../state/conversation';
@@ -100,6 +100,16 @@ import {
   runDecisionSourceStateSupersessionJob,
 } from './decision-center';
 import { runTaskLedgerRetentionJob } from './task-store/task-ledger-retention';
+import {
+  CONTENT_SCRIPT_JOB_RETENTION_DAYS,
+  LOCAL_INFERENCE_SAFETY_INCIDENT_RETENTION_DAYS,
+  SECURITY_ADMIN_AUDIT_RETENTION_MONTHS,
+  SKILL_INFERENCE_TELEMETRY_RETENTION_DAYS,
+  drainExpiredContentScriptJobPrivateMaterial,
+  drainExpiredLocalInferenceSafetyIncidents,
+  drainExpiredSecurityAdminAuditTrail,
+  drainExpiredSkillInferenceTelemetry,
+} from './private-data-retention';
 import { findCalendarConflictPairs, conflictPairKey, type CalendarConflictPair } from './calendar-conflict-analysis';
 import { listSecretaryAgendaItems, type SecretaryAgendaItem } from './secretary-scheduling-arbitrator';
 import { buildNormalizedDecisionAction } from './decision-action-contract';
@@ -130,6 +140,10 @@ import {
 } from './ai-automation-policy';
 import { AiBudgetError } from './cost-guardrail';
 import { TrainingPlanRevisionError } from './training-plan-revision-errors';
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
 
 type ActiveUserTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'telegramId'>;
 
@@ -1553,10 +1567,25 @@ export function startScheduler(): void {
 
   cron.schedule('20 2 * * *', wrapJob('content_script_batch_file_cleanup', async () => {
     const { getDb } = require('./database');
-    const { pruneExpiredContentScriptBatchFiles } = require('./content-script-provider-batches');
-    const result = await pruneExpiredContentScriptBatchFiles(getDb());
-    if (result.deleted + result.failed === 0) return 'skipped';
-    logger.info(result, 'Content Script Batch provider-file retention cleanup completed');
+    const { drainExpiredContentScriptBatchFiles } = require('./content-script-provider-batches');
+    const db = getDb();
+    const providerFiles = await drainExpiredContentScriptBatchFiles(db);
+    // The provider deletion proof can make the same job immediately eligible
+    // for local tombstoning. Do not leave its private fields until the next
+    // midnight pass merely because the two cleanup schedules are staggered.
+    const localPrivateMaterial = drainExpiredContentScriptJobPrivateMaterial(db);
+    if (providerFiles.deleted + providerFiles.failed
+      + localPrivateMaterial.pruned.jobsPruned === 0
+      && providerFiles.backlog.eligible + providerFiles.backlog.blockedActive
+        + localPrivateMaterial.backlog.eligible === 0) return 'skipped';
+    if (providerFiles.backlog.eligible + providerFiles.backlog.blockedActive
+      + localPrivateMaterial.backlog.eligible > 0) {
+      logger.warn({ providerFiles, localPrivateMaterial },
+        'Content Script private-material retention backlog remains after bounded sweep');
+      return;
+    }
+    logger.info({ providerFiles, localPrivateMaterial },
+      'Content Script private-material retention cleanup completed');
   }));
 
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -1810,31 +1839,69 @@ export function startScheduler(): void {
       logger.warn({ err }, 'Notification retention cleanup failed');
     }
 
-    // ── audit_trail: partial retention (Phase 0.C) ─────────────────
-    // User-meaningful audit rows (action='export','delete','login', etc)
-    // are kept for 180 days for GDPR compliance. The noisy machine-generated
-    // decrypt rows (from oauth-store.getTokens) are trimmed aggressively
-    // at 30 days because they're high-volume and low forensic value beyond
-    // "something accessed this token". The partial index from migration
-    // 044 makes the DELETE fast. See migrations/044_audit_trail_retention.sql
-    // for the full rationale.
+    // ── bounded private-data retention (plan §4) ───────────────────
+    // Terminal encrypted script material ages out only after provider-file
+    // deletion is proven; checkpoints and encrypted fields leave in the same
+    // transaction while content-free job and Batch metadata remain. Terminal
+    // inference telemetry has a separate 90-day window. Safety incidents expire
+    // after 365 days; governed security/admin audit evidence after 12 calendar
+    // months. Active work
+    // is never pruned, and statutory fiscal/billing evidence is excluded.
+    try {
+      const result = drainExpiredContentScriptJobPrivateMaterial(getDb());
+      if (result.backlog.eligible > 0) {
+        logger.warn({ ...result, days: CONTENT_SCRIPT_JOB_RETENTION_DAYS },
+          'Retention backlog: terminal Content script private material');
+      } else if (result.pruned.jobsPruned > 0) {
+        logger.info({ ...result, days: CONTENT_SCRIPT_JOB_RETENTION_DAYS },
+          'Retention cleanup: terminal Content script private material');
+      }
+    } catch (err) {
+      logger.warn({ errorName: safeErrorName(err) }, 'Retention cleanup failed for Content script private material');
+    }
+    try {
+      const result = drainExpiredSkillInferenceTelemetry(getDb());
+      if (result.backlog.eligible > 0) {
+        logger.warn({ ...result, days: SKILL_INFERENCE_TELEMETRY_RETENTION_DAYS },
+          'Retention backlog: skill inference telemetry');
+      } else if (result.pruned.runs > 0) {
+        logger.info({ ...result, days: SKILL_INFERENCE_TELEMETRY_RETENTION_DAYS },
+          'Retention cleanup: skill inference telemetry');
+      }
+    } catch (err) {
+      logger.warn({ errorName: safeErrorName(err) }, 'Retention cleanup failed for skill inference telemetry');
+    }
+    try {
+      const result = drainExpiredLocalInferenceSafetyIncidents(getDb());
+      if (result.backlog.eligible > 0) {
+        logger.warn({ ...result, days: LOCAL_INFERENCE_SAFETY_INCIDENT_RETENTION_DAYS },
+          'Retention backlog: local inference safety incidents');
+      } else if (result.pruned.deleted > 0) {
+        logger.info({ ...result, days: LOCAL_INFERENCE_SAFETY_INCIDENT_RETENTION_DAYS },
+          'Retention cleanup: local inference safety incidents');
+      }
+    } catch (err) {
+      logger.warn({ errorName: safeErrorName(err) }, 'Retention cleanup failed for local inference safety incidents');
+    }
+
+    // Explicitly classified security/admin audit rows are kept for 12 calendar months.
+    // Statutory fiscal/billing and unknown future actions fail closed outside
+    // this generic pruner. Current policy supersedes migration 044's historical
+    // 30-day OAuth-decrypt cleanup: decrypt access evidence is now governed by
+    // the canonical 12-calendar-month security/admin boundary.
     try {
       const { getDb } = require('./database');
       const db = getDb();
-      const decryptResult = db
-        .prepare(`DELETE FROM audit_trail WHERE action = 'decrypt' AND resource LIKE 'oauth.%' AND ts < datetime('now', '-30 days')`)
-        .run();
-      if (decryptResult.changes > 0) {
-        logger.info({ deleted: decryptResult.changes }, 'Retention cleanup: audit_trail decrypt rows');
-      }
-      const otherResult = db
-        .prepare(`DELETE FROM audit_trail WHERE action != 'decrypt' AND ts < datetime('now', '-180 days')`)
-        .run();
-      if (otherResult.changes > 0) {
-        logger.info({ deleted: otherResult.changes }, 'Retention cleanup: audit_trail non-decrypt rows');
+      const governed = drainExpiredSecurityAdminAuditTrail(db);
+      if (governed.backlog.eligible > 0) {
+        logger.warn({ ...governed, months: SECURITY_ADMIN_AUDIT_RETENTION_MONTHS },
+          'Retention backlog: governed audit_trail security/admin rows');
+      } else if (governed.pruned.deleted > 0) {
+        logger.info({ ...governed, months: SECURITY_ADMIN_AUDIT_RETENTION_MONTHS },
+          'Retention cleanup: governed audit_trail security/admin rows');
       }
     } catch (err) {
-      logger.warn({ err }, 'Retention cleanup failed for audit_trail');
+      logger.warn({ errorName: safeErrorName(err) }, 'Retention cleanup failed for audit_trail');
     }
 
     runChatCoreV2ShadowDataRetention();
@@ -2601,7 +2668,7 @@ export function startScheduler(): void {
         try {
           await runScheduledCoachBriefingForTarget(target);
         } catch (err) {
-          logger.error({ err, userId: target.tenantId }, 'Coach briefing failed for user; continuing');
+          logger.error({ errorName: safeErrorName(err) }, 'Coach briefing failed for user; continuing');
         }
       }
     }), { timezone: tz });
@@ -2805,13 +2872,13 @@ export function startScheduler(): void {
 
   // ── Invoice queue flush (every 15 min) ──────────────────────────────
   cron.schedule('*/15 * * * *', wrapJob('invoice_queue', async () => {
-    const pending = getPendingCount();
-    // Empty queue is the overwhelmingly common case (~2,830 no-op rows/month
-    // observed in prod) — return 'skipped' so wrapJob does not persist a
-    // job_history row, mirroring the reminders fast-path.
-    if (pending === 0) return 'skipped';
-
+    // flushQueue also reconciles terminal spool-deletion proof. It must run
+    // even when no pending filing rows remain.
     const result = await flushQueue();
+
+    if (result.flushed === 0 && result.failed === 0 && result.remaining === 0) {
+      return 'skipped';
+    }
 
     if (result.failed > 0) {
       // Only permanent failures are user-facing (K2); a clean flush stays in
@@ -3429,7 +3496,7 @@ function hasCoachableHealthDataForUser(userId: number): boolean {
     ).get(userId) as { present: number };
     return !!row.present;
   } catch (err) {
-    logger.warn({ err, userId }, '[scheduler] coach briefing skipped: health-data eligibility check failed closed');
+    logger.warn({ errorName: safeErrorName(err) }, '[scheduler] coach briefing skipped: health-data eligibility check failed closed');
     return false;
   }
 }
@@ -3449,8 +3516,6 @@ function hasPaidCoachBriefingEntitlement(userId: number): boolean {
     }
     logger.debug(
       {
-        userId,
-        plan: entitlement.plan,
         entitlementSource: entitlement.source,
         automationReason: automationEligibility.reason,
       },
@@ -3465,11 +3530,11 @@ function hasActiveCoachWorkoutPlan(userId: number): boolean {
     const plan = getActivePlan(userId, userId);
     const allowed = !!plan;
     if (!allowed) {
-      logger.debug({ userId }, '[scheduler] coach briefing skipped: active workout plan required');
+      logger.debug('[scheduler] coach briefing skipped: active workout plan required');
     }
     return allowed;
   } catch (err) {
-    logger.warn({ err, userId }, '[scheduler] coach briefing skipped: active workout plan check failed');
+    logger.warn({ errorName: safeErrorName(err) }, '[scheduler] coach briefing skipped: active workout plan check failed');
     return false;
   }
 }
@@ -3495,7 +3560,7 @@ export async function sendCoachBriefingForTarget(
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
   if (!hasCoachableHealthDataForUser(target.tenantId)) {
-    logger.debug({ userId: target.tenantId }, '[scheduler] coach briefing skipped: no health data source for user');
+    logger.debug('[scheduler] coach briefing skipped: no health data source for user');
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
   const coachOptions = {
@@ -3548,20 +3613,20 @@ export async function sendCoachBriefingForTarget(
               privacyPolicy: 'health',
             });
           } catch (notificationErr) {
-            logger.warn({ err: notificationErr, userId: target.tenantId }, 'Coach budget deferral notice failed');
+            logger.warn({ errorName: safeErrorName(notificationErr) }, 'Coach budget deferral notice failed');
           }
           logger.info(
-            { userId: target.tenantId, code: err.decision.code, window: err.decision.window },
+            { code: err.decision.code, window: err.decision.window },
             'Coach briefing deferred by AI budget; latest valid report retained',
           );
           return { status: 'deferred', recommendations: 0, errors: 0 } as const;
         }
-        logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
+        logger.warn({ errorName: safeErrorName(err) }, 'Coach briefing skipped for user');
         return { status: 'failed', recommendations: 0, errors: 1 } as const;
       }
 
       if (result.errors.length > 0) {
-        logger.warn({ userId: target.tenantId, errors: result.errors }, 'Coach briefing completed with data gaps');
+        logger.warn({ errorCount: result.errors.length }, 'Coach briefing completed with data gaps');
       }
 
       // Store recommendations so Training follow-up actions can reference
@@ -3611,12 +3676,11 @@ export async function sendCoachBriefingForTarget(
           pushCategory: 'coach_briefing',
         });
       } catch (err) {
-        logger.debug({ err, userId: target.tenantId }, 'Failed to store coach report (non-fatal)');
+        logger.debug({ errorName: safeErrorName(err) }, 'Failed to store coach report (non-fatal)');
       }
 
       logger.info(
         {
-          userId: target.tenantId,
           dataMs: result.dataCollectionMs,
           analysisMs: result.analysisMs,
           errors: result.errors.length,

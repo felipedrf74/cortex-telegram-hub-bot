@@ -63,6 +63,9 @@ vi.mock('../../src/config', () => ({
     anthropic: {
       apiKey: '',
     },
+    cloudReasoningFallback: {
+      privacy: { mode: 'allow_raw', allowRawPrivateData: true },
+    },
   },
 }));
 
@@ -593,6 +596,21 @@ describe('GeminiProvider', () => {
       usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 },
     });
 
+    it('refuses private coach prompts before any cloud provider or fallback is invoked', async () => {
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      await expect(completeOneShotWithFallback(
+        'Private health system prompt',
+        'Private health and calendar context',
+        'coach_analysis',
+        anthropicFallback,
+        { maxTokens: 32, containsPrivateData: true, allowCloudEscalation: false },
+      )).rejects.toMatchObject({ code: 'SENSITIVE_CLOUD_ROUTING_NOT_AUTHORIZED' });
+
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    });
+
     it('retries the primary on 503 twice then succeeds without any fallback hop', async () => {
       mockGenerateContent
         .mockRejectedValueOnce(error503())
@@ -605,7 +623,7 @@ describe('GeminiProvider', () => {
         'User prompt',
         'coach_analysis',
         anthropicFallback,
-        { maxTokens: 32 },
+        { maxTokens: 32, containsPrivateData: true, allowCloudEscalation: true },
       );
 
       expect(result).toEqual({ text: 'primary text', provider: 'gemini' });
@@ -631,7 +649,7 @@ describe('GeminiProvider', () => {
         'User prompt',
         'coach_analysis',
         anthropicFallback,
-        { maxTokens: 32 },
+        { maxTokens: 32, containsPrivateData: true, allowCloudEscalation: true },
       );
 
       expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
@@ -659,7 +677,7 @@ describe('GeminiProvider', () => {
         'User prompt',
         'coach_analysis',
         anthropicFallback,
-        { maxTokens: 32 },
+        { maxTokens: 32, containsPrivateData: true, allowCloudEscalation: true },
       );
 
       expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });
@@ -685,7 +703,7 @@ describe('GeminiProvider', () => {
         'User prompt',
         'coach_analysis',
         anthropicFallback,
-        { maxTokens: 32 },
+        { maxTokens: 32, containsPrivateData: true, allowCloudEscalation: true },
       )).rejects.toBe(cancelled);
 
       expect(mockGenerateContent).toHaveBeenCalledTimes(1);
@@ -704,7 +722,7 @@ describe('GeminiProvider', () => {
         'User prompt',
         'coach_analysis',
         anthropicFallback,
-        { maxTokens: 32 },
+        { maxTokens: 32, containsPrivateData: true, allowCloudEscalation: true },
       );
 
       expect(result).toEqual({ text: 'fallback model text', provider: 'gemini' });

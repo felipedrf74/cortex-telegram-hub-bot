@@ -177,8 +177,8 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/local-inference-runtime-control.ts:426-433",
-            "anchor": "&& !input.evidenceReference?.trim())",
+            "pattern": "src/services/local-inference-runtime-control.ts:488-495",
+            "anchor": "validatedEvidence = validateLocalInferenceActivationEvidence({",
             "behavior": "Production active routing cannot open without an immutable reference to the signed ten-script acceptance and economics evidence.",
             "replacementTest": "__tests__/services/local-inference-runtime-control.test.ts",
             "ownerTestNamePattern": "requires production auto-rollback and acceptance evidence before active/100%$",
@@ -1330,7 +1330,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:726-726",
+            "pattern": "src/services/stripe-service.ts:737-737",
             "anchor": "reason === 'refund' && charge?.refunded !== true",
             "behavior": "A refund reversal revokes the originating credit lot only when the charge is fully refunded; a partial refund must not delete credits the user still paid for.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1338,7 +1338,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/stripe-service.ts:731-731",
+            "pattern": "src/services/stripe-service.ts:746-746",
             "anchor": "return false",
             "behavior": "A partial refund exits without revoking, leaving the lot intact for reconciliation rather than reporting a successful reversal.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1427,7 +1427,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/apple-notification-inbox.ts:202-207",
+            "pattern": "src/services/apple-notification-inbox.ts:193-197",
             "anchor": "if (!resolved) {",
             "behavior": "An undecodable Apple refund or revoke remains unresolved, increments only its bounded index-attempt counter, and never receives a clean timestamp or transaction identity.",
             "replacementTest": "__tests__/services/apple-notification-inbox.test.ts",

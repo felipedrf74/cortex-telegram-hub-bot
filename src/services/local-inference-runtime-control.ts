@@ -7,6 +7,12 @@ import { localPrimaryInferenceConfig } from './local-primary-config';
 import { getLocalModelManifest, tryGetLocalModelManifest } from './ollama-model-policy';
 import { localInferenceScheduler } from './local-inference-scheduler';
 import { SKILL_INFERENCE_PROFILE_VERSION } from './skill-inference-profiles';
+import {
+  LocalInferenceActivationEvidenceError,
+  resolveCurrentReleaseSourceSha,
+  validateLocalInferenceActivationEvidence,
+  type ValidatedLocalInferenceActivationEvidence,
+} from './local-inference-activation-evidence';
 
 export type LocalInferenceMode = 'off' | 'shadow' | 'canary' | 'active';
 
@@ -181,16 +187,21 @@ export function getLocalInferenceRuntimeControl(
     // throwing while a default argument is evaluated.
     const runtimeDb = db ?? getDb();
     const environment = runtimeEnvironment();
-    const row = runtimeDb.prepare(`SELECT mode, rollout_percent, reason, updated_at,
+    const row = runtimeDb.prepare(`SELECT mode, rollout_percent, release_bound_mode, reason, updated_at,
                                     model_manifest_version, active_model_digest, skill_profile_version,
                                     non_ai_p95_baseline_ms, non_ai_baseline_sample_count,
                                     non_ai_baseline_captured_at,
                                     end_user_error_rate_baseline_percent,
-                                    end_user_error_baseline_sample_count
+                                    end_user_error_baseline_sample_count,
+                                    activation_evidence_reference,
+                                    activation_payload_sha256,
+                                    activation_source_binding_sha256,
+                                    activation_producer_source_sha
       FROM local_inference_runtime_control WHERE environment = ?`)
       .get(environment) as {
         mode: LocalInferenceMode;
         rollout_percent: number;
+        release_bound_mode: 'active' | null;
         reason: string;
         updated_at: string;
         model_manifest_version: string | null;
@@ -201,8 +212,24 @@ export function getLocalInferenceRuntimeControl(
         non_ai_baseline_captured_at: string | null;
         end_user_error_rate_baseline_percent: number | null;
         end_user_error_baseline_sample_count: number | null;
+        activation_evidence_reference: string | null;
+        activation_payload_sha256: string | null;
+        activation_source_binding_sha256: string | null;
+        activation_producer_source_sha: string | null;
       } | undefined;
-    if (row && !isValidPersistedRuntimeStage(row.mode, row.rollout_percent, environment)) {
+    const releaseBoundStorageInvalid = !!row?.release_bound_mode
+      && (environment !== 'production'
+        || row.release_bound_mode !== 'active'
+        || row.mode !== 'off'
+        || row.rollout_percent !== 0);
+    const persistedMode: LocalInferenceMode = row?.release_bound_mode === 'active'
+      ? 'active'
+      : row?.mode ?? 'off';
+    const persistedRolloutPercent = row?.release_bound_mode === 'active'
+      ? 100
+      : row?.rollout_percent ?? 0;
+    if (row && (releaseBoundStorageInvalid
+        || !isValidPersistedRuntimeStage(persistedMode, persistedRolloutPercent, environment))) {
       return {
         mode: 'off',
         rolloutPercent: 0,
@@ -220,7 +247,7 @@ export function getLocalInferenceRuntimeControl(
         updatedAt: row.updated_at,
       };
     }
-    if (row && row.mode !== 'off'
+    if (row && persistedMode !== 'off'
         && (!localPrimaryInferenceConfig.contentProxyEnabled
           || !config.ollama.enabled
           || !localPrimaryInferenceConfig.gatewaySocketPath)) {
@@ -242,7 +269,7 @@ export function getLocalInferenceRuntimeControl(
       };
     }
     if (row && environment === 'production'
-        && (row.mode === 'canary' || row.mode === 'active')
+        && (persistedMode === 'canary' || persistedMode === 'active')
         && !localPrimaryInferenceConfig.autoRollbackEnabled) {
       return {
         mode: 'off',
@@ -261,7 +288,39 @@ export function getLocalInferenceRuntimeControl(
         updatedAt: row.updated_at,
       };
     }
-    const contractDriftReason = !row || row.mode === 'off'
+    if (row && environment === 'production' && persistedMode === 'active') {
+      let servingSourceSha: string | null = null;
+      try {
+        servingSourceSha = resolveCurrentReleaseSourceSha(process.env);
+      } catch {
+        // A missing or ambiguous serving identity invalidates the durable
+        // activation binding just as surely as a changed commit.
+      }
+      if (!servingSourceSha
+          || row.release_bound_mode !== 'active'
+          || !row.activation_evidence_reference
+          || !row.activation_payload_sha256
+          || !row.activation_source_binding_sha256
+          || row.activation_producer_source_sha !== servingSourceSha) {
+        return {
+          mode: 'off',
+          rolloutPercent: 0,
+          environment,
+          manifestVersion: manifest.manifestVersion,
+          activeModelId: manifest.activeModelId,
+          activeModelDigest,
+          profileVersion: SKILL_INFERENCE_PROFILE_VERSION,
+          nonAiP95BaselineMs: row.non_ai_p95_baseline_ms ?? null,
+          nonAiBaselineSampleCount: row.non_ai_baseline_sample_count ?? 0,
+          nonAiBaselineCapturedAt: row.non_ai_baseline_captured_at ?? null,
+          endUserErrorRateBaselinePercent: row.end_user_error_rate_baseline_percent ?? null,
+          endUserErrorBaselineSampleCount: row.end_user_error_baseline_sample_count ?? 0,
+          reason: 'activation_release_changed_requires_reactivation',
+          updatedAt: row.updated_at,
+        };
+      }
+    }
+    const contractDriftReason = !row || persistedMode === 'off'
       ? null
       : row.model_manifest_version !== manifest.manifestVersion
         ? 'manifest_version_changed_requires_reactivation'
@@ -289,8 +348,8 @@ export function getLocalInferenceRuntimeControl(
       };
     }
     return {
-      mode: row?.mode ?? 'off',
-      rolloutPercent: row?.rollout_percent ?? 0,
+      mode: persistedMode,
+      rolloutPercent: persistedRolloutPercent,
       environment,
       manifestVersion: manifest.manifestVersion,
       activeModelId: manifest.activeModelId,
@@ -367,12 +426,13 @@ export function setLocalInferenceRuntimeControl(input: {
     );
   }
   const environment = runtimeEnvironment();
-  const durableBefore = db.prepare(`SELECT mode, rollout_percent, model_manifest_version,
+  const durableBefore = db.prepare(`SELECT mode, rollout_percent, release_bound_mode, model_manifest_version,
                                            active_model_digest, skill_profile_version
     FROM local_inference_runtime_control WHERE environment = ?`)
     .get(environment) as {
       mode: LocalInferenceMode;
       rollout_percent: number;
+      release_bound_mode: 'active' | null;
       model_manifest_version: string | null;
       active_model_digest: string | null;
       skill_profile_version: string | null;
@@ -386,6 +446,8 @@ export function setLocalInferenceRuntimeControl(input: {
     );
   }
   const manifest = manifestLoad.ok ? manifestLoad.manifest : null;
+  let validatedEvidenceReference = input.evidenceReference?.trim().slice(0, 240) || null;
+  let validatedEvidence: ValidatedLocalInferenceActivationEvidence | null = null;
   if (input.mode !== 'off') {
     if (localPrimaryInferenceConfig.hardKill
         || !localPrimaryInferenceConfig.contentProxyEnabled
@@ -423,14 +485,20 @@ export function setLocalInferenceRuntimeControl(input: {
         409,
       );
     }
-    if (environment === 'production'
-        && input.mode === 'active'
-        && !input.evidenceReference?.trim()) {
-      throw new LocalInferenceRuntimeControlError(
-        'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED',
-        'Production active routing requires the signed ten-script acceptance and pre-release economics evidence reference.',
-        409,
-      );
+    if (environment === 'production' && input.mode === 'active') {
+      try {
+        validatedEvidence = validateLocalInferenceActivationEvidence({
+          evidenceReference: input.evidenceReference,
+          artifactPath: localPrimaryInferenceConfig.activationEvidencePath,
+          authenticationSecret: localPrimaryInferenceConfig.activationEvidenceHmacSecret,
+        });
+        validatedEvidenceReference = validatedEvidence.evidenceReference;
+      } catch (error) {
+        if (error instanceof LocalInferenceActivationEvidenceError) {
+          throw new LocalInferenceRuntimeControlError(error.code, error.message, 409);
+        }
+        throw error;
+      }
     }
   }
   const before = getLocalInferenceRuntimeControl(db);
@@ -439,6 +507,7 @@ export function setLocalInferenceRuntimeControl(input: {
         || before.reason === 'active_model_digest_changed_requires_reactivation'
         || before.reason === 'skill_profile_version_changed_requires_reactivation'
         || before.reason === 'runtime_prerequisite_changed_requires_reactivation'
+        || before.reason === 'activation_release_changed_requires_reactivation'
         || before.reason === 'model_manifest_unavailable')) {
     throw new LocalInferenceRuntimeControlError(
       'LOCAL_CONTROL_EXPLICIT_OFF_REQUIRED',
@@ -520,9 +589,13 @@ export function setLocalInferenceRuntimeControl(input: {
     );
   }
   const changedAt = new Date().toISOString();
+  const predecessorSafeProductionActive = environment === 'production' && input.mode === 'active';
+  const persistedLegacyMode: LocalInferenceMode = predecessorSafeProductionActive ? 'off' : input.mode;
+  const persistedLegacyRolloutPercent = predecessorSafeProductionActive ? 0 : input.rolloutPercent;
+  const persistedReleaseBoundMode = predecessorSafeProductionActive ? 'active' : null;
   const applyDatabaseMutation = (): void => {
     const changed = db.prepare(`UPDATE local_inference_runtime_control
-      SET mode = ?, rollout_percent = ?, model_manifest_version = ?,
+      SET mode = ?, rollout_percent = ?, release_bound_mode = ?, model_manifest_version = ?,
           active_model_digest = ?, skill_profile_version = ?, reason = ?,
           updated_by = ?, updated_at = ?,
           non_ai_p95_baseline_ms = CASE
@@ -544,11 +617,28 @@ export function setLocalInferenceRuntimeControl(input: {
           end_user_error_baseline_sample_count = CASE
             WHEN ? = 'off' THEN NULL
             WHEN ? = 1 THEN ?
-            ELSE end_user_error_baseline_sample_count END
+            ELSE end_user_error_baseline_sample_count END,
+          activation_evidence_reference = CASE
+            WHEN ? = 'off' THEN NULL
+            WHEN ? = 'active' THEN ?
+            ELSE activation_evidence_reference END,
+          activation_payload_sha256 = CASE
+            WHEN ? = 'off' THEN NULL
+            WHEN ? = 'active' THEN ?
+            ELSE activation_payload_sha256 END,
+          activation_source_binding_sha256 = CASE
+            WHEN ? = 'off' THEN NULL
+            WHEN ? = 'active' THEN ?
+            ELSE activation_source_binding_sha256 END,
+          activation_producer_source_sha = CASE
+            WHEN ? = 'off' THEN NULL
+            WHEN ? = 'active' THEN ?
+            ELSE activation_producer_source_sha END
       WHERE environment = ?`)
       .run(
-        input.mode,
-        input.rolloutPercent,
+        persistedLegacyMode,
+        persistedLegacyRolloutPercent,
+        persistedReleaseBoundMode,
         manifest?.manifestVersion ?? durableBefore?.model_manifest_version ?? null,
         manifest?.models.find((model) => model.id === manifest.activeModelId)?.digest
           ?? durableBefore?.active_model_digest
@@ -572,6 +662,18 @@ export function setLocalInferenceRuntimeControl(input: {
         input.mode,
         errorBaselineSupplied ? 1 : 0,
         errorBaselineSupplied ? suppliedErrorSampleCount : null,
+        input.mode,
+        input.mode,
+        validatedEvidence?.evidenceReference ?? null,
+        input.mode,
+        input.mode,
+        validatedEvidence?.payloadSha256 ?? null,
+        input.mode,
+        input.mode,
+        validatedEvidence?.sourceBindingSha256 ?? null,
+        input.mode,
+        input.mode,
+        validatedEvidence?.producerSourceSha ?? null,
         environment,
       );
     if (changed.changes !== 1) {
@@ -584,7 +686,7 @@ export function setLocalInferenceRuntimeControl(input: {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         environment,
-        durableBefore?.mode ?? before.mode,
+        before.mode,
         input.mode,
         input.rolloutPercent,
         actorType,
@@ -595,7 +697,7 @@ export function setLocalInferenceRuntimeControl(input: {
           ?? null,
         SKILL_INFERENCE_PROFILE_VERSION,
         reason,
-        input.evidenceReference?.trim().slice(0, 240) || null,
+        validatedEvidenceReference,
       );
     if (input.mode === 'off') {
       // Jobs are durable and will resume from validated checkpoints after
@@ -631,9 +733,14 @@ export function reconcileLocalInferenceRuntimeControlAtStartup(
   db: Database.Database = getDb(),
 ): { reconciled: boolean; reason: string | null } {
   const environment = runtimeEnvironment();
-  const durable = db.prepare(`SELECT mode FROM local_inference_runtime_control
-    WHERE environment = ?`).get(environment) as { mode: LocalInferenceMode } | undefined;
-  if (!durable || durable.mode === 'off') return { reconciled: false, reason: null };
+  const durable = db.prepare(`SELECT mode, release_bound_mode FROM local_inference_runtime_control
+    WHERE environment = ?`).get(environment) as {
+      mode: LocalInferenceMode;
+      release_bound_mode: 'active' | null;
+    } | undefined;
+  if (!durable || (durable.mode === 'off' && durable.release_bound_mode === null)) {
+    return { reconciled: false, reason: null };
+  }
 
   const effective = getLocalInferenceRuntimeControl(db);
   if (effective.mode !== 'off') return { reconciled: false, reason: null };

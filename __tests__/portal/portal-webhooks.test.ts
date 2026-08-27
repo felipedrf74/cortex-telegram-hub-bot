@@ -18,21 +18,36 @@ describe('portal webhook helpers', () => {
 
   it('extracts provider-specific idempotency keys', () => {
     expect(extractIdempotencyKey('google_calendar', { 'x-goog-message-number': '42' }, {})).toBe('42');
-    expect(extractIdempotencyKey('outlook_calendar', {}, { subscriptionId: 'sub-1' })).toBe('sub-1');
+    const outlookKey = extractIdempotencyKey('outlook_calendar', {}, {
+      subscriptionId: 'sub-1', resource: '/events/one', changeType: 'updated',
+    });
+    expect(outlookKey).toMatch(/^outlook:[a-f0-9]{64}$/u);
+    expect(extractIdempotencyKey('outlook_calendar', {}, {
+      changeType: 'updated', resource: '/events/one', subscriptionId: 'sub-1',
+    })).toBe(outlookKey);
     expect(extractIdempotencyKey('github', { 'x-github-delivery': 'delivery-1' }, {})).toBe('delivery-1');
-    expect(extractIdempotencyKey('strava', {}, { event_time: 123 })).toBe('123');
+    const stravaKey = extractIdempotencyKey('strava', {}, { event_time: 123, object_id: 1 });
+    expect(stravaKey).toMatch(/^strava:[a-f0-9]{64}$/u);
+    expect(extractIdempotencyKey('strava', {}, { event_time: 123, object_id: 2 }))
+      .not.toBe(stravaKey);
     expect(extractIdempotencyKey('unknown_provider', {}, { id: 456 })).toBe('456');
     expect(extractIdempotencyKey('unknown_provider', {}, {})).toBeUndefined();
   });
 
   it('flattens single and repeated headers for persistence', () => {
     expect(flattenHeaders({
-      'x-one': 'a',
-      'x-many': ['b', 'c'],
+      'x-github-event': 'push',
+      'x-github-delivery': ['delivery-a', 'delivery-b'],
       'x-empty': undefined,
+      'x-private-provider-header': 'must-not-persist',
+      authorization: 'Bearer must-not-persist',
+      'x-goog-channel-token': 'must-not-persist',
+      'x-hub-signature-256': 'must-not-persist',
+      'x-api-key': 'must-not-persist',
+      'x-custom-session-secret': 'must-not-persist',
     })).toEqual({
-      'x-one': 'a',
-      'x-many': 'b, c',
+      'x-github-event': 'push',
+      'x-github-delivery': 'delivery-a, delivery-b',
     });
   });
 });

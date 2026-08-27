@@ -24,6 +24,7 @@ describe('iOS JWT key rotation', () => {
     vi.stubEnv('IOS_JWT_EXPIRY', '7d');
     vi.stubEnv('IOS_API_JWT_KEYS', '');
     vi.stubEnv('IOS_API_JWT_ACTIVE_KID', '');
+    vi.stubEnv('APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET', 'apple-ownership-secret-000000000000000000000000000');
     vi.stubEnv('CHAT_CONFIRMATION_HMAC_SECRET', 'confirmation-secret-0000000000000000000000000000');
     vi.stubEnv('CHAT_V2_EVIDENCE_HMAC_SECRET', 'evidence-secret-000000000000000000000000000000');
   });
@@ -75,6 +76,17 @@ describe('iOS JWT key rotation', () => {
       userId: 8,
       deviceId: 'old-device',
     });
+  });
+
+  it('requires dedicated Apple ownership material before a rotating keyring can start', () => {
+    vi.stubEnv('IOS_API_JWT_KEYS', JSON.stringify([
+      { kid: 'ios-api-2026-05-06', secret: NEW_SECRET, active: true },
+    ]));
+    vi.stubEnv('APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET', '');
+
+    expect(() => validateIosJwtConfiguration(NOW)).toThrow(
+      'APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET must be pinned before enabling the iOS JWT keyring',
+    );
   });
 
   it('rejects a previous kid after its verification window expires', () => {

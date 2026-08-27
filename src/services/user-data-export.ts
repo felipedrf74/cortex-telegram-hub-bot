@@ -24,7 +24,43 @@ import { decryptTrainingProfileSnapshot } from './training-profile-snapshot-encr
 import {
   ContentScriptJobEncryptionError,
   decryptContentScriptJobJson,
+  parseContentScriptJobPrunedTombstone,
 } from './content-script-job-encryption';
+import { releaseSkillInferenceAccountDeletionFenceOwnership } from './skill-inference-account-lifecycle';
+import { decryptWebhookJsonForOwner } from './webhook-registry';
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
+function exportFiscalBundleDocuments(value: unknown): Array<Record<string, unknown>> {
+  const parsed = parseExportJson(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const documents = (parsed as { documents?: unknown }).documents;
+  if (!Array.isArray(documents)) return [];
+  const allowedProviders = new Set(['outlook', 'gmail', 'filed']);
+  return documents.flatMap((document) => {
+    if (!document || typeof document !== 'object' || Array.isArray(document)) return [];
+    const source = document as Record<string, unknown>;
+    if (typeof source.provider !== 'string' || !allowedProviders.has(source.provider)) return [];
+    const textField = (name: string): string | null => (
+      typeof source[name] === 'string' ? source[name] as string : null
+    );
+    const sizeBytes = typeof source.sizeBytes === 'number'
+      && Number.isSafeInteger(source.sizeBytes) && source.sizeBytes >= 0
+      ? source.sizeBytes
+      : null;
+    return [{
+      provider: source.provider,
+      ruleName: textField('ruleName'),
+      subject: textField('subject'),
+      from: textField('from'),
+      receivedAt: textField('receivedAt'),
+      filename: textField('filename'),
+      sizeBytes,
+    }];
+  });
+}
 
 // ── Finance Export (existing) ───────────────────────────────────────
 
@@ -34,6 +70,16 @@ export interface UserFinanceExport {
   transactions: Transaction[];
   taxEvents: TaxEvent[];
   annualSummaries: AnnualTaxSummary[];
+}
+
+export interface UserInvoiceExport {
+  filings: Array<Record<string, unknown>>;
+  queue: Array<Record<string, unknown>>;
+  vendors: Array<Record<string, unknown>>;
+  vendorSenders: Array<Record<string, unknown>>;
+  fiscalProfiles: Array<Record<string, unknown>>;
+  fiscalBundleSends: Array<Record<string, unknown>>;
+  artifactManifests: Array<Record<string, unknown>>;
 }
 
 export function exportUserFinanceData(userId: number): UserFinanceExport {
@@ -59,6 +105,82 @@ export function exportUserFinanceData(userId: number): UserFinanceExport {
     transactions,
     taxEvents,
     annualSummaries,
+  };
+}
+
+/**
+ * Article 15/20 invoice export. Filesystem paths, object locators, write
+ * tokens, and duplicate invoice bytes are deliberately excluded.
+ */
+export function exportUserInvoiceData(
+  userId: number,
+  options: { failClosed?: boolean } = {},
+): UserInvoiceExport {
+  const db = getDb();
+  const all = (sql: string, ...params: any[]): Array<Record<string, unknown>> => (
+    options.failClosed
+      ? db.prepare(sql).all(...params) as Array<Record<string, unknown>>
+      : safeAll(db, sql, ...params)
+  );
+  const filings = all(`
+    SELECT tenant_id AS tenantId, vendor, amount, document_date AS documentDate,
+           invoice_number AS invoiceNumber, source, source_ref AS sourceReference,
+           filename, file_size_bytes AS originalBytes,
+           compressed_size_bytes AS compressedBytes, checksum, mime, bytes,
+           storage_backend AS storageBackend, status,
+           created_at AS createdAt
+      FROM invoice_filings WHERE user_id = ? ORDER BY created_at, id
+  `, userId);
+  const queue = all(`
+    SELECT type, media_type AS mediaType, analysis_json AS analysis, source, status,
+           retries, last_retry_at AS lastRetryAt,
+           created_at AS createdAt, filed_at AS filedAt
+      FROM invoice_queue WHERE user_id = ? ORDER BY created_at, id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    analysis: parseExportJson(row.analysis),
+  }));
+  const vendors = all(`
+    SELECT tenant_id AS tenantId, name, sender_pattern AS senderPattern,
+           subject_patterns AS subjectPatterns, enabled, created_at AS createdAt
+      FROM invoice_vendors WHERE user_id = ? ORDER BY created_at, id
+  `, userId);
+  const vendorSenders = all(`
+    SELECT tenant_id AS tenantId, sender_pattern AS senderPattern, enabled,
+           created_at AS createdAt
+      FROM invoice_vendor_senders WHERE user_id = ? ORDER BY created_at, id
+  `, userId);
+  const fiscalProfiles = all(`
+    SELECT tenant_id AS tenantId, destination_email AS destinationEmail, cadence,
+           primary_day AS primaryDay, secondary_day AS secondaryDay, enabled,
+           last_bundle_sent_at AS lastBundleSentAt,
+           last_bundle_document_count AS lastBundleDocumentCount,
+           created_at AS createdAt, updated_at AS updatedAt
+      FROM fiscal_collection_profiles WHERE user_id = ?
+  `, userId);
+  const fiscalBundleSends = all(`
+    SELECT tenant_id AS tenantId, period_start AS periodStart, period_end AS periodEnd,
+           sent_at AS sentAt, document_count AS documentCount, total_bytes AS totalBytes,
+           result_json AS result, created_at AS createdAt
+      FROM fiscal_bundle_sends WHERE user_id = ? ORDER BY sent_at, id
+  `, userId).map((row: Record<string, unknown>) => {
+    const { result, ...metadata } = row;
+    return { ...metadata, documents: exportFiscalBundleDocuments(result) };
+  });
+  const artifactManifests = all(`
+    SELECT tenant_id AS tenantId, artifact_kind AS artifactKind,
+           storage_backend AS storageBackend, state, created_at AS createdAt,
+           updated_at AS updatedAt, stored_at AS storedAt, deleted_at AS deletedAt
+      FROM invoice_artifact_manifests WHERE user_id = ? ORDER BY created_at, id
+  `, userId);
+  return {
+    filings,
+    queue,
+    vendors,
+    vendorSenders,
+    fiscalProfiles,
+    fiscalBundleSends,
+    artifactManifests,
   };
 }
 
@@ -156,7 +278,10 @@ async function revokeOneThirdPartyProvider(userId: number, provider: RevocablePr
 
     return { provider, attempted: false, status: 'local_only' };
   } catch (err) {
-    logger.warn({ err, userId, provider }, 'OAuth revocation failed');
+    logger.warn(
+      { errorName: safeErrorName(err), userId, provider },
+      'OAuth revocation failed',
+    );
     return { provider, attempted: true, status: 'failed' };
   }
 }
@@ -205,9 +330,11 @@ export async function revokeThirdPartyOAuthTokensForUser(userId: number): Promis
 }
 
 export async function deleteAllUserDataForAccountDeletion(userId: number): Promise<Record<string, number>> {
-  const [inferenceFence, contentJobs] = await Promise.all([
+  const [inferenceFence, contentJobs, contentBatches, invoiceArtifacts] = await Promise.all([
     import('./skill-inference-account-lifecycle'),
     import('./content-script-job-account-lifecycle'),
+    import('./content-script-provider-batches'),
+    import('./invoice-account-lifecycle'),
   ]);
   let fenceToken: string;
   try {
@@ -217,9 +344,31 @@ export async function deleteAllUserDataForAccountDeletion(userId: number): Promi
     // request instead of allowing erased telemetry to be recreated afterward.
     fenceToken = inferenceFence.beginSkillInferenceAccountDeletionFence(userId, getDb());
   } catch (err) {
-    logger.error({ err, userId }, 'Unable to acquire the account-deletion inference fence');
+    logger.error(
+      { errorName: safeErrorName(err), userId },
+      'Unable to acquire the account-deletion inference fence',
+    );
     throw err;
   }
+  let fenceMaintenanceError: unknown = null;
+  const renewDeletionFence = (): void => {
+    if (fenceMaintenanceError) throw fenceMaintenanceError;
+    if (!inferenceFence.renewSkillInferenceAccountDeletionFence(userId, fenceToken, getDb())) {
+      throw new Error('Account-deletion fence ownership was lost before erasure completed.');
+    }
+  };
+  const fenceRenewalTimer = setInterval(() => {
+    try {
+      renewDeletionFence();
+    } catch (error) {
+      fenceMaintenanceError = error;
+      logger.error(
+        { errorName: safeErrorName(error), userId },
+        'Account-deletion fence renewal failed',
+      );
+    }
+  }, 60_000);
+  fenceRenewalTimer.unref?.();
   const cancelUnfinishedScripts = (phase: 'before_revocation' | 'before_erasure') => {
     try {
       const cancelledScriptJobs = contentJobs.cancelContentScriptJobsForAccountDeletion(userId, getDb());
@@ -230,22 +379,29 @@ export async function deleteAllUserDataForAccountDeletion(userId: number): Promi
         );
       }
     } catch (err) {
-      // The durable inference fence remains authoritative for new provider
-      // admission, and the immediate final erasure still removes owned rows.
-      logger.warn({ err, userId, phase }, 'Unable to pre-cancel Content script jobs before account deletion');
+      logger.error(
+        { errorName: safeErrorName(err), userId, phase },
+        'Unable to fence Content script jobs before account deletion',
+      );
+      throw err;
     }
   };
 
   let deletionCompleted = false;
+  let externalCleanupStarted = false;
   try {
     cancelUnfinishedScripts('before_revocation');
     await inferenceFence.waitForSkillInferenceAccountAdmissionsToDrain(userId);
+    await contentJobs.waitForContentScriptJobsForAccountDeletionToDrain(userId, getDb());
+    await invoiceArtifacts.waitForInvoiceArtifactAdmissionsToDrain(userId);
+    renewDeletionFence();
 
     try {
       // The per-provider outcomes are the ONLY evidence that revocation ran:
       // the credentials are erased microseconds later, and the Apple call in
       // particular cannot be exercised against the live endpoint from a test.
       // `provider`, `attempted`, `status`, and `statusCode` carry no secrets.
+      externalCleanupStarted = true;
       const revocations = await revokeThirdPartyOAuthTokensForUser(userId);
       logger.info(
         { userId, revocations, event: 'account_deletion.revocation' },
@@ -256,32 +412,66 @@ export async function deleteAllUserDataForAccountDeletion(userId: number): Promi
       // predecessor credential table staying reachable. Individual provider
       // failures already degrade to typed outcomes; this catches schema probes.
       logger.warn(
-        { err: revocationError, userId },
+        { errorName: safeErrorName(revocationError), userId },
         'Third-party revocation phase failed before account deletion',
       );
     }
+    renewDeletionFence();
     // Close the revocation interval: a request accepted just before the durable
     // fence was observed may have created a script row after the first sweep.
-    // This second sweep and the erasure transaction are synchronous, so no new
-    // JavaScript admission can interleave between them in the one-backend
-    // release topology.
+    // The second sweep closes local admissions. Provider cancellation/file
+    // deletion then runs under the durable account fence, and local erasure is
+    // refused until every remote-file identifier carries deletion proof.
     cancelUnfinishedScripts('before_erasure');
-    const counts = deleteAllUserData(userId);
+    await contentBatches.cleanupContentScriptProviderFilesForAccountDeletion(getDb(), userId);
+    renewDeletionFence();
+    const invoiceArtifactCounts = await invoiceArtifacts.cleanupInvoiceArtifactsForAccountDeletion(
+      userId,
+      getDb(),
+    );
+    renewDeletionFence();
+    const counts = deleteAllUserData(userId, fenceToken);
+    counts.invoice_queue_files_deleted = invoiceArtifactCounts.queueFilesDeleted;
+    counts.invoice_objects_deleted = invoiceArtifactCounts.storedObjectsDeleted;
     deletionCompleted = true;
     return counts;
   } catch (err) {
-    // Release the exact fence if transactional local erasure fails, allowing an
-    // honest retry without reopening another deletion process's fence.
-    logger.warn({ err, userId }, 'Account deletion failed before local erasure completed');
+    // The finally block clears only a pre-mutation failure. Once external
+    // cleanup starts, it retains the exact durable token for a non-overlapping
+    // same-runtime retry (or foreign takeover only after expiry).
+    logger.warn(
+      { errorName: safeErrorName(err), userId },
+      'Account deletion failed before local erasure completed',
+    );
     throw err;
   } finally {
-    if (!deletionCompleted) {
+    clearInterval(fenceRenewalTimer);
+    if (!deletionCompleted && externalCleanupStarted) {
+      try {
+        if (!inferenceFence.retainSkillInferenceAccountDeletionFenceForRetry(
+          userId,
+          fenceToken,
+          getDb(),
+        )) {
+          logger.error(
+            { userId },
+            'Unable to retain failed account-deletion fence for exact-token retry',
+          );
+        }
+      } catch (cleanupError) {
+        logger.error(
+          { errorName: safeErrorName(cleanupError), userId },
+          'Unable to retain failed account-deletion fence for exact-token retry',
+        );
+      }
+    } else if (!deletionCompleted) {
       try {
         inferenceFence.clearSkillInferenceAccountDeletionFence(userId, fenceToken, getDb());
       } catch (cleanupError) {
-        // The row expires after 15 minutes, so a process/storage failure cannot
-        // strand the account indefinitely even when cleanup is unavailable.
-        logger.error({ err: cleanupError, userId }, 'Unable to release failed account-deletion inference fence');
+        logger.error(
+          { errorName: safeErrorName(cleanupError), userId },
+          'Unable to release pre-mutation account-deletion inference fence',
+        );
       }
     }
   }
@@ -323,6 +513,7 @@ export interface FullUserExport {
   };
   sharedMemory: Array<{ key: string; value: string; updatedAt: string }>;
   finance: UserFinanceExport;
+  invoices: UserInvoiceExport;
   oauthConnections: Array<{ provider: string; connectedAt: string }>;
   oauthConnectionHealth: Array<{
     provider: string;
@@ -331,6 +522,10 @@ export interface FullUserExport {
     firstDetectedAt: string;
     lastDetectedAt: string;
   }>;
+  webhooks: {
+    subscriptions: Array<Record<string, unknown>>;
+    events: Array<Record<string, unknown>>;
+  };
   settings: Array<{ key: string; value: string }>;
   notificationDeviceTokens: Array<{ environment: string; platform: string; appVersion: string | null; lastSeenAt: string; revokedAt: string | null }>;
   // Subject-access requests previously disclosed only the device tokens above
@@ -554,12 +749,20 @@ function exportContentScriptJobRecord(
   };
   const requestCiphertext = typeof record.request_json === 'string' ? record.request_json : '';
   const resultCiphertext = typeof record.result_json === 'string' ? record.result_json : '';
-  exported.request = requestCiphertext
+  const requestPruned = parseContentScriptJobPrunedTombstone(requestCiphertext);
+  const resultPruned = parseContentScriptJobPrunedTombstone(resultCiphertext);
+  exported.request = requestCiphertext && !requestPruned
     ? decryptForExport<Record<string, unknown>>(requestCiphertext, 'request')
     : null;
-  exported.result = resultCiphertext
+  exported.result = resultCiphertext && !resultPruned
     ? decryptForExport<Record<string, unknown>>(resultCiphertext, 'result')
     : null;
+  if (requestPruned) {
+    exported.privateMaterialRetention = {
+      status: 'pruned',
+      prunedAt: requestPruned.prunedAt,
+    };
+  }
   const checkpointRows = jobId ? db.prepare(`
     SELECT section_index, section_key, state, word_budget, output_json,
            validation_json, route, model_digest, created_at, updated_at
@@ -763,6 +966,36 @@ export function exportAllUserData(userId: number): FullUserExport {
     WHERE user_id = ? AND tenant_id = ?
     ORDER BY provider
   `, userId, userId);
+  const webhookSubscriptions = safeAll(db, `
+    SELECT id, provider, event_types AS eventTypes, endpoint_path AS endpointPath,
+           status, external_id AS externalId, metadata, expires_at AS expiresAt,
+           last_event_at AS lastEventAt, event_count AS eventCount,
+           created_at AS createdAt, updated_at AS updatedAt
+      FROM webhook_subscriptions
+     WHERE user_id = ?
+     ORDER BY created_at, id
+  `, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    eventTypes: parseExportJson(row.eventTypes),
+    metadata: row.metadata == null
+      ? null
+      : decryptWebhookJsonForOwner<Record<string, unknown>>(row.metadata, userId),
+  }));
+  const webhookEvents = safeAll(db, `
+    SELECT id, subscription_id AS subscriptionId, provider, event_type AS eventType,
+           payload, status, error_message AS errorName,
+           idempotency_key AS idempotencyKey,
+           received_at AS receivedAt, processed_at AS processedAt
+      FROM webhook_events
+     WHERE user_id = ?
+     ORDER BY received_at, id
+  `, userId).map((row: Record<string, unknown>) => {
+    const { payload, ...metadata } = row;
+    return {
+      ...metadata,
+      payload: decryptWebhookJsonForOwner<Record<string, unknown>>(payload, userId),
+    };
+  });
 
   // User settings from kv_store
   const settings = safeAll(db,
@@ -1192,6 +1425,7 @@ export function exportAllUserData(userId: number): FullUserExport {
       FROM product_learning_case_review_approvals WHERE user_id = ?
      ORDER BY tenant_id, reviewed_at, approval_reference
   `, userId);
+  const invoices = exportUserInvoiceData(userId);
 
   return {
     exportedAt: new Date().toISOString(),
@@ -1213,8 +1447,13 @@ export function exportAllUserData(userId: number): FullUserExport {
     skillInference,
     sharedMemory,
     finance,
+    invoices,
     oauthConnections: oauthRows.map((c: any) => ({ provider: c.provider, connectedAt: c.created_at })),
     oauthConnectionHealth,
+    webhooks: {
+      subscriptions: webhookSubscriptions,
+      events: webhookEvents,
+    },
     settings: settings.map((s: any) => ({ key: s.key.replace(`config:${userId}:`, ''), value: s.value })),
     notificationDeviceTokens,
     notificationProfile,
@@ -1362,7 +1601,7 @@ const ACCOUNT_DELETION_RETAINED_TABLES = new Set([
   // Apple notification evidence is likewise append-only (its DELETE trigger
   // would abort the erasure transaction) and is billing evidence under plan
   // §4. Note its `signed_payload` retains Apple-issued purchase identifiers
-  // including appAccountToken, which the owner-held JWT secret can reverse to
+  // including appAccountToken, which the owner-held dedicated Apple HMAC can reverse to
   // this user id — reducing or pseudonymizing that payload after processing
   // is part of the NH-0035 owner+counsel decision.
   'apple_notification_inbox',
@@ -1652,12 +1891,100 @@ export function getAccountDeletionInventoryForUser(userId: number): AccountDelet
  * The audit_trail table is NOT touched — legal requirement (Article 17(3)(e)).
  * Returns counts of deleted records per table.
  */
-export function deleteAllUserData(userId: number): Record<string, number> {
+function accountDeletionTableHasColumn(db: any, table: string, column: string): boolean {
+  if (!tableExistsForDeletion(db, table)) return false;
+  return (db.prepare(`PRAGMA table_info(${quoteSqlIdentifier(table)})`).all() as Array<{ name: string }>)
+    .some((row) => row.name === column);
+}
+
+function assertInvoiceArtifactDeletionProof(db: any, userId: number): void {
+  if (tableExistsForDeletion(db, 'invoice_artifact_manifests')) {
+    const pendingManifests = (db.prepare(`SELECT COUNT(*) AS count FROM invoice_artifact_manifests
+      WHERE user_id = ? AND deleted_at IS NULL`).get(userId) as { count: number }).count;
+    if (pendingManifests !== 0) {
+      throw new Error('Account deletion requires invoice artifact manifest-deletion proof.');
+    }
+  }
+  if (tableExistsForDeletion(db, 'invoice_queue')) {
+    const proofPredicate = accountDeletionTableHasColumn(db, 'invoice_queue', 'local_file_deleted_at')
+      ? 'AND local_file_deleted_at IS NULL'
+      : '';
+    const pendingQueueFiles = (db.prepare(`SELECT COUNT(*) AS count FROM invoice_queue
+      WHERE user_id = ? AND local_path IS NOT NULL AND TRIM(local_path) <> '' ${proofPredicate}`)
+      .get(userId) as { count: number }).count;
+    if (pendingQueueFiles !== 0) {
+      throw new Error('Account deletion requires invoice queue file-deletion proof.');
+    }
+  }
+
+  if (tableExistsForDeletion(db, 'invoice_filings')) {
+    const proofPredicate = accountDeletionTableHasColumn(db, 'invoice_filings', 'object_deleted_at')
+      ? 'AND object_deleted_at IS NULL'
+      : '';
+    const pendingObjects = (db.prepare(`SELECT COUNT(*) AS count FROM invoice_filings
+      WHERE user_id = ?
+        AND COALESCE(NULLIF(TRIM(object_key), ''), NULLIF(TRIM(remote_path), '')) IS NOT NULL
+        ${proofPredicate}`)
+      .get(userId) as { count: number }).count;
+    if (pendingObjects !== 0) {
+      throw new Error('Account deletion requires stored invoice object-deletion proof.');
+    }
+  }
+}
+
+function assertProviderBatchFileDeletionProof(db: any, userId: number): void {
+  if (!tableExistsForDeletion(db, 'content_script_provider_batches')) return;
+  const providerFilesPending = (db.prepare(`SELECT COUNT(*) AS count
+    FROM content_script_provider_batches
+    WHERE owner_user_id = ? AND provider_files_deleted_at IS NULL
+      AND (provider_batch_id IS NOT NULL OR input_file_id IS NOT NULL
+        OR output_file_id IS NOT NULL OR error_file_id IS NOT NULL
+        OR input_file_intent_filename IS NOT NULL
+        OR batch_create_intent_at IS NOT NULL)`)
+    .get(userId) as { count: number }).count;
+  if (providerFilesPending !== 0) {
+    throw new Error('Account deletion requires provider Batch file-deletion proof.');
+  }
+}
+
+export function deleteAllUserData(
+  userId: number,
+  deletionFenceToken?: string,
+): Record<string, number> {
   const db = getDb();
   const counts: Record<string, number> = {};
   const ownedTables = accountDeletionTablesForDb(db);
+  if (tableExistsForDeletion(db, 'invoice_artifact_manifests')) {
+    const durableFence = tableExistsForDeletion(db, 'local_inference_account_deletion_fences')
+      ? db.prepare(`SELECT 1 AS present FROM local_inference_account_deletion_fences
+          WHERE user_id = ? AND fence_token = ? AND expires_at > ?`)
+        .get(userId, deletionFenceToken ?? '', Date.now()) as { present: number } | undefined
+      : undefined;
+    if (durableFence?.present !== 1) {
+      throw new Error('Account deletion requires the durable admission fence.');
+    }
+  }
+  assertProviderBatchFileDeletionProof(db, userId);
+  assertInvoiceArtifactDeletionProof(db, userId);
 
   const deleteAll = db.transaction(() => {
+    // These are the authoritative final checks. BEGIN IMMEDIATE acquires the
+    // same SQLite writer lock used by invoice/script admission before this
+    // callback starts, so no cross-process write can land between proof and
+    // removal of the account/fence rows.
+    if (tableExistsForDeletion(db, 'invoice_artifact_manifests')) {
+      const durableFence = tableExistsForDeletion(db, 'local_inference_account_deletion_fences')
+        ? db.prepare(`SELECT 1 AS present FROM local_inference_account_deletion_fences
+            WHERE user_id = ? AND fence_token = ? AND expires_at > ?`)
+          .get(userId, deletionFenceToken ?? '', Date.now()) as { present: number } | undefined
+        : undefined;
+      if (durableFence?.present !== 1) {
+        throw new Error('Account deletion requires the durable admission fence.');
+      }
+    }
+    assertProviderBatchFileDeletionProof(db, userId);
+    assertInvoiceArtifactDeletionProof(db, userId);
+
     const compatibilityPlanIds = ownedTrainingCompatibilityPlanIds(db, userId);
     const compatibilityChildCounts = countOwnedTrainingCompatibilityChildren(db, userId);
     const localInferenceCascadeState = ownedLocalInferenceCascadeChildState(db, userId);
@@ -1782,7 +2109,12 @@ export function deleteAllUserData(userId: number): Record<string, number> {
     }
   });
 
-  deleteAll();
+  deleteAll.immediate();
+  if (deletionFenceToken) {
+    // The erasure transaction removes the durable fence row with the account;
+    // release its matching process-local owner for direct and wrapped callers.
+    releaseSkillInferenceAccountDeletionFenceOwnership(userId, deletionFenceToken);
+  }
 
   return counts;
 }

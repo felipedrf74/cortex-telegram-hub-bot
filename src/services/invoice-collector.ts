@@ -15,6 +15,10 @@ import { recordFiling, isDuplicate, isEmailAlreadyFiled } from '../state/invoice
 import { getActiveVendors } from '../state/invoice-vendors';
 import { areGlobalInvoiceVendorsEnabled } from './runtime-flags';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 // ─── Vendor Configuration ───────────────────────────────────────────
 
 export interface VendorConfig {
@@ -297,7 +301,7 @@ async function collectForVendor(
   const vendorEmails = allEmails.filter((e) => senderMatchesVendor(e, vendor));
 
   logger.info(
-    { vendor: vendor.name, matched: vendorEmails.length, total: allEmails.length },
+    { matched: vendorEmails.length, total: allEmails.length },
     'Filtered emails for vendor',
   );
 
@@ -313,7 +317,7 @@ async function collectForVendor(
     const hasSubjectMatch = subjectMatchesPatterns(email.subject, vendor.subjectPatterns);
     if (!hasSubjectMatch) {
       logger.debug(
-        { subject: email.subject, vendor: vendor.name },
+        { subjectMatched: false },
         'Email subject does not match vendor patterns, skipping',
       );
       continue;
@@ -327,14 +331,14 @@ async function collectForVendor(
         isSupportedInvoiceAttachment(attachment.name, attachment.contentType),
       );
     } catch (err) {
-      logger.error({ err, emailId: email.id }, 'Failed to list attachments');
+      logger.error({ errorName: safeErrorName(err) }, 'Failed to list attachments');
       result.errors++;
       result.details.push(`⚠️ Erro ao ler anexos: ${email.subject}`);
       continue;
     }
 
     if (invoiceAttachments.length === 0) {
-      logger.debug({ subject: email.subject }, 'No supported invoice attachments found');
+      logger.debug({ supportedAttachmentCount: 0 }, 'No supported invoice attachments found');
       continue;
     }
 
@@ -412,9 +416,11 @@ async function collectForVendor(
         }
       } catch (err) {
         result.errors++;
-        const message = err instanceof Error ? err.message : 'Unknown error';
-        result.details.push(`⚠️ Erro: ${att.name} — ${message}`);
-        logger.error({ err, emailId: email.id, attachmentId: att.id }, 'Failed to download/file attachment');
+        result.details.push(`⚠️ Erro: ${att.name} — processamento indisponível`);
+        logger.error(
+          { errorName: safeErrorName(err) },
+          'Failed to download/file attachment',
+        );
       }
     }
   }
@@ -475,7 +481,7 @@ export async function collectMonthlyInvoices(
       'Fetched emails with attachments for month',
     );
   } catch (err) {
-    logger.error({ err, year, month }, 'Failed to fetch monthly emails');
+    logger.error({ errorName: safeErrorName(err) }, 'Failed to fetch monthly emails');
     return {
       year, month, monthLabel: monthFolder,
       vendors: [],
@@ -497,11 +503,14 @@ export async function collectMonthlyInvoices(
         'Vendor collection complete',
       );
     } catch (err) {
-      logger.error({ err, builtin: vendor.builtin }, 'Vendor collection failed');
+      logger.error(
+        { errorName: safeErrorName(err), builtin: vendor.builtin },
+        'Vendor collection failed',
+      );
       vendorResults.push({
         vendor: vendor.name,
         filed: 0, duplicates: 0, errors: 1,
-        details: [`⚠️ Erro geral: ${err instanceof Error ? err.message : 'Unknown error'}`],
+        details: ['⚠️ Erro geral: processamento indisponível'],
       });
     }
   }

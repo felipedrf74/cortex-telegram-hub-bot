@@ -9,6 +9,10 @@ import { filePdf, PT_MONTHS, isInvoiceFilingConfigured } from './invoice-filer';
 import { recordFiling, isDuplicate, isEmailAlreadyFiled } from '../state/invoice-filings';
 import { assertGlobalInvoiceCollectorOwnerScope } from './invoice-collector-scope';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface AmazonOrder {
@@ -59,7 +63,7 @@ export function registerReplyWaiter(chatId: number, timeoutMs: number): Promise<
     clearTimeout(existing.timer);
     existing.resolve('__CANCELLED__'); // resolve (not reject) to avoid unhandled rejection noise
     pendingReplies.delete(chatId);
-    logger.warn({ chatId }, 'Replaced existing reply waiter');
+    logger.warn('Replaced existing reply waiter');
   }
 
   return new Promise<string>((resolve, reject) => {
@@ -115,11 +119,14 @@ async function loadOrCreateContext(browser: Browser): Promise<BrowserContext> {
 
   try {
     if (fs.existsSync(sessionPath)) {
-      logger.info({ sessionPath }, 'Loading saved Amazon session');
+      logger.info('Loading saved Amazon session');
       return await browser.newContext({ ...CONTEXT_OPTIONS, storageState: sessionPath });
     }
   } catch (err) {
-    logger.warn({ err, sessionPath }, 'Failed to load saved session, creating fresh context');
+    logger.warn(
+      { errorName: safeErrorName(err) },
+      'Failed to load saved session, creating fresh context',
+    );
   }
 
   return await browser.newContext(CONTEXT_OPTIONS);
@@ -138,9 +145,9 @@ async function saveSession(context: BrowserContext): Promise<void> {
     await context.storageState({ path: sessionPath });
     // Restrict session file permissions (contains auth cookies)
     try { fs.chmodSync(sessionPath, 0o600); } catch { /* non-critical */ }
-    logger.info({ sessionPath }, 'Amazon session saved');
+    logger.info('Amazon session saved');
   } catch (err) {
-    logger.warn({ err }, 'Failed to save Amazon session');
+    logger.warn({ errorName: safeErrorName(err) }, 'Failed to save Amazon session');
   }
 }
 
@@ -190,7 +197,7 @@ async function loginToAmazon(
         '&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0',
       { waitUntil: 'domcontentloaded', timeout: 30000 },
     );
-    logger.debug({ url: page.url() }, 'Sign-in page loaded');
+    logger.debug('Sign-in page loaded');
 
     // ── Step 2: Fill email ─────────────────────────────────────
     // New Amazon.es flow uses `#ap_email_login`; fallback to `#ap_email`
@@ -208,7 +215,7 @@ async function loginToAmazon(
       await page.waitForLoadState('domcontentloaded');
       await page.waitForTimeout(2000);
     }
-    logger.debug({ url: page.url() }, 'After email submission');
+    logger.debug('Amazon email submission completed');
 
     // ── Step 3: Fill password ──────────────────────────────────
     const passwordInput = page.locator('#ap_password');
@@ -224,16 +231,16 @@ async function loginToAmazon(
       await page.waitForLoadState('domcontentloaded');
       await page.waitForTimeout(3000);
     }
-    logger.debug({ url: page.url() }, 'After password submission');
+    logger.debug('Amazon password submission completed');
 
     // ── Check for wrong-password error ─────────────────────────
     const errorBox = page.locator('#auth-error-message-box, .a-alert-content');
     const errorVisible = await errorBox.first().isVisible({ timeout: 1000 }).catch(() => false);
     if (errorVisible) {
       const errorText = (await errorBox.first().textContent().catch(() => '')) || '';
-      logger.error({ errorText: errorText.trim() }, 'Amazon login error message');
+      logger.error({ providerErrorPresent: Boolean(errorText.trim()) }, 'Amazon login error message');
       if (sendTelegram) {
-        await sendTelegram(`❌ Amazon login falhou: ${errorText.trim().substring(0, 200)}`);
+        await sendTelegram('❌ Amazon login falhou. Verifique as credenciais e tente novamente.');
       }
       return { success: false, twoFactorRequired: false };
     }
@@ -245,7 +252,7 @@ async function loginToAmazon(
     while (isAuthPage(page.url()) && challengeAttempts < MAX_CHALLENGE_ATTEMPTS) {
       challengeAttempts++;
       const currentUrl = page.url();
-      logger.info({ url: currentUrl, attempt: challengeAttempts }, 'Detected auth challenge page');
+      logger.info({ attempt: challengeAttempts }, 'Detected auth challenge page');
 
       // 4a. Grid CAPTCHA / visual puzzle — `/ap/cvf`
       if (currentUrl.includes('/ap/cvf')) {
@@ -280,7 +287,7 @@ async function loginToAmazon(
           await page.waitForLoadState('domcontentloaded');
           await page.waitForTimeout(3000);
         } catch (err) {
-          logger.error({ err }, 'CVF interactive flow failed');
+          logger.error({ errorName: safeErrorName(err) }, 'CVF interactive flow failed');
           return { success: false, twoFactorRequired: true };
         }
         continue;
@@ -328,7 +335,7 @@ async function loginToAmazon(
           await page.waitForLoadState('domcontentloaded');
           await page.waitForTimeout(3000);
         } catch (err) {
-          logger.error({ err }, '2FA flow failed');
+          logger.error({ errorName: safeErrorName(err) }, '2FA flow failed');
           return { success: false, twoFactorRequired: true };
         }
         continue;
@@ -365,7 +372,7 @@ async function loginToAmazon(
       }
 
       // 4d. Unknown challenge — send screenshot for manual help
-      logger.warn({ url: currentUrl }, 'Unknown auth challenge page');
+      logger.warn('Unknown auth challenge page');
       if (hasInteractive) {
         await sendTelegram!('⚠️ Amazon mostra uma página de verificação desconhecida:');
         const screenshot = await page.screenshot({ type: 'jpeg', quality: 80 });
@@ -398,7 +405,7 @@ async function loginToAmazon(
       logger.info('Amazon.es login successful');
       if (sendTelegram) await sendTelegram('✅ Login Amazon.es com sucesso!');
     } else {
-      logger.warn({ url: page.url() }, 'Login verification failed after all challenge attempts');
+      logger.warn('Login verification failed after all challenge attempts');
       if (hasInteractive) {
         await sendTelegram!('⚠️ Login pode ter falhado. Estado atual:');
         const screenshot = await page.screenshot({ type: 'jpeg', quality: 70 });
@@ -408,7 +415,7 @@ async function loginToAmazon(
 
     return { success: isLoggedIn, twoFactorRequired: challengeAttempts > 0 };
   } catch (err) {
-    logger.error({ err }, 'Amazon login flow error');
+    logger.error({ errorName: safeErrorName(err) }, 'Amazon login flow error');
     return { success: false, twoFactorRequired: false };
   }
 }
@@ -436,7 +443,7 @@ async function handleCvfChallenge(page: Page, userReply: string): Promise<boolea
 
   if (gridNumbers.length > 0 && gridNumbers.length === reply.split(/[\s,;]+/).filter(Boolean).length) {
     // User provided grid cell numbers — click each one
-    logger.info({ gridNumbers }, 'Clicking grid cells for visual puzzle');
+    logger.info({ selectedCellCount: gridNumbers.length }, 'Clicking grid cells for visual puzzle');
 
     // Find all clickable images in the puzzle grid.
     // The evaluate() callback runs in browser context (DOM available).
@@ -480,7 +487,7 @@ async function handleCvfChallenge(page: Page, userReply: string): Promise<boolea
       if (idx >= 0 && idx < gridImages.length) {
         const { x, y } = gridImages[idx];
         await page.mouse.click(x, y);
-        logger.debug({ num, x, y }, 'Clicked grid cell');
+        logger.debug({ selected: true }, 'Clicked grid cell');
         await page.waitForTimeout(300);
       }
     }
@@ -642,7 +649,7 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
 
   // Navigate to order history for the year
   const url = `https://www.amazon.es/gp/your-account/order-history?orderFilter=year-${year}`;
-  logger.info({ url, targetMonth: targetPrefix }, 'Navigating to Amazon order history');
+  logger.info('Navigating to Amazon order history');
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForTimeout(2000);
 
@@ -672,9 +679,7 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
     }
 
     if (cards.length === 0) {
-      // Last resort: dump page info for debugging
-      const pageText = (await page.textContent('body') || '').replace(/\s+/g, ' ').substring(0, 400);
-      logger.info({ pageText }, 'No order cards found on page (debug excerpt)');
+      logger.info('No order cards found on page');
       break;
     }
 
@@ -758,7 +763,7 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
 
         // If no date found, skip (can't determine month)
         if (!date) {
-          logger.debug({ orderId }, 'Could not extract date from order card');
+          logger.debug({ dateParsed: false }, 'Could not extract date from order card');
           continue;
         }
         datedCards += 1;
@@ -785,15 +790,15 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
         }
 
         orders.push({ orderId, date, total });
-        logger.debug({ orderId, date, total }, 'Found order');
+        logger.debug({ dateParsed: true, totalPresent: total !== null }, 'Found order');
       } catch (err) {
-        logger.warn({ err }, 'Error parsing order card');
+        logger.warn({ errorName: safeErrorName(err) }, 'Error parsing order card');
       }
     }
 
     if (datedCards > 0 && targetMonthCards === 0 && olderThanTargetCards === datedCards) {
       logger.info(
-        { pageNum, targetMonth: targetPrefix, datedCards },
+        { pageNum, datedCards },
         'Stopping Amazon pagination: page is entirely older than target month',
       );
       break;
@@ -817,7 +822,7 @@ async function scrapeOrders(page: Page, year: number, month: number): Promise<Am
     }
   }
 
-  logger.info({ totalOrders: orders.length, year, month }, 'Order scraping complete');
+  logger.info({ totalOrders: orders.length }, 'Order scraping complete');
   return orders;
 }
 
@@ -851,7 +856,7 @@ async function fetchInvoiceUrls(page: Page, orderId: string): Promise<InvoiceLin
     const response = await page.request.get(popoverUrl, { timeout: 15000 });
 
     if (!response.ok()) {
-      logger.warn({ orderId, status: response.status() }, 'Invoice popover request failed');
+      logger.warn({ status: response.status() }, 'Invoice popover request failed');
       return [];
     }
 
@@ -873,10 +878,10 @@ async function fetchInvoiceUrls(page: Page, orderId: string): Promise<InvoiceLin
       idx++;
     }
 
-    logger.info({ orderId, invoiceCount: links.length }, 'Fetched invoice URLs from popover');
+    logger.info({ invoiceCount: links.length }, 'Fetched invoice URLs from popover');
     return links;
   } catch (err) {
-    logger.warn({ err, orderId }, 'Failed to fetch invoice popover');
+    logger.warn({ errorName: safeErrorName(err) }, 'Failed to fetch invoice popover');
     return [];
   }
 }
@@ -895,7 +900,7 @@ async function downloadInvoicePdf(page: Page, url: string): Promise<Buffer | nul
 
       if (!response.ok()) {
         const status = response.status();
-        logger.warn({ url, status, attempt }, 'Invoice PDF download failed');
+        logger.warn({ status, attempt }, 'Invoice PDF download failed');
         if ((status === 429 || status === 502 || status === 503 || status === 504) && attempt < 3) {
           await page.waitForTimeout(500 * attempt + Math.random() * 500);
           continue;
@@ -913,16 +918,19 @@ async function downloadInvoicePdf(page: Page, url: string): Promise<Buffer | nul
 
       if (!isPdf) {
         logger.warn(
-          { url, contentType, bodyLen: body.length },
+          { contentTypePresent: contentType.length > 0, bodyLen: body.length },
           'Invoice download did not return a PDF',
         );
         return null;
       }
 
-      logger.info({ url: url.substring(0, 80), sizeKB: Math.round(body.length / 1024) }, 'Invoice PDF downloaded');
+      logger.info({ sizeKB: Math.round(body.length / 1024) }, 'Invoice PDF downloaded');
       return body;
     } catch (err) {
-      logger.warn({ err, url: url.substring(0, 80), attempt }, 'Failed to download invoice PDF');
+      logger.warn(
+        { errorName: safeErrorName(err), attempt },
+        'Failed to download invoice PDF',
+      );
       if (attempt < 3) {
         await page.waitForTimeout(500 * attempt + Math.random() * 500);
         continue;
@@ -1036,7 +1044,7 @@ export async function collectAmazonInvoices(
     const orders = await scrapeOrders(page, year, month);
 
     if (orders.length === 0) {
-      logger.info({ year, month }, 'No orders found for target month');
+      logger.info('No orders found for target month');
       if (sendTelegram) await sendTelegram(`📭 Nenhuma encomenda encontrada para ${monthFolder}.`);
       await saveSession(context);
       result.durationMs = Date.now() - startTime;
@@ -1068,7 +1076,7 @@ export async function collectAmazonInvoices(
           orderResult.status = 'duplicate';
           result.totalDuplicates++;
           result.orders.push(orderResult);
-          logger.debug({ orderId: order.orderId }, 'Amazon order already filed (duplicate)');
+          logger.debug('Amazon order already filed (duplicate)');
           continue;
         }
 
@@ -1105,7 +1113,7 @@ export async function collectAmazonInvoices(
 
           // Check if THIS specific invoice was already filed
           if (isDuplicate('Amazon.es', invoiceRef, userId) || isEmailAlreadyFiled(invoiceRef, userId)) {
-            logger.debug({ invoiceRef }, 'Invoice already filed (duplicate)');
+            logger.debug('Invoice already filed (duplicate)');
             result.totalDuplicates++;
             continue;
           }
@@ -1113,7 +1121,7 @@ export async function collectAmazonInvoices(
           const pdfBuffer = await downloadInvoicePdf(page, inv.url);
 
           if (!pdfBuffer) {
-            logger.warn({ orderId: order.orderId, invoice: inv.label }, 'Failed to download invoice PDF');
+            logger.warn('Failed to download invoice PDF');
             errorCount++;
             continue;
           }
@@ -1184,9 +1192,9 @@ export async function collectAmazonInvoices(
         }
       } catch (err) {
         orderResult.status = 'error';
-        orderResult.error = err instanceof Error ? err.message : 'Unknown error';
+        orderResult.error = 'Amazon order processing failed.';
         result.totalErrors++;
-        logger.error({ err, orderId: order.orderId }, 'Failed to process Amazon order');
+        logger.error({ errorName: safeErrorName(err) }, 'Failed to process Amazon order');
       }
 
       result.orders.push(orderResult);
@@ -1198,11 +1206,15 @@ export async function collectAmazonInvoices(
     // Save session before closing
     await saveSession(context);
   } catch (err) {
-    logger.error({ err }, 'Amazon collection failed');
+    logger.error({ errorName: safeErrorName(err) }, 'Amazon collection failed');
     result.totalErrors++;
   } finally {
     if (browser) {
-      try { await browser.close(); } catch (err) { logger.warn({ err }, 'Failed to close browser'); }
+      try {
+        await browser.close();
+      } catch (err) {
+        logger.warn({ errorName: safeErrorName(err) }, 'Failed to close browser');
+      }
     }
   }
 
@@ -1210,7 +1222,6 @@ export async function collectAmazonInvoices(
 
   logger.info(
     {
-      year, month,
       filed: result.totalFiled,
       duplicates: result.totalDuplicates,
       errors: result.totalErrors,

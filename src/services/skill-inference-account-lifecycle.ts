@@ -28,6 +28,7 @@ const ACCOUNT_DELETION_FENCE_TTL_MS = 15 * 60 * 1_000;
 const ACCOUNT_DELETION_DRAIN_TIMEOUT_MS = 30_000;
 const SKILL_INFERENCE_RUNTIME_INSTANCE_ID = crypto.randomUUID();
 const activeAccountInferenceControllers = new Map<number, Set<AbortController>>();
+const activeAccountDeletionFenceTokens = new Map<number, string>();
 
 function accountDeletionAbortReason(): Error & { code: 'ACCOUNT_DELETION_IN_PROGRESS' } {
   return Object.assign(new Error('account_deletion_in_progress'), {
@@ -63,38 +64,88 @@ export function beginSkillInferenceAccountDeletionFence(
       403,
     );
   }
-  const token = crypto.randomUUID();
   const now = Date.now();
-  db.prepare(`INSERT INTO local_inference_account_deletion_fences (
-      user_id, fence_token, runtime_instance_id, expires_at
-    ) VALUES (?, ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET
-      fence_token = excluded.fence_token,
-      runtime_instance_id = excluded.runtime_instance_id,
-      expires_at = excluded.expires_at,
-      created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    WHERE local_inference_account_deletion_fences.expires_at <= ?
-      OR local_inference_account_deletion_fences.runtime_instance_id <> excluded.runtime_instance_id`)
-    .run(
-      userId,
-      token,
-      SKILL_INFERENCE_RUNTIME_INSTANCE_ID,
-      now + ACCOUNT_DELETION_FENCE_TTL_MS,
-      now,
-    );
-  const acquired = db.prepare(`SELECT fence_token
-    FROM local_inference_account_deletion_fences WHERE user_id = ?`)
-    .get(userId) as { fence_token: string } | undefined;
-
-  for (const controller of activeAccountInferenceControllers.get(userId) ?? []) {
-    if (!controller.signal.aborted) controller.abort(accountDeletionAbortReason());
-  }
-  if (acquired?.fence_token !== token) {
+  if (activeAccountDeletionFenceTokens.has(userId)) {
     throw new SkillInferencePolicyError(
       'ACCOUNT_DELETION_IN_PROGRESS',
       'Account deletion is already in progress.',
       409,
     );
+  }
+  const token = db.transaction(() => {
+    const existing = db.prepare(`SELECT fence_token, runtime_instance_id, expires_at
+      FROM local_inference_account_deletion_fences WHERE user_id = ?`)
+      .get(userId) as {
+        fence_token: string;
+        runtime_instance_id: string;
+        expires_at: number;
+      } | undefined;
+    if (existing && existing.expires_at > now) {
+      // A failed deletion that already crossed an external-cleanup boundary
+      // retains its exact fence. Only the same live runtime may resume that
+      // token, and the in-memory owner check above prevents overlap.
+      if (existing.runtime_instance_id !== SKILL_INFERENCE_RUNTIME_INSTANCE_ID) {
+        throw new SkillInferencePolicyError(
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'Account deletion is already in progress.',
+          409,
+        );
+      }
+      const resumed = db.prepare(`UPDATE local_inference_account_deletion_fences
+        SET expires_at = ?
+        WHERE user_id = ? AND fence_token = ? AND runtime_instance_id = ?
+          AND expires_at > ?`)
+        .run(
+          now + ACCOUNT_DELETION_FENCE_TTL_MS,
+          userId,
+          existing.fence_token,
+          SKILL_INFERENCE_RUNTIME_INSTANCE_ID,
+          now,
+        ).changes;
+      if (resumed !== 1) {
+        throw new SkillInferencePolicyError(
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'Account deletion fence ownership changed during resume.',
+          409,
+        );
+      }
+      return existing.fence_token;
+    }
+
+    const nextToken = crypto.randomUUID();
+    db.prepare(`INSERT INTO local_inference_account_deletion_fences (
+        user_id, fence_token, runtime_instance_id, expires_at
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        fence_token = excluded.fence_token,
+        runtime_instance_id = excluded.runtime_instance_id,
+        expires_at = excluded.expires_at,
+        created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE local_inference_account_deletion_fences.expires_at <= ?`)
+      .run(
+        userId,
+        nextToken,
+        SKILL_INFERENCE_RUNTIME_INSTANCE_ID,
+        now + ACCOUNT_DELETION_FENCE_TTL_MS,
+        now,
+      );
+    const acquired = db.prepare(`SELECT fence_token, runtime_instance_id
+      FROM local_inference_account_deletion_fences WHERE user_id = ?`)
+      .get(userId) as { fence_token: string; runtime_instance_id: string } | undefined;
+    if (acquired?.fence_token !== nextToken
+        || acquired.runtime_instance_id !== SKILL_INFERENCE_RUNTIME_INSTANCE_ID) {
+      throw new SkillInferencePolicyError(
+        'ACCOUNT_DELETION_IN_PROGRESS',
+        'Account deletion is already in progress.',
+        409,
+      );
+    }
+    return nextToken;
+  }).immediate();
+  activeAccountDeletionFenceTokens.set(userId, token);
+
+  for (const controller of activeAccountInferenceControllers.get(userId) ?? []) {
+    if (!controller.signal.aborted) controller.abort(accountDeletionAbortReason());
   }
   return token;
 }
@@ -105,8 +156,80 @@ export function clearSkillInferenceAccountDeletionFence(
   db: Database.Database = getDb(),
 ): boolean {
   if (!Number.isSafeInteger(userId) || userId <= 0 || !fenceToken) return false;
-  return db.prepare(`DELETE FROM local_inference_account_deletion_fences
-    WHERE user_id = ? AND fence_token = ?`).run(userId, fenceToken).changes === 1;
+  try {
+    return db.prepare(`DELETE FROM local_inference_account_deletion_fences
+      WHERE user_id = ? AND fence_token = ?`).run(userId, fenceToken).changes === 1;
+  } finally {
+    if (activeAccountDeletionFenceTokens.get(userId) === fenceToken) {
+      activeAccountDeletionFenceTokens.delete(userId);
+    }
+  }
+}
+
+/**
+ * Keep the exact durable fence after external cleanup has begun, but release
+ * this request's in-process ownership so a later request in the same runtime
+ * can resume it. A foreign runtime must wait for proven lease expiry.
+ */
+export function retainSkillInferenceAccountDeletionFenceForRetry(
+  userId: number,
+  fenceToken: string,
+  db: Database.Database = getDb(),
+): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0 || !fenceToken) return false;
+  const now = Date.now();
+  try {
+    return db.prepare(`UPDATE local_inference_account_deletion_fences
+      SET expires_at = ?
+      WHERE user_id = ? AND fence_token = ? AND runtime_instance_id = ?
+        AND expires_at > ?`)
+      .run(
+        now + ACCOUNT_DELETION_FENCE_TTL_MS,
+        userId,
+        fenceToken,
+        SKILL_INFERENCE_RUNTIME_INSTANCE_ID,
+        now,
+      ).changes === 1;
+  } finally {
+    if (activeAccountDeletionFenceTokens.get(userId) === fenceToken) {
+      activeAccountDeletionFenceTokens.delete(userId);
+    }
+  }
+}
+
+/** Release only process-local ownership after the durable row was erased. */
+export function releaseSkillInferenceAccountDeletionFenceOwnership(
+  userId: number,
+  fenceToken: string,
+): boolean {
+  if (activeAccountDeletionFenceTokens.get(userId) !== fenceToken) return false;
+  activeAccountDeletionFenceTokens.delete(userId);
+  return true;
+}
+
+/**
+ * Extend only the exact still-live fence owned by this deletion process. An
+ * expired fence is never resurrected because another process may already have
+ * admitted work during that interval.
+ */
+export function renewSkillInferenceAccountDeletionFence(
+  userId: number,
+  fenceToken: string,
+  db: Database.Database = getDb(),
+): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0 || !fenceToken) return false;
+  const now = Date.now();
+  return db.prepare(`UPDATE local_inference_account_deletion_fences
+    SET expires_at = ?
+    WHERE user_id = ? AND fence_token = ? AND runtime_instance_id = ?
+      AND expires_at > ?`)
+    .run(
+      now + ACCOUNT_DELETION_FENCE_TTL_MS,
+      userId,
+      fenceToken,
+      SKILL_INFERENCE_RUNTIME_INSTANCE_ID,
+      now,
+    ).changes === 1;
 }
 
 function registerAccountInferenceController(

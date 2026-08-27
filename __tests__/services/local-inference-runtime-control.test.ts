@@ -5,7 +5,20 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-const { runtimeConfigMock, localPrimaryConfigMock, modelLicenseMock } = vi.hoisted(() => ({
+const {
+  runtimeConfigMock,
+  localPrimaryConfigMock,
+  modelLicenseMock,
+  activationEvidenceMock,
+  releaseSourceMock,
+  MockActivationEvidenceError,
+} = vi.hoisted(() => {
+  class ActivationEvidenceError extends Error {
+    constructor(readonly code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
   runtimeConfigMock: {
     isStaging: true,
     ollama: {
@@ -17,12 +30,35 @@ const { runtimeConfigMock, localPrimaryConfigMock, modelLicenseMock } = vi.hoist
     contentProxyEnabled: true,
     autoRollbackEnabled: true,
     gatewaySocketPath: '/run/nexus-inference/staging/ollama.sock',
+    activationEvidencePath: '/app/data/private/economics.json',
+    activationEvidenceHmacSecret: 'test-activation-evidence-secret-at-least-32-bytes',
     staffUserIds: [42],
   },
   modelLicenseMock: {
     commercialUseApproved: true,
   },
-}));
+  activationEvidenceMock: vi.fn((input: { evidenceReference?: string }) => {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(input.evidenceReference ?? '')) {
+      throw new ActivationEvidenceError(
+        'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REFERENCE_INVALID',
+        'Production activation requires an exact evidence digest.',
+      );
+    }
+    return {
+      evidenceReference: input.evidenceReference,
+      artifactSha256: input.evidenceReference,
+      payloadSha256: `sha256:${'d'.repeat(64)}`,
+      sourceBindingSha256: `sha256:${'e'.repeat(64)}`,
+      workloadSourceSha: 'a'.repeat(40),
+      producerSourceSha: 'b'.repeat(40),
+    };
+  }),
+  releaseSourceMock: { value: 'b'.repeat(40) },
+  MockActivationEvidenceError: ActivationEvidenceError,
+  };
+});
+
+const productionEvidenceReference = `sha256:${'c'.repeat(64)}`;
 
 vi.mock('../../src/config', () => ({
   config: runtimeConfigMock,
@@ -30,6 +66,12 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: localPrimaryConfigMock,
+}));
+
+vi.mock('../../src/services/local-inference-activation-evidence', () => ({
+  LocalInferenceActivationEvidenceError: MockActivationEvidenceError,
+  validateLocalInferenceActivationEvidence: activationEvidenceMock,
+  resolveCurrentReleaseSourceSha: vi.fn(() => releaseSourceMock.value),
 }));
 
 vi.mock('../../src/services/ollama-model-policy', async () => {
@@ -55,6 +97,9 @@ vi.mock('../../src/services/ollama-model-policy', async () => {
 
 const migrationSql = readFileSync(
   resolve(__dirname, '../../migrations/284_local_primary_inference_foundation.sql'),
+  'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/301_local_inference_activation_release_binding.sql'),
   'utf8',
 );
 
@@ -162,7 +207,7 @@ describe('local inference runtime control', () => {
     });
     expect(db.prepare(`SELECT previous_mode, mode, actor_type, actor_user_id
       FROM local_inference_control_events`).get()).toEqual({
-      previous_mode: 'canary',
+      previous_mode: 'off',
       mode: 'off',
       actor_type: 'system_monitor',
       actor_user_id: null,
@@ -332,7 +377,7 @@ describe('local inference runtime control', () => {
     try {
       expect(control.setLocalInferenceRuntimeControl({
         mode: 'active', rolloutPercent: 100, reason: 'release acceptance passed', updatedBy: 42,
-        evidenceReference: 'release:sha256:acceptance-and-economics',
+        evidenceReference: productionEvidenceReference,
         nonAiP95BaselineMs: 120,
         nonAiBaselineSampleCount: 25,
         nonAiBaselineCapturedAt: '2026-08-12T12:00:00.000Z',
@@ -349,7 +394,7 @@ describe('local inference runtime control', () => {
         rolloutPercent: 100,
         reason: 'attempt to replace baseline',
         updatedBy: 42,
-        evidenceReference: 'release:sha256:acceptance-and-economics',
+        evidenceReference: productionEvidenceReference,
         nonAiP95BaselineMs: 1,
         nonAiBaselineSampleCount: 25,
         nonAiBaselineCapturedAt: '2026-08-12T13:00:00.000Z',
@@ -403,7 +448,7 @@ describe('local inference runtime control', () => {
         rolloutPercent: 100,
         reason: 'release acceptance passed',
         updatedBy: 42,
-        evidenceReference: 'release:sha256:acceptance-and-economics',
+        evidenceReference: productionEvidenceReference,
         nonAiP95BaselineMs: 120,
         nonAiBaselineSampleCount: 25,
         nonAiBaselineCapturedAt: '2026-08-12T12:00:00.000Z',
@@ -419,15 +464,40 @@ describe('local inference runtime control', () => {
       expect(() => control.setLocalInferenceRuntimeControl({
         ...activeInput,
         evidenceReference: '',
-      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED' }));
+      }, db)).toThrowError(expect.objectContaining({
+        code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REFERENCE_INVALID',
+      }));
       expect(() => control.setLocalInferenceRuntimeControl({
         ...activeInput,
         evidenceReference: '   ',
-      }, db)).toThrowError(expect.objectContaining({ code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REQUIRED' }));
+      }, db)).toThrowError(expect.objectContaining({
+        code: 'LOCAL_CONTROL_ACCEPTANCE_EVIDENCE_REFERENCE_INVALID',
+      }));
 
       localPrimaryConfigMock.staffUserIds = [];
       expect(control.setLocalInferenceRuntimeControl(activeInput, db)).toMatchObject({
         mode: 'active', rolloutPercent: 100,
+      });
+      expect(db.prepare(`SELECT mode, rollout_percent, release_bound_mode,
+          activation_evidence_reference, activation_payload_sha256,
+          activation_source_binding_sha256, activation_producer_source_sha
+        FROM local_inference_runtime_control WHERE environment = 'production'`).get()).toEqual({
+        mode: 'off',
+        rollout_percent: 0,
+        release_bound_mode: 'active',
+        activation_evidence_reference: productionEvidenceReference,
+        activation_payload_sha256: `sha256:${'d'.repeat(64)}`,
+        activation_source_binding_sha256: `sha256:${'e'.repeat(64)}`,
+        activation_producer_source_sha: 'b'.repeat(40),
+      });
+      expect(db.prepare(`SELECT mode, rollout_percent
+        FROM local_inference_runtime_control WHERE environment = 'production'`).get()).toEqual({
+        mode: 'off',
+        rollout_percent: 0,
+      });
+      expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({
+        mode: 'active',
+        rolloutPercent: 100,
       });
     } finally {
       localPrimaryConfigMock.autoRollbackEnabled = true;
@@ -482,11 +552,18 @@ describe('local inference runtime control', () => {
 
     try {
       db.prepare(`UPDATE local_inference_runtime_control
-        SET mode = 'active', rollout_percent = 100,
+        SET mode = 'off', rollout_percent = 0, release_bound_mode = 'active',
             model_manifest_version = '2026-08-24.1',
             active_model_digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            skill_profile_version = 'nexus-skill-inference-v5', updated_by = 42
-        WHERE environment = 'production'`).run();
+            skill_profile_version = 'nexus-skill-inference-v5', updated_by = 42,
+            activation_evidence_reference = ?, activation_payload_sha256 = ?,
+            activation_source_binding_sha256 = ?, activation_producer_source_sha = ?
+        WHERE environment = 'production'`).run(
+          productionEvidenceReference,
+          `sha256:${'d'.repeat(64)}`,
+          `sha256:${'e'.repeat(64)}`,
+          releaseSourceMock.value,
+        );
 
       localPrimaryConfigMock.autoRollbackEnabled = false;
       expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({
@@ -497,6 +574,13 @@ describe('local inference runtime control', () => {
       localPrimaryConfigMock.autoRollbackEnabled = true;
       localPrimaryConfigMock.staffUserIds = [];
       expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({ mode: 'active', rolloutPercent: 100 });
+
+      releaseSourceMock.value = 'f'.repeat(40);
+      expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({
+        mode: 'off', rolloutPercent: 0,
+        reason: 'activation_release_changed_requires_reactivation',
+      });
+      releaseSourceMock.value = 'b'.repeat(40);
 
       localPrimaryConfigMock.gatewaySocketPath = '';
       expect(control.getLocalInferenceRuntimeControl(db)).toMatchObject({
@@ -517,6 +601,7 @@ describe('local inference runtime control', () => {
       localPrimaryConfigMock.autoRollbackEnabled = true;
       localPrimaryConfigMock.staffUserIds = [42];
       localPrimaryConfigMock.gatewaySocketPath = '/run/nexus-inference/staging/ollama.sock';
+      releaseSourceMock.value = 'b'.repeat(40);
       runtimeConfigMock.isStaging = true;
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;

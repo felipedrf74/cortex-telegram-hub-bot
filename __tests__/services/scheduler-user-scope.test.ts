@@ -205,7 +205,9 @@ vi.mock('../../src/services/task-store/task-ledger-retention', () => ({
   runTaskLedgerRetentionJob: (...args: unknown[]) => mockRunTaskLedgerRetentionJob(...args),
 }));
 vi.mock('../../src/skills/skill-manager', () => ({ isCronJobEnabled: vi.fn(() => true) }));
-vi.mock('../../src/services/invoice-queue', () => ({ flushQueue: vi.fn(), getPendingCount: vi.fn(() => 0) }));
+vi.mock('../../src/services/invoice-queue', () => ({
+  flushQueue: vi.fn(async () => ({ flushed: 0, failed: 0, remaining: 0 })),
+}));
 vi.mock('../../src/domains/domain-handler', () => ({ setLastCoachState: vi.fn() }));
 vi.mock('../../src/api/routes/chat-message-context', () => ({ setLastActiveDomain: vi.fn() }));
 vi.mock('../../src/state/conversation', () => ({ addToConversation: vi.fn() }));

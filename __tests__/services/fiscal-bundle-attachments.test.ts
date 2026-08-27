@@ -5,6 +5,7 @@ const mockGetOrCreateFiscalCollectionProfile = vi.fn();
 const mockUpdateFiscalCollectionProfile = vi.fn();
 const mockGetAllVendors = vi.fn();
 const mockGetFilingsForPeriod = vi.fn();
+const mockHasStoredInvoiceObjectOwnership = vi.fn();
 const mockVerifyInvoiceObjectChecksum = vi.fn();
 const mockFindFiscalBundleSendByIdempotencyKey = vi.fn();
 const mockFindFiscalBundleSendForPeriod = vi.fn();
@@ -46,6 +47,8 @@ vi.mock('../../src/state/fiscal-collection-profiles', () => ({
 
 vi.mock('../../src/state/invoice-filings', () => ({
   getFilingsForPeriod: (...args: unknown[]) => mockGetFilingsForPeriod(...args),
+  hasStoredInvoiceObjectOwnership: (...args: unknown[]) =>
+    mockHasStoredInvoiceObjectOwnership(...args),
 }));
 
 vi.mock('../../src/services/invoice-object-storage', () => ({
@@ -97,6 +100,8 @@ describe('Fiscal bundle attachment support', () => {
     mockGetAllVendors.mockReset();
     mockGetFilingsForPeriod.mockReset();
     mockGetFilingsForPeriod.mockReturnValue([]);
+    mockHasStoredInvoiceObjectOwnership.mockReset();
+    mockHasStoredInvoiceObjectOwnership.mockReturnValue(true);
     mockVerifyInvoiceObjectChecksum.mockReset();
     mockFindFiscalBundleSendByIdempotencyKey.mockReset();
     mockFindFiscalBundleSendByIdempotencyKey.mockReturnValue(null);
@@ -269,6 +274,36 @@ describe('Fiscal bundle attachment support', () => {
         }),
       ],
     }));
+  });
+
+  it('refuses a filed object whose manifest does not prove the same owner', async () => {
+    mockGetOutlookAttachments.mockResolvedValue([]);
+    mockGetFilingsForPeriod.mockReturnValue([{
+      id: 503,
+      tenant_id: 12,
+      user_id: 12,
+      vendor: 'Foreign object fixture',
+      document_date: '2026-04-10',
+      invoice_number: 'FOREIGN-1',
+      source: 'photo',
+      source_ref: 'photo:foreign',
+      object_key: 'invoices/99/99/2026/Abr-2026/foreign.pdf',
+      checksum: 'checksum-foreign',
+      mime: 'application/pdf',
+      bytes: 8,
+      storage_backend: 'filesystem',
+      status: 'filed',
+      created_at: '2026-04-10T12:00:00Z',
+    }]);
+    mockHasStoredInvoiceObjectOwnership.mockReturnValue(false);
+
+    const result = await sendFiscalBundleNow(12, {
+      startAt: '2026-04-01T00:00:00Z',
+      endAt: '2026-04-14T23:59:59Z',
+    });
+
+    expect(result.warnings).toContain('FILED_OBJECT_OWNERSHIP_INVALID:503');
+    expect(mockVerifyInvoiceObjectChecksum).not.toHaveBeenCalled();
   });
 
   it('includes today-dated durable filed objects in the default bundle period', async () => {

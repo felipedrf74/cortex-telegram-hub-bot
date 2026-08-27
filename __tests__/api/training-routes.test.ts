@@ -855,7 +855,10 @@ describe('Training API routes', () => {
 
   it('generates coach reports against the active tenant while billing the authenticated actor', async () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 34, status: 'active' });
-    const res = await dispatch('POST', '/coach/report', {}, { refresh: true }, 12, {}, 34);
+    const res = await dispatch('POST', '/coach/report', {}, {
+      refresh: true,
+      allowSensitiveCloudRouting: true,
+    }, 12, {}, 34);
 
     expect(res.statusCode).toBe(200);
     expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(34, {
@@ -863,12 +866,31 @@ describe('Training API routes', () => {
       meteringUserId: 12,
       budgetRequestSource: 'interactive',
       budgetJobName: 'coach_report',
+      allowSensitiveCloudRouting: true,
     });
     expect(mockSetCache).toHaveBeenCalledWith(
       'coach-briefing:34',
       expect.any(Object),
       expect.any(Number),
     );
+  });
+
+  it('rejects unknown or non-boolean coach report fields at the closed request boundary', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
+
+    const unknown = await dispatch('POST', '/coach/report', {}, {
+      refresh: true,
+      prompt: 'must not be accepted',
+    });
+    const mistyped = await dispatch('POST', '/coach/report', {}, {
+      allowSensitiveCloudRouting: 'true',
+    });
+
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.body.error.code).toBe('INVALID_REQUEST_BODY');
+    expect(mistyped.statusCode).toBe(400);
+    expect(mistyped.body.error.code).toBe('INVALID_REQUEST_BODY');
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
 
   it.each([

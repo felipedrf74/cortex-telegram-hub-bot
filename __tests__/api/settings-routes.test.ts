@@ -545,6 +545,76 @@ describe('Settings language route', () => {
     expect(JSON.stringify(res.body.data.contentNotifications)).not.toContain('Tenant 55');
   });
 
+  it('returns the sanitized invoice archive without internal artifact locators', async () => {
+    const vendor = testDb.prepare(`INSERT INTO invoice_vendors (
+        name, sender_pattern, subject_patterns, enabled, user_id, tenant_id
+      ) VALUES ('Utility', 'billing.example', 'invoice', 1, 1, 1)`).run();
+    testDb.prepare(`INSERT INTO invoice_vendor_senders (
+        vendor_id, tenant_id, user_id, sender_pattern, enabled
+      ) VALUES (?, 1, 1, 'sender@billing.example', 1)`).run(vendor.lastInsertRowid);
+    testDb.prepare(`INSERT INTO fiscal_collection_profiles (
+        user_id, tenant_id, destination_email, cadence, enabled
+      ) VALUES (1, 1, 'owner@example.test', 'monthly', 1)`).run();
+    testDb.prepare(`INSERT INTO invoice_filings (
+        vendor, source, remote_path, object_key, storage_backend, status,
+        user_id, tenant_id, filename, folder_path, error_message
+      ) VALUES ('Utility', 'email', '/internal/remote/path',
+        'invoices/1/1/private.pdf', 'filesystem', 'filed', 1, 1, 'private.pdf',
+        '/internal/accounting/folder', '/internal/provider/error')`).run();
+    testDb.prepare(`INSERT INTO invoice_queue (
+        type, local_path, analysis_json, source, status, user_id, tenant_id, error_message
+      ) VALUES ('pdf', '/internal/spool/private.pdf', '{"vendor":"Utility"}',
+        'email', 'pending', 1, 1, '/internal/queue/error')`).run();
+    testDb.prepare(`INSERT INTO fiscal_bundle_sends (
+        tenant_id, user_id, period_start, period_end, document_count, total_bytes,
+        idempotency_key, result_json
+      ) VALUES (1, 1, '2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z',
+        1, 123, 'private-replay-key',
+        '{"providerPayload":"private-provider-result","documents":[{"provider":"gmail","ruleName":"Utility","subject":"July invoice","from":"sender@billing.example","receivedAt":"2026-07-20T10:00:00.000Z","filename":"july.pdf","sizeBytes":123,"internalPath":"/internal/fiscal/file"}]}')`).run();
+    testDb.prepare(`INSERT INTO invoice_artifact_manifests (
+        tenant_id, user_id, artifact_kind, artifact_locator, storage_backend,
+        state, write_token, write_lease_expires_at, created_at, updated_at
+      ) VALUES (1, 1, 'stored_object', 'invoices/1/1/private.pdf', 'filesystem',
+        'stored', 'private-write-token', 1, datetime('now'), datetime('now'))`).run();
+
+    const res = await dispatchAccountExport(1, 1);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.invoices).toMatchObject({
+      filings: [expect.objectContaining({ filename: 'private.pdf' })],
+      queue: [expect.objectContaining({ analysis: { vendor: 'Utility' } })],
+      vendors: [expect.objectContaining({ name: 'Utility' })],
+      vendorSenders: [expect.objectContaining({ senderPattern: 'sender@billing.example' })],
+      fiscalProfiles: [expect.objectContaining({ destinationEmail: 'owner@example.test' })],
+      fiscalBundleSends: [expect.objectContaining({
+        documentCount: 1,
+        documents: [expect.objectContaining({ subject: 'July invoice', filename: 'july.pdf' })],
+      })],
+      artifactManifests: [expect.objectContaining({ artifactKind: 'stored_object' })],
+    });
+    expect(res.body.data.invoiceFilings).toEqual(res.body.data.invoices.filings);
+    const serialized = JSON.stringify({
+      invoices: res.body.data.invoices,
+      invoiceFilings: res.body.data.invoiceFilings,
+    });
+    expect(serialized).not.toContain('/internal/');
+    expect(serialized).not.toContain('invoices/1/1/private.pdf');
+    expect(serialized).not.toContain('private-write-token');
+    expect(serialized).not.toContain('artifactLocator');
+    expect(serialized).not.toContain('objectKey');
+    expect(serialized).not.toContain('private-replay-key');
+    expect(serialized).not.toContain('private-provider-result');
+    expect(serialized).not.toContain('errorCode');
+  });
+
+  it('fails the account export instead of returning a partial invoice archive', async () => {
+    testDb.exec('DROP TABLE invoice_artifact_manifests');
+
+    const res = await dispatchAccountExport(1, 1);
+
+    expect(res.statusCode).toBe(500);
+  });
+
   it('audit-logs account deletion after cascade so the row survives erasure', async () => {
     const res = await dispatchAccountDelete(1);
 

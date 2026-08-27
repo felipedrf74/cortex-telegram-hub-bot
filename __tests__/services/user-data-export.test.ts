@@ -69,16 +69,30 @@ vi.mock('../../src/config', () => ({
 import { addTransaction, calculateAndStoreTax, markTaxPaid } from '../../src/services/finance-tracker';
 import {
   exportUserFinanceData, deleteUserFinanceData, countUserFinanceData,
-  exportAllUserData, deleteAllUserData, deleteAllUserDataForAccountDeletion,
+  exportAllUserData, deleteAllUserData as deleteAllUserDataWithToken, deleteAllUserDataForAccountDeletion,
   getAccountDeletionInventoryForUser,
   revokeThirdPartyOAuthTokensForUser,
 } from '../../src/services/user-data-export';
+import {
+  beginSkillInferenceAccountDeletionFence,
+  clearSkillInferenceAccountDeletionFence,
+} from '../../src/services/skill-inference-account-lifecycle';
 import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
 import { config } from '../../src/config';
 import { encryptValue } from '../../src/utils/encryption';
 import { encryptTrainingProfileSnapshot } from '../../src/services/training-profile-snapshot-encryption';
 import { createContentArtifact, createContentWorkspaceItem } from '../../src/services/content-workspace';
 import { recordContentPerformanceOutcome } from '../../src/services/content-performance-lineage';
+
+function deleteAllUserData(userId: number): Record<string, number> {
+  const fenceToken = beginSkillInferenceAccountDeletionFence(userId, testDb);
+  try {
+    return deleteAllUserDataWithToken(userId, fenceToken);
+  } catch (error) {
+    clearSkillInferenceAccountDeletionFence(userId, fenceToken, testDb);
+    throw error;
+  }
+}
 
 function seedCanonicalContentItem(input: {
   tenantId: number;
@@ -428,6 +442,54 @@ describe('exportAllUserData', () => {
     expect(other.billing.appleNotifications).toHaveLength(1);
   });
 
+  it('exports scoped invoice/fiscal subject data without internal artifact locators', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2);
+    testDb.prepare(`INSERT INTO invoice_filings (
+        tenant_id, user_id, vendor, amount, document_date, invoice_number, source,
+        object_key, checksum, mime, bytes, storage_backend, status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'photo', ?, ?, 'application/pdf', 123, 'filesystem', 'filed')`)
+      .run(1, 1, 'Owner vendor', 'private amount', '2026-08-01', 'owner-number',
+        'invoices/1/1/owner.pdf', 'owner-checksum');
+    testDb.prepare(`INSERT INTO invoice_filings (
+        tenant_id, user_id, vendor, source, status
+      ) VALUES (2, 2, 'Other vendor', 'photo', 'filed')`).run();
+    testDb.prepare(`INSERT INTO invoice_queue (
+        type, local_path, analysis_json, source, tenant_id, user_id, status
+      ) VALUES ('pdf', '/private/internal-owner-path', ?, 'email', 1, 1, 'pending')`)
+      .run(JSON.stringify({ vendor: 'Queued owner vendor' }));
+    testDb.prepare(`INSERT INTO invoice_vendors (
+        name, sender_pattern, subject_patterns, enabled, user_id, tenant_id
+      ) VALUES ('Owner rule', 'owner.example', 'invoice', 1, 1, 1)`).run();
+    testDb.prepare(`INSERT INTO fiscal_collection_profiles (
+        user_id, tenant_id, destination_email, cadence
+      ) VALUES (1, 1, 'owner-accountant@example.test', 'monthly')`).run();
+    testDb.prepare(`INSERT INTO invoice_artifact_manifests (
+        tenant_id, user_id, artifact_kind, artifact_locator, storage_backend,
+        state, write_token, write_lease_expires_at, created_at, updated_at
+      ) VALUES (1, 1, 'stored_object', 'invoices/1/1/private-locator.pdf',
+        'filesystem', 'stored', 'private-write-token', 0,
+        '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`).run();
+
+    const exported = exportAllUserData(1).invoices;
+    expect(exported.filings).toEqual([
+      expect.objectContaining({ vendor: 'Owner vendor', invoiceNumber: 'owner-number' }),
+    ]);
+    expect(exported.queue).toEqual([
+      expect.objectContaining({ analysis: { vendor: 'Queued owner vendor' } }),
+    ]);
+    expect(exported.vendors).toHaveLength(1);
+    expect(exported.fiscalProfiles).toEqual([
+      expect.objectContaining({ destinationEmail: 'owner-accountant@example.test' }),
+    ]);
+    expect(exported.artifactManifests).toHaveLength(1);
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain('/private/internal-owner-path');
+    expect(serialized).not.toContain('private-locator.pdf');
+    expect(serialized).not.toContain('private-write-token');
+    expect(serialized).not.toContain('Other vendor');
+  });
+
   it('exports and erases scoped device-inference metadata without prompt or output fields', () => {
     seedUser(testDb, 1);
     seedUser(testDb, 2);
@@ -506,6 +568,71 @@ describe('exportAllUserData', () => {
       SELECT user_id, provider FROM user_oauth_connection_health
       ORDER BY user_id
     `).all()).toEqual([{ user_id: 2, provider: 'outlook' }]);
+  });
+
+  it('exports and erases only owner-scoped webhook data without secrets or headers', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2);
+    const subscriptionInsert = testDb.prepare(`
+      INSERT INTO webhook_subscriptions (
+        provider, endpoint_path, secret, metadata, user_id
+      ) VALUES ('custom', ?, ?, ?, ?)
+    `);
+    const ownerSubscriptionId = Number(subscriptionInsert.run(
+      '/api/webhooks/custom',
+      'owner-secret',
+      JSON.stringify({ resource: 'owner-resource' }),
+      1,
+    ).lastInsertRowid);
+    const otherSubscriptionId = Number(subscriptionInsert.run(
+      '/api/webhooks/custom',
+      'other-secret',
+      JSON.stringify({ resource: 'other-resource' }),
+      2,
+    ).lastInsertRowid);
+    const eventInsert = testDb.prepare(`
+      INSERT INTO webhook_events (
+        subscription_id, provider, event_type, payload, headers,
+        idempotency_key, user_id
+      ) VALUES (?, 'custom', 'updated', ?, ?, ?, ?)
+    `);
+    eventInsert.run(
+      ownerSubscriptionId,
+      JSON.stringify({ record: 'owner-record' }),
+      JSON.stringify({ authorization: 'owner-header-secret' }),
+      'owner-event',
+      1,
+    );
+    eventInsert.run(
+      otherSubscriptionId,
+      JSON.stringify({ record: 'other-record' }),
+      JSON.stringify({ authorization: 'other-header-secret' }),
+      'other-event',
+      2,
+    );
+
+    const exported = exportAllUserData(1).webhooks;
+    expect(exported.subscriptions).toEqual([
+      expect.objectContaining({
+        provider: 'custom',
+        metadata: { resource: 'owner-resource' },
+      }),
+    ]);
+    expect(exported.events).toEqual([
+      expect.objectContaining({
+        eventType: 'updated',
+        payload: { record: 'owner-record' },
+      }),
+    ]);
+    expect(JSON.stringify(exported)).not.toContain('owner-secret');
+    expect(JSON.stringify(exported)).not.toContain('owner-header-secret');
+    expect(JSON.stringify(exported)).not.toContain('other-record');
+
+    const counts = deleteAllUserData(1);
+    expect(counts.webhook_events).toBe(1);
+    expect(counts.webhook_subscriptions).toBe(1);
+    expect(exportAllUserData(1).webhooks).toEqual({ subscriptions: [], events: [] });
+    expect(exportAllUserData(2).webhooks.events).toHaveLength(1);
   });
 
   it('exports notification decision logs with type from the matching scoped intent', () => {
@@ -1058,6 +1185,27 @@ describe('deleteAllUserData', () => {
     expect(counts['users']).toBe(1);
   });
 
+  it('refuses transactional erasure while a provider Batch intent lacks deletion proof', () => {
+    seedUser(testDb, 1);
+    const stageKey = 'a'.repeat(64);
+    testDb.prepare(`INSERT INTO content_script_provider_batches (
+      job_id, tenant_id, owner_user_id, stage_key, request_digest, custom_id,
+      input_file_intent_filename, input_file_intent_at, status
+    ) VALUES (
+      'job-unresolved-provider-intent', 1, 1, ?, ?, ?, ?,
+      '2026-08-23T12:00:00.000Z', 'preparing'
+    )`).run(stageKey, 'b'.repeat(64), stageKey, `${stageKey}.jsonl`);
+
+    expect(() => deleteAllUserData(1))
+      .toThrow('Account deletion requires provider Batch file-deletion proof.');
+    expect(testDb.prepare(`SELECT input_file_intent_filename
+      FROM content_script_provider_batches
+      WHERE job_id = 'job-unresolved-provider-intent'`).get()).toEqual({
+      input_file_intent_filename: `${stageKey}.jsonl`,
+    });
+    expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeDefined();
+  });
+
   it('inventories and erases every current user-keyed API cache family without prefix collisions', () => {
     seedUser(testDb, 1);
     seedUser(testDb, 2, { username: 'other' });
@@ -1133,6 +1281,13 @@ describe('deleteAllUserData', () => {
   it('erases a migrated legacy topic through the scoped legal-erasure gate', () => {
     testDb.close();
     testDb = createMigratedTestDatabase({ stopBefore: '247_content_topics_workspace_exit.sql' });
+    testDb.exec(`CREATE TABLE local_inference_account_deletion_fences (
+      user_id INTEGER PRIMARY KEY CHECK (user_id > 0),
+      fence_token TEXT NOT NULL UNIQUE CHECK (length(fence_token) = 36),
+      runtime_instance_id TEXT NOT NULL CHECK (length(runtime_instance_id) = 36),
+      expires_at INTEGER NOT NULL CHECK (expires_at > 0),
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )`);
     seedUser(testDb, 1);
     testDb.prepare(`
       INSERT INTO content_topics (
@@ -1721,7 +1876,7 @@ describe('account deletion OAuth revocation', () => {
     expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeUndefined();
   });
 
-  it('releases only its account-inference fence when transactional erasure fails', async () => {
+  it('retains and resumes its exact account fence after external cleanup precedes erasure failure', async () => {
     seedUser(testDb, 1);
     testDb.exec(`CREATE TRIGGER test_block_account_delete
       BEFORE DELETE ON users
@@ -1733,8 +1888,13 @@ describe('account deletion OAuth revocation', () => {
     await expect(deleteAllUserDataForAccountDeletion(1))
       .rejects.toThrow('injected account deletion failure');
 
-    expect(testDb.prepare(`SELECT 1 FROM local_inference_account_deletion_fences
-      WHERE user_id = 1`).get()).toBeUndefined();
+    const retained = testDb.prepare(`SELECT fence_token FROM local_inference_account_deletion_fences
+      WHERE user_id = 1`).get() as { fence_token: string };
+    expect(retained.fence_token).toHaveLength(36);
+    await expect(deleteAllUserDataForAccountDeletion(1))
+      .rejects.toThrow('injected account deletion failure');
+    expect(testDb.prepare(`SELECT fence_token FROM local_inference_account_deletion_fences
+      WHERE user_id = 1`).get()).toEqual(retained);
     expect(testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get()).toBeDefined();
   });
 });

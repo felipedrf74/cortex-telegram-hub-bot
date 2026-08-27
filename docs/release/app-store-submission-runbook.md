@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: release owner (Felipe)
-Last verified: 2026-08-21
+Last verified: 2026-08-26
 Update policy: update when the App Store review outcome, subscription product
 identity, reviewer entitlement mechanism, or reviewer demo-account contract
 changes.
@@ -16,6 +16,16 @@ path.
 The code remediation has advanced since that rejection. This runbook covers
 the App Store Connect configuration, reviewer account provisioning, and
 production posture that source changes alone cannot satisfy.
+
+Current snapshot: App Store Connect reports iOS `1.5.0` as `Rejected` on
+2026-08-26, superseding the `Waiting for Review` status recorded for build 289
+and the three versioned consumables on 2026-08-25. The observed review-detail
+route did not finish loading, so this evidence does not identify the rejected
+build, guideline, reviewer message, or current version-to-product associations.
+Capture those exact details before choosing an iOS or metadata remediation; do
+not assume this is a repeat of the historical build-259 decision. The snapshot
+also does not replace reviewer-path evidence, Apple approval, the effective
+commission date, or post-approval listing verification.
 
 This file is a sequence and evidence definition. It is not authorization to
 mutate production, Cloudflare, App Store Connect, or the App ID, and it does not
@@ -53,11 +63,24 @@ Work these in order. Item 1 gates every other item on this list.
    one localization with display name and description, a price schedule
    covering every storefront the app ships to, and an attached review
    screenshot. The screenshot is mandatory and is the field most often left
-   blank. Each new-sale product must read **Ready to Submit**.
-6. **Attach exactly the two monthly subscriptions and three consumables to the
-   next 1.5.0 version submission.** Products can be Ready to Submit and still
-   not be part of the version submission. Do not attach the annual
-   restore/renewal-only products.
+   blank. Before initial attachment, each new-sale product must read **Ready to
+   Submit**; after submission, record the authenticated status Apple actually
+   reports rather than expecting it to remain **Ready to Submit**.
+6. **Verify the submitted version's product associations before changing
+   them.** In an authenticated App Store Connect session, inspect the exact
+   `1.5.0` version submission and capture secret-free evidence of whether the
+   two monthly subscriptions and three consumables are attached. If all five
+   are attached, record that evidence and make no product-association change.
+   If either monthly subscription is absent and Apple still permits attachment
+   without withdrawing or replacing the submitted review, the owner may attach
+   only the missing monthly subscription or subscriptions, then reverify the
+   exact five-product set. If Apple has locked the submitted review or
+   correction would require a
+   withdrawal or resubmission, leave it unchanged, mark subscription attachment
+   unresolved, and obtain the owner's decision; attach the exact five new-sale
+   products to the next owner-authorized submission if one is created. The
+   build-289-plus-consumables snapshot above does not satisfy this check. Never
+   attach the annual restore/renewal-only products.
 7. App Information → License Agreement: either file the custom EULA that the
    paywall already links (`https://nexushub.me/termos`, with the English variant
    at `?lang=en`) or switch the app to Apple's standard EULA. Confirm the

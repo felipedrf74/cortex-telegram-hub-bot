@@ -9,8 +9,12 @@ import { logger } from '../utils/logger';
 const PORTAL_ADMIN_TARGET_USER_KEY = Symbol.for('nexushub.portalAdminTargetUserId');
 
 function parsePositiveUserId(value: unknown): number | null {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function sendJson(res: Response, status: number, code: string, message: string): void {
@@ -55,6 +59,56 @@ export function isOperatorScopedToUser(
   return allowed.includes(targetUserId);
 }
 
+export function portalOperatorUserScopesConfigured(): boolean {
+  return Object.keys(config.portal.operatorUserScopes ?? {}).length > 0;
+}
+
+/**
+ * Authorize a target user that was resolved from a body, query, or owned row.
+ * This is the non-middleware companion to requireOperatorTargetUser().
+ */
+export function authorizePortalOperatorTargetUser(
+  req: Request,
+  res: Response,
+  targetUserId: number,
+): boolean {
+  const parsedTargetUserId = parsePositiveUserId(targetUserId);
+  if (!parsedTargetUserId) {
+    sendJson(res, 400, 'INVALID_USER_ID', 'invalid userId');
+    return false;
+  }
+
+  const user = getUserById(parsedTargetUserId);
+  if (!user) {
+    sendJson(res, 404, 'USER_NOT_FOUND', 'target user not found');
+    return false;
+  }
+
+  const scopes = config.portal.operatorUserScopes ?? {};
+  const auth = getPortalAuthContext(req);
+  if (!isOperatorScopedToUser(auth?.actorHint, parsedTargetUserId, scopes)) {
+    logger.warn(
+      {
+        actorHint: auth?.actorHint,
+        targetUserId: parsedTargetUserId,
+        matchedCredential: auth?.matchedCredential,
+      },
+      'Portal admin: operator is not scoped to target user',
+    );
+    sendJson(
+      res,
+      403,
+      'FORBIDDEN',
+      'operator is not scoped to target user',
+    );
+    return false;
+  }
+
+  (req as Request & { [PORTAL_ADMIN_TARGET_USER_KEY]?: number })[PORTAL_ADMIN_TARGET_USER_KEY] =
+    parsedTargetUserId;
+  return true;
+}
+
 // Middleware factory: validate `:userId` (or configured param) against:
 //   1. Format — positive integer.
 //   2. Existence — user row must exist in the users table.
@@ -78,34 +132,7 @@ export function requireOperatorTargetUser(paramName: string = 'userId') {
       return;
     }
 
-    const user = getUserById(targetUserId);
-    if (!user) {
-      sendJson(res, 404, 'USER_NOT_FOUND', 'target user not found');
-      return;
-    }
-
-    const scopes = config.portal.operatorUserScopes ?? {};
-    const auth = getPortalAuthContext(req);
-    if (!isOperatorScopedToUser(auth?.actorHint, targetUserId, scopes)) {
-      logger.warn(
-        {
-          actorHint: auth?.actorHint,
-          targetUserId,
-          matchedCredential: auth?.matchedCredential,
-        },
-        'Portal admin: operator is not scoped to target user',
-      );
-      sendJson(
-        res,
-        403,
-        'FORBIDDEN',
-        'operator is not scoped to target user',
-      );
-      return;
-    }
-
-    (req as Request & { [PORTAL_ADMIN_TARGET_USER_KEY]?: number })[PORTAL_ADMIN_TARGET_USER_KEY] =
-      targetUserId;
+    if (!authorizePortalOperatorTargetUser(req, res, targetUserId)) return;
     next();
   };
 }

@@ -9,6 +9,10 @@ import { filePdf, PT_MONTHS, isInvoiceFilingConfigured } from './invoice-filer';
 import { recordFiling, isDuplicate } from '../state/invoice-filings';
 import { assertGlobalInvoiceCollectorOwnerScope } from './invoice-collector-scope';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface UberOrder {
@@ -60,7 +64,7 @@ export function registerReplyWaiter(chatId: number, timeoutMs: number): Promise<
     clearTimeout(existing.timer);
     existing.resolve('__CANCELLED__');
     pendingReplies.delete(chatId);
-    logger.warn({ chatId }, 'Uber: replaced existing reply waiter');
+    logger.warn('Uber: replaced existing reply waiter');
   }
   return new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -112,11 +116,14 @@ async function loadOrCreateContext(browser: Browser): Promise<BrowserContext> {
   const sessionPath = config.invoices.uberSessionPath;
   try {
     if (fs.existsSync(sessionPath)) {
-      logger.info({ sessionPath }, 'Loading saved Uber session');
+      logger.info('Loading saved Uber session');
       return await browser.newContext({ ...CONTEXT_OPTIONS, storageState: sessionPath });
     }
   } catch (err) {
-    logger.warn({ err }, 'Failed to load Uber session, creating fresh context');
+    logger.warn(
+      { errorName: safeErrorName(err) },
+      'Failed to load Uber session, creating fresh context',
+    );
   }
   return await browser.newContext(CONTEXT_OPTIONS);
 }
@@ -128,9 +135,9 @@ async function saveSession(context: BrowserContext): Promise<void> {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     await context.storageState({ path: sessionPath });
     try { fs.chmodSync(sessionPath, 0o600); } catch { /* non-critical */ }
-    logger.info({ sessionPath }, 'Uber session saved');
+    logger.info('Uber session saved');
   } catch (err) {
-    logger.warn({ err }, 'Failed to save Uber session');
+    logger.warn({ errorName: safeErrorName(err) }, 'Failed to save Uber session');
   }
 }
 
@@ -197,7 +204,7 @@ async function loginToUber(
       timeout: 30000,
     });
     await page.waitForTimeout(2000);
-    logger.debug({ url: page.url() }, 'Uber login page loaded');
+    logger.debug('Uber login page loaded');
 
     // Step 2: Fill email
     const emailInput = page.locator(
@@ -216,7 +223,7 @@ async function loginToUber(
       await page.waitForLoadState('domcontentloaded');
       await page.waitForTimeout(2000);
     }
-    logger.debug({ url: page.url() }, 'After Uber email submission');
+    logger.debug('Uber email submission completed');
 
     // Step 3: Fill password (if presented — some accounts go to OTP directly)
     const passwordInput = page.locator(
@@ -235,7 +242,7 @@ async function loginToUber(
       await page.waitForLoadState('domcontentloaded');
       await page.waitForTimeout(3000);
     }
-    logger.debug({ url: page.url() }, 'After Uber password submission');
+    logger.debug('Uber password submission completed');
 
     // Step 4: OTP / 2FA challenge loop
     let challengeAttempts = 0;
@@ -243,7 +250,7 @@ async function loginToUber(
 
     while (isAuthPage(page.url()) && challengeAttempts < MAX_CHALLENGE_ATTEMPTS) {
       challengeAttempts++;
-      logger.info({ url: page.url(), attempt: challengeAttempts }, 'Uber auth challenge detected');
+      logger.info({ attempt: challengeAttempts }, 'Uber auth challenge detected');
 
       const otpInput = page.locator(
         'input[name="verificationCode"], input[name="otp"], input[type="tel"]'
@@ -276,7 +283,7 @@ async function loginToUber(
           await page.waitForLoadState('domcontentloaded');
           await page.waitForTimeout(3000);
         } catch (err) {
-          logger.error({ err }, 'Uber 2FA flow failed');
+          logger.error({ errorName: safeErrorName(err) }, 'Uber 2FA flow failed');
           return { success: false, twoFactorRequired: true };
         }
         continue;
@@ -284,7 +291,7 @@ async function loginToUber(
 
       // Unknown challenge — send screenshot for manual intervention
       if (hasInteractive) {
-        logger.warn({ url: page.url() }, 'Unknown Uber auth challenge');
+        logger.warn('Unknown Uber auth challenge');
         await sendTelegram!('⚠️ Uber mostra uma página de verificação desconhecida:');
         const screenshot = await page.screenshot({ type: 'jpeg', quality: 80 });
         await sendScreenshot!(screenshot);
@@ -315,7 +322,7 @@ async function loginToUber(
       logger.info('Uber login successful');
       if (sendTelegram) await sendTelegram('✅ Login Uber com sucesso!');
     } else {
-      logger.warn({ url: page.url() }, 'Uber login verification failed');
+      logger.warn('Uber login verification failed');
       if (hasInteractive) {
         await sendTelegram!('⚠️ Login Uber pode ter falhado:');
         const screenshot = await page.screenshot({ type: 'jpeg', quality: 70 });
@@ -325,7 +332,7 @@ async function loginToUber(
 
     return { success: isLoggedIn, twoFactorRequired: challengeAttempts > 0 };
   } catch (err) {
-    logger.error({ err }, 'Uber login flow error');
+    logger.error({ errorName: safeErrorName(err) }, 'Uber login flow error');
     return { success: false, twoFactorRequired: false };
   }
 }
@@ -442,7 +449,7 @@ async function downloadEatsInvoice(page: Page, orderId: string): Promise<Buffer 
     // Find the "View receipt" link for this specific order
     const receiptLink = page.locator(`a[href*="modctx=${orderId}"]`);
     if (await receiptLink.count() === 0) {
-      logger.warn({ orderId }, 'Order card not found on orders page');
+      logger.warn('Order card not found on orders page');
       return null;
     }
 
@@ -460,7 +467,7 @@ async function downloadEatsInvoice(page: Page, orderId: string): Promise<Buffer 
       ).first().locator('a:has-text("Download Invoice")');
     }
     if (await downloadLink.count() === 0) {
-      logger.warn({ orderId }, 'No "Download Invoice" link found near order card');
+      logger.warn('No "Download Invoice" link found near order card');
       return null;
     }
 
@@ -475,23 +482,26 @@ async function downloadEatsInvoice(page: Page, orderId: string): Promise<Buffer 
 
     const downloadPath = await download.path();
     if (!downloadPath) {
-      logger.warn({ orderId }, 'Download event fired but no file path returned');
+      logger.warn('Download event fired but no file path returned');
       return null;
     }
 
     try {
       const buffer = fs.readFileSync(downloadPath);
       if (isValidPdf(buffer)) {
-        logger.debug({ orderId, size: buffer.length }, 'Downloaded Eats invoice PDF from orders page');
+        logger.debug({ size: buffer.length }, 'Downloaded Eats invoice PDF from orders page');
         return buffer;
       }
-      logger.warn({ orderId, size: buffer.length }, 'Downloaded file is not a valid PDF');
+      logger.warn({ size: buffer.length }, 'Downloaded file is not a valid PDF');
       return null;
     } finally {
       try { fs.unlinkSync(downloadPath); } catch { /* ignore cleanup */ }
     }
   } catch (err) {
-    logger.warn({ err, orderId }, 'Failed to download Eats invoice from orders page');
+    logger.warn(
+      { errorName: safeErrorName(err) },
+      'Failed to download Eats invoice from orders page',
+    );
     return null;
   }
 }
@@ -546,7 +556,7 @@ async function ensureEatsOrdersLoaded(page: Page, orderIds: string[]): Promise<v
 
   if (idsToFind.size > 0) {
     logger.warn(
-      { missingIds: [...idsToFind], scrollAttempts },
+      { missingCount: idsToFind.size, scrollAttempts },
       'Some Eats order cards not found after scrolling',
     );
   }
@@ -579,7 +589,7 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
             const response = await page.request.get(fullUrl, { timeout: 30000 });
             if (!response.ok()) {
               const status = response.status();
-              logger.warn({ detailUrl, status, attempt }, 'Uber receipt direct PDF download failed');
+              logger.warn({ status, attempt }, 'Uber receipt direct PDF download failed');
               if (TRANSIENT_DOWNLOAD_STATUSES.has(status)) {
                 if (attempt < 3) {
                   await waitForUberDownloadRetry(page, attempt);
@@ -591,13 +601,16 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
             }
             const body = await response.body();
             if (isValidPdf(body)) {
-              logger.debug({ detailUrl }, 'Downloaded PDF via direct link');
+              logger.debug('Downloaded PDF via direct link');
               return body;
             }
             break;
           } catch (err) {
             if (err instanceof UberTransientDownloadError) throw err;
-            logger.warn({ err, detailUrl, attempt }, 'Uber receipt direct PDF download request failed');
+            logger.warn(
+              { errorName: safeErrorName(err), attempt },
+              'Uber receipt direct PDF download request failed',
+            );
             if (attempt < 3) {
               await waitForUberDownloadRetry(page, attempt);
               continue;
@@ -618,7 +631,7 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
           try {
             const buffer = fs.readFileSync(downloadPath);
             if (isValidPdf(buffer)) {
-              logger.debug({ detailUrl }, 'Downloaded PDF via click+download event');
+              logger.debug('Downloaded PDF via click+download event');
               return buffer;
             }
           } finally {
@@ -647,7 +660,7 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
           try {
             const buffer = fs.readFileSync(downloadPath);
             if (isValidPdf(buffer)) {
-              logger.debug({ detailUrl }, 'Downloaded PDF via receipt button');
+              logger.debug('Downloaded PDF via receipt button');
               return buffer;
             }
           } finally {
@@ -661,16 +674,16 @@ async function downloadRidesReceipt(page: Page, detailUrl: string): Promise<Buff
 
     // Strategy 3: Render the page as PDF (fallback for Rides only)
     if (isAuthPage(page.url())) {
-      logger.warn({ detailUrl, url: page.url() }, 'Redirected to auth page — skipping PDF render');
+      logger.warn('Redirected to auth page — skipping PDF render');
       return null;
     }
-    logger.debug({ detailUrl }, 'No direct PDF found — rendering page as PDF (Rides fallback)');
+    logger.debug('No direct PDF found — rendering page as PDF (Rides fallback)');
     const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
     return pdfBuffer;
 
   } catch (err) {
     if (err instanceof UberTransientDownloadError) throw err;
-    logger.warn({ err, detailUrl }, 'Failed to download Rides receipt');
+    logger.warn({ errorName: safeErrorName(err) }, 'Failed to download Rides receipt');
     return null;
   }
 }
@@ -695,7 +708,7 @@ async function scrapeEatsOrders(page: Page, year: number, month: number): Promis
   const orders: UberOrder[] = [];
   const targetPrefix = `${year}-${month.toString().padStart(2, '0')}`;
 
-  logger.info({ targetMonth: targetPrefix }, 'Navigating to Uber Eats order history');
+  logger.info('Navigating to Uber Eats order history');
   await page.goto('https://www.ubereats.com/pt-en/orders', {
     waitUntil: 'domcontentloaded',
     timeout: 30000,
@@ -707,7 +720,7 @@ async function scrapeEatsOrders(page: Page, year: number, month: number): Promis
   await dismissCookieBanner(page);
 
   const receiptCount = await page.locator(EATS_RECEIPT_SELECTOR).count();
-  logger.info({ url: page.url(), receiptLinks: receiptCount }, 'Uber Eats page loaded');
+  logger.info({ receiptLinks: receiptCount }, 'Uber Eats page loaded');
 
   let reachedOlderMonth = false;
   let scrollAttempts = 0;
@@ -751,7 +764,7 @@ async function scrapeEatsOrders(page: Page, year: number, month: number): Promis
           date = parseUberDate(cardText, year, month);
         }
         if (!date) {
-          logger.debug({ orderId, cardText: cardText.substring(0, 100) }, 'Could not parse date from Eats order');
+          logger.debug({ dateParsed: false }, 'Could not parse date from Eats order');
           continue;
         }
 
@@ -769,9 +782,9 @@ async function scrapeEatsOrders(page: Page, year: number, month: number): Promis
         const amount = amountMatch ? amountMatch[0].trim() : null;
 
         orders.push({ orderId, date, amount, portal: 'eats' });
-        logger.debug({ orderId, date, amount }, 'Found Uber Eats order');
+        logger.debug({ dateParsed: true, amountPresent: amount !== null }, 'Found Uber Eats order');
       } catch (err) {
-        logger.warn({ err }, 'Error parsing Uber Eats order card');
+        logger.warn({ errorName: safeErrorName(err) }, 'Error parsing Uber Eats order card');
       }
     }
 
@@ -794,7 +807,7 @@ async function scrapeEatsOrders(page: Page, year: number, month: number): Promis
     if (newLinkCount <= previousLinkCount && scrollAttempts > 2) break;
   }
 
-  logger.info({ ordersFound: orders.length, year, month }, 'Uber Eats scraping complete');
+  logger.info({ ordersFound: orders.length }, 'Uber Eats scraping complete');
   return orders;
 }
 
@@ -804,7 +817,7 @@ async function scrapeRides(page: Page, year: number, month: number): Promise<Ube
   const trips: UberOrder[] = [];
   const targetPrefix = `${year}-${month.toString().padStart(2, '0')}`;
 
-  logger.info({ targetMonth: targetPrefix }, 'Navigating to Uber rides history');
+  logger.info('Navigating to Uber rides history');
   await page.goto('https://riders.uber.com/trips', {
     waitUntil: 'domcontentloaded',
     timeout: 30000,
@@ -850,7 +863,7 @@ async function scrapeRides(page: Page, year: number, month: number): Promise<Ube
 
         trips.push({ orderId: tripId, date, amount, portal: 'rides' });
       } catch (err) {
-        logger.warn({ err }, 'Error parsing Uber ride card');
+        logger.warn({ errorName: safeErrorName(err) }, 'Error parsing Uber ride card');
       }
     }
 
@@ -865,7 +878,7 @@ async function scrapeRides(page: Page, year: number, month: number): Promise<Ube
     if (newLinkCount <= previousLinkCount && scrollAttempts > 2) break;
   }
 
-  logger.info({ tripsFound: trips.length, year, month }, 'Uber rides scraping complete');
+  logger.info({ tripsFound: trips.length }, 'Uber rides scraping complete');
   return trips;
 }
 
@@ -953,7 +966,7 @@ export async function collectUberInvoices(
         const eatsOrders = await scrapeEatsOrders(page, year, month);
         allOrders.push(...eatsOrders);
       } catch (err) {
-        logger.error({ err }, 'Uber Eats scraping failed');
+        logger.error({ errorName: safeErrorName(err) }, 'Uber Eats scraping failed');
         if (sendTelegram) await sendTelegram('⚠️ Erro ao procurar pedidos Uber Eats.');
       }
     }
@@ -963,13 +976,13 @@ export async function collectUberInvoices(
         const rides = await scrapeRides(page, year, month);
         allOrders.push(...rides);
       } catch (err) {
-        logger.error({ err }, 'Uber rides scraping failed');
+        logger.error({ errorName: safeErrorName(err) }, 'Uber rides scraping failed');
         if (sendTelegram) await sendTelegram('⚠️ Erro ao procurar viagens Uber.');
       }
     }
 
     if (allOrders.length === 0) {
-      logger.info({ year, month }, 'No Uber orders found for target month');
+      logger.info('No Uber orders found for target month');
       if (sendTelegram) await sendTelegram(`📭 Nenhum pedido Uber encontrado para ${monthFolder}.`);
       await saveSession(context);
       result.durationMs = Date.now() - startTime;
@@ -1076,9 +1089,9 @@ export async function collectUberInvoices(
                   tenant_id: userId,
                 });
               } else {
-                orderResult.error = filingResult.error;
+                orderResult.error = 'Invoice object storage write failed.';
                 result.totalErrors++;
-                logger.error({ orderId: order.orderId, error: filingResult.error }, 'Failed to file Eats invoice');
+                logger.error('Failed to file Eats invoice');
                 recordFiling({
                   vendor: 'Uber', document_date: order.date,
                   invoice_number: order.orderId, source: 'uber',
@@ -1090,9 +1103,9 @@ export async function collectUberInvoices(
               }
             }
           } catch (err) {
-            orderResult.error = err instanceof Error ? err.message : 'Unknown error';
+            orderResult.error = 'Uber Eats order processing failed.';
             result.totalErrors++;
-            logger.error({ err, orderId: order.orderId }, 'Failed to process Eats order');
+            logger.error({ errorName: safeErrorName(err) }, 'Failed to process Eats order');
           }
 
           result.orders.push(orderResult);
@@ -1167,9 +1180,9 @@ export async function collectUberInvoices(
             tenant_id: userId,
           });
         } else {
-          orderResult.error = filingResult.error;
+          orderResult.error = 'Invoice object storage write failed.';
           result.totalErrors++;
-          logger.error({ orderId: order.orderId, error: filingResult.error }, 'Failed to file Rides receipt');
+          logger.error('Failed to file Rides receipt');
           recordFiling({
             vendor: 'Uber', document_date: order.date,
             invoice_number: order.orderId, source: 'uber',
@@ -1180,9 +1193,9 @@ export async function collectUberInvoices(
           });
         }
       } catch (err) {
-        orderResult.error = err instanceof Error ? err.message : 'Unknown error';
+        orderResult.error = 'Uber Rides order processing failed.';
         result.totalErrors++;
-        logger.error({ err, orderId: order.orderId }, 'Failed to process Rides order');
+        logger.error({ errorName: safeErrorName(err) }, 'Failed to process Rides order');
       }
 
       result.orders.push(orderResult);
@@ -1191,17 +1204,21 @@ export async function collectUberInvoices(
 
     await saveSession(context);
   } catch (err) {
-    logger.error({ err }, 'Uber collection failed');
+    logger.error({ errorName: safeErrorName(err) }, 'Uber collection failed');
     result.totalErrors++;
   } finally {
     if (browser) {
-      try { await browser.close(); } catch (err) { logger.warn({ err }, 'Failed to close browser'); }
+      try {
+        await browser.close();
+      } catch (err) {
+        logger.warn({ errorName: safeErrorName(err) }, 'Failed to close browser');
+      }
     }
   }
 
   result.durationMs = Date.now() - startTime;
   logger.info(
-    { year, month, filed: result.totalFiled, duplicates: result.totalDuplicates,
+    { filed: result.totalFiled, duplicates: result.totalDuplicates,
       errors: result.totalErrors, noInvoice: result.totalNoInvoice, durationMs: result.durationMs },
     'Uber invoice collection complete',
   );

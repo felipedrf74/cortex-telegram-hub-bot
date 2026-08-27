@@ -11,7 +11,7 @@ import {
   type FiscalCollectionCadence,
   type FiscalCollectionProfileRow,
 } from '../state/fiscal-collection-profiles';
-import { getFilingsForPeriod } from '../state/invoice-filings';
+import { getFilingsForPeriod, hasStoredInvoiceObjectOwnership } from '../state/invoice-filings';
 import {
   findFiscalBundleSendByIdempotencyKey,
   findFiscalBundleSendForPeriod,
@@ -33,6 +33,10 @@ import {
   downloadAttachment as downloadGmailAttachment,
   type GmailAttachment,
 } from './google-gmail';
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
 
 type FiscalMailProvider = 'outlook' | 'gmail';
 type FiscalBundleProvider = FiscalMailProvider | 'filed';
@@ -175,7 +179,10 @@ function loadFiscalBundleDemoFixture(userId: number): DemoFiscalFixture | null {
     if (!Array.isArray(parsed.emails)) return null;
     return parsed;
   } catch (err) {
-    logger.warn({ err, userId, fixturePath }, 'Fiscal bundle: failed to load demo fixture');
+    logger.warn(
+      { errorName: safeErrorName(err) },
+      'Fiscal bundle: failed to load demo fixture',
+    );
     return null;
   }
 }
@@ -708,6 +715,15 @@ async function collectFiledDocs(
       warnings.push(`FILED_OBJECT_MISSING:${filing.id}`);
       continue;
     }
+    if (!hasStoredInvoiceObjectOwnership(
+      tenantId,
+      userId,
+      filing.object_key,
+      filing.storage_backend,
+    )) {
+      warnings.push(`FILED_OBJECT_OWNERSHIP_INVALID:${filing.id}`);
+      continue;
+    }
 
     const durableKey = filing.checksum
       ? `checksum:${filing.checksum}`
@@ -742,7 +758,10 @@ async function collectFiledDocs(
         sizeBytes: content.length,
       });
     } catch (err) {
-      logger.warn({ err, filingId: filing.id }, 'Fiscal bundle: failed to read filed invoice object');
+      logger.warn(
+        { errorName: safeErrorName(err), filingId: filing.id },
+        'Fiscal bundle: failed to read filed invoice object',
+      );
       warnings.push(`FILED_OBJECT_READ_FAILED:${filing.id}`);
     }
   }
@@ -793,7 +812,10 @@ async function collectBundle(tenantId: number, userId: number, start: DateTime, 
     try {
       mergeCollection(collection, await collectOutlookDocs(userId, start, end, tenantId));
     } catch (err) {
-      logger.warn({ err, userId }, 'Fiscal bundle: Outlook collection failed');
+      logger.warn(
+        { errorName: safeErrorName(err), userId },
+        'Fiscal bundle: Outlook collection failed',
+      );
       collection.warnings.push('OUTLOOK_COLLECTION_FAILED');
     }
   }
@@ -802,7 +824,10 @@ async function collectBundle(tenantId: number, userId: number, start: DateTime, 
     try {
       mergeCollection(collection, await collectGmailDocs(userId, start, end, tenantId));
     } catch (err) {
-      logger.warn({ err, userId }, 'Fiscal bundle: Gmail collection failed');
+      logger.warn(
+        { errorName: safeErrorName(err), userId },
+        'Fiscal bundle: Gmail collection failed',
+      );
       collection.warnings.push('GMAIL_COLLECTION_FAILED');
     }
   }

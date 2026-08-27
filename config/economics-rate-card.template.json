@@ -1,5 +1,5 @@
 {
-  "_comment": "Economics rate-card template (plan §4, NH-0034/NH-0036). Fill every null with ACTUAL provider-account rates and measured p95 tokens; the simulation fails closed on any null. Do not substitute public list prices when the account contract or invoice provides the applicable rate.",
+  "_comment": "Private economics rate-card template (plan §4, NH-0034/NH-0036). Copy it into an owner-controlled mode-0700 directory as an ignored mode-0600, single-link file and fill every null with ACTUAL provider-account and account/channel rates plus owner-approved projected monthly paid-cohort counts for every profile on both web and Apple. Zero is allowed for an individual profile/channel cell, but a channel with zero projected paid users fails its channel gate. Capture the card only after the completed acceptance evidence and use it within 24 hours. Standard/deep operation p95 plus script p95 and tool/search costs come only from the tenant-scoped read-only production snapshot bound into the ten-script acceptance evidence. The simulator uses the greater of current-rate recomputed model cost and resolved measured model cost, then adds measured provider-tool cost exactly once; ten-credit script profiles use the higher measured Standard or Scheduled total. The complete profile-by-channel matrix weights the blended and per-channel gates and is digest-bound into the private artifact. The web subscription-plus-pack profile incurs two Stripe fixed transaction fees because the subscription and one-time pack use separate Checkout charges. Do not substitute public list prices when the account contract or invoice provides the applicable rate.",
   "version": null,
   "capturedAt": null,
   "providerRatesUsdPerMTok": {
@@ -9,16 +9,17 @@
     "scheduledScript": { "input": null, "output": null },
     "priorityScript": { "input": null, "output": null }
   },
-  "p95Tokens": {
-    "standardOp": { "input": null, "output": null },
-    "deepOp": { "input": null, "output": null },
-    "script": { "input": null, "output": null }
-  },
-  "searchToolUsdPerOp": null,
   "stripeFeePct": null,
   "stripeFeeFixedUsd": null,
   "appleProceedsPct": null,
   "vpsAllocationUsdPerPaidUser": null,
   "refundsPct": null,
-  "taxesPct": null
+  "taxesPct": null,
+  "projectedCohortCounts": {
+    "pro_script_heavy": { "web": null, "apple": null },
+    "max_script_heavy": { "web": null, "apple": null },
+    "chat_heavy": { "web": null, "apple": null },
+    "reasoning_heavy": { "web": null, "apple": null },
+    "priority_pack_buyer": { "web": null, "apple": null }
+  }
 }

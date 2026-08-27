@@ -35,6 +35,10 @@ const warnedModels = new Set<string>();
 
 const DEFAULT_ANTHROPIC_WEB_SEARCH_MAX_USES = 5;
 
+function safeProviderErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 function isAnthropicWebSearchTool(tool: unknown): boolean {
   if (!tool || typeof tool !== 'object') return false;
   const value = tool as { type?: unknown; name?: unknown };
@@ -215,7 +219,10 @@ export async function trackedCreate(
       webSearchRequests: maxWebSearchRequests,
     });
     void settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId).catch((settleErr) => {
-      logger.warn({ err: settleErr, apiUsageId, category }, 'nexus_points: Anthropic timeout estimate settlement failed');
+      logger.warn(
+        { errorName: safeProviderErrorName(settleErr), apiUsageId, category },
+        'nexus_points: Anthropic timeout estimate settlement failed',
+      );
     });
   };
 
@@ -345,7 +352,10 @@ export async function trackedCreate(
       });
     } catch (fallbackErr) {
       const persistenceError = tripApiUsagePersistenceFailure('anthropic', category);
-      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to record Anthropic api_usage; AI usage persistence degraded');
+      logger.error(
+        { errorName: safeProviderErrorName(fallbackErr), code: persistenceError.code },
+        'Failed to record Anthropic api_usage; AI usage persistence degraded',
+      );
       throw persistenceError;
     }
   }
@@ -361,25 +371,30 @@ export async function trackedCreate(
       options?.isUserMessage ?? false,
     );
   } catch (err) {
-    logger.warn({ err }, 'Failed to record usage metering');
+    logger.warn({ errorName: safeProviderErrorName(err) }, 'Failed to record usage metering');
   }
 
   // Push activity event
-  const totalTokens = usage.input_tokens + usage.output_tokens;
   try {
     pushEvent({
       ts: new Date().toISOString(),
       type: 'api_call',
-      summary: `${category}: ${totalTokens.toLocaleString()} tok, $${cost.toFixed(4)}, ${durationMs}ms`,
+      summary: `Anthropic API call metered [${category}]`,
       durationMs,
     });
   } catch (eventErr) {
-    logger.warn({ err: eventErr, userId, category }, 'Failed to publish Anthropic usage telemetry');
+    logger.warn(
+      { errorName: safeProviderErrorName(eventErr), userId, category },
+      'Failed to publish Anthropic usage telemetry',
+    );
   }
   try {
     await settleNexusPointOverageForUser(options?.userId ?? 0, apiUsageId);
   } catch (settleErr) {
-    logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: Anthropic usage settlement failed');
+    logger.warn(
+      { errorName: safeProviderErrorName(settleErr), apiUsageId, userId },
+      'nexus_points: Anthropic usage settlement failed',
+    );
   }
 
   throwIfCancelled();

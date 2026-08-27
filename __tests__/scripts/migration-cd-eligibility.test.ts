@@ -364,7 +364,7 @@ describe('migration inventory', () => {
     });
     const onDisk = readdirSync(join(root, 'migrations'))
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(inventory).toHaveLength(287);
+    expect(inventory).toHaveLength(292);
     expect(inventory).toHaveLength(onDisk.length);
     expect(() => assertMigrationInventoryShape(inventory)).not.toThrow();
     for (const entry of inventory) {
@@ -372,8 +372,8 @@ describe('migration inventory', () => {
       expect(typeof entry.predecessorCompatible).toBe('boolean');
     }
     expect(inventory.at(-1)).toMatchObject({
-      file: '296_apple_foundation_models_device_lane.sql',
-      kind: 'backfill',
+      file: '301_local_inference_activation_release_binding.sql',
+      kind: 'expand',
       predecessorCompatible: true,
     });
   });
@@ -466,7 +466,7 @@ describe('migration inventory', () => {
     // still-green zero-unknown assertion. Deliberate policy changes update this
     // exact snapshot together.
     const compatible = inventory.filter((entry) => entry.predecessorCompatible).length;
-    expect(compatible).toBe(159);
+    expect(compatible).toBe(164);
   });
 });
 
@@ -596,6 +596,31 @@ describe('cdEligibility aggregation', () => {
     });
     expect(result.eligible).toBe(false);
   });
+
+  it.each([
+    '297_private_data_retention_indexes.sql',
+    '298_invoice_artifact_identity_journal.sql',
+    '299_content_script_job_release_identity.sql',
+    '300_webhook_owner_encryption_boundary.sql',
+    '301_local_inference_activation_release_binding.sql',
+  ])('keeps hybrid phase-A migration %s predecessor-compatible', (file) => {
+    const sql = readFileSync(join(root, 'migrations', file), 'utf8');
+    const result = classifyMigrationSql(sql);
+
+    expect(result.predecessorCompatible).toBe(true);
+    expect(result.blockingReasons).toEqual([]);
+  });
+
+  it('keeps migration 299 rollback executable after the phase-A rewrite', () => {
+    const sql = readFileSync(
+      join(root, 'migrations/down/299_content_script_job_release_identity.sql'),
+      'utf8',
+    );
+
+    expect(sql).not.toContain('requires_exact_snapshot');
+    expect(sql).toContain('DROP TRIGGER IF EXISTS content_script_jobs_release_identity_update_guard');
+    expect(sql).toContain('DROP COLUMN completed_release_backend_digest');
+  });
 });
 
 describe('second-round adversarial probes', () => {
@@ -675,7 +700,7 @@ describe('second-round adversarial probes', () => {
     // block every release for a classifier gap rather than a real risk.
     const dir = join(process.cwd(), 'migrations');
     const files = readdirSync(dir).filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(files.length).toBe(287);
+    expect(files.length).toBe(292);
     const unknown = files.filter(
       (file) => classifyMigrationSql(readFileSync(join(dir, file), 'utf8')).kind === 'unknown',
     );

@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let db: Database.Database;
 let stripePackSalesEnabled = false;
+const loggerMocks = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/database')>();
@@ -41,7 +47,11 @@ vi.mock('../../src/config', async (importOriginal) => {
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
-    info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(),
+    info: (...args: unknown[]) => loggerMocks.info(...args),
+    warn: (...args: unknown[]) => loggerMocks.warn(...args),
+    error: (...args: unknown[]) => loggerMocks.error(...args),
+    debug: (...args: unknown[]) => loggerMocks.debug(...args),
+    trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
   },
   LOGGER_REDACTION_PATHS: [],
@@ -76,6 +86,7 @@ function packSession(overrides: Record<string, unknown> = {}) {
 
 describe('stripe credit-pack fulfillment', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     db = createMigratedTestDatabase();
     stripePackSalesEnabled = false;
   });
@@ -145,6 +156,31 @@ describe('stripe credit-pack fulfillment', () => {
     // A missing currency is equally a refusal.
     expect(fulfillStripeCreditPackCheckout(packSession({ currency: undefined }))).toBe(false);
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_lots').get()).toEqual({ count: 0 });
+
+    expect(loggerMocks.error).toHaveBeenCalledWith(
+      {
+        catalogItemId: 'pack.credits.100',
+        currencyMismatch: true,
+        currencyPresent: true,
+      },
+      expect.any(String),
+    );
+    expect(loggerMocks.error).toHaveBeenCalledWith(
+      {
+        catalogItemId: 'pack.credits.100',
+        failureKind: 'amount_missing',
+      },
+      expect.any(String),
+    );
+    const metadataKeys = loggerMocks.error.mock.calls.flatMap(([metadata]) => (
+      metadata && typeof metadata === 'object' ? Object.keys(metadata) : []
+    ));
+    expect(metadataKeys).not.toEqual(expect.arrayContaining([
+      'sessionCurrency',
+      'paidAmountCents',
+      'expectedAmountCents',
+      'sessionId',
+    ]));
   });
 
   it('refuses a session whose charged amount does not match the catalog price', () => {
@@ -173,6 +209,22 @@ describe('stripe credit-pack fulfillment', () => {
       'refund',
     )).toBe(false);
     expect(getAiCreditWallet(40, 'pro', NOW).purchasedRemaining).toBe(100);
+    expect(loggerMocks.warn).toHaveBeenCalledWith(
+      {
+        paymentIntentPresent: true,
+        refundAmountPresent: true,
+        chargeAmountPresent: true,
+      },
+      expect.any(String),
+    );
+    const metadataKeys = loggerMocks.warn.mock.calls.flatMap(([metadata]) => (
+      metadata && typeof metadata === 'object' ? Object.keys(metadata) : []
+    ));
+    expect(metadataKeys).not.toEqual(expect.arrayContaining([
+      'paymentIntent',
+      'amountRefunded',
+      'amount',
+    ]));
   });
 });
 

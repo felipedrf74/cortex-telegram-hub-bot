@@ -93,6 +93,9 @@ vi.mock('../../src/services/local-primary-config', () => ({
 const migrationSql = readFileSync(
   resolve(__dirname, '../../migrations/284_local_primary_inference_foundation.sql'),
   'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/301_local_inference_activation_release_binding.sql'),
+  'utf8',
 );
 
 function database(): Database.Database {
@@ -462,6 +465,8 @@ describe('skill inference service', () => {
       executeSkillInference,
       getSkillInferenceExternalCloudFallbackEligibility,
       isSkillInferenceAccountDeletionFenced,
+      retainSkillInferenceAccountDeletionFenceForRetry,
+      renewSkillInferenceAccountDeletionFence,
       recordSkillInferenceExternalCloudAttempt,
       waitForSkillInferenceAccountAdmissionsToDrain,
     } = await import('../../src/services/skill-inference-service');
@@ -487,6 +492,12 @@ describe('skill inference service', () => {
     await providerStarted;
     const fenceToken = beginSkillInferenceAccountDeletionFence(42, db);
     expect(isSkillInferenceAccountDeletionFenced(42, db)).toBe(true);
+    db.prepare(`UPDATE local_inference_account_deletion_fences
+      SET expires_at = ? WHERE user_id = ?`).run(Date.now() + 100, 42);
+    expect(renewSkillInferenceAccountDeletionFence(42, 'wrong-token', db)).toBe(false);
+    expect(renewSkillInferenceAccountDeletionFence(42, fenceToken, db)).toBe(true);
+    expect((db.prepare(`SELECT expires_at FROM local_inference_account_deletion_fences
+      WHERE user_id = 42`).get() as { expires_at: number }).expires_at).toBeGreaterThan(Date.now() + 100);
     await expect(active).rejects.toMatchObject({ code: 'ACCOUNT_DELETION_IN_PROGRESS' });
     await expect(waitForSkillInferenceAccountAdmissionsToDrain(42, {
       timeoutMs: 100,
@@ -508,15 +519,35 @@ describe('skill inference service', () => {
     }, db)).toEqual({ allowed: false, reason: 'account_deletion_in_progress' });
     expect(() => beginSkillInferenceAccountDeletionFence(42, db))
       .toThrow(expect.objectContaining({ code: 'ACCOUNT_DELETION_IN_PROGRESS' }));
-    db.prepare(`UPDATE local_inference_account_deletion_fences
-      SET runtime_instance_id = ? WHERE user_id = ?`)
-      .run('00000000-0000-4000-8000-000000000099', 42);
-    const restartedFenceToken = beginSkillInferenceAccountDeletionFence(42, db);
-    expect(restartedFenceToken).not.toBe(fenceToken);
+    expect(retainSkillInferenceAccountDeletionFenceForRetry(42, fenceToken, db)).toBe(true);
+    const resumedFenceToken = beginSkillInferenceAccountDeletionFence(42, db);
+    expect(resumedFenceToken).toBe(fenceToken);
     expect(clearSkillInferenceAccountDeletionFence(42, 'wrong-token', db)).toBe(false);
-    expect(clearSkillInferenceAccountDeletionFence(42, fenceToken, db)).toBe(false);
-    expect(clearSkillInferenceAccountDeletionFence(42, restartedFenceToken, db)).toBe(true);
+    expect(clearSkillInferenceAccountDeletionFence(42, resumedFenceToken, db)).toBe(true);
     expect(isSkillInferenceAccountDeletionFenced(42, db)).toBe(false);
+    db.prepare(`INSERT INTO local_inference_account_deletion_fences (
+      user_id, fence_token, runtime_instance_id, expires_at
+    ) VALUES (44, ?, ?, ?)`)
+      .run(
+        '00000000-0000-4000-8000-000000000044',
+        '00000000-0000-4000-8000-000000000099',
+        Date.now() + 60_000,
+      );
+    expect(() => beginSkillInferenceAccountDeletionFence(44, db))
+      .toThrow(expect.objectContaining({ code: 'ACCOUNT_DELETION_IN_PROGRESS' }));
+    db.prepare(`UPDATE local_inference_account_deletion_fences
+      SET expires_at = ? WHERE user_id = 44`).run(Date.now() - 1);
+    const takeoverFenceToken = beginSkillInferenceAccountDeletionFence(44, db);
+    expect(takeoverFenceToken).not.toBe('00000000-0000-4000-8000-000000000044');
+    expect(clearSkillInferenceAccountDeletionFence(44, takeoverFenceToken, db)).toBe(true);
+    const expiredFenceToken = beginSkillInferenceAccountDeletionFence(43, db);
+    const expiredAt = Date.now() - 1;
+    db.prepare(`UPDATE local_inference_account_deletion_fences
+      SET expires_at = ? WHERE user_id = 43`).run(expiredAt);
+    expect(renewSkillInferenceAccountDeletionFence(43, expiredFenceToken, db)).toBe(false);
+    expect(db.prepare(`SELECT expires_at FROM local_inference_account_deletion_fences
+      WHERE user_id = 43`).get()).toEqual({ expires_at: expiredAt });
+    expect(clearSkillInferenceAccountDeletionFence(43, expiredFenceToken, db)).toBe(true);
     expect(getSkillInferenceExternalCloudFallbackEligibility({
       runId: 'account-deletion-active-run', tenantId: 42, userId: 42,
     }, db)).toEqual({ allowed: false, reason: 'cancelled' });
