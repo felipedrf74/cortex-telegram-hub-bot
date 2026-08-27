@@ -116,6 +116,31 @@ function phase(result, checks, durationMs) {
   };
 }
 
+function classifyMigratorFailure(result) {
+  const diagnostic = `${result?.stderr ?? ''}\n${result?.stdout ?? ''}`;
+  const rules = [
+    ['sqlite contention', /\bSQLITE_(?:BUSY|LOCKED)\b|database (?:is )?locked/iu],
+    ['sqlite readonly', /\bSQLITE_READONLY\b|read-only (?:database|file system)/iu],
+    ['sqlite storage', /\bSQLITE_(?:FULL|IOERR)\b|disk I\/O error|no space left/iu],
+    [
+      'migration admission',
+      /release migration plan|signed (?:plan|byte digest)|does not authorize|packaged migration/iu,
+    ],
+    [
+      'schema precondition',
+      /no such (?:table|column)|duplicate column|constraint failed|foreign key|syntax error/iu,
+    ],
+    [
+      'data maintenance',
+      /release data maintenance|owner bootstrap|plaintext migration|encryption configured/iu,
+    ],
+  ];
+  const matched = rules.find(([, pattern]) => pattern.test(diagnostic));
+  if (matched) return matched[0];
+  if ([124, 137, 143].includes(result?.status)) return 'process terminated';
+  return 'exit nonzero';
+}
+
 const RELEASE_ID_RE = /^[0-9a-f]{32}$/u;
 const GOVERNANCE_REASON_SEPARATOR = ':irreversible:';
 
@@ -2821,7 +2846,11 @@ export async function runReleaseDeployment({
     name: 'production_migrator',
     result: productionMigrator.status === 0 ? 'passed' : 'failed',
     durationMs: clock() - productionStart,
-    detail: productionMigrator.status === 0 ? null : sanitizeDetail(`exit ${productionMigrator.status}`),
+    detail: productionMigrator.status === 0
+      ? null
+      : sanitizeDetail(
+        `exit ${productionMigrator.status}; class ${classifyMigratorFailure(productionMigrator)}`,
+      ),
   });
   if (productionMigrator.status !== 0) {
     // A failed migrator may have applied part of the schema. That is a hard

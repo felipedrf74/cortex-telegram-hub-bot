@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "e5bd600d435e4a5779b8a3c8aed5ed5381b58718ff55819035e02b9be9578801",
-    "baseCommit": "01c9cfa2731193c28dd6d03d74d3a636c9ee2823",
-    "baseCommitTimestamp": "2026-08-27T07:46:02+01:00",
+    "sourceDigest": "f85438b72cd9a48f43d379580fd5ed6798b358a17a0efd1076804cae576a3433",
+    "baseCommit": "f45985a72ab035e3aa6ad2d4e6a788939fb368fd",
+    "baseCommitTimestamp": "2026-08-27T09:37:42+01:00",
     "trackedFiles": 3419,
     "sourceFiles": 1190
   },
@@ -5923,7 +5923,7 @@
     },
     {
       "path": "__tests__/scripts/release-continuous-deployment.test.ts",
-      "bytes": 295361,
+      "bytes": 296703,
       "generated": false
     },
     {

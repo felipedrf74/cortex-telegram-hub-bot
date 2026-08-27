@@ -474,6 +474,8 @@ interface RegistryScript {
   composeUpFailures?: Record<string, number>;
   composeDownFailures?: Record<string, number>;
   migratorExit?: Record<string, number>;
+  migratorStdout?: Record<string, string>;
+  migratorStderr?: Record<string, string>;
   newerPayload?: { digest: string; envelope: unknown };
   serviceHealthy?: boolean;
   // Rollback verification: what the restored containers actually report.
@@ -652,7 +654,11 @@ function fakeRegistry(
       }) => {
         composeIdentities.push({ kind: 'composeRunMigrator', environment, releaseIdentity });
         calls.push({ kind: 'composeRunMigrator', environment });
-        return { status: script.migratorExit?.[environment] ?? 0, stdout: '', stderr: '' };
+        return {
+          status: script.migratorExit?.[environment] ?? 0,
+          stdout: script.migratorStdout?.[environment] ?? '',
+          stderr: script.migratorStderr?.[environment] ?? '',
+        };
       },
       pruneWorkDirs: ({ keepDirs }: { keepDirs: string[] }) => {
         calls.push({ kind: 'pruneWorkDirs', keepDirs });
@@ -3145,6 +3151,34 @@ describe('release failure handling', () => {
     expect(registryHarness.calls.some((call) => (
       call.kind === 'composeUp' && call.environment === 'production'
     ))).toBe(false);
+
+    store.acknowledgeBlock();
+    const repeated = await deploy({ store });
+    expect(repeated.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.REFUSED,
+      reason: 'already_settled_blocked',
+    });
+    expect(repeated.registryHarness.calls.some((call) => (
+      call.kind === 'composeRunMigrator' && call.environment === 'production'
+    ))).toBe(false);
+  });
+
+  it('records only a bounded failure class for production migrator output', async () => {
+    const privateDiagnostic = 'private-value-must-not-enter-receipt';
+    const { result, store } = await deploy({
+      script: {
+        migratorExit: { production: 1 },
+        migratorStderr: {
+          production: `SqliteError: database is locked ${privateDiagnostic}`,
+        },
+      },
+    });
+
+    expect(result.outcome).toBe(DEPLOYMENT_OUTCOMES.BLOCKED);
+    const check = store.readReceipt(result.releaseId!)?.production.checks
+      .find((entry) => entry.name === 'production_migrator');
+    expect(check?.detail).toBe('exit 1 class sqlite contention');
+    expect(JSON.stringify(store.readReceipt(result.releaseId!))).not.toContain(privateDiagnostic);
   });
 
   it('refuses an ineligible migration and names the owner-gated missing path', async () => {
