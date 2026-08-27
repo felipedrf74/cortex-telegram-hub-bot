@@ -62,6 +62,7 @@ import {
   getTransactions,
   deleteTransaction,
   updateTransactionCategory,
+  updateTransaction,
   getMonthlyBudgetView,
   getMonthlySummary,
   calculateAndStoreTax,
@@ -451,6 +452,34 @@ describe('Transaction CRUD', () => {
     for (const privateValue of ['2024-06-01', 'expense', 'deduction', 'food', 'health', '100']) {
       expect(serialized).not.toContain(privateValue);
     }
+  });
+
+  it('records every mutable transaction field without embedding values in audit evidence', () => {
+    const tx = addTransaction(1, '2024-06-01', 'expense', 100);
+    const updated = updateTransaction(1, tx.id, {
+      date: '2024-06-02',
+      category: 'deduction',
+      subcategory: 'health',
+      amount: 120,
+      currency: 'EUR',
+      description: 'updated description',
+      receiptRef: 'updated receipt',
+    });
+    expect(updated?.id).toBe(tx.id);
+
+    const row = testDb.prepare(`
+      SELECT details FROM audit_trail
+      WHERE user_id = 1 AND tenant_id = 1 AND resource = 'finance.transaction'
+        AND action = 'update'
+      ORDER BY id DESC LIMIT 1
+    `).get() as { details: string };
+    expect(JSON.parse(row.details)).toEqual({
+      source: 'finance_tracker',
+      transactionId: tx.id,
+      changedFields: [
+        'amount', 'category', 'currency', 'date', 'description', 'receiptRef', 'subcategory',
+      ],
+    });
   });
 
   it('delete returns false for wrong user', () => {

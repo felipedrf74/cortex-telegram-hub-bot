@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { DateTime } from 'luxon';
 
 const mocks = vi.hoisted(() => ({
   trackedCreate: vi.fn(),
@@ -7,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   loggerInfo: vi.fn(),
   loggerWarn: vi.fn(),
   loggerError: vi.fn(),
+  buildInvoiceObjectKey: vi.fn(),
+  objectStorageConfigured: vi.fn(),
+  putInvoiceObject: vi.fn(),
 }));
 
 vi.mock('@anthropic-ai/sdk', () => ({
@@ -49,19 +53,205 @@ vi.mock('../../src/services/gemini-provider', async () => {
 
 vi.mock('../../src/services/invoice-object-storage', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/services/invoice-object-storage')>(),
-  buildInvoiceObjectKey: vi.fn(),
+  buildInvoiceObjectKey: (...args: unknown[]) => mocks.buildInvoiceObjectKey(...args),
   getInvoiceObjectBuffer: vi.fn(),
-  isInvoiceObjectStorageConfigured: vi.fn(() => false),
-  putInvoiceObject: vi.fn(),
+  isInvoiceObjectStorageConfigured: () => mocks.objectStorageConfigured(),
+  putInvoiceObject: (...args: unknown[]) => mocks.putInvoiceObject(...args),
   sha256Hex: vi.fn(),
   verifyInvoiceObjectChecksum: vi.fn(),
 }));
 
-import { analyzeInvoiceImage } from '../../src/services/invoice-filer';
+import {
+  analyzeInvoiceImage,
+  buildFilename,
+  buildPdfFilename,
+  fileInvoice,
+  filePdf,
+} from '../../src/services/invoice-filer';
 
 describe('invoice filer privacy-safe observability', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.objectStorageConfigured.mockReturnValue(true);
+    mocks.buildInvoiceObjectKey.mockReturnValue(
+      'invoices/71/71/2026/Ago-2026/queue-identity.pdf',
+    );
+    mocks.putInvoiceObject.mockResolvedValue({
+      objectKey: 'invoices/71/71/2026/Ago-2026/queue-identity.pdf',
+      checksum: 'a'.repeat(64),
+      mime: 'application/pdf',
+      bytes: 19,
+      storageBackend: 'filesystem',
+    });
+  });
+
+  it('builds deterministic image and PDF names while preserving legacy suffix branches', () => {
+    const date = DateTime.fromISO('2026-08-27T12:00:00Z');
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_123_456);
+    const completeAnalysis = {
+      isInvoice: true,
+      confidence: 0.9,
+      documentDate: '2026-08-27',
+      documentDateRaw: '27/08/2026',
+      vendor: 'Vendor Name',
+      totalAmount: '€12,34',
+      invoiceNumber: 'INV/41',
+    };
+
+    expect(buildFilename(completeAnalysis, 'image/png', date, 'queue/41')).toBe(
+      '2026-08-27_queue_41_Vendor_Name_€12,34_INV_41.png',
+    );
+    expect(buildFilename({
+      ...completeAnalysis,
+      vendor: null,
+      totalAmount: null,
+      invoiceNumber: null,
+    }, 'image/webp', date)).toBe('2026-08-27_123456.webp');
+    expect(buildFilename(completeAnalysis, 'image/jpeg', date)).toMatch(/\.jpg$/u);
+
+    expect(buildPdfFilename(
+      'Vendor Name',
+      date,
+      'INV/41',
+      'scan.Final.PDF',
+      'queue/41',
+    )).toBe('2026-08-27_queue_41_Vendor_Name_INV_41.pdf');
+    expect(buildPdfFilename('Vendor', date, null, null)).toBe(
+      '2026-08-27_Vendor_123456.pdf',
+    );
+    expect(buildPdfFilename('Vendor', date, null, 'scan')).toBe(
+      '2026-08-27_Vendor_scan_123456.pdf',
+    );
+    now.mockRestore();
+  });
+
+  it('binds queue identity and write intent into image and PDF object writes', async () => {
+    const analysis = {
+      isInvoice: true,
+      confidence: 0.9,
+      documentDate: '2026-08-27',
+      documentDateRaw: '27/08/2026',
+      vendor: 'Synthetic Vendor',
+      totalAmount: null,
+      invoiceNumber: null,
+    };
+    const writeIntent = {
+      kind: 'invoice_queue' as const,
+      id: '41',
+      sourceChecksum: 'b'.repeat(64),
+    };
+
+    await expect(fileInvoice(
+      Buffer.from('private image bytes'),
+      'image/png',
+      analysis,
+      { tenantId: 71, userId: 71, filingIdentity: 'queue-41', writeIntent },
+    )).resolves.toMatchObject({ success: true, storageBackend: 'filesystem' });
+    expect(mocks.putInvoiceObject).toHaveBeenLastCalledWith(
+      Buffer.from('private image bytes'),
+      'invoices/71/71/2026/Ago-2026/queue-identity.pdf',
+      'image/png',
+      { writeIntent },
+    );
+
+    await expect(filePdf(
+      Buffer.from('private pdf bytes'),
+      'Synthetic Vendor',
+      '2026-08-27',
+      null,
+      null,
+      {
+        tenantId: 71,
+        userId: 71,
+        mime: 'application/x-pdf',
+        filingIdentity: 'queue-41',
+        writeIntent,
+      },
+    )).resolves.toMatchObject({ success: true, storageBackend: 'filesystem' });
+    expect(mocks.putInvoiceObject).toHaveBeenLastCalledWith(
+      Buffer.from('private pdf bytes'),
+      'invoices/71/71/2026/Ago-2026/queue-identity.pdf',
+      'application/x-pdf',
+      { writeIntent },
+    );
+
+    await expect(fileInvoice(
+      Buffer.from('private image bytes'),
+      'image/png',
+      analysis,
+      { tenantId: 71, userId: 71 },
+    )).resolves.toMatchObject({ success: true, storageBackend: 'filesystem' });
+    expect(mocks.putInvoiceObject).toHaveBeenLastCalledWith(
+      Buffer.from('private image bytes'),
+      'invoices/71/71/2026/Ago-2026/queue-identity.pdf',
+      'image/png',
+      {},
+    );
+  });
+
+  it('fails closed with content-free errors across configuration, scope, and storage failures', async () => {
+    mocks.objectStorageConfigured.mockReturnValueOnce(false);
+    await expect(filePdf(Buffer.from('pdf'), 'Vendor', null)).resolves.toEqual({
+      success: false,
+      error: 'Invoice object storage is not configured.',
+    });
+    await expect(fileInvoice(
+      Buffer.from('image'),
+      'image/jpeg',
+      {
+        isInvoice: true,
+        confidence: 0.9,
+        documentDate: null,
+        documentDateRaw: null,
+        vendor: null,
+        totalAmount: null,
+        invoiceNumber: null,
+      },
+      { tenantId: 0, userId: 71 },
+    )).resolves.toEqual({
+      success: false,
+      error: 'tenantId and userId are required for invoice object storage.',
+      analysis: {
+        isInvoice: true,
+        confidence: 0.9,
+        documentDate: null,
+        documentDateRaw: null,
+        vendor: null,
+        totalAmount: null,
+        invoiceNumber: null,
+      },
+    });
+
+    mocks.putInvoiceObject.mockRejectedValueOnce('non-error storage failure');
+    await expect(filePdf(
+      Buffer.from('pdf'),
+      'Vendor',
+      null,
+      null,
+      null,
+      { tenantId: 71, userId: 71 },
+    )).resolves.toEqual({
+      success: false,
+      error: 'Invoice object storage write failed.',
+    });
+    expect(mocks.loggerError).toHaveBeenLastCalledWith(
+      { errorName: 'string' },
+      'Failed to file invoice attachment to object storage',
+    );
+
+    mocks.putInvoiceObject.mockRejectedValueOnce(new TypeError('private storage failure'));
+    await expect(filePdf(
+      Buffer.from('pdf'),
+      'Vendor',
+      null,
+      null,
+      null,
+      { tenantId: 71, userId: 71 },
+    )).resolves.toMatchObject({ success: false });
+    expect(mocks.loggerError).toHaveBeenLastCalledWith(
+      { errorName: 'TypeError' },
+      'Failed to file invoice attachment to object storage',
+    );
   });
 
   it('logs only safe mismatch indicators and buckets, never extracted receipt values', async () => {

@@ -95,6 +95,118 @@ describe('invoice object storage manifest reconciliation', () => {
     testConfig.objectRoot = '';
   });
 
+  it('rejects invalid limits, missing schema, and unsafe mode-specific cursors', () => {
+    for (const limit of [0, 1.5, Number.MAX_SAFE_INTEGER]) {
+      expect(() => reconcileArtifactManifests({
+        db, dbPath, apply: false, kind: 'filings', after: '', limit,
+      })).toThrow(/limit must be between/);
+    }
+
+    const unmigrated = new Database(':memory:');
+    try {
+      expect(() => reconcileArtifactManifests({
+        db: unmigrated, dbPath, apply: false, kind: 'filings', after: '', limit: 1,
+      })).toThrow(/manifest migration is required/);
+    } finally {
+      unmigrated.close();
+    }
+
+    for (const after of ['-1', '1.5', 'not-a-filing']) {
+      expect(() => reconcileArtifactManifests({
+        db, dbPath, apply: false, kind: 'filings', after, limit: 1,
+      })).toThrow(/nonnegative filing id/);
+    }
+    for (const after of ['/absolute', '../parent']) {
+      expect(() => reconcileArtifactManifests({
+        db, dbPath, apply: false, kind: 'objects', after, limit: 1,
+      })).toThrow(/safe relative artifact cursor/);
+    }
+    for (const after of ['invalid', 'rows:999999999999999999999999']) {
+      expect(() => reconcileArtifactManifests({
+        db, dbPath, apply: false, kind: 'queue', after, limit: 1,
+      })).toThrow();
+    }
+    fs.rmSync(queueRoot, { recursive: true });
+    for (const after of ['files:/absolute', 'files:../parent']) {
+      expect(() => reconcileArtifactManifests({
+        db, dbPath, apply: false, kind: 'queue', after, limit: 1,
+      })).toThrow(/safe relative path/);
+    }
+  });
+
+  linuxIt('reconciles filing rows without adopting unsafe or cross-scope objects', () => {
+    const makeSecureDirectory = (relative: string): string => {
+      const target = path.join(testConfig.objectRoot, relative);
+      fs.mkdirSync(target, { recursive: true, mode: 0o700 });
+      let current = testConfig.objectRoot;
+      for (const part of relative.split('/')) {
+        current = path.join(current, part);
+        fs.chmodSync(current, 0o700);
+      }
+      return target;
+    };
+    const ownerRoot = makeSecureDirectory('invoices/7/9');
+    const zeroTenantRoot = makeSecureDirectory('invoices/0/9');
+    const zeroUserRoot = makeSecureDirectory('invoices/7/0');
+    const validKey = 'invoices/7/9/valid.pdf';
+    const unsafeKey = 'invoices/7/9/unsafe.pdf';
+    const directoryKey = 'invoices/7/9/not-a-file';
+    fs.writeFileSync(path.join(ownerRoot, 'valid.pdf'), Buffer.from('valid'), { mode: 0o600 });
+    fs.writeFileSync(path.join(ownerRoot, 'unsafe.pdf'), Buffer.from('unsafe'), { mode: 0o644 });
+    fs.mkdirSync(path.join(ownerRoot, 'not-a-file'), { mode: 0o700 });
+    fs.writeFileSync(path.join(zeroTenantRoot, 'invalid.pdf'), Buffer.from('invalid'), { mode: 0o600 });
+    fs.writeFileSync(path.join(zeroUserRoot, 'invalid.pdf'), Buffer.from('invalid'), { mode: 0o600 });
+
+    const insert = db.prepare(`INSERT INTO invoice_filings
+      (id, tenant_id, user_id, object_key, storage_backend) VALUES (?, ?, ?, ?, ?)`);
+    const rows: Array<[number, number, number, string, string]> = [
+      [1, 7, 9, validKey, 'filesystem'],
+      [2, 7, 9, 'other/7/9/not-in-root.pdf', 'filesystem'],
+      [3, 7, 9, 'invoices/8/9/wrong-tenant.pdf', 'filesystem'],
+      [4, 7, 9, 'invoices/7/10/wrong-user.pdf', 'filesystem'],
+      [5, 7, 9, validKey, 'other'],
+      [6, 7, 9, 'invoices/7/9/missing.pdf', 'filesystem'],
+      [7, 7, 9, 'invoices/7/9/../../../../escape.pdf', 'filesystem'],
+      [8, 7, 9, unsafeKey, 'filesystem'],
+      [9, 7, 9, directoryKey, 'filesystem'],
+      [10, 0, 9, 'invoices/0/9/invalid.pdf', 'filesystem'],
+      [11, 7, 0, 'invoices/7/0/invalid.pdf', 'filesystem'],
+    ];
+    for (const row of rows) insert.run(...row);
+
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: false, kind: 'filings', after: '', limit: 20,
+    })).toEqual({ scanned: 11, needed: 1, created: 0, unresolved: 10, nextAfter: null });
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: true, kind: 'filings', after: '', limit: 20,
+    })).toEqual({ scanned: 11, needed: 1, created: 1, unresolved: 10, nextAfter: null });
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: true, kind: 'filings', after: '0', limit: 1,
+    })).toEqual({ scanned: 1, needed: 0, created: 0, unresolved: 0, nextAfter: '1' });
+
+    db.prepare(`UPDATE invoice_artifact_manifests SET state = 'failed'`).run();
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: true, kind: 'filings', after: '0', limit: 1,
+    })).toMatchObject({ unresolved: 1 });
+    db.prepare(`DELETE FROM invoice_artifact_manifests`).run();
+    db.prepare(`UPDATE users SET status = 'disabled' WHERE id = 9`).run();
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: true, kind: 'filings', after: '0', limit: 1,
+    })).toMatchObject({ needed: 0, unresolved: 1 });
+    db.prepare(`UPDATE users SET status = 'active' WHERE id = 9`).run();
+    db.prepare(`INSERT INTO local_inference_account_deletion_fences (user_id, expires_at)
+      VALUES (9, ?)`).run(Date.now() + 60_000);
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: true, kind: 'filings', after: '0', limit: 1,
+    })).toMatchObject({ needed: 0, unresolved: 1 });
+
+    fs.rmSync(testConfig.objectRoot, { recursive: true });
+    insert.run(12, 7, 9, 'invoices/7/9/root-missing.pdf', 'filesystem');
+    expect(reconcileArtifactManifests({
+      db, dbPath, apply: true, kind: 'filings', after: '11', limit: 1,
+    })).toEqual({ scanned: 1, needed: 0, created: 0, unresolved: 1, nextAfter: null });
+  });
+
   linuxIt('proves queue ownership in bounded row then filesystem phases', () => {
     const spool = path.join(queueRoot, 'queued_owned.pdf');
     fs.writeFileSync(spool, Buffer.from('private queue bytes'), { mode: 0o600 });
