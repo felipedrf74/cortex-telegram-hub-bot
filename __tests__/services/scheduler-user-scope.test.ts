@@ -551,6 +551,11 @@ describe('scheduler tenant scoping', () => {
     expect(decisionMetricsRollupDateForScheduler(winterMidnight, 'Europe/Lisbon')).toBe('2026-01-02');
   });
 
+  it('uses the deterministic Decision Metrics fallback for an invalid clock value', () => {
+    expect(decisionMetricsRollupDateForScheduler(new Date(Number.NaN), 'Europe/Lisbon'))
+      .toBe('1970-01-01');
+  });
+
   it('source-pins reminder cron as per-reminder fault isolated and tenant deduped', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/services/scheduler.ts'), 'utf8');
     const loopIndex = source.indexOf('for (const reminder of dueReminders)');
@@ -665,6 +670,20 @@ describe('scheduler tenant scoping', () => {
 
     expect(getActiveUserIds()).toEqual([99]);
     expect(getOwnerUserIds()).toEqual([1999]);
+  });
+
+  it('returns empty owner scopes and reports a non-schema tenant lookup failure', () => {
+    mockGetOwnerBootstrapTarget.mockReturnValue(null);
+    mockGetDb.mockImplementation(() => {
+      throw 'database unavailable';
+    });
+
+    expect(getActiveUserIds()).toEqual([]);
+    expect(getOwnerUserIds()).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { fn: 'getActiveUserIds', err: 'database unavailable' },
+      'Tenant query failed with unexpected SQLite error',
+    );
   });
 
   it('buildDailyBriefingDataForUser uses scoped task, calendar, mail, and reminder reads', async () => {
@@ -2517,6 +2536,16 @@ describe('M6 scheduler task sync wiring', () => {
         status: 'completed',
         outcome: { total: 1, refreshed: 1, failed: [] },
       });
+    });
+
+    it('reports not executed when the durable keepalive fence does not enter the callback', async () => {
+      mockWrapJob.mockImplementationOnce(() => vi.fn(async () => undefined));
+
+      await expect(refreshConnectedGarminUsersWithLease('manual')).resolves.toEqual({
+        status: 'not_executed',
+        outcome: null,
+      });
+      expect(mockGarminKeepAlive).not.toHaveBeenCalled();
     });
 
     it('refreshes every connected user, not just the first', async () => {

@@ -998,13 +998,14 @@ function parseSubscriptionRow(row: Record<string, unknown>): WebhookSubscription
   if (!isValidWebhookEventTypes(eventTypes)) {
     throw new Error('Webhook subscription has invalid event_types.');
   }
+  const signingMaterial = decryptWebhookValueForOwner(row.secret, userId);
   return {
     id: row.id as number,
     user_id: userId,
     provider: row.provider as WebhookProvider,
     event_types: eventTypes,
     endpoint_path: row.endpoint_path as string,
-    secret: decryptWebhookValueForOwner(row.secret, userId),
+    secret: signingMaterial,
     status: row.status as SubscriptionStatus,
     external_id: row.external_id as string | null,
     metadata: row.metadata == null

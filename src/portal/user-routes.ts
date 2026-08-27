@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import express, { NextFunction, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import { listUsers, setUserStatusById } from '../services/user-service';
@@ -62,6 +64,30 @@ function rejectOversizedPortalStripeCheckoutBody(req: Request, res: Response, ne
 }
 
 export function registerPortalUserRoutes(app: express.Express): void {
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  const authorizationRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 180,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many portal requests from this IP. Slow down.', retryAfter },
+      });
+    },
+  });
+  if (typeof app.use === 'function') {
+    app.use('/api/users/:userId/ai-budget', authorizationRateLimitMiddleware);
+    app.use('/api/users/:userId/billing/nexus-points/stripe-checkout', authorizationRateLimitMiddleware);
+    app.use('/api/users/:userId/suspend', authorizationRateLimitMiddleware);
+    app.use('/api/users/:userId/activate', authorizationRateLimitMiddleware);
+    app.use('/api/users/:userId/tier', authorizationRateLimitMiddleware);
+    app.use('/api/users/:userId/limits', authorizationRateLimitMiddleware);
+  }
+
   app.get('/api/users', (_req: Request, res: Response) => {
     try {
       res.json({ users: listUsers() });

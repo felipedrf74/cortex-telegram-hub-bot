@@ -281,7 +281,7 @@ describe('Webhook Registry', () => {
         user_id: TEST_WEBHOOK_USER_ID,
         provider: 'github',
         endpoint_path: '/api/webhooks/github',
-        secret: 'oauth-domain-key-required',
+        secret: 'oauth-key-required',
       })).toBe(-1);
     });
 
@@ -307,7 +307,7 @@ describe('Webhook Registry', () => {
         user_id: TEST_WEBHOOK_USER_ID,
         provider: 'strava',
         endpoint_path: '/api/webhooks/strava',
-        secret: 'not-a-native-strava-verifier',
+        secret: 'not-native-strava',
       })).toBe(-1);
     });
 

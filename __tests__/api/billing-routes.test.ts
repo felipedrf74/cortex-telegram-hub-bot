@@ -161,7 +161,8 @@ vi.mock('../../src/services/nexus-points', () => ({
   lookupNexusPointCreditByProviderTransaction: (...args: unknown[]) => mockLookupNexusPointCredit(...args),
 }));
 
-vi.mock('../../src/services/apple-notification-inbox', () => ({
+vi.mock('../../src/services/apple-notification-inbox', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/apple-notification-inbox')>(),
   lookupAppleReversalForTransaction: (...args: unknown[]) => mockLookupAppleReversal(...args),
 }));
 

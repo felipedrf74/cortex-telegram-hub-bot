@@ -42,10 +42,11 @@
   inference-telemetry, 12-month audit, provider crash/retry cleanup, account
   erasure, invoice ownership/deletion-proof, evidence source/tool-closure,
   Apple grant binding, anonymous-claim sunset, coach privacy, and generic
-  webhook ownership plus phased encryption-boundary gaps. It is absent from the
-  completed receipt above; a reviewed producer receipt plus exact committed
-  executing-module bytes may bind its exact SHA to the immutable workload SHA
-  without adding or replacing an acceptance scenario.
+  webhook ownership plus phased encryption-boundary gaps. Release A also adds
+  explicit throttles to CodeQL-identified authenticated billing/portal routes;
+  focused tests, type-check, strict mock/secret scans, and mutation gates pass.
+  It remains absent from the completed receipt; a producer receipt plus exact
+  committed bytes may bind its SHA without adding an acceptance scenario.
 - Migrations 297–301 are deliberately predecessor-compatible phase-A schema.
   A read-only check of both authoritative container databases on 2026-08-26
   found `296_apple_foundation_models_device_lane.sql` as the latest governed

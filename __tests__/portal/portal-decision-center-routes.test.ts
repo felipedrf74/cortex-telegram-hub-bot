@@ -33,7 +33,8 @@ vi.mock('../../src/api/secret-guards', () => ({
   verifyPortalActorSignature: vi.fn(),
 }));
 
-vi.mock('../../src/portal/admin-target-user', () => ({
+vi.mock('../../src/portal/admin-target-user', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/portal/admin-target-user')>(),
   getPortalAdminTargetUserId: vi.fn(),
   isOperatorScopedToUser: vi.fn(),
   requireOperatorTargetUser: (...args: unknown[]) => mocks.requireOperatorTargetUser(...args),

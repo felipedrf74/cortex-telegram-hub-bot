@@ -12,8 +12,11 @@
  */
 
 import express, { Router, Request, Response, NextFunction } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { extractClientIp } from '../rate-limiter';
 import {
   isStripeConfigured,
   getSubscriptionStatus,
@@ -133,6 +136,25 @@ function buildBillingStatusPayload(userId: number): Record<string, unknown> {
 
 export function billingRoutes(): Router {
   const router = Router();
+  const appleVerifyRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: config.ios?.rateLimit || 60,
+    keyGenerator: (req: Request) => {
+      const userId = (req as { userId?: unknown }).userId;
+      return typeof userId === 'number' && userId > 0
+        ? `user:${userId}`
+        : `ip:${ipKeyGenerator(extractClientIp(req))}`;
+    },
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
   /**
    * GET /api/v1/billing/status
@@ -504,7 +526,7 @@ export function billingRoutes(): Router {
     sendSuccess(res, { results: result.results });
   }));
 
-  router.post('/apple-verify', asyncHandler(async (req: Request, res: Response) => {
+  router.post('/apple-verify', appleVerifyRateLimitMiddleware, asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
     const { jwsTransaction } = req.body;
 

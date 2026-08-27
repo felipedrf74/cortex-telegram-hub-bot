@@ -11,14 +11,16 @@ vi.mock('../../src/services/database', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
   getDb: () => testDb,
 }));
-vi.mock('../../src/services/invoice-queue', () => ({
+vi.mock('../../src/services/invoice-queue', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/invoice-queue')>(),
   deleteInvoiceQueueSpoolFileForAccountDeletion: (...args: unknown[]) => {
     const outcome = deleteQueueFile(...args);
     persistMockDeletionProof(args[1]);
     return outcome;
   },
 }));
-vi.mock('../../src/services/invoice-object-storage', () => ({
+vi.mock('../../src/services/invoice-object-storage', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/invoice-object-storage')>(),
   deleteInvoiceObject: async (...args: unknown[]) => {
     const outcome = await deleteStoredObject(...args);
     persistMockDeletionProof(args[2]);

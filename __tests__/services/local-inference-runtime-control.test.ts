@@ -68,7 +68,8 @@ vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: localPrimaryConfigMock,
 }));
 
-vi.mock('../../src/services/local-inference-activation-evidence', () => ({
+vi.mock('../../src/services/local-inference-activation-evidence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/local-inference-activation-evidence')>(),
   LocalInferenceActivationEvidenceError: MockActivationEvidenceError,
   validateLocalInferenceActivationEvidence: activationEvidenceMock,
   resolveCurrentReleaseSourceSha: vi.fn(() => releaseSourceMock.value),

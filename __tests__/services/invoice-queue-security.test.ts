@@ -23,14 +23,22 @@ vi.mock('../../src/services/database', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
   getDb: () => testDb,
 }));
-vi.mock('../../src/services/invoice-filer', () => ({
+vi.mock('../../src/services/invoice-filer', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/invoice-filer')>(),
   fileInvoice: filingMocks.fileInvoice,
   filePdf: filingMocks.filePdf,
   isInvoiceFilingConfigured: () => true,
 }));
-vi.mock('../../src/state/invoice-filings', () => ({ recordFiling: filingMocks.recordFiling }));
-vi.mock('../../src/portal/telemetry', () => ({ pushEvent: vi.fn() }));
-vi.mock('../../src/utils/logger', () => ({
+vi.mock('../../src/state/invoice-filings', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/state/invoice-filings')>(),
+  recordFiling: filingMocks.recordFiling,
+}));
+vi.mock('../../src/portal/telemetry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/portal/telemetry')>(),
+  pushEvent: vi.fn(),
+}));
+vi.mock('../../src/utils/logger', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/utils/logger')>(),
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 

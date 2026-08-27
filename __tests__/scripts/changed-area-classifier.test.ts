@@ -35,6 +35,8 @@ const LOCAL_PRIMARY_RETIREMENT_BASE_SHA = '1af3fd89edcfa6aadbf65b778d3509a876cdd
 const REPRICING_RETIREMENT_BASE_SHA = 'fb78be73e9880a4a9f77f193c6477d7a0203d4df';
 // QA3 inbox hardening (sandbox flag, non-retryable quantities, hard fails).
 const QA3_INBOX_RETIREMENT_BASE_SHA = '98ec86210f34ad94ea250c8a1eb10ea71aee2db4';
+// Release A provider privacy boundary and explicit authorized-retry fixtures.
+const RELEASE_A_RETIREMENT_BASE_SHA = '92b722ee02242fd37453ece17d74cfc53102d961';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -459,7 +461,21 @@ describe('lean changed-area classification', () => {
       LOCAL_PRIMARY_RETIREMENT_BASE_SHA,
       REPRICING_RETIREMENT_BASE_SHA,
       QA3_INBOX_RETIREMENT_BASE_SHA,
+      RELEASE_A_RETIREMENT_BASE_SHA,
     ]));
+
+    expect(policy.retirementMappings.filter((mapping: { baseSha?: string }) => (
+      mapping.baseSha === RELEASE_A_RETIREMENT_BASE_SHA
+    ))).toEqual([
+      expect.objectContaining({
+        test: '__tests__/services/gemini-provider.test.ts',
+        requiredChangedPaths: [
+          '__tests__/services/gemini-provider.test.ts',
+          'src/services/gemini-provider.ts',
+        ],
+        replacementTests: ['__tests__/services/gemini-provider.test.ts'],
+      }),
+    ]);
 
     const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {
       baseSha?: string;

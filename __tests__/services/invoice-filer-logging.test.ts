@@ -47,7 +47,8 @@ vi.mock('../../src/services/gemini-provider', async () => {
   };
 });
 
-vi.mock('../../src/services/invoice-object-storage', () => ({
+vi.mock('../../src/services/invoice-object-storage', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/invoice-object-storage')>(),
   buildInvoiceObjectKey: vi.fn(),
   getInvoiceObjectBuffer: vi.fn(),
   isInvoiceObjectStorageConfigured: vi.fn(() => false),

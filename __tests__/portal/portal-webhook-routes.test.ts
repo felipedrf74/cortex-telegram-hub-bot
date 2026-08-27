@@ -777,7 +777,7 @@ describe('portal webhook routes', () => {
 
   it('returns stats, filtered subscriptions, recent events, and replay results', async () => {
     const registry = createRegistry({
-      getSubscriptions: vi.fn(() => [{ id: 1, secret: 'must-not-leave-the-server' }]),
+      getSubscriptions: vi.fn(() => [{ id: 1, secret: 'must-stay-private' }]),
       getRecentEvents: vi.fn(() => [{
         id: 2,
         status: 'failed',

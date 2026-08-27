@@ -1135,6 +1135,17 @@ receipt-verified before the owner-directed same-job recovery continues; job
 replacement, an eleventh scenario, early movement, direct database mutation,
 and pre-9/9 smoke submission remain forbidden.
 
+Pull-request CI then exposed three policy defects rather than a runtime
+regression: ten newly partial `vi.mock` factories, unmapped ownership for
+retained test-cleanup evidence, and broad CodeQL findings where authenticated
+billing and portal handlers relied only on parent/global throttling. The mocks
+now retain their real module exports, all sixteen retained cleanup suites have
+governed mutation owners, and every reported handler carries an explicit
+route-level limiter before authorization. Local verification passed the strict
+mock baseline, changed-line secret scan, 86-mutant governed cleanup run,
+type-check, and focused route/security tests. These changes remain part of the
+unreleased Release A candidate and do not authorize a same-job retry yet.
+
 ### Final activation audit remediation (2026-08-26)
 
 Fresh-context QA found five release-blocking gaps. The local patch now refuses
