@@ -30,6 +30,12 @@ const RELEASE_ID = /^[0-9a-f]{32}$/u;
 const JOB_ID = /^script_job_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 const MAX_RELEASE_VIEW_BYTES = 1024 * 1024;
+const MAX_ACCEPTANCE_STATE_BYTES = 1024 * 1024;
+const MAX_AUTH_FILE_BYTES = 64 * 1024;
+const PRODUCTION_API_ORIGIN = 'https://api.nexushub.me';
+const EXPECTED_PRODUCTION_SOURCE_SHA = 'bc129db7db35c669692d9916d0007cb90288a490';
+const RELEASE_VIEW_COMMAND = '/usr/local/sbin/nexus-release-state-view';
+const SUDO = '/usr/bin/sudo';
 const JOB_STATUSES = new Set([
   'pending', 'queued', 'running', 'waiting_capacity', 'completed', 'failed', 'cancelled',
 ]);
@@ -135,6 +141,66 @@ export function validateCompletedReleaseView(view, expectedSourceSha) {
     receiptCompletedAt: receipt.completedAt,
     releasePayloadDigest: receipt.releasePayloadDigest,
   };
+}
+
+function parseReleaseViewBytes(bytes, expectedSourceSha, label) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > MAX_RELEASE_VIEW_BYTES) {
+    throw new Error(`${label} bytes are missing or oversized`);
+  }
+  let view;
+  try {
+    view = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw new Error(`${label} is not valid JSON`);
+  }
+  return { view, release: validateCompletedReleaseView(view, expectedSourceSha) };
+}
+
+function captureAuthoritativeReleaseView(expectedSourceSha) {
+  const result = spawnSync(SUDO, ['-n', RELEASE_VIEW_COMMAND], {
+    encoding: null,
+    maxBuffer: MAX_RELEASE_VIEW_BYTES,
+    env: { PATH: '/usr/bin:/bin' },
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    throw new Error('authoritative release-state viewer failed');
+  }
+  return parseReleaseViewBytes(
+    result.stdout,
+    expectedSourceSha,
+    'authoritative release view',
+  );
+}
+
+export function validateAuthoritativeWorkloadReleaseView(
+  candidateBytes,
+  authoritativeView,
+  expectedSourceSha,
+) {
+  const candidate = parseReleaseViewBytes(
+    candidateBytes,
+    expectedSourceSha,
+    'workload release view',
+  );
+  const authoritative = {
+    view: authoritativeView,
+    release: validateCompletedReleaseView(authoritativeView, expectedSourceSha),
+  };
+  const stableFields = [
+    'releaseId',
+    'sourceSha',
+    'receiptCompletedAt',
+    'releasePayloadDigest',
+  ];
+  const candidateBackendDigest = candidate.view.active?.images?.backend?.digest;
+  const authoritativeBackendDigest = authoritative.view.active?.images?.backend?.digest;
+  if (!SHA256.test(candidateBackendDigest ?? '')
+      || candidateBackendDigest !== authoritativeBackendDigest
+      || stableFields.some((field) => candidate.release[field] !== authoritative.release[field])
+      || Date.parse(candidate.release.capturedAt) > Date.parse(authoritative.release.capturedAt)) {
+    throw new Error('workload release view does not match the current authoritative receipt');
+  }
+  return candidate;
 }
 
 function validateWorkloadSourceBinding(binding) {
@@ -279,6 +345,66 @@ function assertPrivateRegularFile(filename, label) {
   }
 }
 
+function readPrivateRegularFileBytes(filename, label, maximumBytes, expectedIdentity = null) {
+  assertPrivateDirectory(path.dirname(filename), `${label} directory`);
+  const noFollow = fs.constants.O_NOFOLLOW;
+  if (typeof noFollow !== 'number') fail(`${label} requires no-follow file support`, 77);
+  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY | noFollow);
+  try {
+    const stat = fs.fstatSync(descriptor, { bigint: true });
+    const currentUid = typeof process.geteuid === 'function' ? BigInt(process.geteuid()) : null;
+    if (!stat.isFile() || stat.nlink !== 1n || Number(stat.mode & 0o777n) !== 0o600
+        || (currentUid !== null && stat.uid !== currentUid)) {
+      fail(`${label} must be an owner-controlled mode-0600, single-link regular file`, 77);
+    }
+    if (expectedIdentity
+        && (stat.dev.toString() !== expectedIdentity.dev
+          || stat.ino.toString() !== expectedIdentity.ino)) {
+      fail(`${label} identity changed before the locked read`, 75);
+    }
+    const size = Number(stat.size);
+    if (!Number.isSafeInteger(size) || size < 1 || size > maximumBytes) {
+      fail(`${label} is missing or oversized`, 77);
+    }
+    const bytes = Buffer.allocUnsafe(size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (read < 1) fail(`${label} could not be read completely`, 77);
+      offset += read;
+    }
+    if (expectedIdentity
+        && crypto.createHash('sha256').update(bytes).digest('hex') !== expectedIdentity.sha256) {
+      fail(`${label} bytes changed before the locked read`, 75);
+    }
+    return bytes;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function readPrivateAnonymousFileDescriptor(descriptor, label, maximumBytes) {
+  const stat = fs.fstatSync(descriptor, { bigint: true });
+  const currentUid = typeof process.geteuid === 'function' ? BigInt(process.geteuid()) : null;
+  const mode = Number(stat.mode & 0o777n);
+  if (!stat.isFile() || stat.nlink !== 0n || (mode & 0o077) !== 0
+      || (currentUid !== null && stat.uid !== currentUid)) {
+    fail(`${label} must be a private anonymous regular file`, 77);
+  }
+  const size = Number(stat.size);
+  if (!Number.isSafeInteger(size) || size < 1 || size > maximumBytes) {
+    fail(`${label} is missing or oversized`, 77);
+  }
+  const bytes = Buffer.allocUnsafe(size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const read = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+    if (read < 1) fail(`${label} could not be read completely`, 77);
+    offset += read;
+  }
+  return bytes;
+}
+
 function assertPrivateDirectory(directory, label) {
   const resolved = path.resolve(directory);
   fs.mkdirSync(resolved, { recursive: true, mode: 0o700 });
@@ -388,6 +514,9 @@ export function runCliUnderStateLock() {
     assertPrivateRegularFile(lockPath, 'acceptance state lock');
     if (linuxProcessOwnsExclusiveStateLock(lockPath)) return main();
   }
+  if (process.argv.includes('--auth-file-fd')) {
+    fail('auth-file descriptors require an already-held acceptance state lock', 77);
+  }
   const noFollow = fs.constants.O_NOFOLLOW;
   if (typeof noFollow !== 'number') fail('acceptance evidence requires no-follow lock support', 77);
   let descriptor = null;
@@ -433,16 +562,24 @@ function initialState() {
   };
 }
 
-function readState(filename, allowLegacy = false) {
-  if (!fs.existsSync(filename)) {
+function readState(filename, allowLegacy = false, expectedIdentity = null) {
+  let bytes;
+  try {
+    bytes = readPrivateRegularFileBytes(
+      filename,
+      'acceptance state',
+      MAX_ACCEPTANCE_STATE_BYTES,
+      expectedIdentity,
+    );
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || expectedIdentity) throw error;
     const state = initialState();
     atomicPrivateWrite(filename, state);
     return state;
   }
-  assertPrivateRegularFile(filename, 'acceptance state');
   let state;
   try {
-    state = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    state = JSON.parse(bytes.toString('utf8'));
     if (allowLegacy && state?.schemaVersion === LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA) {
       // Validate the exact v2 bytes through the stricter v3 row contract, but
       // do not mutate them until a receipt is available to bind atomically.
@@ -615,28 +752,86 @@ async function main() {
   const phase = option('--phase', true);
   if (!['pre-release', 'production-smoke', 'status'].includes(phase)) fail('--phase must be pre-release, production-smoke, or status', 64);
   const statePath = path.resolve(option('--state', true));
-  let state = readState(statePath, phase === 'status' || phase === 'production-smoke');
+  const expectedStateDev = option('--state-expected-dev');
+  const expectedStateIno = option('--state-expected-ino');
+  const expectedStateSha256 = option('--state-expected-sha256');
+  const expectedIdentityCount = [
+    expectedStateDev,
+    expectedStateIno,
+    expectedStateSha256,
+  ].filter(Boolean).length;
+  if (![0, 3].includes(expectedIdentityCount)
+      || (expectedStateDev && (!/^\d+$/u.test(expectedStateDev)
+        || !/^\d+$/u.test(expectedStateIno)
+        || !/^[0-9a-f]{64}$/u.test(expectedStateSha256)))) {
+    fail('state expected identity must contain device, inode, and SHA-256 values', 64);
+  }
+  const expectedStateIdentity = expectedStateDev
+    ? { dev: expectedStateDev, ino: expectedStateIno, sha256: expectedStateSha256 }
+    : null;
+  if (phase === 'production-smoke'
+      && (!expectedStateIdentity || !import.meta.url.startsWith('data:text/javascript;base64,'))) {
+    fail('production smoke requires the receipt-bound launcher and reviewed state identity', 77);
+  }
+  let state = readState(
+    statePath,
+    phase === 'status' || phase === 'production-smoke',
+    expectedStateIdentity,
+  );
 
   if (phase !== 'status') {
-    const authPath = path.resolve(option('--auth-file', true));
-    assertPrivateRegularFile(authPath, 'auth file');
-    const token = fs.readFileSync(authPath, 'utf8').trim();
+    const authPathValue = option('--auth-file');
+    const authDescriptorValue = option('--auth-file-fd');
+    if (Boolean(authPathValue) === Boolean(authDescriptorValue)) {
+      fail('exactly one auth-file source is required', 64);
+    }
+    if (phase === 'production-smoke' && !authDescriptorValue) {
+      fail('production smoke requires an anonymous auth-file descriptor', 77);
+    }
+    let authBytes;
+    if (authDescriptorValue) {
+      const descriptor = Number(authDescriptorValue);
+      if (!Number.isSafeInteger(descriptor) || descriptor < 3 || descriptor > 255) {
+        fail('auth-file descriptor is invalid', 64);
+      }
+      authBytes = readPrivateAnonymousFileDescriptor(
+        descriptor,
+        'auth file',
+        MAX_AUTH_FILE_BYTES,
+      );
+    } else {
+      authBytes = readPrivateRegularFileBytes(
+        path.resolve(authPathValue),
+        'auth file',
+        MAX_AUTH_FILE_BYTES,
+      );
+    }
+    const token = authBytes.toString('utf8').trim();
     if (!token || /\s/u.test(token)) fail('auth file must contain exactly one bearer token', 65);
     const baseUrl = option('--base-url', true);
     if (!/^https:\/\//u.test(baseUrl) && !/^http:\/\/127\.0\.0\.1(?::\d+)?$/u.test(baseUrl)) {
       fail('--base-url must be HTTPS or loopback HTTP', 64);
     }
     if (phase === 'production-smoke') {
+      if (baseUrl !== PRODUCTION_API_ORIGIN) {
+        fail('production smoke requires the canonical production API origin', 77);
+      }
       const preRelease = state.scenarios.filter((row) => row.phase === 'pre-release');
       if (preRelease.some((row) => row.status !== 'completed' || row.output?.contractPass !== true)) {
         fail('production smoke is locked until all nine pre-release scripts pass', 78);
       }
       const deployedSha = option('--deployed-sha', true);
       if (!FULL_SHA.test(deployedSha)) fail('--deployed-sha must be an exact 40-character source commit', 64);
+      if (deployedSha !== EXPECTED_PRODUCTION_SOURCE_SHA) {
+        fail('production smoke source is not the reviewed Release A identity', 78);
+      }
       const workloadReleaseViewPathValue = option('--workload-release-view');
       const workloadReleaseViewDescriptorValue = option('--workload-release-view-fd');
       if (Boolean(workloadReleaseViewPathValue) === Boolean(workloadReleaseViewDescriptorValue)) {
         fail('exactly one workload release-view source is required', 64);
+      }
+      if (!workloadReleaseViewDescriptorValue) {
+        fail('production smoke requires an anonymous workload release-view descriptor', 77);
       }
       let workloadReleaseViewBytes;
       if (workloadReleaseViewDescriptorValue) {
@@ -675,6 +870,12 @@ async function main() {
         fail('workload release view is not valid JSON', 65);
       }
       try {
+        const authoritative = captureAuthoritativeReleaseView(deployedSha);
+        validateAuthoritativeWorkloadReleaseView(
+          workloadReleaseViewBytes,
+          authoritative.view,
+          deployedSha,
+        );
         if (state.schemaVersion === LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA) {
           state = migrateLegacyAcceptanceState(state);
         }

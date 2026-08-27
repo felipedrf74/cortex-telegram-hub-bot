@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import {
   chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync,
-  writeFileSync,
+  renameSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -20,6 +20,7 @@ import {
   migrateLegacyAcceptanceState,
   updateAcceptanceScenarioFromView,
   validateAcceptanceStateShape,
+  validateAuthoritativeWorkloadReleaseView,
   validateCompletedReleaseView,
 } from '../../scripts/content-ten-script-acceptance.mjs';
 import {
@@ -211,6 +212,63 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     }
   });
 
+  it('refuses a state inode that changed before the locked read', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nexus-ten-script-identity-'));
+    const state = join(directory, 'state.json');
+    const replacement = join(directory, 'replacement.json');
+    try {
+      execFileSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status', '--state', state,
+      ], { encoding: 'utf8' });
+      const identity = statSync(state, { bigint: true });
+      const stateSha256 = crypto.createHash('sha256').update(readFileSync(state)).digest('hex');
+      writeFileSync(replacement, readFileSync(state), { mode: 0o600 });
+      renameSync(replacement, state);
+      const result = spawnSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status', '--state', state,
+        '--state-expected-dev', identity.dev.toString(),
+        '--state-expected-ino', identity.ino.toString(),
+        '--state-expected-sha256', stateSha256,
+      ], { encoding: 'utf8' });
+      expect(result.status).toBe(75);
+      expect(result.stderr).toMatch(/identity changed before the locked read/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses in-place state changes that preserve device and inode', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nexus-ten-script-bytes-'));
+    const state = join(directory, 'state.json');
+    try {
+      execFileSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status', '--state', state,
+      ], { encoding: 'utf8' });
+      const originalBytes = readFileSync(state);
+      const identity = statSync(state, { bigint: true });
+      const stateSha256 = crypto.createHash('sha256').update(originalBytes).digest('hex');
+      writeFileSync(state, Buffer.from(originalBytes).fill(0x20));
+      const changedIdentity = statSync(state, { bigint: true });
+      expect(changedIdentity.dev).toBe(identity.dev);
+      expect(changedIdentity.ino).toBe(identity.ino);
+
+      const result = spawnSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status', '--state', state,
+        '--state-expected-dev', identity.dev.toString(),
+        '--state-expected-ino', identity.ino.toString(),
+        '--state-expected-sha256', stateSha256,
+      ], { encoding: 'utf8' });
+      expect(result.status).toBe(75);
+      expect(result.stderr).toMatch(/bytes changed before the locked read/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('resumes the same acceptance identity after an authenticated durable-job retry', () => {
     const row = {
       id: 'std-en-01',
@@ -292,6 +350,33 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     expect(validateCompletedReleaseView(releaseView, sourceSha).sourceSha).toBe(sourceSha);
     releaseView.effective.releaseId = 'c'.repeat(32);
     expect(() => validateCompletedReleaseView(releaseView, sourceSha)).toThrow(/expected source/);
+  });
+
+  it('requires the workload snapshot to match the current authoritative receipt identity', () => {
+    const sourceSha = 'a'.repeat(40);
+    const candidate = completedReleaseView({
+      sourceSha,
+      releaseId: 'b'.repeat(32),
+      payloadDigest: `sha256:${'d'.repeat(64)}`,
+      completedAt: '2026-08-22T22:30:00Z',
+      capturedAt: '2026-08-22T22:45:00Z',
+    });
+    const authoritative = structuredClone(candidate);
+    authoritative.capturedAt = '2026-08-22T22:46:00Z';
+    expect(validateAuthoritativeWorkloadReleaseView(
+      Buffer.from(JSON.stringify(candidate)),
+      authoritative,
+      sourceSha,
+    ).release.releaseId).toBe('b'.repeat(32));
+
+    authoritative.active.releaseId = 'c'.repeat(32);
+    authoritative.effective.releaseId = 'c'.repeat(32);
+    authoritative.activeReceipt.releaseId = 'c'.repeat(32);
+    expect(() => validateAuthoritativeWorkloadReleaseView(
+      Buffer.from(JSON.stringify(candidate)),
+      authoritative,
+      sourceSha,
+    )).toThrow(/current authoritative receipt/);
   });
 
   it('migrates the exact pre-smoke v2 inventory but rejects a bare legacy source assertion', () => {
