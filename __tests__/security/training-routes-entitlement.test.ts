@@ -356,8 +356,8 @@ async function requestCoach(
   }
 }
 
-async function getCoach(userId = 42): Promise<{ status: number; body: any }> {
-  return requestCoach('GET', '/training/coach?refresh=true', userId);
+async function generateCoachReport(userId = 42): Promise<{ status: number; body: any }> {
+  return requestCoach('POST', '/training/coach/report', userId, { refresh: true });
 }
 
 const productTrainingRouteCases = [
@@ -469,7 +469,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
   it('blocks free-tier training coach before any AI or cost guardrail fires', async () => {
     setPlan('free');
 
-    const response = await getCoach();
+    const response = await generateCoachReport();
 
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe('TIER_REQUIRED');
@@ -481,7 +481,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
     setPlan('free');
     mockIsSkillAllowedByEntitlement.mockReturnValue(true);
 
-    const response = await getCoach();
+    const response = await generateCoachReport();
 
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe('TIER_REQUIRED');
@@ -611,7 +611,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
       { plan: 'beta', source: 'beta', allowedSkills: new Set(['training']) },
     ]) {
       mockGetEffectiveEntitlement.mockReturnValue(entitlement);
-      const response = await getCoach();
+      const response = await generateCoachReport();
       expect(response.status).toBe(403);
       expect(response.body.error.code).toBe('TIER_REQUIRED');
     }
@@ -625,7 +625,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
     process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
     setPlan('free');
     mockIsSkillAllowedByEntitlement.mockReturnValue(true);
-    const response = await getCoach();
+    const response = await generateCoachReport();
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe('AI_PLAN_REQUIRED');
   });
@@ -638,7 +638,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
       { plan: 'pro', source: 'stripe', status: 'trialing', aiAccessAllowed: true, allowedSkills: new Set(['training']) },
     ]) {
       mockGetEffectiveEntitlement.mockReturnValue(entitlement);
-      const response = await getCoach();
+      const response = await generateCoachReport();
       expect(response.status).toBe(200);
     }
     expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
@@ -648,7 +648,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
     setPlan('pro');
     mockGetActivePlan.mockReturnValue(null);
 
-    const response = await getCoach();
+    const response = await generateCoachReport();
 
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('ACTIVE_TRAINING_PLAN_REQUIRED');
@@ -677,7 +677,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
       }, async () => ({ message: 'unreachable', recommendations: [] }));
     });
 
-    const response = await getCoach();
+    const response = await generateCoachReport();
 
     expect(response.status).toBe(429);
     expect(response.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
@@ -687,7 +687,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
   it('allows pro users under cap and preserves the coach response shape', async () => {
     setPlan('pro');
 
-    const response = await getCoach();
+    const response = await generateCoachReport();
 
     expect(response.status).toBe(200);
     expect(response.body.ok).toBe(true);
@@ -696,7 +696,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
       tenantId: 42,
       meteringUserId: 42,
       budgetRequestSource: 'interactive',
-      budgetJobName: 'coach_refresh',
+      budgetJobName: 'coach_report',
       allowSensitiveCloudRouting: false,
     });
   });
@@ -727,7 +727,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
       });
     });
 
-    const results = await Promise.all(Array.from({ length: 5 }, () => getCoach(777)));
+    const results = await Promise.all(Array.from({ length: 5 }, () => generateCoachReport(777)));
 
     expect(results.filter((r) => r.status === 200)).toHaveLength(1);
     expect(results.filter((r) => r.status === 429)).toHaveLength(4);

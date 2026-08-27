@@ -2686,46 +2686,25 @@ paths:
       operationId: "getTrainingCoach"
       tags:
         - "training"
-      summary: "Coach briefing — SQLite-cached 6h; refresh can request an explicitly authorized private-data cloud analysis"
+      summary: "Read cached or persisted coach briefing; return an explicit empty state on miss"
       description: |-
-        Source: src/api/routes/training.ts:528
+        Source: src/api/routes/training.ts:532
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: Per-request coach-briefing eligibility gate (requireCoachBriefingEligibility): 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is on, otherwise 403 TIER_REQUIRED; 409 ACTIVE_TRAINING_PLAN_REQUIRED without an active plan. AI budget denials route through sendAiBudgetError (403 AI_PLAN_REQUIRED / 429 AI_DAILY_LIMIT_REACHED / AI_MONTHLY_LIMIT_REACHED / SERVICE_DEGRADED). Cached/restored path is token-zero; AI failures fall back to a deterministic briefing (still 200).
-      x-nexus-kind: "model-backed"
-      x-source: "src/api/routes/training.ts:528"
+        Notes: Per-request coach-briefing eligibility gate (requireCoachBriefingEligibility): 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is on, otherwise 403 TIER_REQUIRED; 409 ACTIVE_TRAINING_PLAN_REQUIRED without an active plan. This GET is token-zero and reads only the SQLite cache or latest persisted report. A miss returns briefing:"", recommendations:[], garminData:null, cachedOnlyMiss:true. Legacy refresh=true requests receive 400 BAD_REQUEST directing clients to POST /api/v1/training/coach/report, the sole generation path.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training.ts:532"
       x-entitlement: "training"
-      parameters:
-        - name: "refresh"
-          in: "query"
-          required: false
-          schema:
-            type: "string"
-          description: "'true' forces a fresh AI coach run (route comment: costs ~$0.05)"
-        - name: "cacheOnly"
-          in: "query"
-          required: false
-          schema:
-            type: "string"
-          description: "'true' returns { cachedOnlyMiss: true } instead of generating on cache miss"
-        - name: "allowSensitiveCloudRouting"
-          in: "query"
-          required: false
-          schema:
-            type: "string"
-          description: "'true' is per-request user authority to route raw health/calendar context to the configured cloud provider chain. The server must also permit allow_raw private-data routing; otherwise generation refuses and the route uses its deterministic fallback."
       responses:
         "200":
-          description: "{ briefing, recommendations, garminData, cachedAt, ... }; deterministic fallback payload with degraded:true + warnings when AI unavailable (Standard success envelope unless noted.)"
+          description: "Cached/restored { briefing, recommendations, garminData, cachedAt, ... }, or explicit { briefing:'', recommendations:[], garminData:null, cachedOnlyMiss:true } on miss (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): TENANT_SCOPE_REQUIRED."
+          description: "Error envelope. Stable code(s): BAD_REQUEST, TENANT_SCOPE_REQUIRED. refresh=true is rejected and directs clients to POST /api/v1/training/coach/report."
         "403":
           description: "Error envelope. Stable code(s): AI_PLAN_REQUIRED, TIER_REQUIRED."
         "409":
-          description: "Error envelope. Stable code(s): ACTIVE_TRAINING_PLAN_REQUIRED, ACCOUNT_DELETION_IN_PROGRESS."
-        "429":
-          "$ref": "#/components/responses/ModelQuotaExceeded"
+          description: "Error envelope. Stable code(s): ACTIVE_TRAINING_PLAN_REQUIRED."
         "503":
           description: "Error envelope. Stable code(s): COACH_ELIGIBILITY_UNAVAILABLE."
         "4XX":
@@ -2739,7 +2718,7 @@ paths:
         - "training"
       summary: "Apply cached coach recommendations to the calendar under the Training operation lock"
       description: |-
-        Source: src/api/routes/training.ts:1357
+        Source: src/api/routes/training.ts:1313
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
@@ -2747,7 +2726,7 @@ paths:
 
         Notes: Applies previously generated recommendations — no model call. Training operation-lock contention surfaces the lock's public code/status (trainingOperationLockPublicError). Generic failures return 503 COACH_APPLY_FAILED (sendInternalError with overridden code/status).
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/training.ts:1357"
+      x-source: "src/api/routes/training.ts:1313"
       x-entitlement: "training"
       requestBody:
         required: true
@@ -2774,15 +2753,15 @@ paths:
         - "training"
       summary: "Structured coach report (sectioned briefing); shares briefing cache; refresh:true regenerates via AI"
       description: |-
-        Source: src/api/routes/training.ts:646
+        Source: src/api/routes/training.ts:583
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
         Request body (evidenced fields): refresh?: boolean (true forces a fresh AI coach run); allowSensitiveCloudRouting?: boolean (per-request authority for raw health/calendar cloud routing)
 
-        Notes: Same eligibility + AI-budget gates as GET /training/coach; deterministic fallback report (200) when the AI run fails.
+        Notes: Uses the same current-request coach eligibility gate as GET /training/coach. AI-budget gates apply when this POST generates a report; an AI failure can return a deterministic fallback report (200).
       x-nexus-kind: "model-backed"
-      x-source: "src/api/routes/training.ts:646"
+      x-source: "src/api/routes/training.ts:583"
       x-entitlement: "training"
       requestBody:
         required: true
@@ -2822,7 +2801,7 @@ paths:
         - "training"
       summary: "Mark a training session (numeric id or sentinel 'today') completed with optional CompletionFeedbackV2"
       description: |-
-        Source: src/api/routes/training.ts:748
+        Source: src/api/routes/training.ts:704
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
@@ -2830,7 +2809,7 @@ paths:
 
         Notes: Per-user write budget 60/min (429 RATE_LIMITED with Retry-After). Foreign-owned sessions return the same 404 NOT_FOUND as missing ones. TrainingCompletionContractError surfaces its own code/statusCode. No active plan no-ops with 200.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/training.ts:748"
+      x-source: "src/api/routes/training.ts:704"
       x-entitlement: "training"
       requestBody:
         required: true
@@ -3771,7 +3750,7 @@ paths:
         - "training"
       summary: "Mark today's session (or explicit numeric session id) skipped, with optional feedback"
       description: |-
-        Source: src/api/routes/training.ts:1099
+        Source: src/api/routes/training.ts:1055
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
@@ -3779,7 +3758,7 @@ paths:
 
         Notes: Per-user write budget 60/min. Excludes already-skipped sessions from resolution.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/training.ts:1099"
+      x-source: "src/api/routes/training.ts:1055"
       x-entitlement: "training"
       requestBody:
         required: true
@@ -3854,13 +3833,13 @@ paths:
         - "training"
       summary: "Per-day adaptation opt-out: render today's prescription exactly as written (idempotent)"
       description: |-
-        Source: src/api/routes/training.ts:1340
+        Source: src/api/routes/training.ts:1296
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
         Notes: Per-user write budget 60/min.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/training.ts:1340"
+      x-source: "src/api/routes/training.ts:1296"
       x-entitlement: "training"
       responses:
         "200":

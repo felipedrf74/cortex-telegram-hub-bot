@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 import { config } from '../../src/config';
 import { resolveTrainingDay } from '../../src/services/training-date-utils';
@@ -14,6 +15,7 @@ const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGenerateCoachBriefing = vi.fn();
 const mockRunWithCoachBriefingAccountAdmissions = vi.fn();
+const mockRunWithCoachBriefingAccountLifecycle = vi.fn();
 const mockApplyCoachRecommendations = vi.fn();
 const mockGetLatestByType = vi.fn();
 const mockDeleteReportsByType = vi.fn();
@@ -115,13 +117,8 @@ vi.mock('../../src/services/garmin-coach', () => ({
   runWithCoachBriefingAccountAdmissions: (...args: unknown[]) => (
     mockRunWithCoachBriefingAccountAdmissions(...args)
   ),
-  runWithCoachBriefingAccountLifecycle: async (
-    userId: number,
-    options: Record<string, unknown>,
-    consume: (briefing: unknown, abortSignal: AbortSignal) => unknown,
-  ) => consume(
-    await mockGenerateCoachBriefing(userId, options),
-    new AbortController().signal,
+  runWithCoachBriefingAccountLifecycle: (...args: unknown[]) => (
+    mockRunWithCoachBriefingAccountLifecycle(...args)
   ),
   applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
 }));
@@ -613,6 +610,15 @@ describe('Training API routes', () => {
       _options: Record<string, unknown>,
       operation: (abortSignal: AbortSignal) => unknown,
     ) => operation(new AbortController().signal));
+    mockRunWithCoachBriefingAccountLifecycle.mockReset();
+    mockRunWithCoachBriefingAccountLifecycle.mockImplementation(async (
+      userId: number,
+      options: Record<string, unknown>,
+      consume: (briefing: unknown, abortSignal: AbortSignal) => unknown,
+    ) => consume(
+      await mockGenerateCoachBriefing(userId, options),
+      new AbortController().signal,
+    ));
     mockApplyCoachRecommendations.mockReset();
     mockGetLatestByType.mockReset();
     mockDeleteReportsByType.mockReset();
@@ -806,15 +812,46 @@ describe('Training API routes', () => {
     });
   });
 
-  it('returns a cache-only miss without triggering a new coach generation', async () => {
+  it('keeps GET /coach cache misses token-zero and rejects refresh without any model-provider path', async () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
-    const res = await dispatch('GET', '/coach', { cacheOnly: 'true' });
+    const miss = await dispatch('GET', '/coach');
+    const refresh = await dispatch('GET', '/coach', { refresh: 'true' });
 
-    expect(res.statusCode).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(res.body.data.cachedOnlyMiss).toBe(true);
-    expect(res.body.data.briefing).toBe('');
+    expect(miss.statusCode).toBe(200);
+    expect(miss.body.ok).toBe(true);
+    expect(miss.body.data).toEqual({
+      briefing: '',
+      recommendations: [],
+      garminData: null,
+      cachedOnlyMiss: true,
+    });
+    expect(refresh.statusCode).toBe(400);
+    expect(refresh.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'BAD_REQUEST',
+        message: expect.stringContaining('POST /api/v1/training/coach/report'),
+      },
+    });
+    expect(mockRunWithCoachBriefingAccountLifecycle).not.toHaveBeenCalled();
+    expect(mockRunWithCoachBriefingAccountAdmissions).not.toHaveBeenCalled();
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+
+    const routeSource = readFileSync('src/api/routes/training.ts', 'utf8');
+    const getCoachStart = routeSource.indexOf("router.get('/coach'");
+    const postCoachReportStart = routeSource.indexOf("router.post('/coach/report'", getCoachStart);
+    expect(getCoachStart).toBeGreaterThan(-1);
+    expect(postCoachReportStart).toBeGreaterThan(getCoachStart);
+    expect(routeSource.slice(getCoachStart, postCoachReportStart)).not.toMatch(
+      /runWithCoachBriefingAccountLifecycle|generateCoachBriefingAdmitted|completeOneShotWithFallback/,
+    );
+
+    const openApiSource = readFileSync('docs/contracts/openapi-v1.yaml', 'utf8');
+    const getCoachContractStart = openApiSource.indexOf('"/api/v1/training/coach":');
+    const coachApplyContractStart = openApiSource.indexOf('"/api/v1/training/coach/apply":', getCoachContractStart);
+    const getCoachContract = openApiSource.slice(getCoachContractStart, coachApplyContractStart);
+    expect(getCoachContract).toContain('x-nexus-kind: "deterministic"');
+    expect(getCoachContract).not.toMatch(/x-nexus-kind: "model-backed"|allowSensitiveCloudRouting/);
   });
 
   it('returns a structured sanitized coach report without raw debug fragments', async () => {
@@ -893,22 +930,14 @@ describe('Training API routes', () => {
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['GET', '/coach', { refresh: 'true' }, undefined],
-    ['POST', '/coach/report', {}, { refresh: true }],
-  ] as const)('does not replace account-erasure cancellation with a deterministic %s %s fallback', async (
-    method,
-    path,
-    query,
-    body,
-  ) => {
+  it('does not replace POST coach report account-erasure cancellation with a deterministic fallback', async () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
     mockGenerateCoachBriefing.mockRejectedValueOnce(Object.assign(
       new Error('account deletion in progress'),
       { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
     ));
 
-    const res = await dispatch(method, path, query, body);
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true });
 
     expect(res.statusCode).toBe(409);
     expect(res.body).toMatchObject({
@@ -961,7 +990,7 @@ describe('Training API routes', () => {
       } as any);
     });
 
-    const res = await dispatch('GET', '/coach', { refresh: 'true' });
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true });
 
     expect(res.statusCode).toBe(429);
     expect(res.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
@@ -1309,7 +1338,7 @@ describe('Training API routes', () => {
       },
     });
 
-    const res = await dispatch('GET', '/coach', { cacheOnly: 'true' });
+    const res = await dispatch('GET', '/coach');
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -1351,7 +1380,7 @@ describe('Training API routes', () => {
       },
     });
 
-    const res = await dispatch('GET', '/coach', { cacheOnly: 'true' }, undefined, 0);
+    const res = await dispatch('GET', '/coach', {}, undefined, 0);
 
     expect(res.statusCode).toBe(400);
     expect(res.body.ok).toBe(false);
@@ -1424,22 +1453,22 @@ describe('Training API routes', () => {
     expect(mockInvalidateTrainingDerivedCaches).not.toHaveBeenCalledWith(42);
   });
 
-  it('sanitizes degraded coach warnings when briefing generation fails', async () => {
+  it('sanitizes degraded coach report warnings when briefing generation fails', async () => {
     mockGetActivePlan
       .mockReturnValueOnce({ id: 44, user_id: 12, tenant_id: 12, status: 'active' })
       .mockReturnValue(null);
     mockGenerateCoachBriefing.mockRejectedValueOnce(new Error('upstream garmin timeout: tenant=12'));
 
-    const res = await dispatch('GET', '/coach');
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true });
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.degraded).toBe(true);
-    expect(res.body.data.warnings).toEqual(['Coach briefing unavailable.']);
+    expect(res.body.data.warnings).toEqual(['Coach report unavailable.']);
     expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
   });
 
-  it('falls back to deterministic coach copy when AI coach generation fails but a plan exists', async () => {
+  it('falls back to a deterministic coach report when AI generation fails but a plan exists', async () => {
     mockGenerateCoachBriefing.mockRejectedValueOnce(new Error('upstream garmin timeout: tenant=12'));
     mockGetActivePlan.mockReturnValue({
       id: 44,
@@ -1460,13 +1489,13 @@ describe('Training API routes', () => {
       },
     ]);
 
-    const res = await dispatch('GET', '/coach', {}, undefined, 12, { 'x-language': 'pt-BR' });
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true }, 12, { 'x-language': 'pt-BR' });
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.data.degraded).toBe(true);
+    expect(res.body.data.degraded).toBe(false);
     expect(res.body.data.deterministicFallback).toBe(true);
-    expect(res.body.data.warnings).toContain('Coach AI unavailable; deterministic fallback used.');
+    expect(res.body.data.warnings).toEqual([]);
     expect(res.body.data.briefing).toContain('Leitura rápida do coach');
     expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
     expect(mockRunWithCoachBriefingAccountAdmissions).toHaveBeenCalledWith(
@@ -1474,7 +1503,7 @@ describe('Training API routes', () => {
       expect.objectContaining({
         tenantId: 12,
         meteringUserId: 12,
-        budgetJobName: 'coach_refresh_fallback',
+        budgetJobName: 'coach_report_fallback',
       }),
       expect.any(Function),
     );
@@ -1485,15 +1514,7 @@ describe('Training API routes', () => {
     );
   });
 
-  it.each([
-    ['GET', '/coach', { refresh: 'true' }, undefined],
-    ['POST', '/coach/report', {}, { refresh: true }],
-  ] as const)('does not publish a deterministic %s %s fallback when fallback admission is fenced', async (
-    method,
-    path,
-    query,
-    body,
-  ) => {
+  it('does not publish a deterministic POST coach report fallback when fallback admission is fenced', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 44,
       user_id: 12,
@@ -1506,7 +1527,7 @@ describe('Training API routes', () => {
       { code: 'ACCOUNT_DELETION_IN_PROGRESS' },
     ));
 
-    const res = await dispatch(method, path, query, body);
+    const res = await dispatch('POST', '/coach/report', {}, { refresh: true });
 
     expect(res.statusCode).toBe(409);
     expect(res.body).toMatchObject({
