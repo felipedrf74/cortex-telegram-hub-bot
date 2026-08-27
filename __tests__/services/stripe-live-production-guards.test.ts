@@ -25,7 +25,10 @@ vi.mock('stripe', () => ({ default: vi.fn(function StripeMock() { return {}; }) 
 vi.mock('../../src/config', () => ({
   config: {
     stripe: hoisted.stripeConfig,
-    ios: { jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long' },
+    ios: {
+      jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
+      appAccountTokenHmacSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
+    },
     get isLiveProduction() { return hoisted.runtime.isLiveProduction; },
   },
 }));

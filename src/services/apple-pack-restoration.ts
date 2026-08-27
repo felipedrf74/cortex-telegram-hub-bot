@@ -30,15 +30,15 @@ import { findAiCreditLotByProviderTransaction, grantPurchasedAiCredits } from '.
 import { isCreditPackPurchaseEligible } from './credit-pack-entitlement';
 import {
   lookupAppleReversalForTransaction,
-  isSandboxGrantAllowed,
   MAX_CONSUMABLE_QUANTITY,
   type AppleReversalBackfillBudget,
   type AppleReversalLookupResult,
 } from './apple-notification-inbox';
 import { isApplePackFulfillmentActive } from './hybrid-runtime-kill-switches';
-import { resolveUserIdFromAppleAppAccountToken } from './stripe-service';
+import { resolveAppleAppAccountTokenForAuthenticatedScope } from './stripe-service';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { isAppleValueGrantEnvironmentAllowed } from './apple-value-grant-policy';
 
 export const MAX_RESTORE_TRANSACTIONS_PER_REQUEST = 8;
 export const MAX_RESTORE_TRANSACTION_JWS_LENGTH = 16_384;
@@ -69,6 +69,7 @@ export type ApplePackRestorationResult =
 
 export function restoreApplePackTransactions(input: {
   userId: number;
+  tenantId: number;
   signedTransactions: unknown;
 }): ApplePackRestorationResult {
   if (!isApplePackFulfillmentActive()) {
@@ -95,13 +96,14 @@ export function restoreApplePackTransactions(input: {
     return lookupAppleReversalForTransaction(transactionId, { backfillBudget });
   };
   for (const jws of raw as string[]) {
-    results.push(restoreOne(input.userId, jws, lookupReversal));
+    results.push(restoreOne(input.userId, input.tenantId, jws, lookupReversal));
   }
   return { kind: 'processed', results };
 }
 
 function restoreOne(
   userId: number,
+  tenantId: number,
   jws: string,
   lookupReversal: (transactionId: string) => AppleReversalLookupResult,
 ): ApplePackRestorationItemResult {
@@ -123,19 +125,23 @@ function restoreOne(
   const packItem = resolveBillingCatalogItemByAppleProductId(productId);
   if (!packItem) return { outcome: 'not_a_pack' };
 
-  // Restoration mirrors the inbox environment rule: sandbox transactions
-  // never mint spendable production credit.
-  const environment = typeof inner.environment === 'string' ? inner.environment : '';
-  if (environment !== 'Production' && !isSandboxGrantAllowed()) {
-    return { outcome: 'environment_refused', catalogItemId: packItem.id };
-  }
-
   // Ownership is derived from the transaction's own appAccountToken, never
   // from the caller's claim. A mismatch is refused as wrong_account without
   // confirming the transaction's existence to the wrong caller.
-  const boundUserId = resolveUserIdFromAppleAppAccountToken(inner.appAccountToken);
-  if (!boundUserId || boundUserId !== userId) {
+  const boundUserId = resolveAppleAppAccountTokenForAuthenticatedScope({
+    userId,
+    tenantId,
+    appAccountToken: inner.appAccountToken,
+  });
+  if (!boundUserId) {
     return { outcome: 'wrong_account', catalogItemId: packItem.id };
+  }
+
+  // Resolve ownership before considering the App Review exception so the
+  // allowlist can never turn an unbound Sandbox receipt into bearer value.
+  const environment = typeof inner.environment === 'string' ? inner.environment : '';
+  if (!isAppleValueGrantEnvironmentAllowed(environment, boundUserId)) {
+    return { outcome: 'environment_refused', catalogItemId: packItem.id };
   }
 
   const transactionId = String(inner.transactionId || inner.originalTransactionId || '');
@@ -178,6 +184,9 @@ function restoreOne(
   }
 
   const existingLot = findAiCreditLotByProviderTransaction('apple', transactionId);
+  if (existingLot && existingLot.userId !== userId) {
+    return { outcome: 'wrong_account', catalogItemId: packItem.id };
+  }
   if (!existingLot && !isCreditPackPurchaseEligible({
     userId,
   })) {

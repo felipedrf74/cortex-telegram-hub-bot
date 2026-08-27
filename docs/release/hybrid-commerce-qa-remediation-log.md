@@ -645,3 +645,557 @@ queued, and one pending production smoke. The three scheduled cases remain
 fixed for `2026-08-25T03:00:00Z`; the root-owned timer is enabled and active.
 The smoke and measured-p95 economics gate must follow those executions. The
 owner's no-rotation decision remains the only explicit security exception.
+
+## Final release evidence and residual activation gates (2026-08-25)
+
+Protected-main source `92b722ee02242fd37453ece17d74cfc53102d961`
+completed as signed release `cec9cc171f8953e6e1191894dd3e1927`. Its provable
+v3 receipt binds backend digest
+`sha256:d019a44f9ebf9350a2739c57e716536cb02fc269a63ba78945aceaccb8f46abf`,
+Content Engine digest
+`sha256:db72646164a1888096e26fdb5a760688d4c312dfa047e31eb498e8cd958586e5`,
+and signed payload digest
+`sha256:a29c35a2aaba968b829607a54e187de29258c0bf46646cc08828af3454b93310`.
+Production and staging are healthy and no release block is active.
+
+The real Apple sandbox path is complete. An Apple-signed transaction bound to
+the isolated staging user `1100000` created exactly one active 100-credit lot
+and one provider transaction. Replaying the same transaction returned
+`already_credited` without changing the balance, and the corresponding Sandbox
+server notification was durably processed once. App Review submission
+`9f222cb7-fec9-47c9-988a-5f58cbe9184b` contains exact iOS 1.5.0 build 289 plus
+the 100-, 250-, and 600-credit consumables; all four items are `Waiting for
+Review`. Apple received the Small Business Program enrollment on 2026-08-25,
+but approval and its commission effective date remain external. Production
+Apple fulfillment stays OFF until review approval.
+
+Protected iOS `main` at `6ad5193c04be2199fe4ea84a76272468bf2bb72c`
+also passed 28 of 28 device-compatible billing, catalog, wallet, paywall, and
+Foundation Models lane-safety tests on the connected iPhone 13 running iOS
+26.6.1. An initial combined run correctly showed that eight repository-source
+convention checks cannot read checkout files from an iPhone application
+sandbox; those exact eight checks then passed in their supported
+host/simulator environment. The simulator was shut down after the run. The
+attended sandbox purchase was not repeated, avoiding a redundant transaction
+and credit grant.
+
+The governed policy-v5 final pass rejected GPT-OSS despite its 76.32 score:
+it won only 25% of paired cases and failed safety/tenant, output-contract,
+latency, memory, and critical-skill gates. Its exact digest was removed. Qwen
+is the only resident model and remains `control_only`; local-primary activation
+therefore correctly stays fail-closed. The plan's no-challenger retention branch
+does not override Qwen's unapproved research/control license: eligible work
+continues through the governed cloud fallback, and Qwen serves no production
+traffic. The connected iPhone 13 is not eligible for Apple Foundation Models,
+and the eligible iPhone 17 Pro Max framework run remains externally
+rate-limited, so the device lane stays OFF.
+
+The production container keeps the script-job infrastructure flag and approved
+cloud-primary delivery binding enabled only to finish the owner/staff acceptance
+inventory. `CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED=false`, and the durable
+`local_inference_runtime_control` production row is `off/0%` with reason
+`migration_default_off`. Thus neither a public script user nor an unqualified
+local model is admitted; the infrastructure flag alone is not activation.
+
+Website source `2e2d44c` published as Cloudflare Pages deployment `c8bc468e`.
+Direct production reads of both language routes returned HTTP 200 with zero
+redirects. Rendered desktop and mobile checks confirmed Pro `$9.99`/500 credits,
+Max `$14.99`/1,200 credits, all three packs (`$4.99`, `$9.99`, `$19.99`), the
+active-paid-plan requirement, and closed-purchase disclosure with zero browser
+console warnings or errors. Obsolete regional, annual, and founder-price claims
+were removed. The legal pages retain the approved OpenAI resumable-script
+boundary; App Privacy links the production policy and declares 14 data types.
+
+The live Stripe account remains bound to `acct_1U54u33I2RHPBZcJ`, with charges
+and payouts enabled and no active account tasks. It still reports
+`business_type=individual` and zero active Tax registrations while the public
+legal pages name Cigarra Esbelta Unipessoal LDA. The Dashboard now carries the
+production support email and live support, privacy, and terms URLs. Public
+subscription checkout and pack fulfillment therefore remain OFF pending an
+owner/accountant-backed seller identity and Portugal/OSS registration decision.
+This cannot be inferred from application code or changed safely as a technical
+default.
+
+The immutable acceptance inventory remains six contract-valid completions,
+three scheduled jobs fixed for `2026-08-25T03:00:00Z`, and one production
+smoke gated behind those nine pre-release jobs and exact source
+`92b722ee02242fd37453ece17d74cfc53102d961`. The root-owned timer is active.
+No job was moved early and no eleventh script was created. Public hybrid
+credits remain OFF until the ten-script artifact and measured-p95 economics
+simulation settle.
+
+## Recovered acceptance and completeness audit (2026-08-26)
+
+The surviving acceptance state was recovered without changing its immutable
+ten-scenario inventory. Its bearer credential had expired, causing read polls
+to return only unauthorized responses while durable jobs continued on the
+server. The old credential's signature and numeric scope were verified inside
+the deployed backend runtime, then the deployed issuer created a fresh bounded
+credential for that same scope. The mode-0600 auth file was replaced
+atomically. No prompt, script body, job identifier, token, signing secret,
+provider payload, private user data, or finance value was emitted or persisted
+outside the existing private boundary.
+
+The first authenticated metadata refresh recovered one additional completed,
+contract-valid result. At the latest observation, seven of nine pre-release
+scenarios were completed and contract-valid, one remained actively leased in
+generation, one remained in governed capacity wait, and the production smoke
+was pending. There are no terminal failures and no replacement or eleventh job
+was created. The exact-source completed receipt was re-proved with no active
+block, so the receipt prerequisite is ready when the ninth pre-release result
+settles.
+
+The full-plan audit also found three repository retention defects independent
+of acceptance: terminal script job material lacked the required 30-day prune,
+content-free skill-inference telemetry lacked the required 90-day prune, and
+security/admin audit rows were pruned after 180 days instead of 12
+months. The evidence-to-economics chain also did not bind a completed release
+view, independent quality review, acceptance digest, and actual-account rate
+card into one write-once artifact, and script-heavy simulation omitted measured
+script tool costs. Local unverified remediations now preserve content-free
+job/Batch/billing identity while tombstoning aged script material, fence
+provider cleanup against retry and late Batch persistence, require account
+erasure to prove remote-file deletion, backfill cancellation for terminal
+parents with active provider Batches, normalize backlog timestamps, add the
+90-day and 12-calendar-month pruners, require an independent per-script quality attestation,
+bind completed receipt/state/quality/rate-card digests, require the exact
+revision and immutable ten-script inventory, recompute p95/totals, join every
+script to tenant/user-scoped production cloud-routing evidence, snapshot
+Standard/deep operation p95 from scoped `api_usage`, require usage coverage for
+every completed script stage, retain paid failed-attempt cost, split metered
+model and tool cost without double counting, include measured script tool costs,
+and write private evidence through descriptor-checked, no-follow, write-once
+paths. Tests were added but not run under the owner's explicit no-test
+instruction. These changes require a new reviewed release and cannot be
+retroactively attributed to the completed source receipt above.
+
+Public activation remains additionally blocked on counsel/owner approval of
+the repository legal sources, the owner/accountant seller-identity and
+Portugal/OSS decision, applicable Stripe Tax registration, Apple review and
+commission evidence, and rotation of the VPS credential disclosed in operator
+chat. That credential was not used or copied into tooling. Final hostile QA is
+withheld until the ten-script gate, economics, new release evidence, and these
+external/manual gates are either completed or accepted as specific
+impossibilities by the owner.
+
+### Production-smoke v2 state transition
+
+The surviving mode-0600 acceptance state uses schema v2 because all nine
+pre-release submissions were created by the immutable workload tool. The
+production smoke must not be submitted by that older tool: its bare
+`productionSmokeSourceSha` is not receipt evidence. Once all nine pre-release
+rows are completed and contract-valid, capture the authoritative unblocked
+completed workload release view into a new owner-controlled mode-0600 file and
+invoke the reviewed v3 acceptance tool with that same file, the existing state
+and auth files, production-smoke phase, production base URL, and exact deployed
+SHA. In one pre-API write, the tool validates the exact ordered v2 inventory,
+refuses any existing smoke identity or bare source assertion, upgrades only the
+schema, and persists the receipt-bound workload identity. Retries must reuse
+the same release-view bytes and tenth idempotency identity. The state rewrite
+fsyncs the private temporary file and containing directory around the atomic
+rename. On Linux the entire invocation is held by an exclusive, nonblocking
+`flock` retained across exec; the child accepts the fence only when its own
+descriptor and the kernel `FLOCK ... WRITE` record match the exact lock inode.
+The migration also rejects every optional smoke submission/update marker, not
+only a job identifier. Never edit the state JSON, retrofit a binding after
+submission, or run the old installed tool for the smoke. Admitting the reviewed
+v3 tool onto the VPS is a separate authorized production-tool change; it is not
+a container release, control-plane update, or permission to alter the
+application runtime.
+
+### Post-acceptance private evidence procedure
+
+This procedure starts only after the immutable inventory reports ten unique,
+completed, contract-valid scenarios. It does not activate scripts, credits,
+commerce, local inference, or any other public surface.
+The private state must already contain the authoritative workload release-view
+binding persisted before the production smoke; post-acceptance evidence cannot
+invent or replace it.
+
+1. Capture a fresh `nexus-release-state-view` response into a new private,
+   mode-0600 single-link regular file inside an owner-controlled mode-0700
+   directory. Require an unblocked completed v3 receipt for the exact evidence-
+   producer source SHA under review; do not substitute an earlier console
+   summary or require it to equal the immutable acceptance workload SHA.
+2. Have an independent reviewer inspect all ten outputs and create the private
+   quality-review v1 input. It must bind the exact workload source SHA from
+   the receipt-backed `productionSmokeSource` binding and acceptance state
+   digest, cover every script digest, report a passing verdict, and record zero
+   critical regressions without copying script bodies into release docs.
+3. Run `npm run content:acceptance:evidence --` with `--state`,
+   `--quality-review`, `--workload-release-view`, `--release-view`, `--database`,
+   `--script-job-key-file`,
+   `--workload-source-sha`, `--producer-source-sha`, and a new `--output` path.
+   Invoke the command from the reviewed producer checkout whose executing
+   evidence and acceptance modules exactly match that producer commit. An
+   optional `--producer-source-repository` may locate the Git object database
+   containing the receipt-bound commit, but it does not relocate the executing
+   module root or allow different working-tree bytes to qualify.
+   The key input is a fresh owner-controlled mode-0600 JSON file using
+   `nexus.content-script-job-evidence-keys.v1`; it contains the current and only
+   still-required previous script-job keys, is never copied into evidence, and
+   is securely removed under the approved secret-handling procedure after the
+   read-only capture.
+   The workload SHA and private workload release view must equal the immutable,
+   receipt-backed binding persisted before the production smoke; the smoke must
+   postdate that binding and receipt. The producer SHA must equal the fresh
+   completed release receipt, remain distinct from the workload SHA, and its
+   receipt must postdate the smoke and workload evidence. Evidence v6 records
+   both, the Git blob/byte identity of the complete governed local module
+   closure, and a versioned digest that binds the ordered pair to that closure.
+   A missing commit/module, symlinked or unstable source file, or byte mismatch
+   refuses before artifact creation. The smoke row must also
+   carry immutable server-owned creation and completion release triples—release
+   ID, source SHA, and backend image digest—that both equal the bound workload
+   release. A concurrent release therefore refuses instead of being
+   retroactively attributed. Shipping reviewed
+   evidence tooling does not replace or rerun the ten scenarios. The command
+   must read the production database through its read-only snapshot contract.
+   In that same transaction it decrypts each authenticated v3 persisted request
+   and result, proves the exact immutable scenario request hash/idempotency key,
+   and recomputes the reviewed script digest and word count from the persisted
+   result. It then joins all ten scripts to their tenant/user-scoped completed
+   production inference/usage rows and captures the exact preceding 90-day
+   Standard/deep operation p95.
+   Operation samples are grouped by user-visible operation, not individual run.
+   All governed paid production attempts contribute, including operations whose
+   attempts all failed. Failed-only token/model/tool overhead is divided across
+   completed operations in that class with upward-rounded shares before p95;
+   the v3 nested evidence records the failed-only count and allocation. A class
+   without a completed production denominator blocks rather than false-passing.
+   Shadow rows plus `chat_live_eval:*` and `content_live_eval:*` jobs are
+   excluded. Cross-scope rows,
+   unresolved pricing, a paid non-live interactive row with a blank, unknown,
+   or newly introduced category, an accepted script not routed through OpenAI
+   `gpt-5.6-luna`, or a missing operation class is a release block. Historical
+   failed/cancelled attempts sharing an operation do not invalidate a later
+   completed run, but their paid usage remains in economics. Each accepted job
+   must use one unique exact `operation_id = content-script:<job_id>`. Every
+   completed script-stage run must have its own resolved, correctly routed
+   usage row, and every paid row attached to an accepted production run must
+   have the exact tenant/user scope, automation source, job name, governed
+   category, valid timestamp, resolved pricing, provider, and model or the
+   capture refuses. A user-visible operation identity must belong to exactly
+   one Standard/deep class; a cross-class collision refuses instead of being
+   counted in both populations. The
+   command separates measured model cost from tool cost and creates one
+   write-once private evidence v6
+   artifact; a refusal is not permission to edit evidence.
+4. Populate a new mode-0600 rate card with actual account rates, channel
+   costs, and a complete owner-approved matrix of nonnegative monthly counts
+   for all five profiles on both web and Apple. An individual matrix cell may
+   be zero, but a channel total of zero fails that channel gate. Capture the
+   card after the completed acceptance evidence and use it
+   within 24 hours; older or causally earlier rates fail closed. Do not enter
+   p95 token/tool usage manually and do not infer private rates from public list
+   prices. Run `scripts/economics-simulation.mjs`
+   with that rate card, the acceptance artifact, the same workload and producer
+   release views, both exact source SHAs, and a new private output path, from
+   the same reviewed producer checkout. If supplied,
+   `--producer-source-repository` is only the Git commit locator and never the
+   executing module root. Economics v6 independently proves the exact
+   economics/evidence/acceptance/canonicalization module bytes against that
+   commit and revalidates the acceptance-producer closure. It must revalidate
+   the distinct workload/producer pair and immutable-tool digest, exact
+   revision/inventory, script p95/totals, and bound operation snapshot. Each
+   class costs the greater of its current-rate recomputation and resolved
+   measured model-cost p95, then adds measured tool cost exactly once. The
+   ten-credit script profiles use the higher measured total of Standard and
+   Scheduled, so Batch cost cannot be silently omitted.
+   All five profiles run on web and Apple; the web subscription-plus-pack
+   profile incurs two Stripe fixed fees because those are separate charges.
+   Exit 0 is eligible;
+   exit 2 is a failed economics gate; any other refusal is invalid evidence.
+5. Keep public activation OFF. The locally staged retention and evidence
+   changes are unverified and are not part of the accepted workload source.
+   They require owner-authorized verification, review, commit, protected-main
+   release, and a new completed producer receipt before their artifacts can
+   support an activation decision. That later producer receipt is intentionally
+   distinct from the immutable workload receipt and does not authorize an
+   eleventh scenario, replacement, or acceptance rerun.
+
+### Invoice artifact erasure hardening (2026-08-26)
+
+The completeness audit found that invoice queue bytes were created before their
+database row and stored objects before their filing row. A process crash could
+therefore leave a no-row object, while account deletion could race an admitted
+write or a later `recordFiling` insert. The local remediation adds a durable
+tenant/user ownership manifest before filesystem creation, private no-follow
+descriptor writes, a bounded write lease with expired-intent reconciliation,
+and deletion-proof receipts for manifest, queue, and filing rows. Invoice
+metadata insertion now rechecks account status and the durable deletion fence
+inside the same immediate transaction. The deletion wrapper renews that exact
+token-bound fence throughout external cleanup and refuses to resurrect an
+expired fence. Focused fixtures cover present/missing artifacts, live and stale
+write leases, unsupported backends, proof-persistence crash recovery,
+symlink/hardlink refusal, permission tightening, and post-fence metadata
+refusal. They remain unexecuted under the owner's no-test instruction.
+
+The follow-up static audit also closed five proof gaps: final fence and artifact
+checks now run under the same immediate writer lock as account-row removal;
+directory entries are fsynced before deletion proof commits; legacy permissive
+queue files are descriptor-validated before mode repair; fiscal subject-access
+exports strictly project retained document metadata while dropping internal
+payloads and paths; and distinct historical SCP copies cannot be mistaken for
+their backfilled object. Migration 297 records a separate legacy-copy proof.
+The bounded mounted-root maintenance producer verifies the backfilled checksum,
+rejects symlink components, hardlinks, foreign ownership, and row-identity
+changes, and reconciles canonical no-row object/queue files into durable
+manifests. Its verified root and every parent component remain inode-pinned for
+each descriptor-relative read/delete, and the bounded queue inventory proves
+both row-to-file and file-to-row ownership before readiness. Ownerless queue
+artifacts remain a deliberate release block. Per-directory fanout is capped by
+the requested page limit, total materialized/sorted entries are capped at four
+times that limit, and traversal depth is capped at 128; exceeding any bound is
+a safe refusal rather than unbounded reconciliation. Follow-on migration 298
+adds immutable queue-row/source intent, stored payload digest/size/MIME, and a
+pre-unlink device/inode deletion journal. Retry adoption now requires that exact
+intent and verifies already-stored payload bytes rather than recompressing and
+comparing new bytes. Queue and object cleanup commit the inode claim before
+unlink, require parent durability, canonical absence, and zero links on the
+opened inode, and refuse missing/replaced or pre-journal identities. Legacy
+row-owned artifacts first receive an exact tenant/user manifest; account
+cleanup can no longer adopt a cross-owner object manifest. The
+predecessor-compatible phase-A migration deliberately uses a plain lookup index:
+the supported runtime serializes live intent admission under an immediate writer
+transaction and fails closed if it observes more than one candidate. The same
+phase keeps deletion-journal enforcement in the token/device/inode-bound runtime
+transition; database UNIQUE/trigger enforcement is deferred until the
+predecessor writer has been retired. The
+authorized procedure is canonical in
+[`security-operations-runbook.md`](../security/security-operations-runbook.md#invoice-artifact-ownership-reconciliation).
+
+The filesystem object-store boundary now walks the configured root from a held
+filesystem descriptor and requires every descriptor-relative component
+observation to match the no-follow descriptor subsequently opened. Create,
+read, deletion, durability, and quota traversal remain relative to those held
+parents; configured root paths cannot contain symbolic-link components, a
+missing configured root cannot become account-erasure absence proof, and
+non-Linux hosts fail closed. Unexecuted focused fixtures cover missing-root
+creation, configured-root replacement, and a parent-directory ABA swap while
+recording that no write targets the external replacement.
+
+### Evidence producer source-closure binding (2026-08-26)
+
+The completion audit found that the acceptance and economics producers accepted
+a producer source SHA plus completed receipt without proving that their
+executing repository modules were the bytes committed at that SHA. The local
+remediation makes evidence v6 resolve the exact producer commit, no-follow read
+the executing acceptance/evidence module closure, compare every byte to its Git
+blob, and bind the ordered workload/producer pair to the resulting immutable
+closure digest. Economics v6 independently revalidates that acceptance closure,
+proves its expanded economics/canonicalization closure against the same commit,
+and includes both bindings in its canonical payload and source digest.
+Production activation now accepts only economics v6, reconstructs both binding
+layers, and rejects a stripped, reordered, or redigested producer closure.
+Focused fixtures cover current-byte/commit drift, self-consistent acceptance
+closure substitution, economics closure drift, and activation-time redigestion.
+They remain unexecuted under the owner's no-test instruction.
+
+Migration 299 is likewise an expand-only phase-A schema. The current runtime
+validates complete release identity at job creation and again before completion;
+acceptance evidence rejects a missing, partial, or mismatched pair. A code-only
+rollback remains schema-compatible, but a predecessor worker can complete a
+release-bound job without the new completion columns. Such a row is deliberately
+ineligible for acceptance and must not be repaired or substituted. Database
+immutability follows only in a later contract phase after predecessor retirement.
+
+### Coach cloud privacy and webhook ownership (2026-08-26)
+
+The completeness audit found that Garmin Coach could pass raw health/calendar
+context through the Gemini→OpenAI→Anthropic fallback chain without an
+explicit private-data authority, while an obsolete diagnostic flag could write
+the full prompt to disk. The local remediation removes disk capture and
+requires both authenticated per-request consent and the operator `allow_raw`
+privacy policy before any provider or fallback is considered. Operational logs
+now contain only bounded counts/provider timing, never activity names,
+calendar text, or prompt bodies. Without that authority, scheduled and direct
+coach calls return a deterministic local-only briefing and never debit a cloud
+budget, persist an error-shaped coaching result, or enter the provider chain.
+
+Generic webhook persistence previously defaulted ownership to user zero and
+stored provider payloads and signing headers as plaintext. The local
+remediation mounts public raw callbacks before parsing/auth while keeping all
+management routes behind admin auth, requires one positive owner plus explicit
+provider verifier material, and matches each delivery to exactly one active
+subscription. Google Calendar binds channel ID/token; Outlook binds
+subscription ID/clientState per notification and strips clientState before
+persistence. Gmail Pub/Sub fails closed pending OIDC identity verification;
+Strava fails closed pending its native GET challenge and owner-bound POST
+identity contract. Deduplication is scoped by owner/provider/subscription/key
+inside a `BEGIN IMMEDIATE` transaction. Outlook uses canonical-notification
+digests; the future-ready Strava helper does too. Subscription event types are a
+validated allowlist enforced before signature work and persistence; Outlook
+batches are capped at 1,000 before subscription matching. Event-list limits are
+strictly parsed and clamped to 1..200. Every management read and mutation also
+honors `PORTAL_OPERATOR_USER_SCOPES`, including stored-row authorization and an
+owner predicate on destructive/replay mutations.
+
+Migration 300 is an additive phase-A migration with new ordinary lookup-index
+names only. Release A must deploy and be verified with
+`WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED=false`, so its predecessor can still
+read new writes and remains the compatible rollback target. Only a later
+protected release may enable per-user envelope writes and the offline rotation;
+webhook envelopes use only the pinned OAuth-domain key (never a Finance-key
+fallback), reads support plaintext and ciphertext throughout, and the rotator preserves
+historical object, array, scalar, and null JSON. Portal/export responses omit
+secrets and retained headers, and account deletion removes exact owner rows.
+Focused provider, Express composition, dedup, compatibility-flag, release-policy,
+rotation-shape, and limit fixtures were authored but remain unexecuted under the
+owner's no-test instruction.
+
+### Anonymous checkout claim sunset (2026-08-26)
+
+The completion audit found that turning off new anonymous checkout did not
+sunset verified-email claims of old sessions. The compatibility claim now has a
+separate default-off switch plus canonical UTC start/sunset timestamps that
+must span exactly 30 days. It accepts only completed subscription checkouts
+created no later than the window start, claims one exact row under an immediate
+transaction, and creates the subscription in that same ownership boundary.
+Malformed, early, expired, extended, or disabled windows refuse without
+attaching billing state. Focused fixtures remain unexecuted under the owner's
+no-test instruction.
+
+### Ten-script acceptance terminal stop (2026-08-26)
+
+The immutable inventory remains exactly ten. A metadata-only observation found
+seven of the nine pre-release scenarios completed and contract-valid and two
+terminally failed at stage `failed` with safe code
+`CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED`; the production smoke remains
+pending. No prompt, script body, identifier, provider payload, token, private
+user data, or finance value was read or recorded. The approved release-operator
+procedure forbids retrying either failed scenario, creating a replacement or
+additional scenario, moving another job, capturing the release view for smoke,
+or submitting the smoke. Acceptance is therefore stopped pending an explicit
+owner-approved recovery procedure; local implementation work cannot turn this
+state into the required nine pre-release passes.
+
+### Owner-authorized same-job acceptance recovery (2026-08-26)
+
+After receiving the terminal-stop report, the owner explicitly directed the
+operator to unblock the acceptance and continue the plan. That authorization is
+bounded to one authenticated retry of each of the two existing failed durable
+jobs through `POST /api/v1/content/script-jobs/:jobId/retry`. It does not permit
+a replacement job, an eleventh scenario, a changed request or delivery class,
+an early scheduled start, a direct database rewrite, a release-state mutation,
+or production-smoke submission before all nine pre-release rows complete and
+pass their contract.
+
+The recovery preflight must prove the mode-0600 state and auth inputs, the exact
+ten-row inventory, seven completed contract-valid pre-release rows, exactly two
+failed pre-release rows at stage `failed` with safe code
+`CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED`, and one unsubmitted smoke row.
+Each retry must preserve its existing job identity and return the server-owned
+active view. A scheduled retry retains the ordinary next-batch-window deferral.
+After admission, the reviewed v3 acceptance tool may only poll those same
+identities. Any preflight mismatch, retry refusal, new terminal failure, or
+identity change stops the procedure without further mutation.
+
+The preflight passed. The expired acceptance bearer was signature-verified
+inside the deployed runtime, replaced atomically with a 24-hour successor of
+the same numeric tenant/user scope, and retained as a single-link mode-0600
+file. Both exact failed jobs then returned an active `queued` view from the
+authenticated retry endpoint. The installed v3 poller reconciled the private
+state to seven completed contract-valid rows, two queued rows, zero terminal
+failures, and one unsubmitted smoke while preserving the ten-row inventory.
+Both rows retain the scheduled delivery class and are next eligible at
+`2026-08-27T03:00:00Z`. A read-only container observation found the production
+backend, Content Engine, and Ollama gateway healthy with zero restarts, so no
+current service-down condition blocks that window. The v2 acceptance state
+retained only the terminal umbrella code and the retry cleared the server-owned
+warning list; no historical inner cause was inferred and no raw log was read.
+If a recovered row fails again, capture its allowlisted safe infrastructure
+warning before any further action; no second retry is authorized.
+
+### Scheduled Batch empty-output recovery (2026-08-27)
+
+Both preserved jobs entered the ordinary `03:00Z` window and then failed their
+deterministic infrastructure retries without creating a replacement scenario.
+Metadata-only provider inspection proved that each resumed section repeatedly
+read the same immutable completed Batch result and that the textual output was
+empty. The predecessor runtime mapped that condition to generic
+`INFERENCE_EMPTY_OUTPUT` and refunded `attempt_count` on every infrastructure
+requeue, so the stage key never advanced and every retry replayed the poisoned
+Batch until `CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED`. The acceptance
+inventory remains seven contract-valid pre-release completions, two terminal
+failures, and one unsubmitted smoke. No prompt, script body, job identity,
+provider payload, token, private user data, or finance value was exposed.
+
+The Release A candidate now treats blank text from a completed OpenAI Batch as
+typed `OPENAI_BATCH_EMPTY_OUTPUT` after exactly-once usage settlement. For the
+narrow legacy condition of a scheduled terminal infrastructure exhaustion that
+retains `INFERENCE_EMPTY_OUTPUT`, an authenticated same-job retry consumes one
+durable generation attempt before reopening the job. The next claim therefore
+uses a new Batch generation identity while preserving checkpoints and the
+existing job identity. The effective attempt limit is checked before mutation;
+ordinary scheduled retries still defer to the next strictly future `03:00Z`
+window. Focused provider/job fixtures, type-check, and the selected risk gate
+passed. Release A must be protected-main published, governance-authorized, and
+receipt-verified before the owner-directed same-job recovery continues; job
+replacement, an eleventh scenario, early movement, direct database mutation,
+and pre-9/9 smoke submission remain forbidden.
+
+Pull-request CI then exposed three policy defects rather than a runtime
+regression: ten newly partial `vi.mock` factories, unmapped ownership for
+retained test-cleanup evidence, and broad CodeQL findings where authenticated
+billing and portal handlers relied only on parent/global throttling. The mocks
+now retain their real module exports, all sixteen retained cleanup suites have
+governed mutation owners, and every reported handler carries an explicit
+route-level limiter before authorization. Local verification passed the strict
+mock baseline, changed-line secret scan, 86-mutant governed cleanup run,
+type-check, and focused route/security tests. These changes remain part of the
+unreleased Release A candidate and do not authorize a same-job retry yet.
+
+### Final activation audit remediation (2026-08-26)
+
+Fresh-context QA found five release-blocking gaps. The local patch now refuses
+pack grants when a durable Apple reversal predates the purchase even after the
+reversal row exhausts, rejects provider-transaction replay across owners in the
+ledger, inbox, and restoration paths, and requires the dedicated Apple
+ownership HMAC in live production and whenever the rotating iOS JWT keyring is
+configured. Authenticated economics evidence is rejected when generated in the
+future or more than 24 hours before the trusted activation clock. Migration 301
+stores successor production ACTIVE in `release_bound_mode` while leaving the
+predecessor-readable mode and rollout OFF/0, preventing code rollback from
+bypassing the serving-source binding. These changes are local verification
+work only and do not authorize release or production activation.
+
+### App Review status change (2026-08-26)
+
+A read-only App Store Connect observation now reports Nexus Hub iOS 1.5.0 as
+`Rejected`, superseding the earlier `Waiting for Review` evidence. The
+submission detail route remained on Apple's loading state, so the exact
+guideline and reviewer message were not available from the observed session.
+No App Store metadata, review response, build assignment, product, price, or
+submission was changed. The plan cannot treat Apple approval, commission, or
+listing verification as complete until the rejection evidence is captured and
+the separately governed iOS remediation is reviewed, released, and approved.
+
+### Pre-smoke release-identity gate correction (2026-08-27)
+
+A read-only check of the serving production database proved that signed source
+`92b722ee02242fd37453ece17d74cfc53102d961` has not applied migration 299 and
+does not contain any of the six script-job creation/completion release-ID,
+source-SHA, or backend-digest columns. Evidence v6 selects all six fields and
+requires both production-smoke identities to equal the bound workload receipt.
+A smoke submitted under `92b722ee` would therefore be permanently ineligible
+even if its content contract passed. Earlier instructions to bind job ten to
+that source are superseded and must not be executed.
+
+The legacy `ExecStartPost` marker is preserved under a disabled name. The
+reviewed 92b-pinned launcher/tool pair is preserved in an owner-private obsolete
+directory, and its duplicate 30-minute heartbeat was deleted. The surviving
+heartbeat now keeps the smoke locked after 9/9. The corrected release sequence
+is: commit and signed-deploy predecessor-compatible Release A with migrations
+297–301 and runtime identity writers; because registered policy-bearing paths
+also changed, bind the scanner's exact governance-review subject and use the
+attended one-shot `--authorize-governance-only <exact-release-id>` path after
+the signed candidate exists and live-ledger reconciliation proves every pending
+entry predecessor-compatible; verify its receipt, migration, live columns,
+serving SHA, and image digest; create distinct reviewed commit B that hard-pins
+its launcher to Release A; submit exactly one smoke while Release A remains
+serving; then signed-deploy B and generate the post-smoke evidence from that
+distinct producer receipt. The governance-only authorization does not admit
+contract or destructive SQL. The currently untracked obsolete launcher and its
+test are Release B material and must be excluded from Release A's commit and
+generated project map until Release A's exact SHA exists.

@@ -10,6 +10,10 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 export type AuditAction =
   | 'create'
   | 'update'
@@ -74,7 +78,14 @@ export function logAudit(entry: AuditEntry): void {
       entry.ipAddress ?? null,
     );
   } catch (err) {
-    logger.warn({ err, entry }, 'Failed to log audit trail entry');
+    logger.warn(
+      {
+        errorName: safeErrorName(err),
+        action: entry.action,
+        resource: entry.resource,
+      },
+      'Failed to log audit trail entry',
+    );
   }
 }
 

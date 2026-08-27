@@ -27,6 +27,7 @@ import {
 import {
   decryptContentScriptJobJson,
   encryptContentScriptJobJson,
+  parseContentScriptJobPrunedTombstone,
 } from './content-script-job-encryption';
 import { getLocalInferenceRuntimeControl } from './local-inference-runtime-control';
 import {
@@ -35,6 +36,11 @@ import {
 } from './content-script-job-credits';
 import { recordOperatorAlert } from './operator-alerts';
 import type { BillingPlan } from './plan-quotas';
+import {
+  assertReleaseDataMaintenanceIdentity,
+  type ReleaseDataMaintenanceIdentity,
+  releaseDataMaintenanceIdentityFromEnvironment,
+} from './release-data-maintenance';
 import { localInferenceScheduler } from './local-inference-scheduler';
 import { localPrimaryInferenceConfig } from './local-primary-config';
 import { getLocalModelManifest } from './ollama-model-policy';
@@ -59,6 +65,7 @@ import { activeContentScriptJobLeases as controllers } from './content-script-jo
 import {
   contentScriptBatchStageKey,
   createContentScriptBatchControl,
+  hasContentScriptProviderFileCleanupFence,
   markContentScriptBatchesCancellationRequested,
   requestContentScriptBatchCancellationReconciliation,
 } from './content-script-provider-batches';
@@ -165,6 +172,12 @@ interface JobRow {
   result_json: string | null;
   route: string | null;
   model_digest: string | null;
+  created_release_id: string | null;
+  created_release_source_sha: string | null;
+  created_release_backend_digest: string | null;
+  completed_release_id: string | null;
+  completed_release_source_sha: string | null;
+  completed_release_backend_digest: string | null;
   attempt_count: number;
   infrastructure_requeue_count: number;
   delivery_mode: string | null;
@@ -347,6 +360,77 @@ function requireScope(tenantId: number, userId: number): void {
   }
 }
 
+function currentContentScriptJobReleaseIdentity(): ReleaseDataMaintenanceIdentity | null {
+  const releaseEnvironment = String(process.env.NEXUS_RELEASE_ENVIRONMENT ?? '').trim();
+  const rawIdentity = [
+    process.env.NEXUS_RELEASE_ID,
+    process.env.NEXUS_RELEASE_SOURCE_SHA,
+    process.env.NEXUS_RELEASE_BACKEND_DIGEST,
+  ].map((value) => String(value ?? '').trim());
+  if (!releaseEnvironment && rawIdentity.every((value) => value.length === 0)
+      && process.env.NODE_ENV !== 'production') return null;
+  if (!['production', 'staging'].includes(releaseEnvironment)) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID',
+      'Content script admission requires the complete server-owned application release identity.',
+      503,
+    );
+  }
+  try {
+    return releaseDataMaintenanceIdentityFromEnvironment();
+  } catch {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID',
+      'Content script admission requires the complete server-owned application release identity.',
+      503,
+    );
+  }
+}
+
+function persistedContentScriptReleaseIdentity(input: {
+  releaseId: string | null;
+  sourceSha: string | null;
+  backendImageDigest: string | null;
+}): ReleaseDataMaintenanceIdentity | null {
+  if (input.releaseId === null
+      && input.sourceSha === null
+      && input.backendImageDigest === null) return null;
+  try {
+    return assertReleaseDataMaintenanceIdentity({
+      releaseId: input.releaseId ?? '',
+      sourceSha: input.sourceSha ?? '',
+      backendImageDigest: input.backendImageDigest ?? '',
+    });
+  } catch {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID',
+      'Content script release identity is incomplete or malformed.',
+      503,
+    );
+  }
+}
+
+function assertContentScriptCompletionReleaseState(row: JobRow): boolean {
+  const created = persistedContentScriptReleaseIdentity({
+    releaseId: row.created_release_id,
+    sourceSha: row.created_release_source_sha,
+    backendImageDigest: row.created_release_backend_digest,
+  });
+  const completed = persistedContentScriptReleaseIdentity({
+    releaseId: row.completed_release_id,
+    sourceSha: row.completed_release_source_sha,
+    backendImageDigest: row.completed_release_backend_digest,
+  });
+  if (completed !== null) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID',
+      'Content script completion release identity is already set.',
+      503,
+    );
+  }
+  return created !== null;
+}
+
 function readRow(db: Database.Database, tenantId: number, userId: number, jobId: string): JobRow | null {
   return (db.prepare(`SELECT * FROM content_script_jobs
     WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ?`)
@@ -354,8 +438,13 @@ function readRow(db: Database.Database, tenantId: number, userId: number, jobId:
 }
 
 function mapJob(row: JobRow): ContentScriptJobView {
+  const requestPruned = parseContentScriptJobPrunedTombstone(row.request_json) !== null;
   const warnings = JSON.parse(row.warning_codes_json) as string[];
+  if (requestPruned && !warnings.includes('content_script_private_material_expired')) {
+    warnings.push('content_script_private_material_expired');
+  }
   const result = row.status === 'completed' && row.result_json
+      && parseContentScriptJobPrunedTombstone(row.result_json) === null
     ? decryptContentScriptJobJson<Record<string, unknown>>(row.result_json, row.owner_user_id)
     : undefined;
   return {
@@ -576,7 +665,18 @@ export function createContentScriptJob(input: {
     pinnedCreatorVoice: (buildUserVoiceMemory(input.userId, getAllKnowledge) ?? '').slice(0, 8_000) || null,
     pinnedSources: sourceSnapshot,
   };
+  const createdRelease = currentContentScriptJobReleaseIdentity();
   const persisted = db.transaction((): { row: JobRow; replayed: boolean } => {
+    // Serialize account erasure with job insertion/reservation. The outer
+    // check gives a fast refusal; this durable recheck closes the interval in
+    // which deletion can acquire its fence before this write lock.
+    if (isSkillInferenceAccountDeletionFenced(input.userId, db)) {
+      throw new ContentScriptJobError(
+        'ACCOUNT_DELETION_IN_PROGRESS',
+        'No new Content job can start while this account is being deleted.',
+        409,
+      );
+    }
     // Recheck idempotency under the same write lock as limits and insertion.
     const concurrentExisting = db.prepare(`SELECT * FROM content_script_jobs
       WHERE tenant_id = ? AND owner_user_id = ? AND idempotency_key = ?`)
@@ -616,8 +716,9 @@ export function createContentScriptJob(input: {
     const inserted = db.prepare(`INSERT INTO content_script_jobs (
       job_id, tenant_id, owner_user_id, plan_id, idempotency_key, request_hash,
       operation_id, request_json, target_duration_seconds,
-      status, stage, progress_percent, model_digest, delivery_mode, next_attempt_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, ?, ?, ?)
+      status, stage, progress_percent, model_digest, delivery_mode, next_attempt_at,
+      created_release_id, created_release_source_sha, created_release_backend_digest
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(tenant_id, owner_user_id, idempotency_key) DO NOTHING`)
       .run(
         jobId,
@@ -632,6 +733,9 @@ export function createContentScriptJob(input: {
         activeModel?.digest ?? null,
         request.deliveryMode,
         deferredStart,
+        createdRelease?.releaseId ?? null,
+        createdRelease?.sourceSha ?? null,
+        createdRelease?.backendImageDigest ?? null,
       );
     if (inserted.changes !== 1) {
       const winner = db.prepare(`SELECT * FROM content_script_jobs
@@ -788,6 +892,12 @@ function requeueInfrastructureFailure(
       );
     if (changed.changes !== 1) return null;
     if (terminal) {
+      markContentScriptBatchesCancellationRequested(db, {
+        jobId,
+        tenantId: row.tenant_id,
+        userId: row.owner_user_id,
+        timestamp,
+      });
       // Infrastructure-retry exhaustion is a terminal failure: release the
       // job's credit reservation. Non-terminal requeues keep it held so the
       // resumed attempt never charges twice.
@@ -1185,6 +1295,7 @@ async function runScriptStage(
         jobId: row.job_id,
         tenantId: row.tenant_id,
         userId: row.owner_user_id,
+        generationAttempt: row.attempt_count,
         taskType: input.taskType,
         prompt: input.prompt,
         schemaId: input.schemaId,
@@ -2224,10 +2335,21 @@ export async function runContentScriptJob(
     updateProgress(db, jobId, token, 'final_validation', 95);
     const finalRoute = completedJobRoute(db, row);
     const finalModelDigest = finalRoute === 'local' ? request.pinnedModelDigest ?? null : null;
+    const releaseBoundAtCreation = assertContentScriptCompletionReleaseState(row);
+    const completedRelease = currentContentScriptJobReleaseIdentity();
+    if (releaseBoundAtCreation && completedRelease === null) {
+      throw new ContentScriptJobError(
+        'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID',
+        'Content script completion requires the server-owned application release identity.',
+        503,
+      );
+    }
     const completedAt = new Date().toISOString();
     const completed = db.prepare(`UPDATE content_script_jobs
       SET status = 'completed', stage = 'completed', progress_percent = 100,
           warning_codes_json = ?, result_json = ?, route = ?, model_digest = ?,
+          completed_release_id = ?, completed_release_source_sha = ?,
+          completed_release_backend_digest = ?,
           lease_token = NULL, lease_expires_at = NULL,
           infrastructure_requeue_count = 0, next_attempt_at = NULL,
           completed_at = ?, updated_at = ?
@@ -2238,6 +2360,9 @@ export async function runContentScriptJob(
         encryptContentScriptJobJson(publicResult, row.owner_user_id),
         finalRoute,
         finalModelDigest,
+        completedRelease?.releaseId ?? null,
+        completedRelease?.sourceSha ?? null,
+        completedRelease?.backendImageDigest ?? null,
         completedAt,
         completedAt,
         jobId,
@@ -2332,6 +2457,12 @@ export async function runContentScriptJob(
       WHERE job_id = ? AND status = 'running' AND lease_token = ?`)
       .run(status, status, code, JSON.stringify(warningCodes), status, timestamp, timestamp, jobId, token);
     if (stopped.changes === 1) {
+      markContentScriptBatchesCancellationRequested(db, {
+        jobId,
+        tenantId: row.tenant_id,
+        userId: row.owner_user_id,
+        timestamp,
+      });
       settleContentScriptJobCredits({
         tenantId: row.tenant_id,
         userId: row.owner_user_id,
@@ -2435,23 +2566,76 @@ export function retryContentScriptJob(input: {
   }
   const existing = readRow(db, input.tenantId, input.userId, input.jobId);
   if (!existing) throw new ContentScriptJobError('CONTENT_SCRIPT_JOB_NOT_FOUND', 'Script job not found.', 404);
+  if (parseContentScriptJobPrunedTombstone(existing.request_json)) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED',
+      'This script job is outside the private-material retention window and cannot be retried.',
+      409,
+    );
+  }
+  const providerCleanupStarted = hasContentScriptProviderFileCleanupFence(db, input);
+  if (providerCleanupStarted) {
+    throw new ContentScriptJobError(
+      'CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED',
+      'This script job is outside the private-material retention window and cannot be retried.',
+      409,
+    );
+  }
   if (existing.status === 'queued' || existing.status === 'running' || existing.status === 'waiting_capacity') {
     // Retry is idempotent for an already-active operation even if new local
-    // admission has since been disabled.
+    // admission has since been disabled, but never after private cleanup began.
     return mapJob(existing);
   }
   assertJobsEnabled();
   assertRuntimeAdmitsJob(db, input.userId);
   const retried = db.transaction((): { row: JobRow; changed: boolean } => {
+    // Retry and fresh reservation must serialize with the durable account
+    // deletion fence just like first admission.
+    if (isSkillInferenceAccountDeletionFenced(input.userId, db)) {
+      throw new ContentScriptJobError(
+        'ACCOUNT_DELETION_IN_PROGRESS',
+        'No Content job can be retried while this account is being deleted.',
+        409,
+      );
+    }
     const row = readRow(db, input.tenantId, input.userId, input.jobId);
     if (!row) throw new ContentScriptJobError('CONTENT_SCRIPT_JOB_NOT_FOUND', 'Script job not found.', 404);
+    // Re-check inside the write transaction so midnight retention cannot
+    // tombstone the request between the preflight read and retry admission.
+    if (parseContentScriptJobPrunedTombstone(row.request_json)) {
+      throw new ContentScriptJobError(
+        'CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED',
+        'This script job is outside the private-material retention window and cannot be retried.',
+        409,
+      );
+    }
+    const cleanupFence = hasContentScriptProviderFileCleanupFence(db, input);
+    if (cleanupFence) {
+      throw new ContentScriptJobError(
+        'CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED',
+        'This script job is outside the private-material retention window and cannot be retried.',
+        409,
+      );
+    }
     if (row.status === 'queued' || row.status === 'running' || row.status === 'waiting_capacity') {
       return { row, changed: false };
     }
     if (row.status !== 'failed' && row.status !== 'cancelled') {
       throw new ContentScriptJobError('CONTENT_SCRIPT_JOB_NOT_RETRYABLE', 'Only failed or cancelled jobs can be retried.', 409);
     }
-    if (row.attempt_count >= MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS) {
+    const retryDeliveryMode = resolveScriptDeliveryMode(row.delivery_mode ?? 'standard');
+    const retryWarnings = JSON.parse(row.warning_codes_json) as unknown;
+    const legacyBatchEmptyOutputExhausted = retryDeliveryMode === 'scheduled'
+      && row.last_error_code === 'CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED'
+      && Array.isArray(retryWarnings)
+      && retryWarnings.includes('INFERENCE_EMPTY_OUTPUT');
+    // Older runtimes refunded attempt_count for every infrastructure retry.
+    // A terminal, immutable Batch result with empty text was therefore replayed
+    // under the same stage key even after an explicit user retry. Consume that
+    // exhausted generation once so the next claim advances the durable Batch
+    // identity instead of reopening the poisoned provider result.
+    const retryAttemptCount = row.attempt_count + (legacyBatchEmptyOutputExhausted ? 1 : 0);
+    if (retryAttemptCount >= MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS) {
       throw new ContentScriptJobError(
         'CONTENT_SCRIPT_JOB_RETRY_LIMIT',
         'This script job exhausted its bounded generation attempts.',
@@ -2492,7 +2676,6 @@ export function retryContentScriptJob(input: {
     // The persisted delivery_mode column is the single source of truth for the
     // job's pinned delivery class; a scheduled retry re-defers to the next
     // batch window rather than jumping the standard queue.
-    const retryDeliveryMode = resolveScriptDeliveryMode(row.delivery_mode ?? 'standard');
     const retryDeferredStart = retryDeliveryMode === 'scheduled'
       ? scheduledBatchWindowStart(new Date())
       : null;
@@ -2501,11 +2684,21 @@ export function retryContentScriptJob(input: {
           cancellation_requested_at = NULL, last_error_code = NULL,
           warning_codes_json = '[]', completed_at = NULL,
           infrastructure_requeue_count = 0, final_repair_count = 0,
+          attempt_count = ?,
           next_attempt_at = ?,
           fair_use_admitted_at = ?, updated_at = ?
       WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ?
         AND status IN ('failed', 'cancelled')`)
-      .run(durableProgress, retryDeferredStart, timestamp, timestamp, input.jobId, input.tenantId, input.userId);
+      .run(
+        durableProgress,
+        retryAttemptCount,
+        retryDeferredStart,
+        timestamp,
+        timestamp,
+        input.jobId,
+        input.tenantId,
+        input.userId,
+      );
     if (changed.changes !== 1) {
       throw new ContentScriptJobError('CONTENT_SCRIPT_JOB_RETRY_RACE', 'The script job changed while retrying.', 409);
     }

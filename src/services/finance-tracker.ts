@@ -17,6 +17,10 @@ import { centsToNumber, parseUserAmount, toCents } from './money';
 
 // ── Encryption Helpers ────────────────────────────────────────────
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 function getEncryptionKey(): string | null {
   const { enabled, masterKey } = config.financeEncryption;
   if (!enabled || !masterKey) return null;
@@ -272,18 +276,24 @@ function decryptTransaction(row: any): Transaction {
   };
 }
 
-function financeTransactionAuditSnapshot(tx: Transaction): Record<string, unknown> {
+type FinanceTransactionAuditField =
+  | 'amount'
+  | 'category'
+  | 'currency'
+  | 'date'
+  | 'deleteReason'
+  | 'deletedAt'
+  | 'description'
+  | 'receiptRef'
+  | 'subcategory';
+
+function financeTransactionAuditEvidence(
+  transactionId: number,
+  changedFields: readonly FinanceTransactionAuditField[],
+): Record<string, unknown> {
   return {
-    id: tx.id,
-    date: tx.date,
-    category: tx.category,
-    subcategory: tx.subcategory,
-    amount: tx.amount,
-    amountCents: tx.amount_cents ?? Number(toCents(tx.amount)),
-    currency: tx.currency,
-    receiptRefPresent: Boolean(tx.receipt_ref),
-    deletedAt: tx.deleted_at ?? null,
-    deleteReason: tx.delete_reason ?? null,
+    transactionId,
+    changedFields: [...new Set(changedFields)].sort(),
   };
 }
 
@@ -511,8 +521,11 @@ export function getPreferredCurrencyForUser(userId: number): string {
     if (dominant?.currency && dominant.currency.trim().length > 0) {
       return dominant.currency.trim().toUpperCase();
     }
-  } catch (err) {
-    logger.debug({ err, userId }, 'Finance tracker: preferred currency lookup fell back to timezone');
+  } catch (error: unknown) {
+    logger.debug(
+      { errorName: safeErrorName(error), userId },
+      'Finance tracker: preferred currency lookup fell back to timezone',
+    );
   }
 
   try {
@@ -892,10 +905,17 @@ export function addTransaction(
   );
   const row = db.prepare('SELECT * FROM finance_transactions WHERE rowid = last_insert_rowid()').get() as any;
   const tx = decryptTransaction(row);
-  auditFinanceTransaction(userId, 'create', {
-    after: financeTransactionAuditSnapshot(tx),
-  }, tenantId);
-  logger.info({ userId, tenantId, txId: row.id, currency }, 'Finance transaction added');
+  const changedFields: FinanceTransactionAuditField[] = ['amount', 'category', 'currency', 'date'];
+  if (opts?.subcategory !== undefined) changedFields.push('subcategory');
+  if (opts?.description !== undefined) changedFields.push('description');
+  if (opts?.receiptRef !== undefined) changedFields.push('receiptRef');
+  auditFinanceTransaction(
+    userId,
+    'create',
+    financeTransactionAuditEvidence(tx.id, changedFields),
+    tenantId,
+  );
+  logger.info({ userId, tenantId, txId: row.id }, 'Finance transaction added');
   return tx;
 }
 
@@ -937,12 +957,12 @@ export function deleteTransaction(userId: number, transactionId: number, opts?: 
        AND deleted_at IS NULL
   `).run(transactionId, userId, tenantId);
   if (result.changes > 0 && beforeRow) {
-    const afterRow = db.prepare('SELECT * FROM finance_transactions WHERE id = ? AND user_id = ? AND tenant_id = ?')
-      .get(transactionId, userId, tenantId) as any;
-    auditFinanceTransaction(userId, 'delete', {
-      before: financeTransactionAuditSnapshot(decryptTransaction(beforeRow)),
-      after: financeTransactionAuditSnapshot(decryptTransaction(afterRow)),
-    }, tenantId);
+    auditFinanceTransaction(
+      userId,
+      'delete',
+      financeTransactionAuditEvidence(transactionId, ['deletedAt', 'deleteReason']),
+      tenantId,
+    );
   }
   return result.changes > 0;
 }
@@ -974,10 +994,12 @@ export function updateTransactionCategory(
     .get(transactionId, userId, tenantId) as any;
   if (!row) return null;
   const updated = decryptTransaction(row);
-  auditFinanceTransaction(userId, 'update', {
-    before: financeTransactionAuditSnapshot(decryptTransaction(existing)),
-    after: financeTransactionAuditSnapshot(updated),
-  }, tenantId);
+  auditFinanceTransaction(
+    userId,
+    'update',
+    financeTransactionAuditEvidence(transactionId, ['category', 'subcategory']),
+    tenantId,
+  );
   return updated;
 }
 
@@ -996,10 +1018,11 @@ export function updateTransaction(
 
   const setParts: string[] = [];
   const params: any[] = [];
+  const changedFields: FinanceTransactionAuditField[] = [];
 
-  if (patch.date !== undefined) { setParts.push('date = ?'); params.push(patch.date); }
-  if (patch.category !== undefined) { setParts.push('category = ?'); params.push(normalizeFinanceCategory(patch.category)); }
-  if (patch.subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(patch.subcategory); }
+  if (patch.date !== undefined) { setParts.push('date = ?'); params.push(patch.date); changedFields.push('date'); }
+  if (patch.category !== undefined) { setParts.push('category = ?'); params.push(normalizeFinanceCategory(patch.category)); changedFields.push('category'); }
+  if (patch.subcategory !== undefined) { setParts.push('subcategory = ?'); params.push(patch.subcategory); changedFields.push('subcategory'); }
   if (patch.amount !== undefined) {
     assertNonNegativeMoney(patch.amount);
     const amountCents = toCents(patch.amount);
@@ -1007,14 +1030,16 @@ export function updateTransaction(
     const encryptedAmount = tryEncryptNum(normalizedAmount, userId);
     setParts.push('amount = ?', 'amount_cents = ?', 'encrypted_amount = ?');
     params.push(normalizedAmount, Number(amountCents), encryptedAmount);
+    changedFields.push('amount');
   }
-  if (patch.currency !== undefined) { setParts.push('currency = ?'); params.push(patch.currency); }
+  if (patch.currency !== undefined) { setParts.push('currency = ?'); params.push(patch.currency); changedFields.push('currency'); }
   if (patch.description !== undefined) {
     const encryptedDescription = tryEncryptStr(patch.description, userId);
     setParts.push('description = ?', 'encrypted_description = ?');
     params.push(encryptedDescription ? null : patch.description, encryptedDescription);
+    changedFields.push('description');
   }
-  if (patch.receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(patch.receiptRef); }
+  if (patch.receiptRef !== undefined) { setParts.push('receipt_ref = ?'); params.push(patch.receiptRef); changedFields.push('receiptRef'); }
 
   if (setParts.length === 0) return decryptTransaction(existing);
 
@@ -1034,10 +1059,12 @@ export function updateTransaction(
     'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ? AND tenant_id = ? AND deleted_at IS NULL',
   ).get(transactionId, userId, tenantId) as any;
   const updated = decryptTransaction(row);
-  auditFinanceTransaction(userId, 'update', {
-    before: financeTransactionAuditSnapshot(decryptTransaction(existing)),
-    after: financeTransactionAuditSnapshot(updated),
-  }, tenantId);
+  auditFinanceTransaction(
+    userId,
+    'update',
+    financeTransactionAuditEvidence(transactionId, changedFields),
+    tenantId,
+  );
   return updated;
 }
 

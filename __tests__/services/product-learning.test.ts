@@ -16,7 +16,14 @@ import {
 } from '../../src/services/product-learning';
 import { withDatabaseForTest, withDatabaseForTestAsync } from '../../src/services/database';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
-import { deleteAllUserData, exportAllUserData } from '../../src/services/user-data-export';
+import {
+  deleteAllUserData as deleteAllUserDataWithToken,
+  exportAllUserData,
+} from '../../src/services/user-data-export';
+import {
+  beginSkillInferenceAccountDeletionFence,
+  clearSkillInferenceAccountDeletionFence,
+} from '../../src/services/skill-inference-account-lifecycle';
 import { createDecisionIntent, performDecisionAction } from '../../src/services/decision-center';
 import { buildSkillNotificationFixtureIntent } from '../../src/services/notification-orchestrator';
 
@@ -24,6 +31,16 @@ let db: Database.Database;
 
 function scoped<T>(callback: () => T): T {
   return withDatabaseForTest(db, callback);
+}
+
+function deleteAllUserData(userId: number): Record<string, number> {
+  const fenceToken = beginSkillInferenceAccountDeletionFence(userId, db);
+  try {
+    return deleteAllUserDataWithToken(userId, fenceToken);
+  } catch (error) {
+    clearSkillInferenceAccountDeletionFence(userId, fenceToken, db);
+    throw error;
+  }
 }
 
 interface ReviewExecutionSeed {

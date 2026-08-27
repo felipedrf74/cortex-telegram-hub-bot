@@ -8,17 +8,14 @@
  *     offer inline buttons for applying coach suggestions to the calendar.
  */
 import Anthropic from '@anthropic-ai/sdk';
-import fs from 'fs';
-import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now, startOfDay, endOfDay } from '../utils/date-parser';
 import { escapeHtml, splitMessage } from '../utils/chat-html-formatter';
-import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActivityDetails } from './garmin';
+import { fetchDailyCoachData, GarminCoachData, summarizeActivityDetails } from './garmin';
 import {
   getEvents,
   hasConnectedCalendarForUser,
-  isAnyCalendarConfigured,
   CalendarSource,
   updateEvent as updateCalendarEvent,
 } from './unified-calendar';
@@ -46,6 +43,7 @@ import {
   withTrainingCalendarOperationLock,
   type TrainingOperationLockLease,
 } from './training-operation-locks';
+import { getCurrentContext, runWithContext } from '../utils/request-context';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -222,12 +220,20 @@ export interface CoachBriefingOptions {
   budgetRunId?: string | null;
   /** Owning HTTP, WebSocket, scheduler, or account-erasure cancellation. */
   abortSignal?: AbortSignal;
+  /** Authenticated user authority for this request's raw health/calendar cloud routing. */
+  allowSensitiveCloudRouting?: boolean;
 }
 
 export interface CoachRecommendationApplyScope {
   userId?: number | null;
   tenantId?: number | null;
   lease?: Pick<TrainingOperationLockLease, 'signal' | 'assertActive'>;
+}
+
+function safeCoachErrorCode(stage: string, error: unknown): string {
+  const rawName = error instanceof Error && error.name ? error.name : 'UnknownError';
+  const name = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawName) ? rawName : 'UnknownError';
+  return `${stage}:${name}`;
 }
 
 export interface CoachRecommendationsApplyOptions {
@@ -472,7 +478,7 @@ async function tryAppleHealthFallback(userId: number | undefined, errors: string
     };
     return result;
   } catch (err) {
-    errors.push(`Apple Health fallback failed: ${(err as Error).message}`);
+    errors.push(safeCoachErrorCode('apple_health', err));
     return null;
   }
 }
@@ -700,6 +706,38 @@ function buildCoachAnalysisPayload(
   }) as Record<string, unknown>;
 }
 
+function buildLocalOnlyCoachBriefing(
+  garminData: GarminCoachData,
+  tomorrowCalendarEvents: TomorrowCalendarEvent[],
+  errors: string[],
+  dataCollectionMs: number,
+): CoachBriefingResult {
+  const tomorrowTrainingCount = tomorrowCalendarEvents.filter(isTrainingCalendarEvent).length;
+  const bodyBattery = garminData.bodyBatterySummary?.current;
+  const recoveryLine = typeof bodyBattery === 'number'
+    ? `Current Body Battery: ${Math.round(bodyBattery)}/100.`
+    : 'Recovery data is limited today.';
+  const activityLine = garminData.activities.length === 0
+    ? 'No recorded activity today.'
+    : `${garminData.activities.length} recorded activit${garminData.activities.length === 1 ? 'y' : 'ies'} today.`;
+  const scheduleLine = tomorrowTrainingCount === 0
+    ? 'No training session is identified on tomorrow\'s calendar.'
+    : `${tomorrowTrainingCount} training session${tomorrowTrainingCount === 1 ? '' : 's'} identified for tomorrow.`;
+  return {
+    message: [
+      '🏋️ NEXUS HUB — LOCAL COACH BRIEFING',
+      recoveryLine,
+      activityLine,
+      scheduleLine,
+      'Your private health and calendar context stayed on this server. Open Training and explicitly allow sensitive cloud routing for an AI analysis.',
+    ].join('\n'),
+    recommendations: [],
+    errors,
+    dataCollectionMs,
+    analysisMs: 0,
+  };
+}
+
 // ─── Main coach function ──────────────────────────────────────────────
 
 async function runCoachBriefingWithAccountAdmissions<T>(
@@ -738,6 +776,11 @@ export async function runWithCoachBriefingAccountAdmissions<T>(
   operation: (abortSignal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
+  if (userId != null && userId !== briefingTenantId) {
+    throw Object.assign(new Error('Coach data owner must match the validated briefing tenant.'), {
+      code: 'COACH_DATA_OWNER_SCOPE_MISMATCH',
+    });
+  }
   const meteringScope = resolveCoachAnalysisMeteringScope(
     opts.meteringUserId ?? userId,
     briefingTenantId,
@@ -759,6 +802,11 @@ export async function runWithCoachBriefingAccountLifecycle<T>(
   consume: (briefing: CoachBriefingResult, abortSignal: AbortSignal) => T | Promise<T>,
 ): Promise<T> {
   const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
+  if (userId != null && userId !== briefingTenantId) {
+    throw Object.assign(new Error('Coach data owner must match the validated briefing tenant.'), {
+      code: 'COACH_DATA_OWNER_SCOPE_MISMATCH',
+    });
+  }
   const meteringScope = resolveCoachAnalysisMeteringScope(
     opts.meteringUserId ?? userId,
     briefingTenantId,
@@ -767,20 +815,29 @@ export async function runWithCoachBriefingAccountLifecycle<T>(
     userId,
     opts,
     async (accountAbortSignal) => {
-      const briefing = await generateCoachBriefingAdmitted(
-        userId,
-        opts,
-        briefingTenantId,
-        meteringScope,
-        accountAbortSignal,
-      );
-      return consume(briefing, accountAbortSignal);
+      const parentContext = getCurrentContext();
+      return runWithContext({
+        requestId: parentContext?.requestId,
+        source: parentContext?.source ?? 'manual',
+        userId: briefingTenantId,
+        tenantId: briefingTenantId,
+        garminSilent: opts.garminSilent ?? parentContext?.garminSilent,
+      }, async () => {
+        const briefing = await generateCoachBriefingAdmitted(
+          briefingTenantId,
+          opts,
+          briefingTenantId,
+          meteringScope,
+          accountAbortSignal,
+        );
+        return consume(briefing, accountAbortSignal);
+      });
     },
   );
 }
 
 async function generateCoachBriefingAdmitted(
-  userId: number | undefined,
+  dataOwnerId: number,
   opts: CoachBriefingOptions,
   briefingTenantId: number,
   meteringScope: CoachAnalysisMeteringScope,
@@ -795,9 +852,7 @@ async function generateCoachBriefingAdmitted(
   // Garmin as connected in the app but always fell through to Apple Health.
   // The `userId == null` path has no user to scope to, so it keeps the
   // legacy global-credential behaviour.
-  const canUseScopedGarmin = userId == null
-    ? isGarminConfigured()
-    : hasActiveGarminConnection(userId);
+  const canUseScopedGarmin = hasActiveGarminConnection(dataOwnerId);
 
   // ── Data source resolution ─────────────────────────────────
   // Priority: Garmin (richer data) → Apple Health (HealthKit sync)
@@ -806,16 +861,16 @@ async function generateCoachBriefingAdmitted(
   if (canUseScopedGarmin) {
     try {
       garminData = await fetchDailyCoachData({ silent: opts.garminSilent });
-      errors.push(...garminData.errors);
+      if (garminData.errors.length > 0) errors.push('garmin:data_gap');
     } catch (err) {
-      logger.error({ err }, 'Garmin data collection failed completely');
+      logger.error({ errorCode: safeCoachErrorCode('garmin', err) }, 'Garmin data collection failed completely');
       // Try Apple Health fallback before giving up
-      garminData = await tryAppleHealthFallback(userId, errors);
+      garminData = await tryAppleHealthFallback(dataOwnerId, errors);
       if (!garminData) {
         return {
           message: '⚠️ Coach briefing failed\n\nHealth data unavailable. Connect Garmin or sync Apple Health.',
           recommendations: [],
-          errors: [(err as Error).message],
+          errors: [safeCoachErrorCode('garmin', err)],
           dataCollectionMs: Date.now() - collectStart,
           analysisMs: 0,
         };
@@ -823,7 +878,7 @@ async function generateCoachBriefingAdmitted(
     }
   } else {
     // No Garmin — try Apple Health
-    garminData = await tryAppleHealthFallback(userId, errors);
+    garminData = await tryAppleHealthFallback(dataOwnerId, errors);
     if (!garminData) {
       throw new Error('No health data source configured. Connect Garmin or sync Apple Health from your iPhone.');
     }
@@ -834,14 +889,14 @@ async function generateCoachBriefingAdmitted(
   // Include id + source so Claude can reference them in structured recommendations
   let todayCalendarEvents: TodayCalendarEvent[] = [];
   let tomorrowCalendarEvents: TomorrowCalendarEvent[] = [];
-  const hasCalendar = userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured();
+  const hasCalendar = hasConnectedCalendarForUser(dataOwnerId);
   if (hasCalendar) {
     try {
       const today = now();
       const tomorrow = today.plus({ days: 1 });
       const [todayEvents, tomorrowEvents] = await Promise.all([
-        getEvents(today.startOf('day').toISO()!, today.endOf('day').toISO()!, userId),
-        getEvents(tomorrow.startOf('day').toISO()!, tomorrow.endOf('day').toISO()!, userId),
+        getEvents(today.startOf('day').toISO()!, today.endOf('day').toISO()!, dataOwnerId),
+        getEvents(tomorrow.startOf('day').toISO()!, tomorrow.endOf('day').toISO()!, dataOwnerId),
       ]);
       todayCalendarEvents = todayEvents.map((e) => ({
         summary: e.summary,
@@ -856,7 +911,7 @@ async function generateCoachBriefingAdmitted(
         end: e.end,
       }));
     } catch (err) {
-      errors.push(`calendar: ${(err as Error).message}`);
+      errors.push(safeCoachErrorCode('calendar', err));
     }
   }
 
@@ -864,12 +919,21 @@ async function generateCoachBriefingAdmitted(
   logger.info({
     todayCalendarCount: todayCalendarEvents.length,
     tomorrowCalendarCount: tomorrowCalendarEvents.length,
-    tomorrowTraining: tomorrowCalendarEvents
-      .filter(isTrainingCalendarEvent)
-      .map((e) => e.summary),
     activitiesCount: garminData.activities.length,
-    activitiesNames: garminData.activities.map((a) => a.activityName),
   }, 'Coach: data collection summary');
+
+  // Scheduler runs and ordinary reads have no fresh user authority to send
+  // raw health/calendar context to a cloud provider. Return a useful local,
+  // deterministic briefing before constructing a cloud prompt or reserving
+  // model budget. Interactive callers can opt in per request.
+  if (opts.allowSensitiveCloudRouting !== true) {
+    return buildLocalOnlyCoachBriefing(
+      garminData,
+      tomorrowCalendarEvents,
+      errors,
+      dataCollectionMs,
+    );
+  }
 
   // Phase 3: Prepare data payload for Claude
   // Summarize activity details (~24KB raw → ~1KB) to prevent payload bloat
@@ -929,6 +993,8 @@ ${payloadStr}
       userId: meteringUserId,
       tenantId: meteringTenantId,
       abortSignal: accountAbortSignal,
+      containsPrivateData: true,
+      allowCloudEscalation: opts.allowSensitiveCloudRouting === true,
     };
     const coachAnalysisScopeBoundary = { maxTokens: COACH_ANALYSIS_MAX_TOKENS, userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     if (
@@ -936,26 +1002,6 @@ ${payloadStr}
       coachAnalysisMeteringOptions.tenantId !== coachAnalysisScopeBoundary.tenantId
     ) {
       throw new Error('Coach analysis metering scope mismatch');
-    }
-    // Local-LLM pilot (2026-07-04): optionally capture the exact prompt
-    // payload for offline side-by-side eval (scripts/coach-local-eval.mjs).
-    // Default off; never throws; no behavior change otherwise.
-    if (process.env.GARMIN_COACH_CAPTURE_PROMPT === 'true') {
-      try {
-        const captureDir = path.resolve(process.cwd(), '.local', 'coach-payloads');
-        fs.mkdirSync(captureDir, { recursive: true });
-        const capturePath = path.join(captureDir, `coach-${Date.now()}-u${meteringScope.userId}.json`);
-        fs.writeFileSync(capturePath, JSON.stringify({
-          capturedAt: new Date().toISOString(),
-          userId: meteringScope.userId,
-          systemPrompt,
-          userPrompt,
-          maxTokens: COACH_ANALYSIS_MAX_TOKENS,
-        }, null, 2));
-        logger.debug({ capturePath }, 'Coach: prompt payload captured for offline eval');
-      } catch (captureErr) {
-        logger.debug({ err: captureErr }, 'Coach: prompt payload capture failed (non-critical)');
-      }
     }
     const budgetRequestSource = opts.budgetRequestSource
       ?? (meteringUserId > 0 ? 'interactive' : 'system');
@@ -1001,7 +1047,7 @@ ${payloadStr}
       return {
         message: '⚠️ Coach analysis returned empty.\n\nTry /coach again.',
         recommendations: [],
-        errors: [...errors, `${analysisProvider} returned empty response`],
+        errors: [...errors, `${analysisProvider}:empty_response`],
         dataCollectionMs,
         analysisMs,
       };
@@ -1026,11 +1072,20 @@ ${payloadStr}
   } catch (err) {
     if (isSkillInferenceAccountDeletionError(err)) throw err;
     rethrowAiUsageFailClosedError(err);
-    logger.error({ err }, 'Coach analysis failed');
+    if ((err as { code?: string })?.code === 'SENSITIVE_CLOUD_ROUTING_NOT_AUTHORIZED') {
+      logger.info('Coach cloud analysis refused by the private-data routing policy; local briefing used');
+      return buildLocalOnlyCoachBriefing(
+        garminData,
+        tomorrowCalendarEvents,
+        errors,
+        dataCollectionMs,
+      );
+    }
+    logger.error({ errorCode: safeCoachErrorCode('analysis', err) }, 'Coach analysis failed');
     return {
       message: '⚠️ Coach analysis failed\n\nAI provider error. Try /coach later.',
       recommendations: [],
-      errors: [...errors, (err as Error).message],
+      errors: [...errors, safeCoachErrorCode('analysis', err)],
       dataCollectionMs,
       analysisMs: Date.now() - analysisStart,
     };
@@ -1066,7 +1121,7 @@ function extractRecommendations(text: string): {
   try {
     const raw = JSON.parse(jsonStr);
     if (!Array.isArray(raw)) {
-      logger.warn({ raw }, 'Coach: COACH_RECS is not an array');
+      logger.warn('Coach: COACH_RECS is not an array');
       return { humanMessage, recommendations: [] };
     }
 
@@ -1087,7 +1142,7 @@ function extractRecommendations(text: string): {
     logger.info({ count: recommendations.length }, 'Coach: parsed structured recommendations');
     return { humanMessage, recommendations };
   } catch (err) {
-    logger.warn({ err, jsonStr: jsonStr.substring(0, 200) }, 'Coach: failed to parse COACH_RECS JSON');
+    logger.warn({ errorCode: safeCoachErrorCode('recommendations_json', err) }, 'Coach: failed to parse COACH_RECS JSON');
     return { humanMessage, recommendations: [] };
   }
 }

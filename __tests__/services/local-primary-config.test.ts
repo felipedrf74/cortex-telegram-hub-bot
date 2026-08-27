@@ -13,6 +13,8 @@ describe('local-primary release controls', () => {
     vi.stubEnv('CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED', '');
     vi.stubEnv('LOCAL_PRIMARY_LLM_HARD_KILL', '');
     vi.stubEnv('OLLAMA_GATEWAY_SOCKET_PATH', '');
+    vi.stubEnv('LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH', '');
+    vi.stubEnv('LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET', '');
     vi.stubEnv('LOCAL_PRIMARY_STAFF_USER_IDS', '');
     const { localPrimaryInferenceConfig } = await import('../../src/services/local-primary-config');
     expect(localPrimaryInferenceConfig).toMatchObject({
@@ -22,6 +24,8 @@ describe('local-primary release controls', () => {
       scriptJobsPublicEnabled: false,
       hardKill: false,
       gatewaySocketPath: '',
+      activationEvidencePath: '',
+      activationEvidenceHmacSecret: '',
       staffUserIds: [],
       maxContextTokens: 16_384,
       maxOutputTokens: 6_144,
@@ -36,6 +40,11 @@ describe('local-primary release controls', () => {
     vi.stubEnv('CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED', 'true');
     vi.stubEnv('LOCAL_PRIMARY_LLM_HARD_KILL', 'TRUE');
     vi.stubEnv('OLLAMA_GATEWAY_SOCKET_PATH', '/run/nexus-inference/staging/ollama.sock');
+    vi.stubEnv('LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH', '/app/data/private/launch.json');
+    vi.stubEnv(
+      'LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET',
+      'test-activation-evidence-secret-at-least-32-bytes',
+    );
     vi.stubEnv('LOCAL_PRIMARY_STAFF_USER_IDS', '42, 84, invalid, -1, 1.5');
     const { localPrimaryInferenceConfig } = await import('../../src/services/local-primary-config');
     expect(localPrimaryInferenceConfig.contentProxyEnabled).toBe(true);
@@ -45,6 +54,10 @@ describe('local-primary release controls', () => {
     expect(localPrimaryInferenceConfig.hardKill).toBe(true);
     expect(localPrimaryInferenceConfig.gatewaySocketPath)
       .toBe('/run/nexus-inference/staging/ollama.sock');
+    expect(localPrimaryInferenceConfig.activationEvidencePath)
+      .toBe('/app/data/private/launch.json');
+    expect(localPrimaryInferenceConfig.activationEvidenceHmacSecret)
+      .toBe('test-activation-evidence-secret-at-least-32-bytes');
     expect(localPrimaryInferenceConfig.staffUserIds).toEqual([42, 84]);
   });
 

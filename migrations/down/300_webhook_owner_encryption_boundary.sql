@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_webhook_events_owner_subscription_idemp_lookup_v2;
+DROP INDEX IF EXISTS idx_webhook_subscriptions_owner_provider_status_v2;

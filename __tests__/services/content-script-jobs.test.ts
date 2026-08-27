@@ -16,6 +16,7 @@ const contentJobMocks = vi.hoisted(() => ({
   rejectApplicationOperationResults: vi.fn(),
   isEnrolled: vi.fn(() => true),
   accountDeletionFenced: false,
+  accountDeletionFenceSequence: [] as boolean[],
   outputLanguageMismatchesRemaining: 0,
   publicOutputLanguageMismatchesRemaining: 0,
 }));
@@ -38,6 +39,16 @@ const MockContentOutputLanguageMismatchError = vi.hoisted(() => class extends Er
 });
 const ACTIVE_MODEL_TAG = 'qwen2.5:3b-instruct-q4_K_M';
 const ACTIVE_MODEL_DIGEST = 'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b';
+const RELEASE_A = {
+  releaseId: 'a'.repeat(32),
+  sourceSha: 'b'.repeat(40),
+  backendImageDigest: `sha256:${'c'.repeat(64)}`,
+};
+const RELEASE_B = {
+  releaseId: 'd'.repeat(32),
+  sourceSha: 'e'.repeat(40),
+  backendImageDigest: `sha256:${'f'.repeat(64)}`,
+};
 
 vi.mock('../../src/services/local-primary-config', () => ({
   localPrimaryInferenceConfig: localPrimaryConfigMock,
@@ -95,7 +106,10 @@ vi.mock('../../src/services/skill-inference-service', async () => {
   return {
     ...actual,
     executeSkillInference: (...args: unknown[]) => inferenceMock(...args),
-    isSkillInferenceAccountDeletionFenced: () => contentJobMocks.accountDeletionFenced,
+    isSkillInferenceAccountDeletionFenced: () => (
+      contentJobMocks.accountDeletionFenceSequence.shift()
+      ?? contentJobMocks.accountDeletionFenced
+    ),
     isLocalInferenceUserEnrolled: (...args: unknown[]) => contentJobMocks.isEnrolled(...args),
     rejectSkillInferenceApplicationResult: (...args: unknown[]) => contentJobMocks.rejectApplicationResult(...args),
     rejectSkillInferenceApplicationOperationResults: (...args: unknown[]) => (
@@ -154,6 +168,12 @@ const migrationSql = readFileSync(
 ) + readFileSync(
   resolve(__dirname, '../../migrations/295_content_script_openai_batches.sql'),
   'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/299_content_script_job_release_identity.sql'),
+  'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/301_local_inference_activation_release_binding.sql'),
+  'utf8',
 );
 
 function database(): Database.Database {
@@ -179,6 +199,30 @@ function database(): Database.Database {
     INSERT INTO plan_configs (plan_id, display_name) VALUES ('pro', 'Pro');
   `);
   db.exec(migrationSql);
+  db.exec(`ALTER TABLE content_script_provider_batches
+      ADD COLUMN provider_files_cleanup_started_at TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN provider_files_cleanup_claim TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN provider_files_cleanup_claimed_at TEXT;`);
+  db.exec(`ALTER TABLE content_script_provider_batches
+      ADD COLUMN input_file_intent_filename TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN input_file_intent_at TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN batch_create_intent_at TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN input_file_intent_absence_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN input_file_intent_absence_observed_at TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN input_file_intent_absence_confirmed_at TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN batch_create_intent_absence_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN batch_create_intent_absence_observed_at TEXT;
+    ALTER TABLE content_script_provider_batches
+      ADD COLUMN batch_create_intent_absence_confirmed_at TEXT;`);
   db.prepare(`UPDATE local_inference_runtime_control
     SET mode = 'active', rollout_percent = 100, model_manifest_version = '2026-08-24.1',
         active_model_digest = 'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
@@ -265,6 +309,7 @@ describe('durable Content script jobs', () => {
     contentJobMocks.isEnrolled.mockReset();
     contentJobMocks.isEnrolled.mockReturnValue(true);
     contentJobMocks.accountDeletionFenced = false;
+    contentJobMocks.accountDeletionFenceSequence = [];
     contentJobMocks.outputLanguageMismatchesRemaining = 0;
     contentJobMocks.publicOutputLanguageMismatchesRemaining = 0;
     localPrimaryConfigMock.scriptJobsEnabled = true;
@@ -503,6 +548,42 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('rechecks the account-deletion fence inside create and retry write transactions', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    contentJobMocks.accountDeletionFenceSequence = [false, true];
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'account-deletion-create-race',
+      request: { topic: 'Create race', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db)).toThrow(expect.objectContaining({ code: 'ACCOUNT_DELETION_IN_PROGRESS' }));
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM content_script_jobs
+      WHERE idempotency_key = 'account-deletion-create-race'`).get()).toEqual({ count: 0 });
+
+    contentJobMocks.accountDeletionFenceSequence = [];
+    const existing = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'account-deletion-retry-race',
+      request: { topic: 'Retry race', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', last_error_code = 'test_failure'
+      WHERE job_id = ?`).run(existing.job.jobId);
+
+    contentJobMocks.accountDeletionFenceSequence = [false, true];
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: existing.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'ACCOUNT_DELETION_IN_PROGRESS' }));
+    expect(db.prepare(`SELECT status FROM content_script_jobs WHERE job_id = ?`)
+      .get(existing.job.jobId)).toEqual({ status: 'failed' });
+    db.close();
+  });
+
   it('uses compiled Content limits when persisted active and daily limits are malformed', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');
@@ -611,6 +692,133 @@ describe('durable Content script jobs', () => {
     expect(checkpoints[1]).toMatchObject({ section_key: 'section_1', route: 'local' });
     expect(checkpoints[1].output_json).not.toContain('word1');
     db.close();
+  });
+
+  it('persists the server-owned application release at creation and completion', async () => {
+    const keys = [
+      'NEXUS_RELEASE_ENVIRONMENT',
+      'NEXUS_RELEASE_ID',
+      'NEXUS_RELEASE_SOURCE_SHA',
+      'NEXUS_RELEASE_BACKEND_DIGEST',
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    const setRelease = (identity: typeof RELEASE_A) => {
+      process.env.NEXUS_RELEASE_ENVIRONMENT = 'production';
+      process.env.NEXUS_RELEASE_ID = identity.releaseId;
+      process.env.NEXUS_RELEASE_SOURCE_SHA = identity.sourceSha;
+      process.env.NEXUS_RELEASE_BACKEND_DIGEST = identity.backendImageDigest;
+    };
+    const db = database();
+    try {
+      const service = await import('../../src/services/content-script-jobs');
+      setRelease(RELEASE_A);
+      const created = service.createContentScriptJob({
+        tenantId: 42,
+        userId: 42,
+        idempotencyKey: 'release-bound-job',
+        request: { topic: 'Release identity', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+      }, db);
+
+      setRelease(RELEASE_B);
+      await service.runContentScriptJob(created.job.jobId, db);
+
+      expect(db.prepare(`SELECT created_release_id, created_release_source_sha,
+          created_release_backend_digest, completed_release_id,
+          completed_release_source_sha, completed_release_backend_digest
+        FROM content_script_jobs WHERE job_id = ?`).get(created.job.jobId)).toEqual({
+        created_release_id: RELEASE_A.releaseId,
+        created_release_source_sha: RELEASE_A.sourceSha,
+        created_release_backend_digest: RELEASE_A.backendImageDigest,
+        completed_release_id: RELEASE_B.releaseId,
+        completed_release_source_sha: RELEASE_B.sourceSha,
+        completed_release_backend_digest: RELEASE_B.backendImageDigest,
+      });
+    } finally {
+      db.close();
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('fails closed on a partial persisted creation identity before completion', async () => {
+    const keys = [
+      'NODE_ENV',
+      'NEXUS_RELEASE_ENVIRONMENT',
+      'NEXUS_RELEASE_ID',
+      'NEXUS_RELEASE_SOURCE_SHA',
+      'NEXUS_RELEASE_BACKEND_DIGEST',
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    const db = database();
+    try {
+      process.env.NODE_ENV = 'development';
+      delete process.env.NEXUS_RELEASE_ENVIRONMENT;
+      delete process.env.NEXUS_RELEASE_ID;
+      delete process.env.NEXUS_RELEASE_SOURCE_SHA;
+      delete process.env.NEXUS_RELEASE_BACKEND_DIGEST;
+      const service = await import('../../src/services/content-script-jobs');
+      const created = service.createContentScriptJob({
+        tenantId: 42,
+        userId: 42,
+        idempotencyKey: 'partial-release-identity',
+        request: { topic: 'Partial identity', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+      }, db);
+      db.prepare(`UPDATE content_script_jobs SET created_release_id = ? WHERE job_id = ?`)
+        .run(RELEASE_A.releaseId, created.job.jobId);
+
+      await expect(service.runContentScriptJob(created.job.jobId, db))
+        .rejects.toMatchObject({ code: 'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID' });
+      expect(db.prepare(`SELECT status, completed_release_id FROM content_script_jobs
+        WHERE job_id = ?`).get(created.job.jobId)).toMatchObject({
+        completed_release_id: null,
+      });
+    } finally {
+      db.close();
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('refuses production admission without the complete server-owned release identity', async () => {
+    const keys = [
+      'NODE_ENV',
+      'NEXUS_RELEASE_ENVIRONMENT',
+      'NEXUS_RELEASE_ID',
+      'NEXUS_RELEASE_SOURCE_SHA',
+      'NEXUS_RELEASE_BACKEND_DIGEST',
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    const db = database();
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.NEXUS_RELEASE_ENVIRONMENT;
+      delete process.env.NEXUS_RELEASE_ID;
+      delete process.env.NEXUS_RELEASE_SOURCE_SHA;
+      delete process.env.NEXUS_RELEASE_BACKEND_DIGEST;
+      const service = await import('../../src/services/content-script-jobs');
+
+      expect(() => service.createContentScriptJob({
+        tenantId: 42,
+        userId: 42,
+        idempotencyKey: 'release-identity-missing',
+        request: { topic: 'Missing release identity', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+      }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_RELEASE_IDENTITY_INVALID' }));
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM content_script_jobs
+        WHERE idempotency_key = 'release-identity-missing'`).get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('accepts an approved cloud-only script and records cloud provenance', async () => {
@@ -2303,6 +2511,122 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('advances a scheduled generation after legacy empty-output infrastructure exhaustion', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'retry-poisoned-batch-output',
+      request: {
+        topic: 'Resume with a new durable batch generation',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', progress_percent = 47,
+          attempt_count = 0, infrastructure_requeue_count = 3,
+          last_error_code = 'CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED',
+          warning_codes_json = '["content_script_infrastructure_retry_exhausted","INFERENCE_EMPTY_OUTPUT"]',
+          next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+
+    expect(service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toMatchObject({ status: 'queued', progress: 47, warnings: [] });
+    expect(db.prepare(`SELECT attempt_count, infrastructure_requeue_count
+      FROM content_script_jobs WHERE job_id = ?`).get(failed.job.jobId)).toEqual({
+      attempt_count: 1,
+      infrastructure_requeue_count: 0,
+    });
+
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 2,
+          last_error_code = 'CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED',
+          warning_codes_json = '["content_script_infrastructure_retry_exhausted","INFERENCE_EMPTY_OUTPUT"]'
+      WHERE job_id = ?`).run(failed.job.jobId);
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
+  it('returns retained job identity but refuses retry after private material expires', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const { contentScriptJobPrunedTombstone } = await import(
+      '../../src/services/content-script-job-encryption'
+    );
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'retention-pruned-retry',
+      request: { topic: 'Aged private request', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    const tombstone = contentScriptJobPrunedTombstone(new Date('2026-08-26T12:00:00.000Z'));
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', request_json = ?, result_json = ?,
+          warning_codes_json = '["content_script_private_material_expired"]',
+          lease_token = NULL, lease_expires_at = NULL
+      WHERE job_id = ?`).run(tombstone, tombstone, created.job.jobId);
+
+    expect(service.getContentScriptJob(42, 42, created.job.jobId, db)).toMatchObject({
+      jobId: created.job.jobId,
+      status: 'failed',
+      warnings: ['content_script_private_material_expired'],
+    });
+    expect(service.getContentScriptJob(42, 42, created.job.jobId, db)).not.toHaveProperty('result');
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: created.job.jobId,
+    }, db)).toThrow(expect.objectContaining({
+      code: 'CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED',
+      status: 409,
+    }));
+    db.close();
+  });
+
+  it('refuses retry once durable provider-file cleanup has started', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'provider-cleanup-fenced-retry',
+      request: { topic: 'Aged provider request', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', lease_token = NULL, lease_expires_at = NULL
+      WHERE job_id = ?`).run(created.job.jobId);
+    db.prepare(`INSERT INTO content_script_provider_batches (
+        job_id, tenant_id, owner_user_id, stage_key, request_digest, custom_id,
+        input_file_id, provider_batch_id, status, completed_at,
+        provider_files_cleanup_started_at
+      ) VALUES (?, 42, 42, ?, ?, 'cleanup-fenced', 'input-fenced',
+        'batch-fenced', 'failed', '2026-06-01T00:00:00.000Z',
+        '2026-08-26T12:00:00.000Z')`)
+      .run(created.job.jobId, 'f'.repeat(64), 'd'.repeat(64));
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: created.job.jobId,
+    }, db)).toThrow(expect.objectContaining({
+      code: 'CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED',
+      status: 409,
+    }));
+    expect(service.getContentScriptJob(42, 42, created.job.jobId, db)?.status).toBe('failed');
+    db.close();
+  });
+
   it('re-defers a scheduled job to the next batch window on user retry', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');
@@ -2540,6 +2864,7 @@ describe('delivery modes (Addendum C)', () => {
   it('binds Batch provider idempotency to the tenant, owner, and job', async () => {
     const { contentScriptBatchStageKey } = await import('../../src/services/content-script-provider-batches');
     const stage = {
+      generationAttempt: 1,
       taskType: 'script_outline',
       prompt: '{"topic":"same provider payload"}',
       schemaId: 'content-script-outline-v1',
@@ -2563,6 +2888,7 @@ describe('delivery modes (Addendum C)', () => {
       contentScriptBatchStageKey({ ...stage, jobId: 'job-b', tenantId: 41, userId: 91 }),
       contentScriptBatchStageKey({ ...stage, jobId: 'job-a', tenantId: 42, userId: 91 }),
       contentScriptBatchStageKey({ ...stage, jobId: 'job-a', tenantId: 41, userId: 92 }),
-    ]).size).toBe(4);
+      contentScriptBatchStageKey({ ...stage, generationAttempt: 2, jobId: 'job-a', tenantId: 41, userId: 91 }),
+    ]).size).toBe(5);
   });
 });

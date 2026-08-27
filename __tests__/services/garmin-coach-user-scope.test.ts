@@ -162,10 +162,21 @@ import {
   COACH_ANALYSIS_SYSTEM_METERING_USER_ID,
   COACH_SYSTEM_PROMPT_MAX_CHARS,
   buildCoachAnalysisSystemPrompt,
-  generateCoachBriefing,
+  generateCoachBriefing as generateCoachBriefingImpl,
   resolveCoachAnalysisMeteringScope,
   runWithCoachBriefingAccountLifecycle,
 } from '../../src/services/garmin-coach';
+import { getCurrentContext, runWithContext } from '../../src/utils/request-context';
+
+function generateCoachBriefing(
+  userId?: number,
+  options: Parameters<typeof generateCoachBriefingImpl>[1] = {},
+) {
+  return generateCoachBriefingImpl(userId, {
+    allowSensitiveCloudRouting: true,
+    ...options,
+  });
+}
 
 describe('garmin-coach user scoping', () => {
   beforeEach(() => {
@@ -349,6 +360,44 @@ describe('garmin-coach user scoping', () => {
     });
   });
 
+  it('rejects a positional data owner that differs from the validated tenant', async () => {
+    await expect(generateCoachBriefing(42, { tenantId: 77, meteringUserId: 42 }))
+      .rejects.toMatchObject({ code: 'COACH_DATA_OWNER_SCOPE_MISMATCH' });
+
+    expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
+    expect(mockGetEvents).not.toHaveBeenCalled();
+    expect(mockTryComplete).not.toHaveBeenCalled();
+  });
+
+  it('binds health and calendar reads to the validated data owner instead of ambient context', async () => {
+    let observedContext: ReturnType<typeof getCurrentContext> | undefined;
+    mockHasActiveGarminConnection.mockReturnValue(true);
+    mockFetchDailyCoachData.mockImplementationOnce(async () => {
+      observedContext = getCurrentContext();
+      return {
+        sleepHours: 7,
+        sleepQuality: 'Good',
+        restingHeartRate: 50,
+        hrv: 70,
+        bodyBatterySummary: { current: 80, charged: 95, lowest: 30 },
+        stressAverage: 25,
+        readiness: 85,
+        bodyBattery: null,
+        activities: [],
+        errors: [],
+      };
+    });
+
+    await runWithContext(
+      { source: 'http', userId: 999, tenantId: 999 },
+      () => generateCoachBriefing(42, { tenantId: 42 }),
+    );
+
+    expect(observedContext).toMatchObject({ userId: 42, tenantId: 42 });
+    expect(mockHasActiveGarminConnection).toHaveBeenCalledWith(42);
+    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
+  });
+
   it('keeps caller publication inside both Coach account admissions', async () => {
     const order: string[] = [];
     mockRunWithSkillInferenceAccountAdmission.mockImplementation(
@@ -365,7 +414,7 @@ describe('garmin-coach user scoping', () => {
 
     const consumed = await runWithCoachBriefingAccountLifecycle(
       77,
-      { tenantId: 77, meteringUserId: 42 },
+      { tenantId: 77, meteringUserId: 42, allowSensitiveCloudRouting: true },
       (briefing, abortSignal) => {
         expect(abortSignal.aborted).toBe(false);
         order.push('publish');
@@ -779,65 +828,31 @@ describe('garmin-coach user scoping', () => {
     expect(coachApplyMocks.syncSessionWithCoachRecommendation).not.toHaveBeenCalled();
   });
 
-  // ── Local-LLM pilot: GARMIN_COACH_CAPTURE_PROMPT payload capture ──
-
-  it('captures the prompt payload to .local/coach-payloads when GARMIN_COACH_CAPTURE_PROMPT=true', async () => {
+  it('never writes private coach prompts to disk even when the retired capture flag is set', async () => {
     const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-capture-'));
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(scratchDir);
     vi.stubEnv('GARMIN_COACH_CAPTURE_PROMPT', 'true');
     try {
       const result = await generateCoachBriefing(42, { tenantId: 42 });
 
-      const captureDir = path.join(scratchDir, '.local', 'coach-payloads');
-      const files = fs.readdirSync(captureDir).filter((f) => /^coach-\d+-u42\.json$/.test(f));
-      expect(files).toHaveLength(1);
-      const payload = JSON.parse(fs.readFileSync(path.join(captureDir, files[0]), 'utf8'));
-      expect(payload).toMatchObject({ userId: 42, maxTokens: 1400 });
-      expect(typeof payload.capturedAt).toBe('string');
-      expect(typeof payload.systemPrompt).toBe('string');
-      expect(payload.systemPrompt.length).toBeGreaterThan(0);
-      expect(payload.userPrompt).toContain('DAILY COACHING ANALYSIS');
-
-      // Capture is observe-only: the captured prompts are exactly what the
-      // LLM call receives, and the briefing itself is unchanged.
-      const [calledSystem, calledUser] = mockTryComplete.mock.calls[0];
-      expect(payload.systemPrompt).toBe(calledSystem);
-      expect(payload.userPrompt).toBe(calledUser);
-      expect(result.message).toContain('NEXUS HUB');
-    } finally {
-      vi.unstubAllEnvs();
-      cwdSpy.mockRestore();
-      fs.rmSync(scratchDir, { recursive: true, force: true });
-    }
-  });
-
-  it('never captures when the env flag is off (default)', async () => {
-    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-capture-off-'));
-    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(scratchDir);
-    try {
-      await generateCoachBriefing(42, { tenantId: 42 });
       expect(fs.existsSync(path.join(scratchDir, '.local', 'coach-payloads'))).toBe(false);
-    } finally {
-      cwdSpy.mockRestore();
-      fs.rmSync(scratchDir, { recursive: true, force: true });
-    }
-  });
-
-  it('capture failures never break the briefing', async () => {
-    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-capture-fail-'));
-    // Point cwd at a path UNDER a regular file so mkdirSync throws ENOTDIR.
-    const blockerFile = path.join(scratchDir, 'not-a-dir');
-    fs.writeFileSync(blockerFile, 'x');
-    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(path.join(blockerFile, 'nested'));
-    vi.stubEnv('GARMIN_COACH_CAPTURE_PROMPT', 'true');
-    try {
-      const result = await generateCoachBriefing(42, { tenantId: 42 });
-      expect(result.message).toContain('NEXUS HUB');
       expect(mockTryComplete).toHaveBeenCalledTimes(1);
+      expect(result.message).toContain('NEXUS HUB');
     } finally {
       vi.unstubAllEnvs();
       cwdSpy.mockRestore();
       fs.rmSync(scratchDir, { recursive: true, force: true });
     }
   });
+
+  it('returns a deterministic local briefing without constructing a cloud request by default', async () => {
+    const result = await generateCoachBriefingImpl(42, { tenantId: 42 });
+
+    expect(result.message).toContain('LOCAL COACH BRIEFING');
+    expect(result.message).toContain('stayed on this server');
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockTryComplete).not.toHaveBeenCalled();
+    expect(mockTrackedCreate).not.toHaveBeenCalled();
+  });
+
 });

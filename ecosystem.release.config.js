@@ -21,6 +21,18 @@ const backendPort = staging ? '8201' : '8200';
 const contentPort = staging ? '8101' : '8100';
 const policyEnvironmentNames = Object.freeze([
   'OLLAMA_ENABLED',
+  'OLLAMA_GATEWAY_SOCKET_PATH',
+  'LOCAL_PRIMARY_CONTENT_PROXY_ENABLED',
+  'LOCAL_PRIMARY_CHAT_ENABLED',
+  'LOCAL_PRIMARY_CONTENT_SPECIALISTS_ENABLED',
+  'LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED',
+  'CONTENT_SCRIPT_JOBS_CLOUD_PRIMARY_ENABLED',
+  'CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED',
+  'LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED',
+  'LOCAL_PRIMARY_LLM_HARD_KILL',
+  'LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH',
+  'LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET',
+  'LOCAL_PRIMARY_STAFF_USER_IDS',
   'AI_CLASSIFY_PRIMARY',
   'LOCAL_LLM_CLASSIFY_SHADOW',
   'CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE',
@@ -48,6 +60,8 @@ const policyEnvironmentNames = Object.freeze([
   'APPLE_FOUNDATION_MODELS_ENABLED',
   'APPLE_FOUNDATION_MODELS_KILL_SWITCH',
   'APPLE_FOUNDATION_MODELS_ELIGIBLE_OPERATIONS',
+  'WEBHOOKS_ENABLED',
+  'WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED',
   'OLLAMA_MODEL',
   'OLLAMA_CLASSIFIER_MODEL',
   'CHAT_CORE_V2_LOCAL_CHAT_MODEL',
@@ -55,6 +69,10 @@ const policyEnvironmentNames = Object.freeze([
   'CHAT_CORE_V2_LOCAL_CHAT_FAST_MODEL',
 ]);
 const optionalPolicyEnvironmentNames = new Set([
+  'OLLAMA_GATEWAY_SOCKET_PATH',
+  'LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH',
+  'LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET',
+  'LOCAL_PRIMARY_STAFF_USER_IDS',
   'CLOUD_SCRIPT_STANDARD_PROVIDER',
   'CLOUD_SCRIPT_STANDARD_MODEL',
   'CLOUD_SCRIPT_STANDARD_SERVICE_TIER',
@@ -68,6 +86,27 @@ const optionalPolicyEnvironmentNames = new Set([
   'APPLE_FOUNDATION_MODELS_KILL_SWITCH',
   'APPLE_FOUNDATION_MODELS_ELIGIBLE_OPERATIONS',
 ]);
+const exactBooleanPolicyEnvironmentNames = new Set([
+  'OLLAMA_ENABLED',
+  'LOCAL_PRIMARY_CONTENT_PROXY_ENABLED',
+  'LOCAL_PRIMARY_CHAT_ENABLED',
+  'LOCAL_PRIMARY_CONTENT_SPECIALISTS_ENABLED',
+  'LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED',
+  'CONTENT_SCRIPT_JOBS_CLOUD_PRIMARY_ENABLED',
+  'CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED',
+  'LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED',
+  'LOCAL_PRIMARY_LLM_HARD_KILL',
+  'LOCAL_LLM_CLASSIFY_SHADOW',
+  'LOCAL_LLM_EVALUATION_MODE',
+  'AI_SCRIPT_GENERATION_REQUIRE_LOCAL',
+  'CLOUD_REASONING_FALLBACK_ENABLED',
+  'CLOUD_REASONING_REQUIRE_APPROVED_MODEL',
+  'CLOUD_REASONING_ALLOW_RAW_PRIVATE_DATA',
+  'WEBHOOKS_ENABLED',
+  'WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED',
+  'APPLE_FOUNDATION_MODELS_ENABLED',
+  'APPLE_FOUNDATION_MODELS_KILL_SWITCH',
+]);
 const protectedEnvironmentPath = path.join(baseDir, '.env');
 const protectedEnvironment = parseDotenv(fs.readFileSync(protectedEnvironmentPath));
 const policyEnvironment = Object.fromEntries(policyEnvironmentNames.map((name) => {
@@ -77,6 +116,10 @@ const policyEnvironment = Object.fromEntries(policyEnvironmentNames.map((name) =
   if (typeof value !== 'string' || value.length < 1 || value.length > 512
       || /[\u0000-\u001f\u007f]/u.test(value)) {
     throw new Error(`protected release environment has an invalid or missing ${name}`);
+  }
+  if (exactBooleanPolicyEnvironmentNames.has(name)
+      && value !== 'false' && value !== 'true') {
+    throw new Error(`${name} must be the exact literal true or false`);
   }
   return [name, value];
 }));

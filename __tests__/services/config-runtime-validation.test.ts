@@ -28,6 +28,7 @@ function applySafeProductionEnv() {
   vi.stubEnv('APNS_ENABLED', 'false');
   vi.stubEnv('OPERATOR_ALERT_WEBHOOK_URL', 'https://example.test/operator-alerts');
   vi.stubEnv('SENTRY_DSN', 'https://public@example.test/1');
+  vi.stubEnv('APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET', 'production-apple-ownership-secret-at-least-32-bytes');
 }
 
 function applyCompleteTrainingPublicBetaEnv() {
@@ -118,6 +119,25 @@ describe('runtime config validation', () => {
     expect(config.waitlist.warnOnEphemeralIpSalt).toBe(false);
   });
 
+  it('keeps webhook envelope writes off by default and requires exact opt-in', async () => {
+    vi.stubEnv('WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED', '');
+    expect((await loadConfigFresh()).config.webhooks.ownerEncryptionWritesEnabled).toBe(false);
+
+    vi.stubEnv('WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED', 'true');
+    expect((await loadConfigFresh()).config.webhooks.ownerEncryptionWritesEnabled).toBe(true);
+
+    vi.stubEnv('WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED', 'yes');
+    expect((await loadConfigFresh()).config.webhooks.ownerEncryptionWritesEnabled).toBe(false);
+  });
+
+  it('requires the exact true literal for generic webhook ingress', async () => {
+    vi.stubEnv('WEBHOOKS_ENABLED', 'true');
+    expect((await loadConfigFresh()).config.webhooks.enabled).toBe(true);
+
+    vi.stubEnv('WEBHOOKS_ENABLED', 'yes');
+    expect((await loadConfigFresh()).config.webhooks.enabled).toBe(false);
+  });
+
   it('centralizes fail-closed Content workspace rollout defaults', async () => {
     vi.stubEnv('CONTENT_WORKSPACE_V1_MODE', 'unexpected');
     vi.stubEnv('CONTENT_WORKSPACE_V1_GLOBAL_WRITE', 'yes');
@@ -160,6 +180,9 @@ describe('runtime config validation', () => {
     vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', '');
     const { config: closedByDefault } = await loadConfigFresh();
     expect(closedByDefault.hybridCommerce.anonymousCheckoutEnabled).toBe(false);
+    expect(closedByDefault.hybridCommerce.anonymousCheckoutClaimEnabled).toBe(false);
+    expect(closedByDefault.hybridCommerce.anonymousCheckoutClaimWindowStartedAt).toBe('');
+    expect(closedByDefault.hybridCommerce.anonymousCheckoutClaimSunsetAt).toBe('');
 
     vi.stubEnv('ANONYMOUS_CHECKOUT_ENABLED', 'true');
     const { config: explicitlyOpen } = await loadConfigFresh();
@@ -350,6 +373,23 @@ describe('runtime config validation', () => {
 
     await expect(loadConfigFresh()).rejects.toThrow(
       'IOS_API_JWT_SECRET must be at least 32 bytes and cannot contain known placeholder text.',
+    );
+  });
+
+  it('requires a dedicated stable Apple ownership HMAC in live production', async () => {
+    applySafeProductionEnv();
+    vi.stubEnv('APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET', '');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'Live production requires APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET for delayed StoreKit notification ownership.',
+    );
+  });
+
+  it('rejects a weak dedicated Apple ownership HMAC', async () => {
+    vi.stubEnv('APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET', 'change-me');
+
+    await expect(loadConfigFresh()).rejects.toThrow(
+      'APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET must be at least 32 bytes and cannot contain known placeholder text.',
     );
   });
 

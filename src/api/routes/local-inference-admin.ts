@@ -105,11 +105,11 @@ export function localInferenceAdminRoutes(): Router {
     try {
       const db = getDb();
       const before = getLocalInferenceRuntimeControl(db);
-      const enteringProductionShadow = before.environment === 'production'
+      const enteringProductionVerification = before.environment === 'production'
         && before.mode === 'off'
-        && body.mode === 'shadow';
-      const nonAiBaseline = enteringProductionShadow ? getNonAiLatencySnapshot() : null;
-      const errorBaseline = enteringProductionShadow ? getEndUserApiErrorSnapshot() : null;
+        && (body.mode === 'shadow' || body.mode === 'active');
+      const nonAiBaseline = enteringProductionVerification ? getNonAiLatencySnapshot() : null;
+      const errorBaseline = enteringProductionVerification ? getEndUserApiErrorSnapshot() : null;
       const after = db.transaction(() => {
         const updated = setLocalInferenceRuntimeControl({
           mode: body.mode,

@@ -29,6 +29,17 @@ type Pm2App = {
 const releaseBase = mkdtempSync(join(tmpdir(), 'nexus-release-pm2-policy-'));
 const expectedPolicy = {
   OLLAMA_ENABLED: 'true',
+  LOCAL_PRIMARY_CONTENT_PROXY_ENABLED: 'false',
+  LOCAL_PRIMARY_CHAT_ENABLED: 'false',
+  LOCAL_PRIMARY_CONTENT_SPECIALISTS_ENABLED: 'false',
+  LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED: 'true',
+  CONTENT_SCRIPT_JOBS_CLOUD_PRIMARY_ENABLED: 'true',
+  CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED: 'false',
+  LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED: 'false',
+  LOCAL_PRIMARY_LLM_HARD_KILL: 'false',
+  LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH: '',
+  LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET: '',
+  LOCAL_PRIMARY_STAFF_USER_IDS: '',
   AI_CLASSIFY_PRIMARY: 'gemini',
   LOCAL_LLM_CLASSIFY_SHADOW: 'true',
   CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE: 'shadow',
@@ -53,6 +64,8 @@ const expectedPolicy = {
   CLOUD_SCRIPT_PRIORITY_PROVIDER: 'openai',
   CLOUD_SCRIPT_PRIORITY_MODEL: 'gpt-5.6-luna',
   CLOUD_SCRIPT_PRIORITY_SERVICE_TIER: 'priority',
+  WEBHOOKS_ENABLED: 'true',
+  WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED: 'false',
   OLLAMA_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   OLLAMA_CLASSIFIER_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   CHAT_CORE_V2_LOCAL_CHAT_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
@@ -208,7 +221,7 @@ describe('PM2 backend memory policy', () => {
       });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(
-        'protected release environment has an invalid or missing AI_CLASSIFY_PRIMARY',
+        'protected release environment has an invalid or missing',
       );
     } finally {
       rmSync(incompleteBase, { recursive: true, force: true });

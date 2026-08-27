@@ -17,17 +17,15 @@ import {
   putInvoiceObject,
   type InvoiceStorageBackend,
 } from './invoice-object-storage';
+import type { InvoiceArtifactWriteIntent } from './invoice-artifact-admission';
+import { getPortugueseMonthFolder } from './invoice-paths';
+
+export { PT_MONTHS, getPortugueseMonthFolder } from './invoice-paths';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
-
-// Portuguese month abbreviations for folder naming
-export const PT_MONTHS: Record<number, string> = {
-  1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
-  7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez',
-};
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -70,6 +68,10 @@ function invoiceConfidenceBucket(confidence: number): 'low' | 'medium' | 'high' 
   if (!Number.isFinite(confidence) || confidence < 0.5) return 'low';
   if (confidence < 0.85) return 'medium';
   return 'high';
+}
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 // ─── Configuration Guard ────────────────────────────────────────────
@@ -283,11 +285,6 @@ export async function analyzeInvoiceImage(
 
 // ─── Path & Filename Helpers ────────────────────────────────────────
 
-/** Returns Portuguese month folder name, e.g. "Mar-2026" */
-export function getPortugueseMonthFolder(date: DateTime): string {
-  return `${PT_MONTHS[date.month]}-${date.year}`;
-}
-
 /** Resolves the remote target directory on the Mac's iCloud Drive. */
 export function resolveTargetDirectory(documentDate: string | null): {
   remoteDir: string;
@@ -314,19 +311,22 @@ export function resolveTargetDirectory(documentDate: string | null): {
 export function buildFilename(
   analysis: InvoiceAnalysis,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
-  effectiveDate: DateTime
+  effectiveDate: DateTime,
+  filingIdentity?: string,
 ): string {
   const ext = mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : 'jpg';
   const sanitize = (s: string) => s.replace(/[^a-zA-Z0-9€.,\-_àáãâéêíóôõúçÀÁÃÂÉÊÍÓÔÕÚÇ]/g, '_').slice(0, 40);
 
+  const deterministicSuffix = filingIdentity ? sanitize(filingIdentity) : '';
   const parts: string[] = [effectiveDate.toFormat('yyyy-MM-dd')];
+  if (deterministicSuffix) parts.push(deterministicSuffix);
   if (analysis.vendor) parts.push(sanitize(analysis.vendor));
   if (analysis.totalAmount) parts.push(sanitize(analysis.totalAmount));
   if (analysis.invoiceNumber) parts.push(sanitize(analysis.invoiceNumber));
 
   // Collision-prevention suffix
-  const suffix = Date.now().toString().slice(-6);
-  parts.push(suffix);
+  const suffix = deterministicSuffix || Date.now().toString().slice(-6);
+  if (!deterministicSuffix) parts.push(suffix);
 
   return `${parts.join('_')}.${ext}`;
 }
@@ -379,7 +379,7 @@ async function compressImage(
     logger.debug({ originalKB, compressedKB }, 'Compression skipped (would increase size)');
     return { buffer: imageBuffer, compressed: false, originalKB, compressedKB: originalKB };
   } catch (err) {
-    logger.warn({ err }, 'Image compression failed, using original');
+    logger.warn({ errorName: safeErrorName(err) }, 'Image compression failed, using original');
     return { buffer: imageBuffer, compressed: false, originalKB, compressedKB: originalKB };
   }
 }
@@ -394,7 +394,12 @@ export async function fileInvoice(
   imageBuffer: Buffer,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
   analysis: InvoiceAnalysis,
-  options: { tenantId?: number; userId?: number } = {},
+  options: {
+    tenantId?: number;
+    userId?: number;
+    filingIdentity?: string;
+    writeIntent?: InvoiceArtifactWriteIntent;
+  } = {},
 ): Promise<FilingResult> {
   if (!isInvoiceFilingConfigured()) {
     return { success: false, error: 'Invoice object storage is not configured.' };
@@ -404,7 +409,7 @@ export async function fileInvoice(
   }
 
   const { monthFolder, effectiveDate } = resolveTargetDirectory(analysis.documentDate);
-  const filename = buildFilename(analysis, mediaType, effectiveDate);
+  const filename = buildFilename(analysis, mediaType, effectiveDate, options.filingIdentity);
 
   const { buffer: finalBuffer, originalKB, compressedKB } =
     await compressImage(imageBuffer, mediaType);
@@ -416,12 +421,11 @@ export async function fileInvoice(
       documentDate: analysis.documentDate,
       filename,
     });
-    const stored = await putInvoiceObject(finalBuffer, objectKey, mediaType);
+    const stored = await putInvoiceObject(finalBuffer, objectKey, mediaType, {
+      ...(options.writeIntent ? { writeIntent: options.writeIntent } : {}),
+    });
     logger.info(
       {
-        objectKey: stored.objectKey,
-        vendor: analysis.vendor,
-        date: analysis.documentDate,
         originalKB,
         compressedKB,
         storageBackend: stored.storageBackend,
@@ -443,9 +447,11 @@ export async function fileInvoice(
       compressedSizeKB: compressedKB,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.error({ err, vendor: analysis.vendor }, 'Failed to file invoice image to object storage');
-    return { success: false, error: message, analysis };
+    logger.error(
+      { errorName: safeErrorName(err) },
+      'Failed to file invoice image to object storage',
+    );
+    return { success: false, error: 'Invoice object storage write failed.', analysis };
   }
 }
 
@@ -457,13 +463,16 @@ export function buildPdfFilename(
   effectiveDate: DateTime,
   invoiceNumber?: string | null,
   originalName?: string | null,
+  filingIdentity?: string,
 ): string {
   const sanitize = (s: string) =>
     s.replace(/[^a-zA-Z0-9€.,\-_àáãâéêíóôõúçÀÁÃÂÉÊÍÓÔÕÚÇ]/g, '_').slice(0, 40);
   const extensionMatch = originalName?.trim().toLowerCase().match(/\.([a-z0-9]{1,8})$/);
   const extension = extensionMatch?.[1] || 'pdf';
 
+  const deterministicSuffix = filingIdentity ? sanitize(filingIdentity) : '';
   const parts: string[] = [effectiveDate.toFormat('yyyy-MM-dd')];
+  if (deterministicSuffix) parts.push(deterministicSuffix);
   parts.push(sanitize(vendor));
   if (invoiceNumber) parts.push(sanitize(invoiceNumber));
 
@@ -473,8 +482,8 @@ export function buildPdfFilename(
     parts.push(sanitize(nameWithoutExt));
   }
 
-  const suffix = Date.now().toString().slice(-6);
-  parts.push(suffix);
+  const suffix = deterministicSuffix || Date.now().toString().slice(-6);
+  if (!deterministicSuffix) parts.push(suffix);
 
   return `${parts.join('_')}.${extension}`;
 }
@@ -489,7 +498,13 @@ export async function filePdf(
   documentDate: string | null,
   invoiceNumber?: string | null,
   originalName?: string | null,
-  options: { tenantId?: number; userId?: number; mime?: string } = {},
+  options: {
+    tenantId?: number;
+    userId?: number;
+    mime?: string;
+    filingIdentity?: string;
+    writeIntent?: InvoiceArtifactWriteIntent;
+  } = {},
 ): Promise<FilingResult> {
   if (!isInvoiceFilingConfigured()) {
     return { success: false, error: 'Invoice object storage is not configured.' };
@@ -499,7 +514,13 @@ export async function filePdf(
   }
 
   const { monthFolder, effectiveDate } = resolveTargetDirectory(documentDate);
-  const filename = buildPdfFilename(vendor, effectiveDate, invoiceNumber, originalName);
+  const filename = buildPdfFilename(
+    vendor,
+    effectiveDate,
+    invoiceNumber,
+    originalName,
+    options.filingIdentity,
+  );
   const mime = options.mime || 'application/pdf';
 
   try {
@@ -509,12 +530,11 @@ export async function filePdf(
       documentDate,
       filename,
     });
-    const stored = await putInvoiceObject(pdfBuffer, objectKey, mime);
+    const stored = await putInvoiceObject(pdfBuffer, objectKey, mime, {
+      ...(options.writeIntent ? { writeIntent: options.writeIntent } : {}),
+    });
     logger.info(
       {
-        objectKey: stored.objectKey,
-        vendor,
-        documentDate,
         sizeKB: Math.round(pdfBuffer.length / 1024),
         storageBackend: stored.storageBackend,
       },
@@ -533,8 +553,10 @@ export async function filePdf(
       originalSizeKB: Math.round(pdfBuffer.length / 1024),
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.error({ err, vendor }, 'Failed to file invoice attachment to object storage');
-    return { success: false, error: message };
+    logger.error(
+      { errorName: safeErrorName(err) },
+      'Failed to file invoice attachment to object storage',
+    );
+    return { success: false, error: 'Invoice object storage write failed.' };
   }
 }

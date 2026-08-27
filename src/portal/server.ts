@@ -18,7 +18,10 @@ import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import { config } from '../config';
 import { getDb } from '../services/database';
-import { expireSubscriptions } from '../services/webhook-registry';
+import {
+  expireSubscriptions,
+  setDbProvider as setWebhookDbProvider,
+} from '../services/webhook-registry';
 import { getOwnerBootstrapTarget } from '../services/user-service';
 import { shouldStartContentLiveEvalBackgroundServices } from '../services/content-live-evaluation-runtime';
 import { logger } from '../utils/logger';
@@ -57,7 +60,10 @@ import { registerPortalStaticRoutes } from './static-routes';
 import { registerPortalUserRoutes } from './user-routes';
 import { registerPortalUserSkillRoutes } from './user-skill-routes';
 import { registerPortalWaitlistRoutes } from './waitlist-routes';
-import { registerPortalWebhookRoutes } from './webhook-routes';
+import {
+  registerPortalWebhookManagementRoutes,
+  registerPublicPortalWebhookRoutes,
+} from './webhook-routes';
 
 // ─── Uptime Helper ──────────────────────────────────────────────────
 
@@ -104,6 +110,10 @@ export function createResponseCompressionMiddleware() {
 
 export function createPortalServer(): http.Server {
   const app = express();
+
+  // The registry deliberately receives its database lazily to avoid module
+  // cycles; wire it before any callback or startup expiry scan can use it.
+  setWebhookDbProvider(() => getDb() as any);
 
   app.use(createPortalSecurityHeadersMiddleware());
 
@@ -163,6 +173,12 @@ export function createPortalServer(): http.Server {
   });
 
   app.use(createResponseCompressionMiddleware());
+
+  // Provider callbacks must see the exact request bytes and cannot present a
+  // portal operator credential. Keep only the externally called, self-
+  // authenticating webhook surface before the global JSON parser and portal
+  // auth; its routes carry their own unauthenticated IP limiter.
+  registerPublicPortalWebhookRoutes(app);
 
   // ── Webhook router (TASK-16b) ───────────────────────────────────────
   // Mounted BEFORE express.json() because the Todoist webhook needs the
@@ -431,7 +447,7 @@ export function createPortalServer(): http.Server {
 
   registerPortalSettingsRoutes(app);
 
-  registerPortalWebhookRoutes(app);
+  registerPortalWebhookManagementRoutes(app);
 
   // ── Start HTTP server ──────────────────────────────────────────
   const server = http.createServer(app);

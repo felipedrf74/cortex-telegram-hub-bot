@@ -249,9 +249,10 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // notificationUUID drives replay de-duplication and `environment` is
-      // recorded as provenance; both live on the outer (already verified)
-      // envelope, so they are threaded through rather than re-decoded.
+      // notificationUUID drives replay de-duplication and `environment` gates
+      // active grants when the inner transaction omits it; both live on the
+      // outer (already verified) envelope, so they are threaded through rather
+      // than re-decoded.
       const normalizedUuid = typeof notificationUUID === 'string' && notificationUUID.trim()
         ? notificationUUID.trim()
         : null;

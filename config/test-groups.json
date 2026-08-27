@@ -13,6 +13,42 @@
   },
   "retirementMappings": [
     {
+      "baseSha": "92b722ee02242fd37453ece17d74cfc53102d961",
+      "test": "__tests__/services/gemini-provider.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/gemini-provider.test.ts",
+        "src/services/gemini-provider.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/gemini-provider.test.ts"
+      ],
+      "reason": "Release A replaces implicit private coach fallback fixtures with an explicit pre-dispatch cloud-privacy refusal and marks the retained provider retry cases as deliberately authorized; the same suite proves that neither Gemini nor any fallback receives an unauthorized private prompt."
+    },
+    {
+      "baseSha": "92b722ee02242fd37453ece17d74cfc53102d961",
+      "test": "__tests__/portal/portal-cooking-routes.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/portal/portal-cooking-routes.test.ts",
+        "src/portal/cooking-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-cooking-routes.test.ts"
+      ],
+      "reason": "Release A replaces positional route-handler assertions with exact limiter-before-auth-before-target-guard registration evidence while the retained suite continues to exercise each terminal Cooking handler."
+    },
+    {
+      "baseSha": "92b722ee02242fd37453ece17d74cfc53102d961",
+      "test": "__tests__/portal/portal-user-routes.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/portal/portal-user-routes.test.ts",
+        "src/portal/user-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-user-routes.test.ts"
+      ],
+      "reason": "Release A replaces positional route-handler assertions with exact limiter-before-auth-before-target-guard registration evidence while the retained suite continues to exercise each terminal user-management handler."
+    },
+    {
       "baseSha": "98ec86210f34ad94ea250c8a1eb10ea71aee2db4",
       "test": "__tests__/services/apple-notification-inbox.test.ts",
       "requiredChangedPaths": [
@@ -847,6 +883,7 @@
         "src/services/skill-inference-profile-policy.json",
         "src/services/owner-bootstrap-preflight.ts",
         "src/services/password-reset.ts",
+        "src/services/private-data-retention.ts",
         "src/services/runtime-*.ts",
         "src/services/staging-fixture-safety.ts",
         "src/services/structured-output-schema.ts",
@@ -867,6 +904,7 @@
         "__tests__/services/apple-jws-leaf-policy.test.ts",
         "__tests__/services/apple-token-revocation.test.ts",
         "__tests__/services/privacy-redacted-flow.test.ts",
+        "__tests__/services/private-data-retention.test.ts",
         "__tests__/services/prompt-cleanliness.test.ts",
         "__tests__/services/prompt-sanitizer.test.ts",
         "__tests__/services/sensitive-log-sinks.test.ts",
@@ -1061,6 +1099,7 @@
         "src/services/ai-credit-*.ts",
         "src/services/credit-pack-*.ts",
         "src/services/apple-notification-inbox.ts",
+        "src/services/apple-value-grant-policy.ts",
         "src/services/billing-catalog.ts",
         "src/services/hybrid-runtime-kill-switches.ts",
         "src/services/apple-pack-restoration.ts",
@@ -1080,6 +1119,7 @@
         "__tests__/services/credit-pack-*.test.ts",
         "__tests__/services/plan-allowance-conformance.test.ts",
         "__tests__/services/apple-notification-inbox.test.ts",
+        "__tests__/services/apple-value-grant-policy.test.ts",
         "__tests__/services/hybrid-runtime-kill-switches.test.ts",
         "__tests__/services/apple-pack-restoration.test.ts",
         "__tests__/services/apple-transaction-reconciliation.test.ts",

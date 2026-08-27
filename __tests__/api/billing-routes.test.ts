@@ -6,6 +6,9 @@ const mockCreateCheckoutSessionForPlan = vi.fn();
 const mockCreatePortalSession = vi.fn();
 const mockClaimWebsiteStripeSubscriptionForUser = vi.fn();
 const mockGrantNexusPoints = vi.fn();
+const mockLookupNexusPointCredit = vi.fn();
+const mockLookupAppleReversal = vi.fn();
+const mockIsCreditPackPurchaseEligible = vi.fn();
 const mockCreateNexusPointsCheckoutSession = vi.fn();
 const mockIsStripeNexusPointsConfigured = vi.fn(() => true);
 const mockLogAudit = vi.fn();
@@ -17,17 +20,19 @@ const mockGetEffectiveEntitlement = vi.fn();
 // real structural + signature verifier in play.
 const hoisted = vi.hoisted(() => ({ signedApplePayload: null as Record<string, unknown> | null }));
 
-// appAccountToken derivation is keyed strictly on IOS_API_JWT_SECRET — there is
-// no source-literal fallback, because one would make every token forgeable by
-// anyone who can read the repo. The test env does not set that secret, so it is
-// supplied here; without it the route correctly returns a null token.
+// appAccountToken derivation uses a dedicated stable HMAC key so JWT rotation
+// cannot invalidate StoreKit ownership evidence.
 vi.mock('../../src/config', async () => {
   const actual = await vi.importActual<typeof import('../../src/config')>('../../src/config');
   return {
     ...actual,
     config: {
       ...actual.config,
-      ios: { ...actual.config.ios, jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long' },
+      ios: {
+        ...actual.config.ios,
+        jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
+        appAccountTokenHmacSecret: 'test-apple-account-token-secret-at-least-32-bytes',
+      },
     },
   };
 });
@@ -64,6 +69,11 @@ vi.mock('../../src/services/stripe-service', async () => {
     createPortalSession: (...args: unknown[]) => mockCreatePortalSession(...args),
     claimWebsiteStripeSubscriptionForUser: (...args: unknown[]) => mockClaimWebsiteStripeSubscriptionForUser(...args),
     handleAppleTransaction: (...args: unknown[]) => mockHandleAppleTransaction(...args),
+    resolveAppleAppAccountTokenForAuthenticatedScope: (input: {
+      userId: number; tenantId: number; appAccountToken: unknown;
+    }) => input.tenantId === input.userId && input.appAccountToken === `token-${input.userId}`
+      ? input.userId
+      : null,
   };
 });
 
@@ -148,6 +158,16 @@ vi.mock('../../src/services/nexus-points', () => ({
     { productId: 'me.nexushub.points.large', label: 'large', priceUsd: 20, points: 1200, usdAllowance: 1.20, aiOnlyMarginPct: 94, netMarginAfterAppleCutPct: 91.4 },
   ]),
   grantNexusPoints: (...args: unknown[]) => mockGrantNexusPoints(...args),
+  lookupNexusPointCreditByProviderTransaction: (...args: unknown[]) => mockLookupNexusPointCredit(...args),
+}));
+
+vi.mock('../../src/services/apple-notification-inbox', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/apple-notification-inbox')>(),
+  lookupAppleReversalForTransaction: (...args: unknown[]) => mockLookupAppleReversal(...args),
+}));
+
+vi.mock('../../src/services/credit-pack-entitlement', () => ({
+  isCreditPackPurchaseEligible: (...args: unknown[]) => mockIsCreditPackPurchaseEligible(...args),
 }));
 
 vi.mock('../../src/services/stripe-nexus-points-service', () => ({
@@ -224,6 +244,7 @@ function mockReq(method: string, path: string, body?: any, userId = 22, headers:
     headers,
     body,
     userId,
+    tenantId: userId,
   } as any;
 }
 
@@ -266,6 +287,12 @@ describe('billing routes', () => {
     mockCreatePortalSession.mockReset();
     mockClaimWebsiteStripeSubscriptionForUser.mockReset();
     mockGrantNexusPoints.mockReset();
+    mockLookupNexusPointCredit.mockReset();
+    mockLookupNexusPointCredit.mockReturnValue(null);
+    mockLookupAppleReversal.mockReset();
+    mockLookupAppleReversal.mockReturnValue({ kind: 'clear' });
+    mockIsCreditPackPurchaseEligible.mockReset();
+    mockIsCreditPackPurchaseEligible.mockReturnValue(true);
     mockGrantNexusPoints.mockReturnValue({
       granted: true,
       creditId: 77,
@@ -382,6 +409,7 @@ describe('billing routes', () => {
       transactionId: '2000000123456789',
       originalTransactionId: '2000000123456789',
       environment: 'Production',
+      appAccountToken: 'token-22',
       expiresDate: Date.now() + 7 * 86400000,
     });
 
@@ -407,6 +435,7 @@ describe('billing routes', () => {
       transactionId: '2000000123456792',
       originalTransactionId: '2000000123456792',
       environment: 'Production',
+      appAccountToken: 'token-99',
       expiresDate: Date.now() + 7 * 86400000,
     });
 
@@ -419,12 +448,10 @@ describe('billing routes', () => {
     expect(mockLogAudit).not.toHaveBeenCalled();
   });
 
-  it('grants a Sandbox Apple transaction under NODE_ENV=production and records its provenance', async () => {
-    // App Review purchases carry environment 'Sandbox' even on an
-    // App-Store-Connect-distributed build. Rejecting them 403'd every reviewer
-    // purchase after the client had already called transaction.finish(), so
-    // nothing unlocked and the purchase was consumed. Guideline 2.1 blocker.
+  it('limits production Sandbox grants to the configured App Review account', async () => {
     const originalNodeEnv = process.env.NODE_ENV;
+    const originalAllowSandbox = process.env.APPLE_ALLOW_SANDBOX_GRANTS;
+    const originalReviewUser = process.env.APPLE_APP_REVIEW_SANDBOX_USER_ID;
     process.env.NODE_ENV = 'production';
     try {
       const expiresDate = Date.now() + 7 * 86400000;
@@ -435,7 +462,7 @@ describe('billing routes', () => {
         transactionId: '2000000123456793',
         originalTransactionId: '2000000123456793',
         environment: 'Sandbox',
-        appAccountToken: '01000000-6bd0-3a2e-4a24-8f1c9b0d5e77',
+        appAccountToken: 'token-42',
         purchaseDate,
         expiresDate,
       };
@@ -446,6 +473,16 @@ describe('billing routes', () => {
         transferredFromUserId: null,
       });
 
+      const refused = await dispatch('POST', '/apple-verify', {
+        jwsTransaction: buildFakeJws(hoisted.signedApplePayload),
+      }, 42);
+
+      expect(refused.statusCode).toBe(403);
+      expect(refused.body.error.code).toBe('APPLE_TRANSACTION_ENVIRONMENT_REFUSED');
+      expect(mockHandleAppleTransaction).not.toHaveBeenCalled();
+
+      process.env.APPLE_ALLOW_SANDBOX_GRANTS = 'true';
+      process.env.APPLE_APP_REVIEW_SANDBOX_USER_ID = '42';
       const res = await dispatch('POST', '/apple-verify', {
         jwsTransaction: buildFakeJws(hoisted.signedApplePayload),
       }, 42);
@@ -458,7 +495,7 @@ describe('billing routes', () => {
         'me.nexushub.pro.monthly',
         new Date(expiresDate).toISOString(),
         new Date(purchaseDate).toISOString(),
-        { environment: 'Sandbox', appAccountToken: '01000000-6bd0-3a2e-4a24-8f1c9b0d5e77' },
+        { tenantId: 42, environment: 'Sandbox', appAccountToken: 'token-42' },
       );
       expect(mockLogAudit).toHaveBeenCalledWith(expect.objectContaining({
         action: 'create',
@@ -466,14 +503,14 @@ describe('billing routes', () => {
         details: expect.objectContaining({ environment: 'Sandbox' }),
       }));
 
-      // Missing provenance remains grantable, but the audit record must make
-      // that absence explicit instead of inventing Production.
+      // Missing provenance never inherits the App Review exception.
       mockLogAudit.mockClear();
       hoisted.signedApplePayload = {
         bundleId: 'me.nexushub.app',
         productId: 'me.nexushub.pro.monthly',
         transactionId: '2000000123456794',
         originalTransactionId: '2000000123456794',
+        appAccountToken: 'token-42',
         expiresDate,
       };
       mockHandleAppleTransaction.mockReturnValueOnce({
@@ -487,17 +524,19 @@ describe('billing routes', () => {
         jwsTransaction: buildFakeJws(hoisted.signedApplePayload),
       }, 42);
 
-      expect(noEnvironment.statusCode).toBe(200);
-      expect(mockLogAudit).toHaveBeenCalledWith(expect.objectContaining({
-        resource: 'billing.apple_verify.subscription',
-        details: expect.objectContaining({ environment: 'unknown' }),
-      }));
+      expect(noEnvironment.statusCode).toBe(403);
+      expect(noEnvironment.body.error.code).toBe('APPLE_TRANSACTION_ENVIRONMENT_REFUSED');
+      expect(mockLogAudit).not.toHaveBeenCalled();
     } finally {
       if (originalNodeEnv === undefined) {
         delete process.env.NODE_ENV;
       } else {
         process.env.NODE_ENV = originalNodeEnv;
       }
+      if (originalAllowSandbox === undefined) delete process.env.APPLE_ALLOW_SANDBOX_GRANTS;
+      else process.env.APPLE_ALLOW_SANDBOX_GRANTS = originalAllowSandbox;
+      if (originalReviewUser === undefined) delete process.env.APPLE_APP_REVIEW_SANDBOX_USER_ID;
+      else process.env.APPLE_APP_REVIEW_SANDBOX_USER_ID = originalReviewUser;
     }
   });
 
@@ -514,6 +553,7 @@ describe('billing routes', () => {
       transactionId: '2000000123456795',
       originalTransactionId: '2000000123456795',
       environment: 'Production',
+      appAccountToken: 'token-99',
       expiresDate: Date.now() + 7 * 86400000,
     });
 
@@ -627,6 +667,7 @@ describe('billing routes', () => {
       transactionId: '2000000123456790',
       originalTransactionId: '2000000123456790',
       environment: 'Production',
+      appAccountToken: 'token-42',
     });
 
     const res = await dispatch('POST', '/apple-verify', { jwsTransaction }, 42);
@@ -653,6 +694,106 @@ describe('billing routes', () => {
       },
     });
     expect(JSON.stringify(res.body.data.nexusPointsPurchase)).not.toMatch(/usd|allowance/i);
+  });
+
+  it('fails closed on signed or durable Apple reversals before granting value', async () => {
+    const basePayload = {
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.points.small',
+      transactionId: '2000000123456810',
+      originalTransactionId: '2000000123456810',
+      environment: 'Production',
+      appAccountToken: 'token-42',
+    };
+
+    const signedRevocation = await dispatch('POST', '/apple-verify', {
+      jwsTransaction: buildFakeJws({ ...basePayload, revocationDate: Date.now() }),
+    }, 42);
+    expect(signedRevocation.statusCode).toBe(409);
+    expect(signedRevocation.body.error.code).toBe('APPLE_TRANSACTION_REVOKED');
+    expect(mockGrantNexusPoints).not.toHaveBeenCalled();
+
+    mockLookupAppleReversal.mockReturnValueOnce({ kind: 'recorded' });
+    const recorded = await dispatch('POST', '/apple-verify', {
+      jwsTransaction: buildFakeJws(basePayload),
+    }, 42);
+    expect(recorded.statusCode).toBe(409);
+    expect(recorded.body.error.code).toBe('APPLE_TRANSACTION_REVOKED');
+
+    mockLookupAppleReversal.mockReturnValueOnce({ kind: 'unavailable', reason: 'index_incomplete' });
+    const unavailable = await dispatch('POST', '/apple-verify', {
+      jwsTransaction: buildFakeJws(basePayload),
+    }, 42);
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.body.error.code).toBe('APPLE_REVERSAL_CHECK_UNAVAILABLE');
+    expect(mockHandleAppleTransaction).not.toHaveBeenCalled();
+  });
+
+  it('requires paid-plan eligibility for a new Apple Nexus Points grant', async () => {
+    mockIsCreditPackPurchaseEligible.mockReturnValueOnce(false);
+    const response = await dispatch('POST', '/apple-verify', {
+      jwsTransaction: buildFakeJws({
+        bundleId: 'me.nexushub.app',
+        productId: 'me.nexushub.points.small',
+        transactionId: '2000000123456811',
+        originalTransactionId: '2000000123456811',
+        environment: 'Production',
+        appAccountToken: 'token-42',
+      }),
+    }, 42);
+
+    expect(response.statusCode).toBe(403);
+    expect(response.body.error.code).toBe('PACK_REQUIRES_PAID_PLAN');
+    expect(mockGrantNexusPoints).not.toHaveBeenCalled();
+  });
+
+  it('refuses signed point and subscription value that is not bound to request scope', async () => {
+    const point = buildFakeJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.points.small',
+      transactionId: '2000000123456796',
+      originalTransactionId: '2000000123456796',
+      environment: 'Production',
+      appAccountToken: 'token-99',
+    });
+    const pointResponse = await dispatch('POST', '/apple-verify', { jwsTransaction: point }, 42);
+    expect(pointResponse.statusCode).toBe(403);
+    expect(pointResponse.body.error.code).toBe('APPLE_TRANSACTION_ACCOUNT_MISMATCH');
+    expect(mockGrantNexusPoints).not.toHaveBeenCalled();
+
+    const subscription = buildFakeJws({
+      bundleId: 'me.nexushub.app',
+      productId: 'me.nexushub.pro.monthly',
+      transactionId: '2000000123456797',
+      originalTransactionId: '2000000123456797',
+      environment: 'Production',
+      appAccountToken: 'token-99',
+      expiresDate: Date.now() + 7 * 86400000,
+    });
+    const subscriptionResponse = await dispatch(
+      'POST',
+      '/apple-verify',
+      { jwsTransaction: subscription },
+      42,
+    );
+    expect(subscriptionResponse.statusCode).toBe(403);
+    expect(subscriptionResponse.body.error.code).toBe('APPLE_TRANSACTION_ACCOUNT_MISMATCH');
+    expect(mockHandleAppleTransaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses a signed transaction without the exact Nexus bundle identity', async () => {
+    const jwsTransaction = buildFakeJws({
+      productId: 'me.nexushub.points.small',
+      transactionId: '2000000123456798',
+      originalTransactionId: '2000000123456798',
+      environment: 'Production',
+      appAccountToken: 'token-42',
+    });
+
+    const response = await dispatch('POST', '/apple-verify', { jwsTransaction }, 42);
+    expect(response.statusCode).toBe(403);
+    expect(response.body.error.code).toBe('INVALID_BUNDLE');
+    expect(mockGrantNexusPoints).not.toHaveBeenCalled();
   });
 
   it('rejects unsigned Apple transaction JWS in production mode', async () => {

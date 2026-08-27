@@ -30,6 +30,18 @@ const releaseArtifactDigest = 'b'.repeat(64);
  */
 const POLICY_ENVIRONMENT = {
   OLLAMA_ENABLED: 'true',
+  OLLAMA_GATEWAY_SOCKET_PATH: '/run/nexus-ollama/production.sock',
+  LOCAL_PRIMARY_CONTENT_PROXY_ENABLED: 'false',
+  LOCAL_PRIMARY_CHAT_ENABLED: 'false',
+  LOCAL_PRIMARY_CONTENT_SPECIALISTS_ENABLED: 'false',
+  LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED: 'true',
+  CONTENT_SCRIPT_JOBS_CLOUD_PRIMARY_ENABLED: 'true',
+  CONTENT_SCRIPT_JOBS_PUBLIC_ENABLED: 'false',
+  LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED: 'false',
+  LOCAL_PRIMARY_LLM_HARD_KILL: 'false',
+  LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH: '',
+  LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET: '',
+  LOCAL_PRIMARY_STAFF_USER_IDS: '',
   AI_CLASSIFY_PRIMARY: 'gemini',
   LOCAL_LLM_CLASSIFY_SHADOW: 'true',
   CHAT_CORE_V2_LOCAL_CHAT_LLM_MODE: 'shadow',
@@ -54,6 +66,8 @@ const POLICY_ENVIRONMENT = {
   CLOUD_SCRIPT_PRIORITY_PROVIDER: 'openai',
   CLOUD_SCRIPT_PRIORITY_MODEL: 'gpt-5.6-luna',
   CLOUD_SCRIPT_PRIORITY_SERVICE_TIER: 'priority',
+  WEBHOOKS_ENABLED: 'true',
+  WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED: 'false',
   OLLAMA_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   OLLAMA_CLASSIFIER_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
   CHAT_CORE_V2_LOCAL_CHAT_MODEL: 'qwen2.5:3b-instruct-q4_K_M',
@@ -160,6 +174,51 @@ describe('release ecosystem config release identity', () => {
   it('refuses a role the runtime identity reader could never attest', () => {
     expect(() => loadReleaseApps('development')).toThrow(
       'NEXUS_RELEASE_ROLE must be staging or production, received development',
+    );
+  });
+
+  it('requires an exact protected webhook encryption-write phase flag', () => {
+    writeFileSync(
+      path.join(baseDir, '.env'),
+      `${Object.entries({
+        ...POLICY_ENVIRONMENT,
+        WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED: 'yes',
+      }).map(([name, value]) => `${name}=${value}`).join('\n')}\n`,
+      { mode: 0o600 },
+    );
+
+    expect(() => loadReleaseApps('staging')).toThrow(
+      'WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED must be the exact literal true or false',
+    );
+  });
+
+  it('requires an exact protected webhook-ingress kill-switch value', () => {
+    writeFileSync(
+      path.join(baseDir, '.env'),
+      `${Object.entries({
+        ...POLICY_ENVIRONMENT,
+        WEBHOOKS_ENABLED: 'yes',
+      }).map(([name, value]) => `${name}=${value}`).join('\n')}\n`,
+      { mode: 0o600 },
+    );
+
+    expect(() => loadReleaseApps('staging')).toThrow(
+      'WEBHOOKS_ENABLED must be the exact literal true or false',
+    );
+  });
+
+  it('rejects a misspelled local-primary emergency kill policy', () => {
+    writeFileSync(
+      path.join(baseDir, '.env'),
+      `${Object.entries({
+        ...POLICY_ENVIRONMENT,
+        LOCAL_PRIMARY_LLM_HARD_KILL: 'ture',
+      }).map(([name, value]) => `${name}=${value}`).join('\n')}\n`,
+      { mode: 0o600 },
+    );
+
+    expect(() => loadReleaseApps('production')).toThrow(
+      'LOCAL_PRIMARY_LLM_HARD_KILL must be the exact literal true or false',
     );
   });
 

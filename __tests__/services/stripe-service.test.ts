@@ -1,8 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import crypto from 'node:crypto';
 import { hashEmail } from '../../src/utils/identity';
 
 let testDb: Database.Database;
+const TEST_IOS_JWT_SECRET = 'test-ios-jwt-secret-at-least-32-bytes-long';
+
+function appleGrantContext(userId: number, environment = 'Production') {
+  const body = Buffer.alloc(5);
+  body.writeUInt8(0x01, 0);
+  body.writeUInt32BE(userId, 1);
+  const tag = crypto.createHmac('sha256', TEST_IOS_JWT_SECRET).update(body).digest().subarray(0, 11);
+  const hex = Buffer.concat([body, tag]).toString('hex');
+  return {
+    tenantId: userId,
+    environment,
+    appAccountToken: [
+      hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
+    ].join('-'),
+  };
+}
 
 const hoisted = vi.hoisted(() => {
   const stripeConfig = {
@@ -23,8 +40,15 @@ const hoisted = vi.hoisted(() => {
     priceMaxMonthlyEur: '',
     priceMaxYearlyEur: '',
   };
+  const claimWindowNow = Date.now();
+  const claimWindow = {
+    enabled: true,
+    startedAt: new Date(claimWindowNow - 24 * 60 * 60 * 1000).toISOString(),
+    sunsetAt: new Date(claimWindowNow + 29 * 24 * 60 * 60 * 1000).toISOString(),
+  };
   return {
     stripeConfig,
+    claimWindow,
     loggerWarn: vi.fn(),
     loggerInfo: vi.fn(),
     loggerError: vi.fn(),
@@ -53,6 +77,9 @@ vi.mock('../../src/config', () => ({
     stripe: hoisted.stripeConfig,
     hybridCommerce: {
       subscriptionCheckoutEnabled: true,
+      get anonymousCheckoutClaimEnabled() { return hoisted.claimWindow.enabled; },
+      get anonymousCheckoutClaimWindowStartedAt() { return hoisted.claimWindow.startedAt; },
+      get anonymousCheckoutClaimSunsetAt() { return hoisted.claimWindow.sunsetAt; },
       stripePriceIds: {
         planProMonthly: 'price_pro_usd',
         planMaxMonthly: 'price_max_usd',
@@ -63,6 +90,7 @@ vi.mock('../../src/config', () => ({
     },
     ios: {
       jwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
+      appAccountTokenHmacSecret: 'test-ios-jwt-secret-at-least-32-bytes-long',
     },
   },
 }));
@@ -176,6 +204,14 @@ describe('stripe service billing reconciliation', () => {
     hoisted.stripeConfig.expectedAccountId = 'acct_expectedtest';
     hoisted.stripeConfig.historicalPriceProMonthly = 'price_historical_pro_operator';
     hoisted.stripeConfig.historicalPriceMaxMonthly = 'price_historical_max_operator';
+    const claimWindowNow = Date.now();
+    hoisted.claimWindow.enabled = true;
+    hoisted.claimWindow.startedAt = new Date(
+      claimWindowNow - 24 * 60 * 60 * 1000,
+    ).toISOString();
+    hoisted.claimWindow.sunsetAt = new Date(
+      claimWindowNow + 29 * 24 * 60 * 60 * 1000,
+    ).toISOString();
     hoisted.stripeCtor.mockClear();
     hoisted.loggerWarn.mockReset();
     hoisted.loggerInfo.mockReset();
@@ -194,6 +230,7 @@ describe('stripe service billing reconciliation', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     testDb.close();
   });
 
@@ -634,6 +671,8 @@ describe('stripe service billing reconciliation', () => {
         email, email_hash, plan, currency, price_id, status, stripe_customer_id, stripe_subscription_id
       ) VALUES (?, ?, 'max', 'brl', 'price_max_brl', 'completed', 'cus_buyer', 'sub_buyer')
     `).run('buyer@example.com', hashEmail('buyer@example.com'));
+    testDb.prepare(`UPDATE stripe_web_checkouts
+      SET created_at = datetime(?, '-1 minute')`).run(hoisted.claimWindow.startedAt);
 
     expect(claimWebsiteStripeSubscriptionForUser(userId)).toBe(false);
     expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count).toBe(0);
@@ -645,6 +684,141 @@ describe('stripe service billing reconciliation', () => {
     const checkout = testDb.prepare('SELECT user_id FROM stripe_web_checkouts WHERE stripe_subscription_id = ?').get('sub_buyer') as any;
     expect(sub).toMatchObject({ plan: 'max', provider: 'stripe', provider_subscription_id: 'sub_buyer' });
     expect(checkout.user_id).toBe(userId);
+
+    testDb.prepare(`UPDATE subscriptions SET status = 'past_due' WHERE user_id = ?`).run(userId);
+    expect(claimWebsiteStripeSubscriptionForUser(userId)).toBe(false);
+    expect(testDb.prepare('SELECT status FROM subscriptions WHERE user_id = ?').get(userId))
+      .toEqual({ status: 'past_due' });
+  });
+
+  it('rechecks anonymous checkout eligibility inside the immediate ownership transaction', async () => {
+    const { claimWebsiteStripeSubscriptionForUser } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('raced@example.com').lastInsertRowid);
+    testDb.prepare(`INSERT INTO stripe_web_checkouts (
+      email, email_hash, plan, currency, price_id, status,
+      stripe_customer_id, stripe_subscription_id, created_at
+    ) VALUES (?, ?, 'max', 'usd', 'price_max_usd', 'completed',
+      'cus_raced', 'sub_raced', datetime(?, '-1 minute'))`)
+      .run('raced@example.com', hashEmail('raced@example.com'), hoisted.claimWindow.startedAt);
+
+    const backingDb = testDb;
+    const beginTransaction = backingDb.transaction.bind(backingDb);
+    testDb = new Proxy(backingDb, {
+      get(target, property, receiver) {
+        if (property === 'transaction') {
+          return (callback: (...args: unknown[]) => unknown) => {
+            const transaction = beginTransaction(callback);
+            const runImmediate = transaction.immediate.bind(transaction);
+            return Object.assign(
+              (...args: unknown[]) => transaction(...args),
+              {
+                immediate: (...args: unknown[]) => {
+                  backingDb.prepare(`UPDATE stripe_web_checkouts
+                    SET status = 'failed', updated_at = datetime('now')
+                    WHERE stripe_subscription_id = 'sub_raced'`).run();
+                  return runImmediate(...args);
+                },
+              },
+            );
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as Database.Database;
+
+    expect(claimWebsiteStripeSubscriptionForUser(userId)).toBe(false);
+    expect(backingDb.prepare(
+      'SELECT status, user_id FROM stripe_web_checkouts WHERE stripe_subscription_id = ?',
+    ).get('sub_raced')).toEqual({ status: 'failed', user_id: null });
+    expect((backingDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count)
+      .toBe(0);
+  });
+
+  it('refuses anonymous checkout claims outside the exact 30-day compatibility window', async () => {
+    const { claimWebsiteStripeSubscriptionForUser } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('sunset@example.com').lastInsertRowid);
+    testDb.prepare(`INSERT INTO stripe_web_checkouts (
+      email, email_hash, plan, currency, price_id, status,
+      stripe_customer_id, stripe_subscription_id, created_at
+    ) VALUES (?, ?, 'pro', 'usd', 'price_pro_usd', 'completed',
+      'cus_sunset', 'sub_sunset', datetime(?, '-1 minute'))`)
+      .run('sunset@example.com', hashEmail('sunset@example.com'), hoisted.claimWindow.startedAt);
+
+    hoisted.claimWindow.sunsetAt = new Date(Date.now() - 1).toISOString();
+    hoisted.claimWindow.startedAt = new Date(
+      Date.parse(hoisted.claimWindow.sunsetAt) - 30 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    expect(claimWebsiteStripeSubscriptionForUser(userId)).toBe(false);
+    expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count)
+      .toBe(0);
+  });
+
+  it('does not revive an unclaimed checkout after Stripe deletes its subscription', async () => {
+    const {
+      claimWebsiteStripeSubscriptionForUser,
+      handleCheckoutCompleted,
+      handleInvoicePaid,
+      handleSubscriptionDeleted,
+    } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('deleted-before-claim@example.com').lastInsertRowid);
+    testDb.prepare(`INSERT INTO stripe_web_checkouts (
+      email, email_hash, plan, currency, price_id, status,
+      stripe_customer_id, stripe_subscription_id, stripe_checkout_session_id, created_at
+    ) VALUES (?, ?, 'pro', 'usd', 'price_pro_usd', 'completed',
+      'cus_deleted_before_claim', 'sub_deleted_before_claim', 'sess_deleted_before_claim',
+      datetime(?, '-1 minute'))`)
+      .run(
+        'deleted-before-claim@example.com',
+        hashEmail('deleted-before-claim@example.com'),
+        hoisted.claimWindow.startedAt,
+      );
+
+    handleSubscriptionDeleted({
+      id: 'sub_deleted_before_claim',
+      customer: 'cus_deleted_before_claim',
+      metadata: {},
+    });
+
+    expect(testDb.prepare(`SELECT status, user_id FROM stripe_web_checkouts
+      WHERE stripe_subscription_id = ?`).get('sub_deleted_before_claim'))
+      .toEqual({ status: 'canceled', user_id: null });
+
+    handleCheckoutCompleted({
+      id: 'sess_deleted_before_claim',
+      mode: 'subscription',
+      payment_status: 'paid',
+      subscription: 'sub_deleted_before_claim',
+      customer: 'cus_deleted_before_claim',
+      metadata: {
+        email: 'deleted-before-claim@example.com',
+        plan: 'pro',
+        currency: 'usd',
+      },
+    });
+
+    expect(testDb.prepare(`SELECT status, user_id FROM stripe_web_checkouts
+      WHERE stripe_subscription_id = ?`).get('sub_deleted_before_claim'))
+      .toEqual({ status: 'canceled', user_id: null });
+
+    handleInvoicePaid({
+      id: 'in_stale_after_delete',
+      customer: 'cus_deleted_before_claim',
+      parent: { subscription_details: { subscription: 'sub_deleted_before_claim' } },
+    });
+
+    expect(testDb.prepare(`SELECT status, user_id FROM stripe_web_checkouts
+      WHERE stripe_subscription_id = ?`).get('sub_deleted_before_claim'))
+      .toEqual({ status: 'canceled', user_id: null });
+    expect(claimWebsiteStripeSubscriptionForUser(userId)).toBe(false);
+    expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count)
+      .toBe(0);
   });
 
   it('rejects an Apple original transaction id claimed by another active account', async () => {
@@ -655,13 +829,15 @@ describe('stripe service billing reconciliation', () => {
     const userOne = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-one@example.com').lastInsertRowid);
     const userTwo = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-two@example.com').lastInsertRowid);
 
-    handleAppleTransaction(userOne, '2000000123456789', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
+    handleAppleTransaction(userOne, '2000000123456789', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString(), null, appleGrantContext(userOne));
 
     expect(() => handleAppleTransaction(
         userTwo,
         '2000000123456789',
         'me.nexushub.max.monthly',
         new Date(Date.now() + 86400000).toISOString(),
+        null,
+        appleGrantContext(userTwo),
       ))
       .toThrowError(expect.objectContaining({ name: 'AppleTransactionAlreadyClaimedError' }));
 
@@ -671,6 +847,8 @@ describe('stripe service billing reconciliation', () => {
         '2000000123456789',
         'me.nexushub.max.monthly',
         new Date(Date.now() + 86400000).toISOString(),
+        null,
+        appleGrantContext(userTwo),
       );
     } catch (err) {
       expect(isAppleTransactionAlreadyClaimedError(err)).toBe(true);
@@ -681,6 +859,32 @@ describe('stripe service billing reconciliation', () => {
       provider: 'apple',
     });
     expect(testDb.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(userTwo)).toBeUndefined();
+  });
+
+  it('rejects an Apple grant when authenticated tenant and user scopes disagree', async () => {
+    const {
+      handleAppleTransaction,
+      isAppleTransactionAccountMismatchError,
+    } = await import('../../src/services/stripe-service');
+    const userId = Number(testDb.prepare(
+      'INSERT INTO users (email, email_verified) VALUES (?, 1)',
+    ).run('apple-tenant-mismatch@example.com').lastInsertRowid);
+    const context = { ...appleGrantContext(userId), tenantId: userId + 1 };
+
+    try {
+      handleAppleTransaction(
+        userId,
+        '2000000123456798',
+        'me.nexushub.pro.monthly',
+        new Date(Date.now() + 86400000).toISOString(),
+        null,
+        context,
+      );
+      throw new Error('expected Apple tenant mismatch refusal');
+    } catch (error) {
+      expect(isAppleTransactionAccountMismatchError(error)).toBe(true);
+    }
+    expect(testDb.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(userId)).toBeUndefined();
   });
 
   it('recovers an Apple original transaction id from a terminal prior account', async () => {
@@ -694,6 +898,8 @@ describe('stripe service billing reconciliation', () => {
       originalTransactionId,
       'me.nexushub.pro.monthly',
       new Date(Date.now() + 86400000).toISOString(),
+      null,
+      appleGrantContext(userOne),
     );
     testDb.prepare(`
       UPDATE subscriptions
@@ -707,6 +913,8 @@ describe('stripe service billing reconciliation', () => {
       originalTransactionId,
       'me.nexushub.max.monthly',
       new Date(Date.now() + 86400000).toISOString(),
+      null,
+      appleGrantContext(userTwo),
     );
 
     expect(result).toMatchObject({ plan: 'max', period: 'monthly', transferredFromUserId: userOne });
@@ -725,19 +933,22 @@ describe('stripe service billing reconciliation', () => {
     const { handleAppleTransaction } = await import('../../src/services/stripe-service');
     const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-sandbox@example.com').lastInsertRowid);
 
+    vi.stubEnv('APPLE_ALLOW_SANDBOX_GRANTS', 'true');
+    vi.stubEnv('APPLE_APP_REVIEW_SANDBOX_USER_ID', String(userId));
+    const context = appleGrantContext(userId, 'Sandbox');
     handleAppleTransaction(
       userId,
       '2000000123456799',
       'me.nexushub.pro.monthly',
       new Date(Date.now() + 86400000).toISOString(),
       null,
-      { environment: 'Sandbox', appAccountToken: '01000000-0000-0000-0000-000000000000' },
+      context,
     );
 
     expect(testDb.prepare('SELECT status, environment, provider_customer_id FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({
       status: 'active',
       environment: 'Sandbox',
-      provider_customer_id: '01000000-0000-0000-0000-000000000000',
+      provider_customer_id: context.appAccountToken,
     });
   });
 
@@ -793,6 +1004,8 @@ describe('stripe service billing reconciliation', () => {
       '2000000123456790',
       'me.nexushub.pro.monthly',
       '2028-03-31T12:34:56.000Z',
+      null,
+      appleGrantContext(userId),
     );
 
     expect(testDb.prepare(
@@ -1014,7 +1227,7 @@ describe('stripe service billing reconciliation', () => {
   it('de-duplicates replayed Apple notificationUUIDs', async () => {
     const { handleAppleNotification, handleAppleTransaction } = await import('../../src/services/stripe-service');
     const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-replay@example.com').lastInsertRowid);
-    handleAppleTransaction(userId, '2000000123456801', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
+    handleAppleTransaction(userId, '2000000123456801', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString(), null, appleGrantContext(userId));
 
     const context = { notificationUUID: 'c0ffee00-1111-2222-3333-444444444444', environment: 'Sandbox' };
     expect(handleAppleNotification('EXPIRED', appleTransactionJws({
@@ -1036,7 +1249,7 @@ describe('stripe service billing reconciliation', () => {
   it('applies DID_CHANGE_RENEWAL_STATUS without changing subscription status', async () => {
     const { handleAppleNotification, handleAppleTransaction } = await import('../../src/services/stripe-service');
     const userId = Number(testDb.prepare('INSERT INTO users (email, email_verified) VALUES (?, 1)').run('apple-renewal@example.com').lastInsertRowid);
-    handleAppleTransaction(userId, '2000000123456802', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString());
+    handleAppleTransaction(userId, '2000000123456802', 'me.nexushub.pro.monthly', new Date(Date.now() + 86400000).toISOString(), null, appleGrantContext(userId));
 
     const jws = appleTransactionJws({
       originalTransactionId: '2000000123456802',
@@ -1078,7 +1291,7 @@ describe('stripe service billing reconciliation', () => {
       originalTransactionId: '2000000123456803',
       productId: 'me.nexushub.max.yearly',
       appAccountToken: deriveAppleAppAccountToken(userId),
-      environment: 'Sandbox',
+      environment: 'Production',
       expiresDate,
     }), { notificationUUID: 'bbbb0001-0000-0000-0000-000000000000' })).toBe(true);
 
@@ -1088,7 +1301,7 @@ describe('stripe service billing reconciliation', () => {
       status: 'active',
       provider: 'apple',
       provider_subscription_id: '2000000123456803',
-      environment: 'Sandbox',
+      environment: 'Production',
     });
   });
 
@@ -1115,6 +1328,8 @@ describe('stripe service billing reconciliation', () => {
       originalTransactionId: '2000000123456806',
       productId: 'me.nexushub.pro.weekly',
       appAccountToken,
+      environment: 'Production',
+      expiresDate: Date.now() + 30 * 86400000,
     }), { notificationUUID: 'cccc0003-0000-0000-0000-000000000000' })).toBe(false);
 
     expect((testDb.prepare('SELECT COUNT(*) AS count FROM subscriptions').get() as any).count).toBe(0);
@@ -1133,6 +1348,8 @@ describe('stripe service billing reconciliation', () => {
       originalTransactionId: '2000000123456807',
       productId: 'me.nexushub.pro.monthly',
       appAccountToken: deriveAppleAppAccountToken(userId),
+      environment: 'Production',
+      expiresDate: Date.now() + 30 * 86400000,
     }), { notificationUUID: 'dddd0001-0000-0000-0000-000000000000' })).toBe(false);
 
     expect(testDb.prepare('SELECT plan, provider, provider_subscription_id FROM subscriptions WHERE user_id = ?').get(userId)).toMatchObject({

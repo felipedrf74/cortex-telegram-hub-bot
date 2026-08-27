@@ -206,6 +206,8 @@ binding; operational assets must never be copied around that contract.
 | `LOCAL_PRIMARY_SCRIPT_JOBS_ENABLED` | Enables resumable long-form script jobs. |
 | `LOCAL_PRIMARY_AUTO_ROLLBACK_ENABLED` | Enables the five-minute application threshold monitor. |
 | `LOCAL_PRIMARY_LLM_HARD_KILL` | Attended emergency environment kill. |
+| `LOCAL_PRIMARY_ACTIVATION_EVIDENCE_PATH` | Selects the private, single-link authenticated economics-v7 artifact whose exact byte digest an owner must present for production active/100%. |
+| `LOCAL_PRIMARY_ACTIVATION_EVIDENCE_HMAC_SECRET` | Dedicated 32-byte-or-stronger per-environment key that authenticates the economics-v7 payload; it is never stored in the artifact. |
 | `LOCAL_PRIMARY_STAFF_USER_IDS` | Optional authenticated owner/staff IDs for verification-only shadow diagnostics; never a percentage-cohort launch gate. |
 | `OLLAMA_GATEWAY_SOCKET_PATH` | Selects the environment-specific gateway socket. |
 | `CONTENT_SCRIPT_JOB_ENCRYPTION_KEY` | Current script-job encryption key, minimum 32 bytes. |
@@ -609,11 +611,11 @@ The pre-delete counts for `skill_inference_attempts` and
 `content_script_job_checkpoints` are included in the erasure receipt, and the
 transaction verifies those captured child identities are absent after cascade.
 The release topology has one backend process per environment; the durable row also
-protects a restarted process. A new runtime takes over a prior runtime's fence
-immediately because the predecessor can no longer own an in-memory controller;
-same-runtime concurrent deletion receives 409
-`ACCOUNT_DELETION_IN_PROGRESS`. Exact-token failure cleanup cannot clear
-another deletion, and expiry remains the final malformed-row recovery bound.
+protects a restarted process. A failed deletion that crossed an external-cleanup
+boundary retains and resumes its exact token in the same runtime; same-runtime
+concurrent deletion receives 409 `ACCOUNT_DELETION_IN_PROGRESS`. A foreign or
+restarted runtime cannot steal an unexpired fence and may take over only after
+its durable lease expires. Exact-token cleanup cannot clear another deletion.
 Deleting the owner rows and fence in the same final transaction prevents late
 publication or telemetry rehydration. Content-free critical safety incidents are retained
 only after tenant, user, and run identifiers are irreversibly pseudonymized;
@@ -672,12 +674,19 @@ worker performs no unfenced post-cancel checkpoint write.
 Checkpoint lifecycle rows record planned, generating, validated, invalid, and
 cancelled states; only validated encrypted output is resumable.
 
-Automatic historical pruning is intentionally not active in this changeset.
-Deleting completed encrypted scripts or operational evidence is irreversible
-and requires an owner-approved product retention schedule, including customer
-history expectations and legal/security evidence periods. Public activation
-must record that decision and then add a separately reviewed lifecycle
-transaction; account deletion remains immediate and complete regardless.
+The owner-approved product retention schedule is enforced by the daily
+`midnight_cleanup` lifecycle and the provider-file cleanup pass. Terminal
+Content script requests, results, and checkpoints are pruned after 30 days only
+when provider-file cleanup is already proven. Content-free job and Batch
+identity, usage evidence, and billing links remain; checkpoint deletion and
+encrypted-field tombstoning are atomic. Content-free terminal inference runs
+and attempts are removed after 90 days, while admitted or running rows remain
+available for recovery. Content-free local-inference safety incidents expire
+after 365 days. Indexed read-only page selection precedes a short writer
+transaction for each local page; provider pages advance a stable cursor across
+failures. Every sweep is bounded and reports eligible backlog count plus the
+oldest eligible timestamp. Account deletion remains immediate and complete
+regardless of those historical windows.
 
 ## 6. Observability and rollback
 
@@ -733,11 +742,11 @@ cannot mask either class of evidence.
 The backend reads `/proc/meminfo` for an immediate host-view headroom and swap
 guard and keeps bounded process-local request evidence for non-AI latency and
 public 5xx regression. Production captures at least 20 baseline samples for
-each metric at the OFF-to-shadow boundary, before shadow inference can affect
-the host. The boundary rejects an outage-poisoned baseline above 2 seconds
-non-AI p95 or 2% public 5xx. Those baselines are immutable through
-canary/active and clear only
-on rollback to OFF. Rollback waits for at least 20 current samples. A backend
+each metric when leaving OFF for either optional shadow verification or direct
+active/100%, before inference can affect the host. The boundary rejects an
+outage-poisoned baseline above 2 seconds non-AI p95 or 2% public 5xx. Those
+baselines remain immutable while non-OFF and clear only on rollback to OFF.
+Rollback waits for at least 20 current samples. A backend
 restart starts a fresh current sample window; it does not invent missing
 evidence. The attended host/cgroup receipt and host
 observability remain authoritative for the sustained 20GB/zero-swap envelope,
@@ -891,11 +900,94 @@ economics evidence. Compact structured tests own the 99% schema gate without
 spending the long-form budget. Reporting never decrypts customer requests merely
 to classify acceptance evidence.
 
+The write-once acceptance artifact must carry the exact acceptance revision,
+the ordered ten-scenario inventory, the source/release/quality bindings, and a
+tenant/user/production scope digest. Its producer recomputes script totals and
+overall/per-delivery p95 from those exact ten rows; operator-supplied summaries
+are not evidence. Before the production smoke is submitted, the private
+acceptance state must bind the workload commit to an authoritative unblocked,
+completed v3 release receipt and its captured release-state view. The smoke
+cannot precede that binding or receipt. Content jobs admitted by a signed
+release persist its server-owned release ID, source SHA, and backend image
+digest at creation and successful completion. Acceptance v6 requires both
+production-smoke identities to equal the bound workload release; a job that
+crosses a concurrent application release is not evidence. The later
+evidence-producer commit must
+remain distinct, and its own completed receipt must postdate the smoke and the
+bound workload view; a command-line SHA without those two deployment proofs is
+not acceptance evidence. In the same read-only database transaction, it
+snapshots a
+90-day p95 for the governed Standard operation categories
+`ios_chat_message`/`ios_websocket_chat` and the governed deep-operation proxy
+categories `content_engine_script_deep`/`content_engine_deepsearch`. Samples
+group by the user-visible operation. Every completed accepted inference stage
+must have its own resolved, correct-scope usage row, and every accepted job must
+have one unique exact `operation_id = content-script:<job_id>`. Every paid usage
+row attached to any accepted production run is either charged or causes a
+refusal: tenant/user scope, `automation` source, script-stage job name, exact
+governed script-stage category, timestamp, pricing, provider, and model must all
+match. The v3 operation snapshot
+includes every governed paid production attempt, including operations whose
+attempts all failed. Failed-only token, model-cost, and tool-cost overhead is
+allocated conservatively across the completed operations in its class with
+upward rounding before p95; a class without a completed denominator blocks.
+Shadow runs are excluded by inference mode;
+`chat_live_eval:*` and `content_live_eval:*` jobs are excluded explicitly
+because they otherwise use the interactive source and production categories.
+Historical failed/cancelled retry attempts therefore do not poison a later
+completed result, but neither retry spend nor failed-only spend can disappear.
+Missing classes, cross-scope rows,
+or a cloud script whose completed inference/usage evidence is not consistently
+routed to OpenAI `gpt-5.6-luna` fail closed. The deep categories are a
+conservative proxy until the planned three-credit deep surface is active and
+emits its own governed category. The private rate card contains actual account
+rates and channel costs only, must be captured after the completed acceptance
+evidence, and expires after 24 hours; token/tool p95 values come from this bound
+snapshot. Evidence separates metered model cost from provider-tool cost.
+Economics uses the greater of current-rate model-cost recomputation and resolved
+measured model-cost p95 for each class, then adds measured tool cost exactly
+once, preventing either a stale cheap rate or double counting from distorting
+the gate. The same-credit Standard and Scheduled delivery paths are both
+computed, and script-heavy profiles use whichever measured total is higher.
+The required five-profile matrix is evaluated for both web and Apple. The web
+Priority/pack-buyer profile charges two Stripe fixed transaction fees because
+the subscription and pack are separate transactions; all other web profiles
+charge one.
+
 Production activation is one audited owner transition from OFF (or optional
 zero-user shadow) to active/100% after the signed release, model/gateway checks,
 ten-script/economics evidence, and safety baselines pass. Percentage canaries
 and timed stability windows are not launch prerequisites. Independent kill
-switches and automatic rollback remain mandatory. The owner plan API continues
+switches and automatic rollback remain mandatory. The owner request supplies
+only the exact lowercase SHA-256 of the configured artifact bytes; it cannot
+select a filesystem path. The runtime opens the server-selected artifact as an
+owner-controlled mode-0600 single-link file inside a mode-0700 directory,
+  recomputes both the byte and canonical-payload digests, requires economics-v7
+  with a timing-safe HMAC over the payload digest, and revalidates the embedded
+  full private rate card and acceptance-v6 evidence. The governed verifier
+  recomputes the immutable ten-script contract, measured p95 values and costs,
+  operation-usage scope, economics profiles, every gate, and
+  `launchEligible: true`; it also requires the exact distinct workload/producer
+  source binding, both producer-tool closures, completed v3 receipts for both
+  sources, equality between the producer source and the serving release, and a
+  canonical artifact `generatedAt` no later than the activation verifier's
+  trusted clock and no more than 24 hours old. A correctly authenticated older
+  artifact is still replay-stale and fails closed.
+  The release image packages the exact producer/verifier modules and compares
+  their bytes, Git blob IDs, modes, and sizes to the authenticated artifact.
+  Migration 301 persists the artifact, payload, source-binding, and producer
+  source digests on the runtime-control row. Successor production ACTIVE is
+  represented by `release_bound_mode=active` while the predecessor-readable
+  `mode`/`rollout_percent` pair remains `off`/`0`; the current reader reconstructs
+  active/100% only after validating that representation and its serving-source
+  binding. A code rollback to the predecessor therefore reads OFF. Missing
+  evidence or any serving source change likewise makes a durable production
+  active row effectively OFF until an owner explicitly resets and reactivates
+  it. An
+unbound string, an older schema, a changed or linked file, or an artifact from a
+different deployed producer fails closed. The validated byte digest is the
+audit event's evidence reference; OFF and the independent kill switches never
+depend on artifact availability. The owner plan API continues
 to bound every local-operation, context, script, active-job, queue-weight, and
 local-to-cloud cost-cap field; partial owner updates are merged with the durable
 plan before validation.
@@ -944,19 +1036,27 @@ authorize a flag change by itself.
 Repository completeness does not prove production readiness. The checked-in
 manifest remains `control_only`, so production canary/active admission is
 intentionally impossible until the owner supplies the VPS bakeoff and pinned
-winner plus license approval. The production gateway service/socket mount is
-also intentionally absent until the attended host transaction creates and
-verifies the environment-specific socket directories and the
-20GB/8-CPU/zero-swap service envelope; only then may a normal protected-main
-change add the signed Compose topology.
+winner plus license approval. The signed gateway/socket topology has since
+been deployed and reports healthy in the current release evidence. That host
+result does not override model admission: the retained control model still
+lacks commercial-use approval, so canary/active routing remains impossible
+until a qualifying model, license evidence, signed manifest update, and
+attended host receipt all exist.
 
 Public activation additionally requires iOS async-job adoption, live billing
 verification, the global ten-script acceptance inventory, and the canonical
 pre-release economics simulation. Public Chat routes and `legacy-tail` responsibilities remain
 supported because their independent retirement evidence does not yet exist.
-An owner-approved historical-retention schedule and its reviewed pruning
-transaction are also required before public activation; this repository does
-not infer authorization to irreversibly delete completed customer artifacts.
+The owner-approved historical-retention schedule is implemented by bounded,
+indexed pruning pages: 30 days for terminal private Content jobs, 90 days for
+terminal content-free inference telemetry, 365 days for local-inference safety
+incidents, and 12 calendar months for the explicitly classified security/admin
+audit subset.
+Statutory fiscal/billing audit actions, generic actions on governed monetary
+resource families, and unknown future action names are fail-closed outside the
+generic audit pruner. Runtime evidence must still prove
+the scheduled jobs execute and their reported eligible backlog converges before
+public activation.
 
 Raw private Content cloud fallback remains intentionally unavailable. Content
 refinement and specialist groups cannot add it until Nexus has an

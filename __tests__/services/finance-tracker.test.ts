@@ -62,6 +62,7 @@ import {
   getTransactions,
   deleteTransaction,
   updateTransactionCategory,
+  updateTransaction,
   getMonthlyBudgetView,
   getMonthlySummary,
   calculateAndStoreTax,
@@ -71,6 +72,7 @@ import {
   parseReceiptAmount,
   normalizeFinanceCategory,
   convertPlanningEstimateFromBrl,
+  getPreferredCurrencyForUser,
   IRPF_BRACKETS,
 } from '../../src/services/finance-tracker';
 import { DEFAULT_SKILLS } from '../../src/skills/skill-config';
@@ -309,16 +311,17 @@ describe('Transaction CRUD', () => {
 
     expect(row.action).toBe('create');
     expect(row.resource).toBe('finance.transaction');
-    expect(details.source).toBe('finance_tracker');
-    expect(details.after).toMatchObject({
-      id: tx.id,
-      amount: 5000,
-      amountCents: 500000,
-      currency: 'EUR',
-      category: 'income',
-      receiptRefPresent: false,
+    expect(details).toEqual({
+      source: 'finance_tracker',
+      transactionId: tx.id,
+      changedFields: ['amount', 'category', 'currency', 'date', 'description', 'subcategory'],
     });
-    expect(JSON.stringify(details)).not.toContain('June contract payment');
+    const serialized = JSON.stringify(details);
+    for (const privateValue of [
+      '2024-06-15', 'income', 'freelance', '5000', '500000', 'EUR', 'June contract payment',
+    ]) {
+      expect(serialized).not.toContain(privateValue);
+    }
   });
 
   it('does not log raw category or amount when adding a transaction', () => {
@@ -333,9 +336,31 @@ describe('Transaction CRUD', () => {
     const logCalls = vi.mocked(logger.info).mock.calls;
     expect(logCalls).toHaveLength(1);
     const metadata = logCalls[0][0] as Record<string, unknown>;
-    expect(metadata).toMatchObject({ userId: 1, txId: tx.id, currency: 'EUR' });
+    expect(metadata).toMatchObject({ userId: 1, tenantId: 1, txId: tx.id });
     expect(metadata).not.toHaveProperty('category');
     expect(metadata).not.toHaveProperty('amount');
+    expect(metadata).not.toHaveProperty('currency');
+  });
+
+  it('does not log raw database errors when preferred-currency lookup falls back', () => {
+    const workingDb = testDb;
+    const privateMarker = 'private-finance-database-marker';
+    vi.mocked(logger.debug).mockClear();
+    try {
+      testDb = {
+        prepare: () => { throw new Error(privateMarker); },
+      } as unknown as Database.Database;
+
+      expect(getPreferredCurrencyForUser(1)).toBe('EUR');
+    } finally {
+      testDb = workingDb;
+    }
+
+    expect(vi.mocked(logger.debug)).toHaveBeenCalledWith(
+      { errorName: 'Error', userId: 1 },
+      'Finance tracker: preferred currency lookup fell back to timezone',
+    );
+    expect(JSON.stringify(vi.mocked(logger.debug).mock.calls)).not.toContain(privateMarker);
   });
 
   it('normalizes allowed categories and rejects unsupported categories or negative amounts', () => {
@@ -397,7 +422,7 @@ describe('Transaction CRUD', () => {
     expect(tombstone.delete_reason).toBe('user_requested');
   });
 
-  it('writes before and after audit rows when updating and deleting a transaction', () => {
+  it('writes content-free mutation evidence when updating and deleting a transaction', () => {
     const tx = addTransaction(1, '2024-06-01', 'expense', 100, { subcategory: 'food' });
 
     const updated = updateTransactionCategory(1, tx.id, 'deduction', { subcategory: 'health' });
@@ -412,12 +437,49 @@ describe('Transaction CRUD', () => {
 
     expect(rows.map((row) => row.action)).toEqual(['create', 'update', 'delete']);
     const updateDetails = JSON.parse(rows[1].details);
-    expect(updateDetails.before).toMatchObject({ category: 'expense', subcategory: 'food' });
-    expect(updateDetails.after).toMatchObject({ category: 'deduction', subcategory: 'health' });
+    expect(updateDetails).toEqual({
+      source: 'finance_tracker',
+      transactionId: tx.id,
+      changedFields: ['category', 'subcategory'],
+    });
     const deleteDetails = JSON.parse(rows[2].details);
-    expect(deleteDetails.before).toMatchObject({ deletedAt: null });
-    expect(deleteDetails.after.deleteReason).toBe('user_requested');
-    expect(deleteDetails.after.deletedAt).toBeTruthy();
+    expect(deleteDetails).toEqual({
+      source: 'finance_tracker',
+      transactionId: tx.id,
+      changedFields: ['deleteReason', 'deletedAt'],
+    });
+    const serialized = JSON.stringify(rows);
+    for (const privateValue of ['2024-06-01', 'expense', 'deduction', 'food', 'health', '100']) {
+      expect(serialized).not.toContain(privateValue);
+    }
+  });
+
+  it('records every mutable transaction field without embedding values in audit evidence', () => {
+    const tx = addTransaction(1, '2024-06-01', 'expense', 100);
+    const updated = updateTransaction(1, tx.id, {
+      date: '2024-06-02',
+      category: 'deduction',
+      subcategory: 'health',
+      amount: 120,
+      currency: 'EUR',
+      description: 'updated description',
+      receiptRef: 'updated receipt',
+    });
+    expect(updated?.id).toBe(tx.id);
+
+    const row = testDb.prepare(`
+      SELECT details FROM audit_trail
+      WHERE user_id = 1 AND tenant_id = 1 AND resource = 'finance.transaction'
+        AND action = 'update'
+      ORDER BY id DESC LIMIT 1
+    `).get() as { details: string };
+    expect(JSON.parse(row.details)).toEqual({
+      source: 'finance_tracker',
+      transactionId: tx.id,
+      changedFields: [
+        'amount', 'category', 'currency', 'date', 'description', 'receiptRef', 'subcategory',
+      ],
+    });
   });
 
   it('delete returns false for wrong user', () => {

@@ -434,7 +434,10 @@ async function logGeminiUsage(
       });
     } catch (fallbackErr) {
       const persistenceError = tripApiUsagePersistenceFailure('gemini', category);
-      logger.error({ err: fallbackErr, code: persistenceError.code }, 'Failed to log Gemini usage; AI usage persistence degraded');
+      logger.error(
+        { errorName: safeProviderErrorName(fallbackErr), code: persistenceError.code },
+        'Failed to log Gemini usage; AI usage persistence degraded',
+      );
       throw persistenceError;
     }
   }
@@ -446,11 +449,14 @@ async function logGeminiUsage(
     pushEvent({
       ts: new Date().toISOString(),
       type: 'api_call',
-      summary: `Gemini ${model}: ${billable.inputTokens}+${billable.outputTokens} billable tokens ($${cost.toFixed(4)})`,
+      summary: 'Gemini API call metered',
       durationMs,
     });
   } catch (eventErr) {
-    logger.warn({ err: eventErr, userId, category }, 'Failed to publish Gemini usage telemetry');
+    logger.warn(
+      { errorName: safeProviderErrorName(eventErr), userId, category },
+      'Failed to publish Gemini usage telemetry',
+    );
   }
   // April 2026 follow-up: mirror anthropic-hook's per-user metering so
   // `usage_metering` aggregates reflect Gemini traffic (the dominant
@@ -459,12 +465,18 @@ async function logGeminiUsage(
     const { recordUsage } = require('./usage-metering') as typeof import('./usage-metering');
     recordUsage(userId, billable.inputTokens, billable.outputTokens, cost, false);
   } catch (meterErr) {
-    logger.warn({ err: meterErr, userId }, 'Failed to record Gemini usage_metering');
+    logger.warn(
+      { errorName: safeProviderErrorName(meterErr), userId },
+      'Failed to record Gemini usage_metering',
+    );
   }
   try {
     await settleNexusPointOverageForUser(userId, apiUsageId);
   } catch (settleErr) {
-    logger.warn({ err: settleErr, apiUsageId, userId }, 'nexus_points: Gemini usage settlement failed');
+    logger.warn(
+      { errorName: safeProviderErrorName(settleErr), apiUsageId, userId },
+      'nexus_points: Gemini usage settlement failed',
+    );
   }
 }
 
@@ -535,7 +547,11 @@ function recordGeminiTimeoutEstimate(input: {
   });
   void settleNexusPointOverageForUser(input.userId, apiUsageId).catch((settleErr) => {
     logger.warn(
-      { err: settleErr, apiUsageId, category: input.category },
+      {
+        errorName: safeProviderErrorName(settleErr),
+        apiUsageId,
+        category: input.category,
+      },
       'nexus_points: Gemini timeout estimate settlement failed',
     );
   });
@@ -624,7 +640,24 @@ type OneShotOptions = {
   maxRetries?: number;
   /** Caller cancellation prevents retries and every later provider hop. */
   abortSignal?: AbortSignal;
+  /** Explicit classification and per-request authority for raw private data. */
+  containsPrivateData?: boolean;
+  allowCloudEscalation?: boolean;
 };
+
+function assertOneShotCloudPrivacy(category: string, options?: OneShotOptions): void {
+  const sensitiveCategory = category === 'coach_analysis'
+    || category.startsWith('coach_analysis_');
+  if (!sensitiveCategory && options?.containsPrivateData !== true) return;
+  if (options?.containsPrivateData !== true
+      || options.allowCloudEscalation !== true
+      || config.cloudReasoningFallback.privacy.mode !== 'allow_raw'
+      || config.cloudReasoningFallback.privacy.allowRawPrivateData !== true) {
+    throw Object.assign(new Error('Sensitive one-shot cloud routing is not authorized.'), {
+      code: 'SENSITIVE_CLOUD_ROUTING_NOT_AUTHORIZED',
+    });
+  }
+}
 
 type VisionOneShotOptions = {
   model?: string;
@@ -635,6 +668,8 @@ type VisionOneShotOptions = {
   timeoutMs?: number;
   maxRetries?: number;
   abortSignal?: AbortSignal;
+  containsPrivateData?: boolean;
+  allowCloudEscalation?: boolean;
 };
 
 const SEARCH_PROMPT_PRIVACY_PATTERNS: Array<[RegExp, string]> = [
@@ -663,6 +698,7 @@ export async function completeOneShot(
   options?: OneShotOptions,
 ): Promise<string> {
   throwIfOneShotCancelled(options?.abortSignal);
+  assertOneShotCloudPrivacy(category, options);
   if (options?.responseJsonSchema !== undefined && options.jsonMode !== true) {
     throw new Error('responseJsonSchema requires jsonMode: true');
   }
@@ -804,6 +840,11 @@ function safeProviderFailureCode(code: string | undefined): string | undefined {
   if (!code) return undefined;
   const normalized = code.trim().toUpperCase();
   return /^[A-Z][A-Z0-9_]{0,63}$/.test(normalized) ? normalized : undefined;
+}
+
+function safeProviderErrorName(error: unknown): string {
+  const name = error instanceof Error && error.name ? error.name : 'UnknownError';
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'UnknownError';
 }
 
 /**
@@ -1170,6 +1211,7 @@ export async function completeVisionOneShotWithFallback(
   options?: VisionOneShotOptions,
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
   throwIfOneShotCancelled(options?.abortSignal);
+  assertOneShotCloudPrivacy(category, options);
   // Stage 1: Gemini (primary) — bounded retry on transient errors so a
   // single 503 burst doesn't skip the cheap primary model entirely.
   if (isGeminiProviderConfigured()) {
@@ -1281,6 +1323,10 @@ export async function completeOneShotWithFallback(
   options?: OneShotOptions,
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
   throwIfOneShotCancelled(options?.abortSignal);
+  // Enforce the privacy boundary before provider availability or fallback
+  // routing is evaluated. Otherwise a missing Gemini configuration could
+  // bypass the check and send the same private prompt to OpenAI/Anthropic.
+  assertOneShotCloudPrivacy(category, options);
   // Stage 1: Gemini (primary) — bounded retry on transient errors so a
   // single 503 burst doesn't skip the cheap primary model entirely.
   if (isGeminiProviderConfigured()) {
@@ -1302,7 +1348,15 @@ export async function completeOneShotWithFallback(
       const fallbackModel = resolveGeminiOneShotFallbackModel(primaryModel);
       if (fallbackModel) {
         try {
-          logger.warn({ err, category, primaryModel, fallbackModel, status, code, attempts }, 'Gemini one-shot failed, trying Gemini fallback model');
+          logger.warn({
+            category,
+            primaryModel,
+            fallbackModel,
+            status,
+            code: safeProviderFailureCode(code),
+            errorName: safeProviderErrorName(err),
+            attempts,
+          }, 'Gemini one-shot failed, trying Gemini fallback model');
           // NOTE: no retry here — this stage IS the second chance.
           const text = await completeOneShot(
             systemPrompt,
@@ -1316,10 +1370,25 @@ export async function completeOneShotWithFallback(
           rethrowUsagePersistenceFailure(fallbackErr);
           rethrowProviderSafetyBlock(fallbackErr);
           const fallbackInfo = extractGeminiErrorInfo(fallbackErr);
-          logger.warn({ err: fallbackErr, category, primaryModel, fallbackModel, status: fallbackInfo.status, code: fallbackInfo.code, attempts }, 'Gemini fallback model also failed, trying OpenAI fallback');
+          logger.warn({
+            category,
+            primaryModel,
+            fallbackModel,
+            status: fallbackInfo.status,
+            code: safeProviderFailureCode(fallbackInfo.code),
+            errorName: safeProviderErrorName(fallbackErr),
+            attempts,
+          }, 'Gemini fallback model also failed, trying OpenAI fallback');
         }
       } else {
-        logger.warn({ err, category, primaryModel, status, code, attempts }, 'Gemini one-shot failed, trying OpenAI fallback');
+        logger.warn({
+          category,
+          primaryModel,
+          status,
+          code: safeProviderFailureCode(code),
+          errorName: safeProviderErrorName(err),
+          attempts,
+        }, 'Gemini one-shot failed, trying OpenAI fallback');
       }
     }
   }
@@ -1342,7 +1411,11 @@ export async function completeOneShotWithFallback(
   } catch (err) {
     throwIfOneShotCancelled(options?.abortSignal, err);
     rethrowUsagePersistenceFailure(err);
-    logger.warn({ err, category }, 'OpenAI fallback also failed, trying Anthropic (if enabled)');
+    logger.warn({
+      category,
+      code: safeProviderFailureCode((err as { code?: string })?.code),
+      errorName: safeProviderErrorName(err),
+    }, 'OpenAI fallback also failed, trying Anthropic (if enabled)');
   }
 
   // Stage 3: Anthropic thunk — only if explicitly re-enabled
@@ -1818,7 +1891,7 @@ ${message}`;
       }
       const e = err as { provider?: string; status?: number; retryable?: boolean };
       logger.error({
-        err,
+        errorName: safeProviderErrorName(err),
         provider: e?.provider,
         status: e?.status,
         retryable: e?.retryable,
@@ -2034,7 +2107,10 @@ ${message}`;
           }
         }
       } catch (err) {
-        logger.warn({ err, msgRole: msg.role }, 'Skipping malformed Gemini tool conversation message');
+        logger.warn(
+          { errorName: safeProviderErrorName(err), msgRole: msg.role },
+          'Skipping malformed Gemini tool conversation message',
+        );
       }
     }
 

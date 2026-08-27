@@ -1,8 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Offline, fail-closed rotation for the encrypted OAuth, Garmin, Apple Health,
- * and finance fields stored in SQLite.
+ * Offline, fail-closed rotation for the encrypted OAuth, webhook, Garmin,
+ * Apple Health, and finance fields stored in SQLite.
  *
  * Dry-run is the default. Apply is deliberately guarded by an exact
  * service-stop acknowledgement and a protected SQLite backup whose encrypted
@@ -86,6 +86,9 @@ type RotationTableSpec = {
   userIdColumn: string;
   domain: RotationDomain;
   encryptedColumns: readonly string[];
+  requirePositiveUserId?: boolean;
+  envelopePrefix?: string;
+  legacyJsonColumns?: readonly string[];
 };
 
 type RotationCandidate = {
@@ -97,6 +100,7 @@ type RotationCandidate = {
   originalCiphertext: string;
   plaintext: string;
   destinationKey: string;
+  envelopePrefix?: string;
 };
 
 type ScanResult = {
@@ -112,6 +116,26 @@ const TABLE_SPECS: readonly RotationTableSpec[] = [
     userIdColumn: 'user_id',
     domain: 'oauth',
     encryptedColumns: ['access_token', 'refresh_token'],
+  },
+  {
+    table: 'webhook_subscriptions',
+    primaryKey: 'id',
+    userIdColumn: 'user_id',
+    domain: 'oauth',
+    encryptedColumns: ['secret', 'metadata'],
+    requirePositiveUserId: true,
+    envelopePrefix: 'nexus-webhook-json-v1:',
+    legacyJsonColumns: ['metadata'],
+  },
+  {
+    table: 'webhook_events',
+    primaryKey: 'id',
+    userIdColumn: 'user_id',
+    domain: 'oauth',
+    encryptedColumns: ['payload', 'headers'],
+    requirePositiveUserId: true,
+    envelopePrefix: 'nexus-webhook-json-v1:',
+    legacyJsonColumns: ['payload', 'headers'],
   },
   {
     table: 'garmin_sessions',
@@ -189,6 +213,20 @@ function canDecrypt(ciphertext: string, key: string, userId: number): string | u
   }
 }
 
+function isValidLegacyPlaintext(
+  spec: RotationTableSpec,
+  column: string,
+  plaintext: string,
+): boolean {
+  if (!spec.legacyJsonColumns?.includes(column)) return true;
+  try {
+    JSON.parse(plaintext);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function emptyTableReport(spec: RotationTableSpec, present: boolean): DataEncryptionRotationTableReport {
   return {
     table: spec.table,
@@ -251,6 +289,9 @@ function scanDatabase(
       if (!isValidRowId(primaryKey) || !isValidRowId(userId)) {
         throw new Error(`${spec.table} contains an invalid rotation identity`);
       }
+      if (spec.requirePositiveUserId && userId <= 0) {
+        throw new Error(`${spec.table} contains a non-positive rotation owner`);
+      }
 
       for (const column of spec.encryptedColumns) {
         const value = row[column];
@@ -261,14 +302,42 @@ function scanDatabase(
           continue;
         }
 
-        const destinationPlaintext = canDecrypt(value, keys.next[spec.domain], userId);
-        if (destinationPlaintext !== undefined) {
-          report.alreadyNew += 1;
+        const envelopePrefix = spec.envelopePrefix;
+        if (envelopePrefix && !value.startsWith(envelopePrefix)) {
+          if (!isValidLegacyPlaintext(spec, column, value)) {
+            report.undecryptable += 1;
+            continue;
+          }
+          report.needsRotation += 1;
+          if (collectPlaintext) {
+            candidates.push({
+              table: spec.table,
+              primaryKey,
+              primaryKeyColumn: spec.primaryKey,
+              userId,
+              column,
+              originalCiphertext: value,
+              plaintext: value,
+              destinationKey: keys.next[spec.domain],
+              envelopePrefix,
+            });
+          }
           continue;
         }
 
-        const oldPlaintext = canDecrypt(value, keys.old[spec.domain], userId);
-        if (oldPlaintext === undefined) {
+        const ciphertext = envelopePrefix ? value.slice(envelopePrefix.length) : value;
+        const destinationPlaintext = canDecrypt(ciphertext, keys.next[spec.domain], userId);
+        if (destinationPlaintext !== undefined) {
+          if (isValidLegacyPlaintext(spec, column, destinationPlaintext)) {
+            report.alreadyNew += 1;
+          } else {
+            report.undecryptable += 1;
+          }
+          continue;
+        }
+
+        const oldPlaintext = canDecrypt(ciphertext, keys.old[spec.domain], userId);
+        if (oldPlaintext === undefined || !isValidLegacyPlaintext(spec, column, oldPlaintext)) {
           report.undecryptable += 1;
           continue;
         }
@@ -284,6 +353,7 @@ function scanDatabase(
             originalCiphertext: value,
             plaintext: oldPlaintext,
             destinationKey: keys.next[spec.domain],
+            envelopePrefix,
           });
         }
       }
@@ -440,11 +510,12 @@ function inspectBackup(backupPath: string): string {
 function applyCandidates(db: Database.Database, candidates: RotationCandidate[]): number {
   let applied = 0;
   for (const candidate of candidates) {
-    const replacement = encryptValue(
+    const encrypted = encryptValue(
       candidate.plaintext,
       candidate.destinationKey,
       candidate.userId,
     );
+    const replacement = `${candidate.envelopePrefix ?? ''}${encrypted}`;
     const result = db.prepare(`
       UPDATE ${candidate.table}
       SET ${candidate.column} = ?

@@ -7,6 +7,7 @@ const originalEnv = {
   STAGING: process.env.STAGING,
   IOS_API_JWT_SECRET: process.env.IOS_API_JWT_SECRET,
   IOS_API_JWT_KEYS: process.env.IOS_API_JWT_KEYS,
+  APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET: process.env.APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET,
   FINANCE_ENCRYPTION_KEY: process.env.FINANCE_ENCRYPTION_KEY,
   BACKUP_ENCRYPT: process.env.BACKUP_ENCRYPT,
   BACKUP_KEY: process.env.BACKUP_KEY,
@@ -84,6 +85,7 @@ describe('authMiddleware: staging fixture production refusal', () => {
     delete process.env.STAGING;
     process.env.IOS_API_JWT_SECRET = STAGING_IOS_JWT_SECRET;
     delete process.env.IOS_API_JWT_KEYS;
+    process.env.APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET = 'auth-middleware-apple-owner-secret-32-bytes';
     process.env.FINANCE_ENCRYPTION_KEY = 'auth-middleware-prod-test-finance-key-32';
     process.env.BACKUP_ENCRYPT = 'true';
     process.env.BACKUP_KEY = 'auth-middleware-prod-test-backup-key-32';

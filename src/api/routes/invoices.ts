@@ -91,6 +91,17 @@ function normalizeRequestSenderPatterns(senderPattern: unknown, senderPatterns: 
   return [...new Set(values.map((value) => value.toLowerCase()))];
 }
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
+function presentFieldNames(values: Record<string, unknown>): string[] {
+  return Object.entries(values)
+    .filter(([, value]) => value !== undefined)
+    .map(([key]) => key)
+    .sort();
+}
+
 export function invoicesRoutes(): Router {
   const router = Router();
 
@@ -118,8 +129,8 @@ export function invoicesRoutes(): Router {
       const { userId, tenantId } = assertTenantScope(req as any, 'invoices.profile');
       const summary = getFiscalCollectionSummary(userId, tenantId);
       sendSuccess(res, summary);
-    } catch (err: any) {
-      logger.error({ err }, 'iOS fiscal collection profile failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err) }, 'iOS fiscal collection profile failed');
       sendInternalError(res, 'Unable to load fiscal collection profile right now.');
     }
   }));
@@ -170,18 +181,23 @@ export function invoicesRoutes(): Router {
         action: 'fiscal_profile_update',
         resource: 'fiscal_collection_profiles',
         details: {
-          destinationEmail: destinationEmail ?? null,
-          cadence: cadence ?? null,
-          primaryDay: primaryDay ?? null,
-          secondaryDay: secondaryDay ?? null,
-          enabled: enabled ?? null,
+          changedFields: presentFieldNames({
+            destinationEmail,
+            cadence,
+            primaryDay,
+            secondaryDay,
+            enabled,
+          }),
         },
         ipAddress: (req as any).ip,
       });
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, getFiscalCollectionSummary(userId, tenantId));
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS fiscal collection profile update failed');
+    } catch (err: unknown) {
+      logger.error(
+        { errorName: safeErrorName(err), userId },
+        'iOS fiscal collection profile update failed',
+      );
       sendInternalError(res, 'Unable to update fiscal collection profile right now.');
     }
   }));
@@ -214,9 +230,12 @@ export function invoicesRoutes(): Router {
         action: 'fiscal_bundle_send',
         resource: 'fiscal_bundle',
         details: {
-          startAt: req.body?.startAt ?? null,
-          endAt: req.body?.endAt ?? null,
-          ok: Boolean(result),
+          requestedFields: presentFieldNames({
+            startAt: req.body?.startAt,
+            endAt: req.body?.endAt,
+            idempotencyKey: req.body?.idempotencyKey,
+          }),
+          resultPresent: Boolean(result),
         },
         ipAddress: (req as any).ip,
       });
@@ -227,7 +246,10 @@ export function invoicesRoutes(): Router {
         sendError(res, err.code, err.message, err.status);
         return;
       }
-      logger.error({ err, userId }, 'iOS fiscal bundle send failed');
+      logger.error(
+        { errorName: safeErrorName(err), userId },
+        'iOS fiscal bundle send failed',
+      );
       sendInternalError(res, 'Unable to send the fiscal bundle right now.');
     }
   }));
@@ -261,8 +283,8 @@ export function invoicesRoutes(): Router {
         builtinCount: 0,
         customCount: dbRows.length,
       });
-    } catch (err: any) {
-      logger.error({ err }, 'iOS invoices vendors list failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err) }, 'iOS invoices vendors list failed');
       sendInternalError(res, 'Unable to load invoice vendors right now.');
     }
   }));
@@ -302,14 +324,17 @@ export function invoicesRoutes(): Router {
         actorId: userId,
         action: 'invoice_vendor_create',
         resource: 'invoice_vendors',
-        details: { vendorId: vendor.id, name: name.trim(), senderPatterns: normalizedSenderPatterns },
+        details: {
+          vendorId: vendor.id,
+          changedFields: presentFieldNames({ name, senderPattern, senderPatterns, subjectPatterns }),
+        },
         ipAddress: (req as any).ip,
       });
       invalidateFinanceDerivedCaches(userId);
-      logger.info({ vendorId: vendor.id, name }, 'iOS invoice vendor added');
+      logger.info({ vendorId: vendor.id }, 'iOS invoice vendor added');
       sendSuccess(res, { vendor }, { status: 201 });
-    } catch (err: any) {
-      logger.error({ err }, 'iOS invoices vendor create failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err) }, 'iOS invoices vendor create failed');
       sendInternalError(res, 'Unable to add the invoice vendor right now.');
     }
   }));
@@ -345,8 +370,8 @@ export function invoicesRoutes(): Router {
       });
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { removed: true, id });
-    } catch (err: any) {
-      logger.error({ err, id }, 'iOS invoices vendor delete failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), vendorId: id }, 'iOS invoices vendor delete failed');
       sendInternalError(res, 'Unable to delete the invoice vendor right now.');
     }
   }));
@@ -379,7 +404,7 @@ export function invoicesRoutes(): Router {
     }
 
     try {
-      logger.info({ userId, year, month }, 'iOS on-demand invoice scan started');
+      logger.info({ userId, explicitPeriod: req.body?.year !== undefined || req.body?.month !== undefined }, 'iOS on-demand invoice scan started');
       const result = await collectMonthlyInvoices(userId, year, month, tenantId);
       // P0-4: audit on-demand scans — they create invoice_filings rows
       // (fiscal records) and write to external mail providers via the
@@ -391,21 +416,22 @@ export function invoicesRoutes(): Router {
         action: 'invoice_scan_on_demand',
         resource: 'invoice_filings',
         details: {
-          year,
-          month,
-          totalFiled: result.totalFiled,
-          totalErrors: result.totalErrors,
+          requestedFields: presentFieldNames({ year: req.body?.year, month: req.body?.month }),
+          completed: true,
         },
         ipAddress: (req as any).ip,
       });
       invalidateFinanceDerivedCaches(userId);
       logger.info(
-        { userId, year, month, filed: result.totalFiled, errors: result.totalErrors },
+        { userId },
         'iOS on-demand invoice scan complete'
       );
       sendSuccess(res, { result });
-    } catch (err: any) {
-      logger.error({ err, userId, year, month }, 'iOS on-demand invoice scan failed');
+    } catch (err: unknown) {
+      logger.error(
+        { errorName: safeErrorName(err), userId },
+        'iOS on-demand invoice scan failed',
+      );
       sendInternalError(res, 'Unable to run the invoice scan right now.');
     }
   }));
@@ -455,16 +481,16 @@ export function invoicesRoutes(): Router {
         actorId: userId,
         action: 'invoice_scraper_mfa_reply',
         resource: 'invoice_scraper_mfa',
-        details: {
-          source,
-          codeLength: code.length,
-        },
+        details: { accepted: true },
         ipAddress: (req as any).ip,
       });
-      logger.info({ userId, tenantId, source, codeLength: code.length }, 'iOS scraper MFA reply accepted');
+      logger.info({ userId, tenantId }, 'iOS scraper MFA reply accepted');
       sendSuccess(res, { accepted: true, source });
-    } catch (err: any) {
-      logger.error({ err, userId, tenantId, source }, 'iOS scraper MFA reply failed');
+    } catch (err: unknown) {
+      logger.error(
+        { errorName: safeErrorName(err), userId, tenantId },
+        'iOS scraper MFA reply failed',
+      );
       sendInternalError(res, 'Unable to submit the verification code right now.');
     }
   }));

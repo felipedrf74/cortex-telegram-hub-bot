@@ -34,21 +34,15 @@ import {
   revokeAiCreditLot,
 } from './ai-credit-ledger';
 import { isCreditPackPurchaseEligible } from './credit-pack-entitlement';
+import { isAppleValueGrantEnvironmentAllowed } from './apple-value-grant-policy';
 
 const MAX_PROCESS_ATTEMPTS = 5;
 const MAX_REVERSAL_INDEX_ATTEMPTS = 3;
 const LAST_ERROR_MAX_LENGTH = 300;
 export const MAX_CONSUMABLE_QUANTITY = 100;
 
-/**
- * Sandbox grants are opt-in by explicit flag, not inferred from NODE_ENV
- * (QA3 P2-9): both staging and production containers run NODE_ENV=production,
- * so an env-based gate made the pack path untestable anywhere but production.
- * Default refuses non-Production notifications everywhere; staging sets
- * APPLE_ALLOW_SANDBOX_GRANTS=true deliberately.
- */
-export function isSandboxGrantAllowed(): boolean {
-  return process.env.APPLE_ALLOW_SANDBOX_GRANTS === 'true';
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 /** Notification types that reverse a purchase and must block restoration. */
@@ -329,7 +323,10 @@ export function lookupAppleReversalForTransaction(
   } catch (err) {
     // Fail CLOSED: if the reversal record cannot be read, do not mint credit
     // on a transaction that may already be refunded.
-    logger.error({ err, transactionId: id }, 'apple-notification-inbox: reversal lookup failed; refusing to treat as clean');
+    logger.error(
+      { errorName: safeErrorName(err), transactionIdPresent: id.length > 0 },
+      'apple-notification-inbox: reversal lookup failed; refusing to treat as clean',
+    );
     return { kind: 'unavailable', reason: 'lookup_failed' };
   }
 }
@@ -337,11 +334,25 @@ export function lookupAppleReversalForTransaction(
 /** Non-retryable inbox faults: retries cannot fix them, so the row fails
  * closed immediately with an operator alert instead of burning five attempts
  * while the money sits ungrantable (QA3 P3-14). */
-class NonRetryableInboxError extends Error {
-  constructor(message: string) {
-    super(message);
+class InboxFailureCodeError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = 'InboxFailureCodeError';
+    this.code = code;
+  }
+}
+
+class NonRetryableInboxError extends InboxFailureCodeError {
+  constructor(code: string) {
+    super(code);
     this.name = 'NonRetryableInboxError';
   }
+}
+
+function safeInboxFailureCode(error: unknown): string {
+  return error instanceof InboxFailureCodeError ? error.code : safeErrorName(error);
 }
 
 export interface AppleInboxRow {
@@ -500,7 +511,7 @@ function applyStoredNotification(row: RawRow): boolean {
   const outer = verifyAppleJws(row.signed_payload, { requireX5c: true }).payload as Record<string, any>;
   const signedTransactionInfo = outer?.data?.signedTransactionInfo;
   if (typeof signedTransactionInfo !== 'string' || !signedTransactionInfo) {
-    throw new Error('stored notification is missing signedTransactionInfo');
+    throw new InboxFailureCodeError('APPLE_NOTIFICATION_TRANSACTION_INFO_MISSING');
   }
   const inner = verifyAppleJws(signedTransactionInfo, { requireX5c: true }).payload as Record<string, any>;
   const productId = typeof inner.productId === 'string' ? inner.productId : '';
@@ -513,37 +524,72 @@ function applyStoredNotification(row: RawRow): boolean {
   // Sandbox and TestFlight notifications carry valid Apple signatures and the
   // same bundle id. A sandbox purchase must never mint spendable production
   // credit: ledger grants require a Production-environment notification.
-  // The VERIFIED outer payload's environment claim outranks the ingest-time
-  // hint on the row; absent both, the grant is refused as unknown provenance.
-  const notificationEnvironment = typeof outer?.data?.environment === 'string'
+  // The verified inner transaction claim is authoritative; the verified outer
+  // claim is its fallback and must agree when both are present. The stored
+  // ingest hint is used only when the outer envelope omitted the claim.
+  const outerEnvironment = typeof outer?.data?.environment === 'string'
     ? outer.data.environment
     : row.environment;
-  if (packItem && notificationEnvironment !== 'Production' && !isSandboxGrantAllowed()) {
-    throw new Error(`refusing ledger grant for non-production environment: ${notificationEnvironment ?? 'unknown'}`);
+  const innerEnvironment = typeof inner.environment === 'string' ? inner.environment : null;
+  if (innerEnvironment && outerEnvironment && innerEnvironment !== outerEnvironment) {
+    throw new NonRetryableInboxError('APPLE_NOTIFICATION_ENVIRONMENT_MISMATCH');
   }
-
+  const notificationEnvironment = innerEnvironment ?? outerEnvironment;
   if (packItem && isPackPurchaseType(row.notification_type)) {
     const userId = resolveUserIdFromAppleAppAccountToken(inner.appAccountToken);
     if (!userId) {
-      throw new Error('pack purchase has no resolvable appAccountToken');
+      throw new InboxFailureCodeError('APPLE_PACK_ACCOUNT_TOKEN_MISSING');
+    }
+    if (!isAppleValueGrantEnvironmentAllowed(notificationEnvironment, userId)) {
+      throw new InboxFailureCodeError('APPLE_PACK_ENVIRONMENT_REFUSED');
     }
     const transactionId = String(inner.transactionId || inner.originalTransactionId || '');
     if (!transactionId) {
-      throw new Error('pack purchase has no transactionId');
+      throw new InboxFailureCodeError('APPLE_PACK_TRANSACTION_ID_MISSING');
+    }
+    if (inner.revocationDate != null || inner.revocationReason != null) {
+      logger.warn(
+        { inboxId: row.id, catalogItemId: packItem.id },
+        'Apple pack purchase already carries revocation evidence; refusing to grant',
+      );
+      return true;
+    }
+    const reversalCandidates = Array.from(new Set([
+      String(inner.transactionId || ''),
+      String(inner.originalTransactionId || ''),
+    ].filter(Boolean)));
+    const reversalBackfillBudget: AppleReversalBackfillBudget = { remainingPasses: 1 };
+    for (const candidate of reversalCandidates) {
+      const reversal = lookupAppleReversalForTransaction(candidate, {
+        backfillBudget: reversalBackfillBudget,
+      });
+      if (reversal.kind === 'recorded') {
+        logger.warn(
+          { inboxId: row.id, catalogItemId: packItem.id },
+          'Apple pack purchase has durable reversal evidence; refusing to grant',
+        );
+        return true;
+      }
+      if (reversal.kind === 'unavailable') {
+        throw new InboxFailureCodeError('APPLE_PACK_REVERSAL_EVIDENCE_UNAVAILABLE');
+      }
     }
     // Apple charges for the full consumable quantity; crediting once would
     // undercharge the user's balance for a multi-quantity purchase.
     const rawQuantity = typeof inner.quantity === 'number' ? inner.quantity : 1;
     if (!Number.isInteger(rawQuantity) || rawQuantity < 1 || rawQuantity > MAX_CONSUMABLE_QUANTITY) {
-      throw new NonRetryableInboxError(`pack purchase has an unsupported quantity: ${String(inner.quantity)}`);
+      throw new NonRetryableInboxError('APPLE_PACK_QUANTITY_UNSUPPORTED');
     }
     const existingLot = findAiCreditLotByProviderTransaction('apple', transactionId);
+    if (existingLot && existingLot.userId !== userId) {
+      throw new NonRetryableInboxError('APPLE_PACK_TRANSACTION_OWNER_MISMATCH');
+    }
     if (!existingLot && !isCreditPackPurchaseEligible({
       userId,
     })) {
       // Keep the row retryable because Apple may deliver the pack before the
       // subscription webhook that establishes the paid billing period.
-      throw new Error('pack purchase requires an active Pro or Max billing period');
+      throw new InboxFailureCodeError('APPLE_PACK_ENTITLEMENT_REQUIRED');
     }
     const granted = grantPurchasedAiCredits({
       userId,
@@ -552,7 +598,7 @@ function applyStoredNotification(row: RawRow): boolean {
       credits: (packItem.credits ?? 0) * rawQuantity,
     });
     if (granted.kind === 'rejected') {
-      throw new Error(`pack grant rejected: ${granted.reason}`);
+      throw new InboxFailureCodeError('APPLE_PACK_GRANT_REJECTED');
     }
     logger.info(
       { inboxId: row.id, catalogItemId: packItem.id, replay: granted.kind === 'already_granted' },
@@ -581,7 +627,7 @@ function applyStoredNotification(row: RawRow): boolean {
     // purchase may still be pending/failed in this inbox. Failing keeps the
     // reversal retryable so it lands after the purchase does; exhausted rows
     // stay visible for reconciliation instead of silently vanishing.
-    throw new Error('pack reversal matched no credit lot; retained for reconciliation');
+    throw new InboxFailureCodeError('APPLE_PACK_REVERSAL_LOT_NOT_FOUND');
   }
 
   const handledByLegacy = handleAppleNotification(row.notification_type, signedTransactionInfo, {
@@ -604,7 +650,7 @@ function applyStoredNotification(row: RawRow): boolean {
         productId,
       },
     });
-    throw new Error(`ONE_TIME_CHARGE for unresolvable product id: ${productId || 'unknown'}`);
+    throw new InboxFailureCodeError('APPLE_PACK_PRODUCT_UNRESOLVED');
   }
   if (!handledByLegacy && isPackReversalType(row.notification_type)) {
     // A refund/revoke whose product id resolves to no catalog pack (the
@@ -625,7 +671,7 @@ function applyStoredNotification(row: RawRow): boolean {
         productId,
       },
     });
-    throw new Error(`${row.notification_type} for unresolvable product id: ${productId || 'unknown'}`);
+    throw new InboxFailureCodeError('APPLE_PACK_PRODUCT_UNRESOLVED');
   }
   return handledByLegacy;
 }
@@ -668,7 +714,7 @@ export function processStoredAppleNotification(inboxId: number, now: Date = new 
       // enabling fulfillment later replays every deferred purchase intact.
       return { kind: 'deferred', row: mapRow(row) };
     }
-    const message = error instanceof Error ? error.message.slice(0, LAST_ERROR_MAX_LENGTH) : 'unknown error';
+    const failureCode = safeInboxFailureCode(error).slice(0, LAST_ERROR_MAX_LENGTH);
     const nonRetryable = error instanceof NonRetryableInboxError;
     if (nonRetryable) {
       recordOperatorAlert({
@@ -679,7 +725,7 @@ export function processStoredAppleNotification(inboxId: number, now: Date = new 
         metadata: {
           notificationUuid: row.notification_uuid,
           notificationType: row.notification_type,
-          error: message,
+          errorCode: failureCode,
         },
       });
     }
@@ -687,11 +733,14 @@ export function processStoredAppleNotification(inboxId: number, now: Date = new 
       `UPDATE apple_notification_inbox
        SET state = 'failed', attempts = ?, last_error = ?
        WHERE id = ?`,
-    ).run(nonRetryable ? MAX_PROCESS_ATTEMPTS : row.attempts + 1, message, row.id);
+    ).run(nonRetryable ? MAX_PROCESS_ATTEMPTS : row.attempts + 1, failureCode, row.id);
     const updated = getRawRow(row.id);
     if (!updated) throw new Error('apple-notification-inbox: failure readback failed');
-    logger.warn({ inboxId: row.id, error: message }, 'Apple notification processing failed; retained for retry');
-    return { kind: 'failed', row: mapRow(updated), error: message };
+    logger.warn(
+      { inboxId: row.id, errorCode: failureCode },
+      'Apple notification processing failed; retained for retry',
+    );
+    return { kind: 'failed', row: mapRow(updated), error: failureCode };
   }
 }
 

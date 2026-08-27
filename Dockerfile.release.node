@@ -79,6 +79,15 @@ COPY src/services/chat-turn-contract.ts ./src/services/chat-turn-contract.ts
 # process.cwd(). Package the exact production script it executes; omitting the
 # scripts tree makes the daily safety scan fail closed on every container run.
 COPY scripts/cleanup-tainted-garmin-sessions.mjs ./scripts/cleanup-tainted-garmin-sessions.mjs
+# Production activation revalidates the HMAC-authenticated private economics
+# artifact against these exact producer/verifier bytes. Their immutable module
+# identities are carried inside the artifact and checked before admission.
+COPY scripts/content-ten-script-acceptance.mjs ./scripts/content-ten-script-acceptance.mjs
+COPY scripts/content-ten-script-evidence.mjs ./scripts/content-ten-script-evidence.mjs
+COPY scripts/economics-activation-verifier.mjs ./scripts/economics-activation-verifier.mjs
+COPY scripts/economics-simulation.mjs ./scripts/economics-simulation.mjs
+COPY scripts/lib/economics-activation-auth.mjs ./scripts/lib/economics-activation-auth.mjs
+COPY scripts/lib/release-canonical.mjs ./scripts/lib/release-canonical.mjs
 # Governed runtime data resolved from process.cwd(); the release attestation
 # surfaced on /health/detailed reads it.
 COPY catalog ./catalog

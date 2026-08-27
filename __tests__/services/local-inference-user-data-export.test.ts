@@ -26,7 +26,10 @@ import {
   exportContentWorkspaceData,
   exportSkillInferenceData,
 } from '../../src/services/user-data-export';
-import { encryptContentScriptJobJson } from '../../src/services/content-script-job-encryption';
+import {
+  contentScriptJobPrunedTombstone,
+  encryptContentScriptJobJson,
+} from '../../src/services/content-script-job-encryption';
 
 describe('local inference privacy export', () => {
   beforeEach(() => {
@@ -112,6 +115,28 @@ describe('local inference privacy export', () => {
     expect(jobs[0]).not.toHaveProperty('request_json');
     expect(jobs[0]).not.toHaveProperty('result_json');
     expect(jobs[0]).not.toHaveProperty('lease_token');
+  });
+
+  it('exports retained job identity without trying to decrypt retention tombstones', () => {
+    const tombstone = contentScriptJobPrunedTombstone(new Date('2026-08-26T12:00:00.000Z'));
+    testDb.prepare(`INSERT INTO content_script_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      'job-pruned', 42, 42, 'pro', tombstone, tombstone, null, null, null,
+    );
+
+    const job = exportContentWorkspaceData(42, 42).tables
+      .find((table) => table.name === 'content_script_jobs')!.records[0];
+    expect(job).toMatchObject({
+      job_id: 'job-pruned',
+      request: null,
+      result: null,
+      checkpoints: [],
+      privateMaterialRetention: {
+        status: 'pruned',
+        prunedAt: '2026-08-26T12:00:00.000Z',
+      },
+    });
+    expect(job).not.toHaveProperty('request_json');
+    expect(job).not.toHaveProperty('result_json');
   });
 
   it('returns a partial archive warning for only the job whose historical key is unavailable', () => {

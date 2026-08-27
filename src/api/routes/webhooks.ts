@@ -61,6 +61,10 @@ const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const recentDeliveryIds = new Map<string, number>();
 const MAX_DELIVERY_IDS = 10_000;
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 function rememberDelivery(id: string): boolean {
   if (recentDeliveryIds.has(id)) return false;
   if (recentDeliveryIds.size >= MAX_DELIVERY_IDS) {
@@ -170,8 +174,8 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
         signature,
         config.stripe?.webhookSecret || '',
       );
-    } catch (err: any) {
-      logger.warn({ err: err.message }, 'Stripe webhook verification failed');
+    } catch (err: unknown) {
+      logger.warn({ errorName: safeErrorName(err) }, 'Stripe webhook verification failed');
       res.status(400).json({ error: 'Webhook signature verification failed' });
       return;
     }
@@ -248,8 +252,15 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
       markStripeWebhookEventProcessed(event.id, event.type);
 
       res.status(200).json({ received: true });
-    } catch (err: any) {
-      logger.error({ err: err.message, type: event.type, eventId: event.id }, 'Stripe webhook processing failed');
+    } catch (err: unknown) {
+      logger.error(
+        {
+          errorName: safeErrorName(err),
+          eventTypePresent: typeof event?.type === 'string',
+          eventIdPresent: typeof event?.id === 'string',
+        },
+        'Stripe webhook processing failed',
+      );
       res.status(500).json({ error: 'Stripe webhook processing failed' });
     }
   });
@@ -301,7 +312,13 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
     // 4. Process async — never block the response on the sync round trip
     setImmediate(() => {
       processTodoistEvent(payload).catch((err) => {
-        logger.warn({ err, eventName: payload?.event_name }, 'Todoist webhook processing failed');
+        logger.warn(
+          {
+            errorName: safeErrorName(err),
+            eventNamePresent: typeof payload?.event_name === 'string',
+          },
+          'Todoist webhook processing failed',
+        );
       });
     });
   });
@@ -324,7 +341,7 @@ export function createWebhookRouter(options: WebhookRouterOptions = {}): Router 
 export async function processTodoistEvent(payload: any): Promise<void> {
   const todoistUserId = Number(payload.user_id);
   if (!todoistUserId) {
-    logger.warn({ payload }, 'Todoist webhook missing user_id');
+    logger.warn({ eventNamePresent: typeof payload?.event_name === 'string' }, 'Todoist webhook missing user_id');
     return;
   }
 
@@ -345,11 +362,14 @@ export async function processTodoistEvent(payload: any): Promise<void> {
     await syncProvider(nexusUserId, 'todoist');
     invalidateTaskCaches({ userId: nexusUserId, includeDerivedSurfaces: true });
     logger.debug(
-      { nexusUserId, todoistUserId, eventName: payload.event_name },
+      { ownerResolved: true, eventNamePresent: typeof payload.event_name === 'string' },
       'Todoist webhook processed',
     );
   } catch (err) {
-    logger.warn({ err, nexusUserId }, 'Todoist webhook sync failed');
+    logger.warn(
+      { errorName: safeErrorName(err), ownerResolved: true },
+      'Todoist webhook sync failed',
+    );
   }
 }
 
@@ -377,7 +397,7 @@ async function resolveNexusUserByTodoistSyncProbe(todoistUserId: number): Promis
       }
     }
   } catch (err) {
-    logger.debug({ err }, 'OAuth scan for Todoist user failed');
+    logger.debug({ errorName: safeErrorName(err) }, 'OAuth scan for Todoist user failed');
   }
   return undefined;
 }

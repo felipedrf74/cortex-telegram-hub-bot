@@ -17,6 +17,7 @@ let testDb: Database.Database;
 
 const hoisted = vi.hoisted(() => ({
   iosJwtSecret: 'test-ios-jwt-secret-at-least-32-bytes-long' as string,
+  appleAppAccountTokenHmacSecret: 'test-apple-account-token-secret-at-least-32-bytes' as string,
 }));
 
 vi.mock('../../src/config', () => ({
@@ -35,6 +36,7 @@ vi.mock('../../src/config', () => ({
       // A getter so a single test can run with the secret unset without
       // needing a second module registry.
       get jwtSecret() { return hoisted.iosJwtSecret; },
+      get appAccountTokenHmacSecret() { return hoisted.appleAppAccountTokenHmacSecret; },
     },
   },
 }));
@@ -127,11 +129,28 @@ function subscriptionRow(userId: number): any {
   return testDb.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(userId);
 }
 
+function appleGrantContext(userId: number, environment = 'Production') {
+  const body = Buffer.alloc(5);
+  body.writeUInt8(0x01, 0);
+  body.writeUInt32BE(userId, 1);
+  const tag = crypto.createHmac('sha256', hoisted.appleAppAccountTokenHmacSecret)
+    .update(body).digest().subarray(0, 11);
+  const hex = Buffer.concat([body, tag]).toString('hex');
+  return {
+    tenantId: userId,
+    environment,
+    appAccountToken: [
+      hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
+    ].join('-'),
+  };
+}
+
 const DAY_MS = 86400000;
 
 describe('Apple subscription renewal state', () => {
   beforeEach(() => {
     hoisted.iosJwtSecret = 'test-ios-jwt-secret-at-least-32-bytes-long';
+    hoisted.appleAppAccountTokenHmacSecret = 'test-apple-account-token-secret-at-least-32-bytes';
     testDb = new Database(':memory:');
     createSchema(testDb);
   });
@@ -145,18 +164,18 @@ describe('Apple subscription renewal state', () => {
     const userId = createUser('apple-relatch@example.com');
     const firstPeriodEnd = new Date(Date.now() + 30 * DAY_MS).toISOString();
 
-    handleAppleTransaction(userId, '2000000200000001', 'me.nexushub.pro.monthly', firstPeriodEnd);
+    handleAppleTransaction(userId, '2000000200000001', 'me.nexushub.pro.monthly', firstPeriodEnd, null, appleGrantContext(userId));
     // The user turns auto-renew off: DID_CHANGE_RENEWAL_STATUS is the only
     // authority for setting this, and a plain restore must not undo it.
     testDb.prepare('UPDATE subscriptions SET cancel_at_period_end = 1 WHERE user_id = ?').run(userId);
 
-    handleAppleTransaction(userId, '2000000200000001', 'me.nexushub.pro.monthly', firstPeriodEnd);
+    handleAppleTransaction(userId, '2000000200000001', 'me.nexushub.pro.monthly', firstPeriodEnd, null, appleGrantContext(userId));
     expect(subscriptionRow(userId).cancel_at_period_end).toBe(1);
 
     // A strictly newer period end can only exist because the subscription
     // actually renewed or was resubscribed, so the flag is stale.
     const secondPeriodEnd = new Date(Date.now() + 60 * DAY_MS).toISOString();
-    handleAppleTransaction(userId, '2000000200000001', 'me.nexushub.pro.monthly', secondPeriodEnd);
+    handleAppleTransaction(userId, '2000000200000001', 'me.nexushub.pro.monthly', secondPeriodEnd, null, appleGrantContext(userId));
     expect(subscriptionRow(userId)).toMatchObject({
       status: 'active',
       cancel_at_period_end: 0,
@@ -168,7 +187,7 @@ describe('Apple subscription renewal state', () => {
     const { handleAppleNotification, handleAppleTransaction } = await import('../../src/services/stripe-service');
     const userId = createUser('apple-resubscribe@example.com');
     const firstPeriodEnd = new Date(Date.now() + 5 * DAY_MS).toISOString();
-    handleAppleTransaction(userId, '2000000200000002', 'me.nexushub.pro.monthly', firstPeriodEnd);
+    handleAppleTransaction(userId, '2000000200000002', 'me.nexushub.pro.monthly', firstPeriodEnd, null, appleGrantContext(userId));
 
     // Auto-renew off, then the period lapses.
     testDb.prepare(
@@ -182,6 +201,7 @@ describe('Apple subscription renewal state', () => {
       originalTransactionId: '2000000200000002',
       productId: 'me.nexushub.pro.monthly',
       expiresDate: resubscribedUntil,
+      ...appleGrantContext(userId),
     }), { notificationUUID: 'eeee0001-0000-0000-0000-000000000000', subtype: 'RESUBSCRIBE' })).toBe(true);
 
     expect(subscriptionRow(userId)).toMatchObject({
@@ -197,8 +217,37 @@ describe('Apple subscription renewal state', () => {
       originalTransactionId: '2000000200000002',
       productId: 'me.nexushub.pro.monthly',
       expiresDate: resubscribedUntil,
+      ...appleGrantContext(userId),
     }), { notificationUUID: 'eeee0002-0000-0000-0000-000000000000' })).toBe(true);
     expect(subscriptionRow(userId).cancel_at_period_end).toBe(1);
+  });
+
+  it('refuses an active notification whose signed account token belongs to another user', async () => {
+    const { handleAppleNotification, handleAppleTransaction } = await import('../../src/services/stripe-service');
+    const owner = createUser('apple-notification-owner@example.com');
+    const otherUser = createUser('apple-notification-other@example.com');
+    const firstPeriodEnd = new Date(Date.now() + 5 * DAY_MS).toISOString();
+    handleAppleTransaction(
+      owner,
+      '2000000200000099',
+      'me.nexushub.pro.monthly',
+      firstPeriodEnd,
+      null,
+      appleGrantContext(owner),
+    );
+    testDb.prepare("UPDATE subscriptions SET status = 'expired' WHERE user_id = ?").run(owner);
+
+    expect(handleAppleNotification('DID_RENEW', appleTransactionJws({
+      originalTransactionId: '2000000200000099',
+      productId: 'me.nexushub.pro.monthly',
+      expiresDate: Date.now() + 35 * DAY_MS,
+      ...appleGrantContext(otherUser),
+    }), { notificationUUID: 'eeee0099-0000-0000-0000-000000000000' })).toBe(false);
+    expect(subscriptionRow(owner)).toMatchObject({
+      status: 'expired',
+      current_period_end: firstPeriodEnd,
+    });
+    expect(subscriptionRow(otherUser)).toBeUndefined();
   });
 
   it('does not leave a released terminal donor flagged as cancelling after they repurchase', async () => {
@@ -207,18 +256,18 @@ describe('Apple subscription renewal state', () => {
     const claimant = createUser('apple-claimant@example.com');
     const periodEnd = new Date(Date.now() + 30 * DAY_MS).toISOString();
 
-    handleAppleTransaction(donor, '2000000200000003', 'me.nexushub.pro.monthly', periodEnd);
+    handleAppleTransaction(donor, '2000000200000003', 'me.nexushub.pro.monthly', periodEnd, null, appleGrantContext(donor));
     testDb.prepare(
       "UPDATE subscriptions SET status = 'expired', current_period_end = ? WHERE user_id = ?",
     ).run(new Date(Date.now() - DAY_MS).toISOString(), donor);
-    handleAppleTransaction(claimant, '2000000200000003', 'me.nexushub.pro.monthly', periodEnd);
+    handleAppleTransaction(claimant, '2000000200000003', 'me.nexushub.pro.monthly', periodEnd, null, appleGrantContext(claimant));
     // The release marks the donor row inactive + cancelling.
     expect(subscriptionRow(donor)).toMatchObject({ status: 'inactive', cancel_at_period_end: 1 });
 
     // The donor then buys their own subscription. They are a fresh paying
     // subscriber; the UI must not tell them their plan is ending.
     const ownPeriodEnd = new Date(Date.now() + 40 * DAY_MS).toISOString();
-    handleAppleTransaction(donor, '2000000200000004', 'me.nexushub.max.monthly', ownPeriodEnd);
+    handleAppleTransaction(donor, '2000000200000004', 'me.nexushub.max.monthly', ownPeriodEnd, null, appleGrantContext(donor));
     expect(subscriptionRow(donor)).toMatchObject({
       plan: 'max',
       status: 'active',
@@ -231,6 +280,7 @@ describe('Apple subscription renewal state', () => {
 describe('Apple subscription provider identity', () => {
   beforeEach(() => {
     hoisted.iosJwtSecret = 'test-ios-jwt-secret-at-least-32-bytes-long';
+    hoisted.appleAppAccountTokenHmacSecret = 'test-apple-account-token-secret-at-least-32-bytes';
     testDb = new Database(':memory:');
     createSchema(testDb);
   });
@@ -253,7 +303,7 @@ describe('Apple subscription provider identity', () => {
       'me.nexushub.max.monthly',
       new Date(Date.now() + 30 * DAY_MS).toISOString(),
       null,
-      { appAccountToken: '01000000-0000-0000-0000-000000000001' },
+      appleGrantContext(userId),
     );
 
     expect(subscriptionRow(userId)).toMatchObject({
@@ -264,19 +314,16 @@ describe('Apple subscription provider identity', () => {
     });
   });
 
-  it('still refreshes the appAccountToken on a row that is already Apple', async () => {
+  it('retains the valid appAccountToken on a row that is already Apple', async () => {
     const { handleAppleTransaction } = await import('../../src/services/stripe-service');
     const userId = createUser('apple-token-refresh@example.com');
     const periodEnd = new Date(Date.now() + 30 * DAY_MS).toISOString();
 
-    handleAppleTransaction(userId, '2000000200000006', 'me.nexushub.pro.monthly', periodEnd, null, {
-      appAccountToken: '01000000-0000-0000-0000-000000000002',
-    });
-    handleAppleTransaction(userId, '2000000200000006', 'me.nexushub.pro.monthly', periodEnd, null, {
-      appAccountToken: '01000000-0000-0000-0000-000000000003',
-    });
+    const context = appleGrantContext(userId);
+    handleAppleTransaction(userId, '2000000200000006', 'me.nexushub.pro.monthly', periodEnd, null, context);
+    handleAppleTransaction(userId, '2000000200000006', 'me.nexushub.pro.monthly', periodEnd, null, context);
 
-    expect(subscriptionRow(userId).provider_customer_id).toBe('01000000-0000-0000-0000-000000000003');
+    expect(subscriptionRow(userId).provider_customer_id).toBe(context.appAccountToken);
   });
 });
 
@@ -296,6 +343,7 @@ describe('Apple appAccountToken derivation key', () => {
 
   beforeEach(() => {
     hoisted.iosJwtSecret = 'test-ios-jwt-secret-at-least-32-bytes-long';
+    hoisted.appleAppAccountTokenHmacSecret = 'test-apple-account-token-secret-at-least-32-bytes';
     testDb = new Database(':memory:');
     createSchema(testDb);
   });
@@ -304,7 +352,7 @@ describe('Apple appAccountToken derivation key', () => {
     testDb.close();
   });
 
-  it('refuses to derive or resolve a token when IOS_API_JWT_SECRET is unset', async () => {
+  it('keeps tokens stable when IOS_API_JWT_SECRET rotates', async () => {
     const {
       deriveAppleAppAccountToken,
       resolveUserIdFromAppleAppAccountToken,
@@ -314,10 +362,11 @@ describe('Apple appAccountToken derivation key', () => {
     expect(token).not.toBeNull();
     expect(resolveUserIdFromAppleAppAccountToken(token)).toBe(4242);
 
-    // IOS_API_JWT_SECRET defaults to empty. Falling back to a constant would
-    // make every token derivable — and every user mapping forgeable — by
-    // anyone who can read this repo. Recovery goes unavailable instead.
-    hoisted.iosJwtSecret = '';
+    hoisted.iosJwtSecret = 'rotated-ios-jwt-secret-at-least-32-bytes-long';
+    expect(deriveAppleAppAccountToken(4242)).toBe(token);
+    expect(resolveUserIdFromAppleAppAccountToken(token)).toBe(4242);
+
+    hoisted.appleAppAccountTokenHmacSecret = '';
     expect(deriveAppleAppAccountToken(4242)).toBeNull();
     expect(resolveUserIdFromAppleAppAccountToken(token)).toBeNull();
   });
@@ -326,7 +375,7 @@ describe('Apple appAccountToken derivation key', () => {
     const { resolveUserIdFromAppleAppAccountToken } = await import('../../src/services/stripe-service');
 
     expect(resolveUserIdFromAppleAppAccountToken(tokenFromDeletedFallbackKey(7))).toBeNull();
-    hoisted.iosJwtSecret = '';
+    hoisted.appleAppAccountTokenHmacSecret = '';
     expect(resolveUserIdFromAppleAppAccountToken(tokenFromDeletedFallbackKey(7))).toBeNull();
   });
 
@@ -339,11 +388,12 @@ describe('Apple appAccountToken derivation key', () => {
     const forgeable = deriveAppleAppAccountToken(userId);
     expect(forgeable).not.toBeNull();
 
-    hoisted.iosJwtSecret = '';
+    hoisted.appleAppAccountTokenHmacSecret = '';
     expect(handleAppleNotification('SUBSCRIBED', appleTransactionJws({
       originalTransactionId: '2000000200000007',
       productId: 'me.nexushub.pro.monthly',
       appAccountToken: forgeable,
+      environment: 'Production',
       expiresDate: Date.now() + 30 * DAY_MS,
     }), { notificationUUID: 'ffff0001-0000-0000-0000-000000000000' })).toBe(false);
 

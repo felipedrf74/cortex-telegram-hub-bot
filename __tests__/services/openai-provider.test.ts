@@ -13,9 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockCreate = vi.fn();
 const mockResponsesCreate = vi.fn();
 const mockFileCreate = vi.fn();
+const mockFileList = vi.fn();
 const mockFileContent = vi.fn();
 const mockFileDelete = vi.fn();
 const mockBatchCreate = vi.fn();
+const mockBatchList = vi.fn();
 const mockBatchRetrieve = vi.fn();
 const mockBatchCancel = vi.fn();
 const mockSettleNexusPointOverageForUser = vi.fn().mockResolvedValue(undefined);
@@ -27,8 +29,14 @@ vi.mock('openai', () => {
     default: class OpenAI {
       chat = { completions: { create: mockCreate } };
       responses = { create: mockResponsesCreate };
-      files = { create: mockFileCreate, content: mockFileContent, delete: mockFileDelete };
-      batches = { create: mockBatchCreate, retrieve: mockBatchRetrieve, cancel: mockBatchCancel };
+      files = {
+        create: mockFileCreate, list: mockFileList,
+        content: mockFileContent, delete: mockFileDelete,
+      };
+      batches = {
+        create: mockBatchCreate, list: mockBatchList,
+        retrieve: mockBatchRetrieve, cancel: mockBatchCancel,
+      };
     },
     toFile: vi.fn(async (value: unknown, name: string) => ({ value, name })),
   };
@@ -179,6 +187,20 @@ function mockChatResponse(content: string, toolCalls?: any[], finishReason = 'st
     usage: usage ?? { prompt_tokens: 100, completion_tokens: 50 },
     model: 'gpt-4o',
   });
+}
+
+interface MockProviderPage<T> {
+  data: T[];
+  hasNextPage(): boolean;
+  getNextPage(): Promise<MockProviderPage<T>>;
+}
+
+function mockProviderPage<T>(data: T[], next?: MockProviderPage<T>): MockProviderPage<T> {
+  return {
+    data,
+    hasNextPage: () => Boolean(next),
+    getNextPage: vi.fn(async () => next!),
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -463,6 +485,224 @@ describe('OpenAIProvider', () => {
     expect(mockBatchRetrieve).not.toHaveBeenCalled();
   });
 
+  it('fails an immutable completed Batch with empty text instead of replaying it as infrastructure', async () => {
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-input-empty' });
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'batch-empty',
+      status: 'completed',
+      output_file_id: 'file-output-empty',
+    });
+    mockFileContent.mockResolvedValue({
+      text: async () => `${JSON.stringify({
+        custom_id: 'b'.repeat(64),
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: '   ' }, finish_reason: 'length' }],
+            usage: { prompt_tokens: 20, completion_tokens: 8 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+    const request = {
+      systemPrompt: 'SYSTEM',
+      userPrompt: 'USER',
+      model: 'gpt-5.6-luna',
+      serviceTier: 'batch' as const,
+      maxTokens: 512,
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning' as const,
+      responseFormat: 'text' as const,
+      durableBatch: {
+        stageKey: 'b'.repeat(64),
+        load: () => durableState,
+        persist: (state: unknown) => { durableState = structuredClone(state); },
+      },
+    };
+
+    await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
+      code: 'OPENAI_BATCH_EMPTY_OUTPUT',
+    });
+    await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
+      code: 'OPENAI_BATCH_EMPTY_OUTPUT',
+    });
+    expect(mockFileCreate).toHaveBeenCalledTimes(1);
+    expect(mockBatchCreate).toHaveBeenCalledTimes(1);
+    expect(durableState).toMatchObject({ status: 'completed' });
+  });
+
+  it('waits for durable absence proof before retrying an unresolved upload intent', async () => {
+    const stageKey = 'e'.repeat(64);
+    let durableState: any = null;
+    const request = {
+      systemPrompt: 'SYSTEM', userPrompt: 'USER', model: 'gpt-5.6-luna',
+      serviceTier: 'batch' as const, maxTokens: 512, userId: 7, tenantId: 7,
+      category: 'cloud_local_reasoning' as const, responseFormat: 'text' as const,
+      durableBatch: {
+        stageKey,
+        load: () => durableState,
+        persist: (state: unknown) => { durableState = structuredClone(state); },
+      },
+    };
+    mockFileCreate.mockRejectedValueOnce(new Error('connection lost after provider acceptance'));
+
+    await expect(provider.callStructuredGeneration(request)).rejects.toThrow('connection lost');
+    expect(durableState).toMatchObject({
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      status: 'preparing',
+    });
+    expect(durableState).not.toHaveProperty('inputFileId');
+
+    mockFileList.mockResolvedValueOnce(mockProviderPage([]));
+    await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
+      code: 'OPENAI_BATCH_FILE_INTENT_PENDING',
+    });
+    expect(mockFileCreate).toHaveBeenCalledTimes(1);
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+
+    const observeIntentAbsence = vi.fn(() => ({
+      state: durableState,
+      mutationAuthorized: true,
+    }));
+    Object.assign(request.durableBatch, { observeIntentAbsence });
+    mockFileList.mockResolvedValueOnce(mockProviderPage([]));
+    mockFileCreate.mockRejectedValueOnce(new Error('proof-authorized upload lost its response'));
+    await expect(provider.callStructuredGeneration(request))
+      .rejects.toThrow('proof-authorized upload lost its response');
+    expect(observeIntentAbsence).toHaveBeenCalledWith('input_file');
+    expect(mockFileCreate).toHaveBeenCalledTimes(2);
+
+    mockFileList.mockResolvedValueOnce(mockProviderPage([{
+      id: 'recovered-input-file',
+      filename: `${stageKey}.jsonl`,
+      purpose: 'batch',
+    }]));
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-after-file-recovery', status: 'completed', output_file_id: 'output-after-file-recovery' });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'recovered' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(request)).resolves.toMatchObject({
+      text: 'recovered', serviceTier: 'batch',
+    });
+    expect(mockFileCreate).toHaveBeenCalledTimes(2);
+    expect(mockFileList).toHaveBeenCalledWith(
+      { purpose: 'batch', order: 'desc', limit: 100 },
+      { maxRetries: 0 },
+    );
+    expect(mockBatchCreate.mock.calls[0][0]).toMatchObject({
+      input_file_id: 'recovered-input-file',
+      metadata: {
+        nexus_stage_key: stageKey,
+        nexus_request_digest: durableState.requestDigest,
+      },
+    });
+  });
+
+  it('recovers a Batch accepted before local identifier persistence by exact metadata', async () => {
+    const stageKey = 'f'.repeat(64);
+    let durableState: any = null;
+    const request = {
+      systemPrompt: 'SYSTEM', userPrompt: 'USER', model: 'gpt-5.6-luna',
+      serviceTier: 'batch' as const, maxTokens: 512, userId: 7, tenantId: 7,
+      category: 'cloud_local_reasoning' as const, responseFormat: 'text' as const,
+      durableBatch: {
+        stageKey,
+        load: () => durableState,
+        persist: (state: unknown) => { durableState = structuredClone(state); },
+      },
+    };
+    mockFileCreate.mockResolvedValueOnce({ id: 'input-before-batch-crash' });
+    mockBatchCreate.mockRejectedValueOnce(new Error('connection lost after Batch acceptance'));
+
+    await expect(provider.callStructuredGeneration(request)).rejects.toThrow('connection lost');
+    expect(durableState).toMatchObject({
+      inputFileId: 'input-before-batch-crash',
+      batchCreateIntent: true,
+    });
+    expect(durableState).not.toHaveProperty('providerBatchId');
+    const requestDigest = durableState.requestDigest;
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
+      code: 'OPENAI_BATCH_CREATE_INTENT_PENDING',
+    });
+    expect(mockBatchCreate).toHaveBeenCalledTimes(1);
+
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([{
+      id: 'recovered-provider-batch',
+      input_file_id: 'input-before-batch-crash',
+      endpoint: '/v1/chat/completions',
+      metadata: { nexus_stage_key: stageKey, nexus_request_digest: requestDigest },
+      status: 'completed',
+      output_file_id: 'recovered-output-file',
+    }]));
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'batch recovered' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(request)).resolves.toMatchObject({
+      text: 'batch recovered', serviceTier: 'batch',
+    });
+    expect(mockBatchCreate).toHaveBeenCalledTimes(1);
+    expect(mockBatchList).toHaveBeenCalledWith({ limit: 100 }, { maxRetries: 0 });
+    expect(durableState).toMatchObject({
+      providerBatchId: 'recovered-provider-batch', status: 'completed',
+    });
+  });
+
+  it('fails closed when provider intent reconciliation is ambiguous or exceeds five pages', async () => {
+    const stageKey = '9'.repeat(64);
+    const filename = `${stageKey}.jsonl`;
+    mockFileList.mockResolvedValueOnce(mockProviderPage([
+      { id: 'duplicate-1', filename, purpose: 'batch' },
+      { id: 'duplicate-2', filename, purpose: 'batch' },
+    ]));
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: '8'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: filename,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_FILE_RECONCILIATION_AMBIGUOUS' });
+
+    let page = mockProviderPage([{ id: 'page-6', filename: 'unrelated', purpose: 'batch' }]);
+    for (let index = 5; index >= 1; index -= 1) {
+      page = mockProviderPage([{ id: `page-${index}`, filename: 'unrelated', purpose: 'batch' }], page);
+    }
+    mockFileList.mockResolvedValueOnce(page);
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: '8'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: filename,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_FILE_RECONCILIATION_EXHAUSTED' });
+  });
+
   it('persists cancellation before cancelling an in-flight Batch', async () => {
     const originalBatchSleep = _openAIBatchSleep.fn;
     const controller = new AbortController();
@@ -492,6 +732,33 @@ describe('OpenAIProvider', () => {
     } finally {
       _openAIBatchSleep.fn = originalBatchSleep;
     }
+  });
+
+  it('persists an upload-only file before honoring account-cancellation abort', async () => {
+    const controller = new AbortController();
+    let durableState: any = null;
+    mockFileCreate.mockImplementationOnce(async () => {
+      controller.abort(Object.assign(new Error('account deletion started'), {
+        name: 'AbortError', code: 'ACCOUNT_DELETION_IN_PROGRESS',
+      }));
+      return { id: 'file-upload-before-account-delete' };
+    });
+
+    await expect(provider.callStructuredGeneration({
+      systemPrompt: 'SYSTEM', userPrompt: 'USER', model: 'gpt-5.6-luna',
+      serviceTier: 'batch', maxTokens: 512, userId: 7, tenantId: 7,
+      category: 'cloud_local_reasoning', responseFormat: 'text',
+      abortSignal: controller.signal,
+      durableBatch: {
+        stageKey: 'c'.repeat(64),
+        load: () => durableState,
+        persist: (state) => { durableState = structuredClone(state); },
+      },
+    })).rejects.toThrow('account deletion started');
+    expect(durableState).toMatchObject({
+      status: 'preparing', inputFileId: 'file-upload-before-account-delete',
+    });
+    expect(mockBatchCreate).not.toHaveBeenCalled();
   });
 
   it('reconciles a durable cancellation after the original worker is gone', async () => {
@@ -1122,7 +1389,8 @@ describe('OpenAIProvider', () => {
       expect(mockPushEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'api_call',
-          summary: expect.stringContaining('OpenAI gpt-4o'),
+          summary: 'OpenAI API call metered [openai_domain_content]',
+          detail: expect.stringMatching(/^\d+ms$/),
         }),
       );
     });

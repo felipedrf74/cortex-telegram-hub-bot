@@ -53,6 +53,8 @@ dotenv.config({ path: '.env.local', override: false, quiet: true });
 // Keep its later database-module import independent from unrelated runtime
 // secrets that may be enabled in the operator's ambient application config.
 process.env.IOS_API_ENABLED = 'false';
+process.env.IOS_API_JWT_SECRET = '';
+process.env.APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET = '';
 
 function readArg(name: string): string | undefined {
   const match = process.argv.find((arg) => arg === name || arg.startsWith(`${name}=`));

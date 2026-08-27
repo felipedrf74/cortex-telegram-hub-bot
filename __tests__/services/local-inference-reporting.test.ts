@@ -86,7 +86,9 @@ function database(): Database.Database {
       model_manifest_version TEXT, active_model_digest TEXT, skill_profile_version TEXT,
       non_ai_p95_baseline_ms INTEGER, non_ai_baseline_sample_count INTEGER,
       non_ai_baseline_captured_at TEXT, end_user_error_rate_baseline_percent REAL,
-      end_user_error_baseline_sample_count INTEGER, reason TEXT, updated_at TEXT
+      end_user_error_baseline_sample_count INTEGER, reason TEXT, updated_at TEXT,
+      activation_evidence_reference TEXT, activation_payload_sha256 TEXT,
+      activation_source_binding_sha256 TEXT, activation_producer_source_sha TEXT
     );
     CREATE TABLE plan_configs (plan_id TEXT PRIMARY KEY, active INTEGER, updated_at TEXT);
     INSERT INTO plan_configs VALUES
@@ -96,7 +98,7 @@ function database(): Database.Database {
       'staging', 'off', 0, '2026-08-24.1',
       'sha256:357c53fb659c5076de1d65ccb0b397446227b71a42be9d1603d46168015c9e4b',
       'nexus-skill-inference-v1', NULL, NULL, NULL, NULL, NULL,
-      'test_default_off', '2026-08-12T00:00:00.000Z'
+      'test_default_off', '2026-08-12T00:00:00.000Z', NULL, NULL, NULL, NULL
     );
   `);
   return db;

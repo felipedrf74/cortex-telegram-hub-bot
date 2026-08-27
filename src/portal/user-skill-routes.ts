@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import express, { Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import {
   getSkillCatalog,
@@ -40,6 +42,25 @@ function validateSkillTarget(skill: unknown, subSkill: unknown): { skill: string
 }
 
 export function registerPortalUserSkillRoutes(app: express.Express): void {
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  const authorizationRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 180,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many portal requests from this IP. Slow down.', retryAfter },
+      });
+    },
+  });
+  if (typeof app.use === 'function') {
+    app.use('/api/users/:userId/skills', authorizationRateLimitMiddleware);
+  }
+
   // Skills routes accept canonical users.id (v4.14+).
   // Portal user-skill views intentionally read/edit admin toggle state through
   // getUserSkillState/setSkillAccess. Runtime enforcement uses checkSkillAccess

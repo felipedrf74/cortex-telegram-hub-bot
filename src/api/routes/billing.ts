@@ -12,8 +12,11 @@
  */
 
 import express, { Router, Request, Response, NextFunction } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { extractClientIp } from '../rate-limiter';
 import {
   isStripeConfigured,
   getSubscriptionStatus,
@@ -25,9 +28,12 @@ import {
   claimWebsiteStripeSubscriptionForUser,
   deriveAppleAppAccountToken,
   isAppleTransactionAlreadyClaimedError,
+  isAppleTransactionAccountMismatchError,
+  isAppleTransactionEnvironmentRefusedError,
   isUnknownAppleProductError,
   isStripeCheckoutUnavailableError,
   APPLE_SUBSCRIPTION_PRODUCT_IDS,
+  resolveAppleAppAccountTokenForAuthenticatedScope,
 } from '../../services/stripe-service';
 import { verifyAppleJws } from '../../services/apple-jws-verifier';
 import { restoreApplePackTransactions } from '../../services/apple-pack-restoration';
@@ -37,6 +43,7 @@ import {
   grantNexusPoints,
   isNexusPointProductId,
   listNexusPointPackages,
+  lookupNexusPointCreditByProviderTransaction,
 } from '../../services/nexus-points';
 import {
   createNexusPointsCheckoutSession,
@@ -61,9 +68,15 @@ import { getAiCreditWallet } from '../../services/ai-credit-ledger';
 import { isAiCreditAdmissionEnabled } from '../../services/ai-credit-admission';
 import { ensureMonthlyAiCreditsForUser } from '../../services/ai-credit-provisioning';
 import { resolveBillingPlanForUser } from '../../services/plan-quotas';
+import { isAppleValueGrantEnvironmentAllowed } from '../../services/apple-value-grant-policy';
+import { lookupAppleReversalForTransaction } from '../../services/apple-notification-inbox';
 
 const STRIPE_NEXUS_CHECKOUT_BODY_LIMIT_BYTES = 8 * 1024;
 const STRIPE_NEXUS_CHECKOUT_BODY_FIELDS = new Set(['packageId']);
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
 
 function rejectOversizedStripeNexusCheckoutBody(req: Request, res: Response, next: NextFunction): void {
   const rawLength = req.headers['content-length'];
@@ -123,6 +136,25 @@ function buildBillingStatusPayload(userId: number): Record<string, unknown> {
 
 export function billingRoutes(): Router {
   const router = Router();
+  const appleVerifyRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: config.ios?.rateLimit || 60,
+    keyGenerator: (req: Request) => {
+      const userId = (req as { userId?: unknown }).userId;
+      return typeof userId === 'number' && userId > 0
+        ? `user:${userId}`
+        : `ip:${ipKeyGenerator(extractClientIp(req))}`;
+    },
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      });
+    },
+  });
 
   /**
    * GET /api/v1/billing/status
@@ -470,6 +502,7 @@ export function billingRoutes(): Router {
     const userId = (req as any).userId;
     const result = restoreApplePackTransactions({
       userId,
+      tenantId: Number((req as any).tenantId),
       signedTransactions: (req.body ?? {}).signedTransactions,
     });
     if (result.kind === 'fulfillment_disabled') {
@@ -493,7 +526,7 @@ export function billingRoutes(): Router {
     sendSuccess(res, { results: result.results });
   }));
 
-  router.post('/apple-verify', asyncHandler(async (req: Request, res: Response) => {
+  router.post('/apple-verify', appleVerifyRateLimitMiddleware, asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
     const { jwsTransaction } = req.body;
 
@@ -525,11 +558,17 @@ export function billingRoutes(): Router {
         // If Apple supplied a cert chain and signature verification failed,
         // reject instead of falling back to attacker-controlled claims.
         if (sigErr?.message !== 'APPLE_JWS_MISSING_X5C' || isProduction) {
-          logger.warn({ err: sigErr?.message, userId }, 'Apple verify: signature check failed');
+          logger.warn(
+            { failureKind: 'signature_verification_failed', userId },
+            'Apple verify: signature check failed',
+          );
           sendError(res, 'INVALID_SIGNATURE', 'Apple transaction signature verification failed', 403);
           return;
         }
-        logger.warn({ err: sigErr.message, userId }, 'Apple verify: missing x5c — continuing with claims validation for sandbox/Xcode compatibility');
+        logger.warn(
+          { failureKind: 'missing_x5c', userId },
+          'Apple verify: missing x5c — continuing with claims validation for sandbox/Xcode compatibility',
+        );
         try {
           const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
           payload = JSON.parse(payloadJson);
@@ -541,21 +580,16 @@ export function billingRoutes(): Router {
 
       // ── Step 2: Bundle ID validation ──
       const expectedBundleId = 'me.nexushub.app';
-      if (payload.bundleId && payload.bundleId !== expectedBundleId) {
+      if (payload.bundleId !== expectedBundleId) {
         logger.warn({ userId, bundleId: payload.bundleId }, 'Apple verify: bundle ID mismatch');
         sendError(res, 'INVALID_BUNDLE', 'Transaction bundle ID does not match this app', 403);
         return;
       }
 
       // ── Step 3: Environment provenance ──
-      // The environment claim is NEVER a gate. App Review buys against the
-      // StoreKit sandbox even on an App-Store-Connect-distributed build, so
-      // denying 'Sandbox' in production rejected every reviewer purchase — and
-      // the client calls transaction.finish() regardless of our answer, so the
-      // rejection was terminal. The claim is recorded on the subscription row
-      // and in the audit trail instead. Strict expiry (step 6) is what bounds
-      // abuse: sandbox subscriptions expire in minutes. JWS signature
-      // verification (step 1b) stays keyed on isProduction and stays strict.
+      // Production value is Production-only except for the explicit App Review
+      // Sandbox account binding checked below. Xcode never qualifies in a
+      // production process and missing provenance always fails closed.
       const env = typeof payload.environment === 'string' ? payload.environment : '';
 
       // ── Step 4: Extract and validate required fields ──
@@ -605,9 +639,88 @@ export function billingRoutes(): Router {
         }
       }
 
-      // ── Step 7: Process the verified transaction ──
-      const tenantId = (req as any).tenantId || userId;
+      // ── Step 7: Bind the Apple-signed transaction to request scope ──
+      const tenantId = Number((req as any).tenantId);
+      const boundUserId = resolveAppleAppAccountTokenForAuthenticatedScope({
+        userId,
+        tenantId,
+        appAccountToken: payload.appAccountToken,
+      });
+      if (!boundUserId) {
+        sendError(
+          res,
+          'APPLE_TRANSACTION_ACCOUNT_MISMATCH',
+          'Apple transaction is not bound to this authenticated account.',
+          403,
+        );
+        return;
+      }
+      if (!isAppleValueGrantEnvironmentAllowed(env, boundUserId)) {
+        sendError(
+          res,
+          'APPLE_TRANSACTION_ENVIRONMENT_REFUSED',
+          'Apple transaction environment is not eligible for this account.',
+          403,
+        );
+        return;
+      }
+
+      // A current transaction JWS can remain cryptographically valid after
+      // Apple revokes/refunds its value. Refuse both the signed revocation
+      // claims and any durable reversal already received by the server before
+      // either a subscription or consumable grant is touched.
+      if (payload.revocationDate != null || payload.revocationReason != null) {
+        sendError(res, 'APPLE_TRANSACTION_REVOKED', 'Apple transaction has been revoked.', 409);
+        return;
+      }
+      const reversalBudget = { remainingPasses: 1 };
+      const reversalIds = [...new Set([
+        String(transactionId),
+        String(originalTransactionId),
+      ])];
+      for (const reversalId of reversalIds) {
+        const reversal = lookupAppleReversalForTransaction(reversalId, {
+          backfillBudget: reversalBudget,
+        });
+        if (reversal.kind === 'recorded') {
+          sendError(res, 'APPLE_TRANSACTION_REVOKED', 'Apple transaction has been revoked.', 409);
+          return;
+        }
+        if (reversal.kind === 'unavailable') {
+          sendError(
+            res,
+            'APPLE_REVERSAL_CHECK_UNAVAILABLE',
+            'Apple transaction reversal status is temporarily unavailable.',
+            503,
+          );
+          return;
+        }
+      }
+
+      // ── Step 8: Process the verified transaction ──
       if (isNexusPointProductId(productId)) {
+        const existingCredit = lookupNexusPointCreditByProviderTransaction(
+          'apple',
+          String(originalTransactionId),
+        );
+        if (existingCredit && existingCredit.userId !== userId) {
+          sendError(
+            res,
+            'APPLE_TRANSACTION_ALREADY_CLAIMED',
+            'This Apple purchase is already attached to another Nexus Hub account.',
+            409,
+          );
+          return;
+        }
+        if (!existingCredit && !isCreditPackPurchaseEligible({ userId })) {
+          sendError(
+            res,
+            'PACK_REQUIRES_PAID_PLAN',
+            'Nexus Points require an active paid Pro or Max plan.',
+            403,
+          );
+          return;
+        }
         const grant = grantNexusPoints({
           userId,
           provider: 'apple',
@@ -660,6 +773,7 @@ export function billingRoutes(): Router {
           ? new Date(payload.purchaseDate).toISOString()
           : null;
         grant = handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate, currentPeriodStart, {
+          tenantId,
           environment: env,
           appAccountToken: payload.appAccountToken,
         });
@@ -670,6 +784,24 @@ export function billingRoutes(): Router {
             'APPLE_TRANSACTION_ALREADY_CLAIMED',
             'This Apple subscription is already attached to another Nexus Hub account.',
             409,
+          );
+          return;
+        }
+        if (isAppleTransactionAccountMismatchError(err)) {
+          sendError(
+            res,
+            'APPLE_TRANSACTION_ACCOUNT_MISMATCH',
+            'Apple transaction is not bound to this authenticated account.',
+            403,
+          );
+          return;
+        }
+        if (isAppleTransactionEnvironmentRefusedError(err)) {
+          sendError(
+            res,
+            'APPLE_TRANSACTION_ENVIRONMENT_REFUSED',
+            'Apple transaction environment is not eligible for this account.',
+            403,
           );
           return;
         }
@@ -709,8 +841,8 @@ export function billingRoutes(): Router {
       });
 
       sendSuccess(res, buildBillingStatusPayload(userId));
-    } catch (err: any) {
-      logger.error({ err, userId }, 'Apple transaction verification failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'Apple transaction verification failed');
       sendError(res, 'VERIFICATION_FAILED', 'Failed to verify Apple transaction', 400);
     }
   }));

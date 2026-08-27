@@ -59,6 +59,21 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/config', async () => {
+  const actual = await vi.importActual<typeof import('../../src/config')>('../../src/config');
+  return {
+    ...actual,
+    config: {
+      ...actual.config,
+      ios: {
+        ...actual.config.ios,
+        jwtSecret: 'test-ios-jws-ownership-secret-000000000000000000',
+        appAccountTokenHmacSecret: 'test-ios-jws-ownership-secret-000000000000000000',
+      },
+    },
+  };
+});
+
 import { createApiRouter } from '../../src/api/router';
 
 const TEST_PRIVATE_KEY = `-----BEGIN EC PRIVATE KEY-----
@@ -135,6 +150,23 @@ function unsignedJws(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: 'ES256' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   return `${header}.${body}.${Buffer.from('fake').toString('base64url')}`;
+}
+
+function appleGrantClaims(userId: number): { appAccountToken: string; environment: 'Production' } {
+  const body = Buffer.alloc(5);
+  body.writeUInt8(0x01, 0);
+  body.writeUInt32BE(userId, 1);
+  const tag = crypto.createHmac(
+    'sha256',
+    'test-ios-jws-ownership-secret-000000000000000000',
+  ).update(body).digest().subarray(0, 11);
+  const hex = Buffer.concat([body, tag]).toString('hex');
+  return {
+    appAccountToken: [
+      hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
+    ].join('-'),
+    environment: 'Production',
+  };
 }
 
 function appleNotification(notificationType: string, innerJws: string): string {
@@ -338,6 +370,7 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       bundleId: 'me.nexushub.app',
       originalTransactionId: '2000000123456789',
       expiresDate: renewedUntil,
+      ...appleGrantClaims(31),
     });
 
     const response = await postAppleNotification(appleNotification('DID_RENEW', inner));
@@ -438,6 +471,7 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       bundleId: 'me.nexushub.app',
       originalTransactionId: '2000000123456789',
       expiresDate: '2026-09-15T12:00:00.000Z',
+      ...appleGrantClaims(31),
     });
 
     const response = await postAppleNotification(
@@ -473,6 +507,7 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       bundleId: 'me.nexushub.app',
       originalTransactionId: '2000000123456789',
       expiresDate: '2026-09-15T12:00:00.000Z',
+      ...appleGrantClaims(31),
     });
 
     const response = await postAppleNotification(
@@ -492,6 +527,7 @@ describe('Apple App Store Server Notifications JWS verification', () => {
       bundleId: 'me.nexushub.app',
       originalTransactionId: '2000000123456789',
       expiresDate: '2026-09-15T12:00:00.000Z',
+      ...appleGrantClaims(31),
     });
     const payload = appleNotificationWithUuid('DID_RENEW', inner, 'uuid-dupe');
 

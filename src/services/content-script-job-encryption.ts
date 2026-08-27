@@ -29,12 +29,47 @@ interface EncryptedJobEnvelopeV3 {
 
 type EncryptedJobEnvelope = EncryptedJobEnvelopeV1 | EncryptedJobEnvelopeV2 | EncryptedJobEnvelopeV3;
 
+export const CONTENT_SCRIPT_JOB_PRUNED_SCHEMA = 'nexus.content-script-job-pruned.v1';
+
+export interface ContentScriptJobPrunedTombstone {
+  schema: typeof CONTENT_SCRIPT_JOB_PRUNED_SCHEMA;
+  prunedAt: string;
+}
+
 export class ContentScriptJobEncryptionError extends Error {
   readonly status = 503;
 
   constructor(readonly code: string, message: string) {
     super(message);
     this.name = 'ContentScriptJobEncryptionError';
+  }
+}
+
+export function contentScriptJobPrunedTombstone(prunedAt: Date): string {
+  if (!Number.isFinite(prunedAt.getTime())) {
+    throw new ContentScriptJobEncryptionError(
+      'CONTENT_SCRIPT_JOB_RETENTION_TIMESTAMP_INVALID',
+      'Content script job retention timestamp is invalid',
+    );
+  }
+  return JSON.stringify({
+    schema: CONTENT_SCRIPT_JOB_PRUNED_SCHEMA,
+    prunedAt: prunedAt.toISOString(),
+  } satisfies ContentScriptJobPrunedTombstone);
+}
+
+export function parseContentScriptJobPrunedTombstone(
+  stored: string | null | undefined,
+): ContentScriptJobPrunedTombstone | null {
+  if (!stored) return null;
+  try {
+    const value = JSON.parse(stored) as Partial<ContentScriptJobPrunedTombstone>;
+    if (value.schema !== CONTENT_SCRIPT_JOB_PRUNED_SCHEMA
+        || typeof value.prunedAt !== 'string'
+        || !Number.isFinite(Date.parse(value.prunedAt))) return null;
+    return { schema: CONTENT_SCRIPT_JOB_PRUNED_SCHEMA, prunedAt: value.prunedAt };
+  } catch {
+    return null;
   }
 }
 

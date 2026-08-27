@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: Felipe Dominguez
-Last verified: 2026-08-09
+Last verified: 2026-08-26
 Update policy: update after any security incident, deploy path change, provider
 credential change, or infrastructure hardening change.
 
@@ -101,6 +101,87 @@ logs, command output, chat, or release evidence.
 - Operational commands and the accepted single-host limitation are documented
   in `ops/local-backup/README.md`.
 
+## Invoice Artifact Ownership Reconciliation
+
+Migration 297 installs durable ownership manifests and deletion-proof columns;
+migration 298 adds queue-intent payload identity plus the device/inode deletion
+journal. Neither migration can infer pre-existing filesystem state inside
+SQLite. Before a release containing these migrations can support account
+erasure, run the installed
+`fiscal:storage:backfill` tool in a separately authorized maintenance window.
+This procedure is a gate, not authorization to mount, delete, or change live
+data.
+
+Migrations 297–299 are the predecessor-compatible phase-A schema: columns added
+to existing tables are nullable (or use only a simple literal default), and
+indexes on existing tables are plain and non-unique. The application is the
+phase-A enforcement boundary. Invoice admission serializes the live
+owner/queue/source-intent lookup and insert under one immediate transaction,
+refuses ambiguous legacy intent rows, and persists deletion proof only through
+the token/device/inode-bound transition. Content job admission/completion writes
+only complete validated release triples, while acceptance rejects missing or
+partial identity. Do not claim database-enforced uniqueness or immutability from
+this phase; those constraints require a later contract migration after the
+predecessor runtime is retired.
+
+1. Take and admit the governed pre-maintenance database backup. Mount the
+   historical invoice root read/write at an owner-controlled real directory.
+   The root, every traversed parent, every invoice artifact, and the identity
+   marker must be owner-only mode-private; symlinked roots or parents are
+   forbidden. First retire/prove absent every legacy SCP writer, then create a
+   mode-private `.nexus-invoice-root-id`
+   identity marker on that exact quiesced original root and pin its SHA-256 in
+   the owner-controlled operation record.
+2. Run private dry inventories with `--reconcile-manifests`, the exact database
+   path, `--limit`, and each `--manifest-kind` in order: `filings`, `objects`,
+   then `queue`. Re-run one phase with its reported `--manifest-after` cursor
+   until the cursor is complete before starting the next phase. The queue phase
+   deliberately scans database ownership rows first and then filesystem entries;
+   preserve the reported opaque `rows:`/`files:` cursor across those bounded
+   subphases. Filesystem cursors may identify a directory or refused entry:
+   directory, file, and unsafe-entry work all consumes the same `--limit`
+   budget. That limit is also the hard admitted fanout for each traversed
+   directory (maximum 5,000); the tool reads at most one look-ahead entry and
+   refuses with `BACKFILL_DIRECTORY_FANOUT_EXCEEDED` instead of materializing
+   or sorting a larger directory. Total enumeration is capped at four times
+   the page limit and traversal depth at 128; the safe refusal codes are
+   `BACKFILL_PAGE_ENUMERATION_BUDGET_EXCEEDED` and
+   `BACKFILL_DIRECTORY_DEPTH_EXCEEDED`. Queue rows
+   retain their exact locator spelling (including a runtime-valid relative
+   locator) while descriptor validation resolves it to the canonical spool
+   parent. Exit 2, any
+   unsafe/ownerless artifact, or any filing/manifest ownership mismatch blocks
+   the window. Do not paste path-bearing JSON or cursors into chat or release
+   evidence.
+3. After owner review, rerun the same bounded phase sequence with `--apply`.
+   Run legacy backfill/deletion with `--delete-legacy`, the mounted legacy root,
+   and the pinned `--legacy-root-marker-sha256`. Canonical object-key files and
+   exact queue rows receive manifests. A distinct legacy copy is deleted only
+   after the backfilled object is checksum-verified through no-follow
+   descriptors pinned to the originally verified mount identity; its parent is
+   fsynced and the exact filing identity is checked. A filing without an
+   adopted object can store only descriptor-bound already-missing proof; an
+   existing legacy artifact cannot match the deliberately empty checksum and
+   is never deleted by that branch
+   before `legacy_remote_deleted_at` is stored.
+4. Rerun every apply phase idempotently from an empty cursor and require zero
+   unresolved legacy copies, zero unsafe/ownerless files, no remaining cursor,
+   zero filing/manifest mismatches, and no duplicate live stored-object manifest
+   grouped by tenant, user, write-intent kind/id, and source checksum. An orphan
+   queue file has no inferable tenant/user owner and must remain blocked until a
+   separately approved investigation either establishes ownership or securely
+   removes it.
+   A manifest left `deleting` with a missing, replaced, or identity-less target
+   is also unresolved: do not clear it from canonical-name absence alone. An
+   older `deleted` manifest with no device/inode journal does not prove deletion
+   for a surviving queue or filing row. An
+   owner-authorized investigation must prove disposition of the journaled inode
+   before recording deletion or retiring the manifest.
+5. Preserve only the bounded counts, exit status, backup receipt, mounted-root
+   authorization, and reviewed release SHA. Never retain invoice paths,
+   filenames, subjects, senders, amounts, artifact locators, or row identifiers
+   in the release record.
+
 ## Retired: advisory SonarQube host boundary
 
 SonarQube is decommissioned from the repository and release path as of
@@ -165,6 +246,72 @@ retention receipt is the only evidence that its last restore drill passed.
 - Verify signatures/JWS validation and idempotency state.
 - Rate-limit or block abusive source while preserving vendor retries.
 - Replay from stored event payload only in staging/test mode unless approved.
+- Register each generic provider subscription with one explicit positive
+  `owner_user_id` and one explicit, provider-unique secret; there is no global
+  fallback secret. Google Calendar additionally binds the channel ID and exact
+  channel token. Microsoft Graph binds each notification's `subscriptionId`
+  and body `clientState`, then removes `clientState` before persistence. Gmail
+  Pub/Sub remains disabled until its OIDC signature, audience, and trusted
+  service-account identity can be verified. Strava remains disabled until its
+  native GET challenge and owner-bound POST identity contract is implemented;
+  do not substitute a fictional HMAC header. The event ledger copies only a
+  narrow allowlist of non-secret Google/GitHub delivery metadata; arbitrary,
+  authorization, cookie, channel-token, and signature headers are omitted.
+- Subscription `event_types` is a bounded non-empty allowlist (`['*']` means
+  all); a correctly authenticated but out-of-scope event is rejected before
+  persistence or dispatch. Microsoft Graph batches are capped at 1,000
+  notifications before subscription matching to bound fanout.
+- Public callbacks are mounted before the global JSON parser and portal auth so
+  provider verification sees the exact bytes; each carries its own IP limiter
+  and native verifier. Stats, subscription mutation, event listing, and replay
+  remain after portal authentication and require the admin token.
+- `WEBHOOKS_ENABLED=false` is the generic-ingress incident kill switch. Generic
+  callback POSTs remain IP-limited but return `503 Webhook ingestion is disabled`;
+  management stays available behind portal/admin authentication. Re-enable only
+  after the abusive source or verifier failure is contained. The protected PM2
+  release environment forwards and exact-boolean-validates this flag.
+- Deploy migration 300 and Release A first with
+  `WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED=false`. Migration 300 adds only
+  ordinary lookup indexes; runtime `BEGIN IMMEDIATE` transactions enforce the
+  subscription owner/provider match, retry admission/replay serialization, and
+  the `(user_id, provider, subscription_id, idempotency_key)` retry boundary. Do
+  not add phase-A triggers, unique indexes, or partial indexes to the existing
+  webhook tables: they would break predecessor writes after rollback.
+- Verify Release A with writes still OFF and establish it as the compatible
+  rollback floor. Only a later protected release may set the flag to `true`,
+  and it must have the pinned OAuth-domain `OAUTH_ENCRYPTION_KEY`; new
+  subscription secrets/metadata, payloads, and retained headers then use the
+  `nexus-webhook-json-v1` authenticated-encryption envelope. Reads remain
+  plaintext/ciphertext compatible throughout the transition.
+- The governed offline data-encryption rotation includes webhook subscription
+  secrets/metadata and event payloads/headers under the OAuth domain. It adopts
+  positive-owner legacy plaintext into the same envelope, rejects non-positive
+  owners, accepts every syntactically valid historical JSON shape (including
+  arrays, scalars, and null), rejects malformed JSON, and requires the protected
+  backup to match those exact columns.
+- Before activation after migration 300, inventory `webhook_subscriptions` and
+  `webhook_events` where `user_id <= 0`. Any row is an ownership-reconciliation
+  block; do not infer its owner from payload contents, provider identifiers, or
+  delivery timing. Confirm that every owned event's subscription, provider,
+  and owner agree. Plaintext is expected while the phase-A flag remains OFF.
+- Inventory duplicate non-failed `webhook_events` grouped by
+  `(user_id, provider, subscription_id, idempotency_key)` for reconciliation,
+  but do not delete or merge provider deliveries automatically. Duplicates do
+  not block the additive phase-A migration; new-runtime admission serializes
+  the lookup and insert instead.
+- Portal webhook stats, subscriptions, events, replay, creation, and removal
+  stay behind the portal admin token. When `PORTAL_OPERATOR_USER_SCOPES` is
+  configured, every list/stats request requires an authorized positive
+  `owner_user_id`; create, remove, and replay authorize the body or stored-row
+  owner and repeat the owner predicate in the registry mutation. Subject-access
+  export omits signing secrets and headers, and subscription list responses
+  expose only a boolean secret-configured marker. Portal event lists omit stored
+  headers; Article 17 erasure removes exact owner rows.
+- Portal event-list limits accept only exact decimal integers and are clamped at
+  1..200 (default 50); the registry repeats the same bound. Mixed Microsoft
+  Graph batches persist each uniquely authenticated notification independently,
+  omit `clientState`, and return a bounded rejected-count summary for invalid or
+  ambiguous siblings.
 
 ### Lost JWT/signing key
 - Activate backup key per `docs/engineering/jwt-rotation-runbook.md`.

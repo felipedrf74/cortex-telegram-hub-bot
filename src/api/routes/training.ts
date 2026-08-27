@@ -92,6 +92,11 @@ function invalidateTrainingScreenCaches(userId: number) {
   invalidateTrainingDerivedCaches(userId);
 }
 
+function safeTrainingErrorName(error: unknown): string {
+  const name = error instanceof Error && error.name ? error.name : 'UnknownError';
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'UnknownError';
+}
+
 function requireCoachBriefingEligibility(req: AuthenticatedRequest, res: Response): boolean {
   const entitlement = (req as AuthenticatedRequest & {
     entitlement?: UserEntitlement;
@@ -138,7 +143,7 @@ function requireCoachBriefingEligibility(req: AuthenticatedRequest, res: Respons
       return false;
     }
   } catch (err) {
-    logger.warn({ err, userId: req.userId, tenantId }, 'Coach briefing eligibility check failed');
+    logger.warn({ errorName: safeTrainingErrorName(err) }, 'Coach briefing eligibility check failed');
     sendError(res, 'COACH_ELIGIBILITY_UNAVAILABLE', 'Coach briefing eligibility is temporarily unavailable.', 503);
     return false;
   }
@@ -541,6 +546,7 @@ export function trainingRoutes(): Router {
 
     const forceRefresh = req.query.refresh === 'true';
     const cacheOnly = req.query.cacheOnly === 'true';
+    const allowSensitiveCloudRouting = req.query.allowSensitiveCloudRouting === 'true';
     const cacheKey = `coach-briefing:${dataUserId}`;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
@@ -558,7 +564,7 @@ export function trainingRoutes(): Router {
       if (restored) {
         const payload = syncCoachStateForUser(dataUserId, restored);
         setCache(cacheKey, payload, COACH_BRIEFING_TTL);
-        logger.debug({ userId, tenantId: dataUserId }, 'Restored coach briefing from latest report document');
+        logger.debug('Restored coach briefing from latest report document');
         sendSuccess(res, payload, { cached: true });
         return;
       }
@@ -580,6 +586,7 @@ export function trainingRoutes(): Router {
         meteringUserId: userId,
         budgetRequestSource: 'interactive',
         budgetJobName: 'coach_refresh',
+        allowSensitiveCloudRouting,
       }, (briefing) => {
         // `briefing.message` is the only briefing text field on
         // CoachBriefingResult; hydration and cache persistence stay inside the
@@ -600,7 +607,7 @@ export function trainingRoutes(): Router {
         sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
         return;
       }
-      logger.error({ err }, 'iOS training/coach failed');
+      logger.error({ errorName: safeTrainingErrorName(err) }, 'iOS training/coach failed');
       if (sendAiBudgetError(res, err)) return;
       let hydratedFallback: Record<string, unknown> | null = null;
       try {
@@ -627,7 +634,7 @@ export function trainingRoutes(): Router {
           sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
           return;
         }
-        logger.debug({ err: fallbackErr, userId, tenantId: dataUserId }, 'training/coach deterministic fallback failed');
+        logger.debug({ errorName: safeTrainingErrorName(fallbackErr) }, 'training/coach deterministic fallback failed');
       }
       if (hydratedFallback) {
         sendSuccess(res, hydratedFallback);
@@ -657,7 +664,25 @@ export function trainingRoutes(): Router {
     // enforce the same current-request eligibility before either read.
     if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
-    const forceRefresh = req.body?.refresh === true;
+    const reportBody = req.body ?? {};
+    const reportBodyKeys = reportBody && typeof reportBody === 'object' && !Array.isArray(reportBody)
+      ? Object.keys(reportBody)
+      : [];
+    if (!reportBody || typeof reportBody !== 'object' || Array.isArray(reportBody)
+        || reportBodyKeys.some((key) => !['refresh', 'allowSensitiveCloudRouting'].includes(key))
+        || (reportBody.refresh !== undefined && typeof reportBody.refresh !== 'boolean')
+        || (reportBody.allowSensitiveCloudRouting !== undefined
+          && typeof reportBody.allowSensitiveCloudRouting !== 'boolean')) {
+      sendError(
+        res,
+        'INVALID_REQUEST_BODY',
+        'Coach report accepts only boolean refresh and allowSensitiveCloudRouting fields.',
+        400,
+      );
+      return;
+    }
+    const forceRefresh = reportBody.refresh === true;
+    const allowSensitiveCloudRouting = reportBody.allowSensitiveCloudRouting === true;
     const cacheKey = `coach-briefing:${dataUserId}`;
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
@@ -683,6 +708,7 @@ export function trainingRoutes(): Router {
         meteringUserId: userId,
         budgetRequestSource: 'interactive',
         budgetJobName: 'coach_report',
+        allowSensitiveCloudRouting,
       }, (briefing) => {
         const payload = syncCoachStateForUser(dataUserId, {
           briefing: briefing?.message || 'No coach briefing available.',
@@ -699,7 +725,7 @@ export function trainingRoutes(): Router {
         sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
         return;
       }
-      logger.error({ err, userId, tenantId: dataUserId }, 'iOS training/coach/report failed');
+      logger.error({ errorName: safeTrainingErrorName(err) }, 'iOS training/coach/report failed');
       if (sendAiBudgetError(res, err)) return;
       let fallbackReport: Record<string, unknown> | null = null;
       try {
@@ -718,7 +744,7 @@ export function trainingRoutes(): Router {
           sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
           return;
         }
-        logger.debug({ err: fallbackErr, userId, tenantId: dataUserId }, 'training/coach/report deterministic fallback failed');
+        logger.debug({ errorName: safeTrainingErrorName(fallbackErr) }, 'training/coach/report deterministic fallback failed');
       }
       if (fallbackReport) {
         sendSuccess(res, fallbackReport);

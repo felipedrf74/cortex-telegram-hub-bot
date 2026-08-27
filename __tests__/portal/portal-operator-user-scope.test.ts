@@ -34,8 +34,10 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  authorizePortalOperatorTargetUser,
   getPortalAdminTargetUserId,
   isOperatorScopedToUser,
+  portalOperatorUserScopesConfigured,
   requireOperatorTargetUser,
 } from '../../src/portal/admin-target-user';
 
@@ -134,6 +136,19 @@ describe('requireOperatorTargetUser middleware', () => {
     expect(res.body).toMatchObject({ error: { code: 'INVALID_USER_ID' } });
   });
 
+  it('rejects numeric prefixes instead of partially parsing a target id', () => {
+    const guard = requireOperatorTargetUser('userId');
+    const req = makeRequest({ userId: '1junk' });
+    const res = makeResponse();
+    const next = vi.fn();
+
+    guard(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(400);
+    expect(hoisted.getUserById).not.toHaveBeenCalled();
+  });
+
   it('rejects unknown target users with 404 USER_NOT_FOUND', () => {
     hoisted.getUserById.mockReturnValue(null);
     const guard = requireOperatorTargetUser('userId');
@@ -212,6 +227,22 @@ describe('requireOperatorTargetUser middleware', () => {
 
     expect(next).toHaveBeenCalledOnce();
     expect(getPortalAdminTargetUserId(req)).toBe(5);
+  });
+
+  it('authorizes row/body/query-derived targets through the same actor scope', () => {
+    hoisted.getUserById.mockReturnValue({ id: 5, email: 'user@example.com' });
+    operatorUserScopes = { 'felipe@nexushub.me': [5] };
+    authContext = { actorHint: 'felipe@nexushub.me', matchedCredential: 'admin' };
+    const req = makeRequest({});
+    const res = makeResponse();
+
+    expect(portalOperatorUserScopesConfigured()).toBe(true);
+    expect(authorizePortalOperatorTargetUser(req, res as unknown as Response, 5)).toBe(true);
+    expect(getPortalAdminTargetUserId(req)).toBe(5);
+
+    const deniedRes = makeResponse();
+    expect(authorizePortalOperatorTargetUser(req, deniedRes as unknown as Response, 9)).toBe(false);
+    expect(deniedRes.statusCode).toBe(403);
   });
 
   it('reuses the configured param name', () => {

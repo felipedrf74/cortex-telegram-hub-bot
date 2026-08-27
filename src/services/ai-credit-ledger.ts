@@ -798,7 +798,13 @@ export function grantPurchasedAiCredits(input: {
     const existing = db
       .prepare(`${LOT_WITH_CAPTURED_SQL} WHERE l.provider = ? AND l.provider_transaction_id = ?`)
       .get(input.provider, input.providerTransactionId) as LotRow | undefined;
-    if (existing) return { kind: 'already_granted', lot: mapLot(existing) };
+    if (existing) {
+      const lot = mapLot(existing);
+      if (lot.userId !== input.userId) {
+        return { kind: 'rejected', reason: 'provider transaction belongs to another user' };
+      }
+      return { kind: 'already_granted', lot };
+    }
     const lot = insertLot({
       userId: input.userId,
       lotType: 'purchased',

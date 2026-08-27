@@ -10,7 +10,9 @@ Activation status: default OFF pending same-release verification evidence
 Update policy: locked decisions change only with explicit owner approval; the
 canonicalization addenda at the end record post-approval owner decisions.
 
-The body below reproduces the owner-approved plan verbatim.
+The body below incorporates the owner-approved plan together with the
+explicit owner-approved canonicalizations recorded in this document and its
+addenda; it is authoritative but is not a byte-for-byte attachment copy.
 
 ---
 
@@ -80,6 +82,12 @@ If no challenger qualifies:
 - Keep Qwen 2.5 3B as the only installed Nexus model.
 - Limit it to Free, classification, orchestration, summaries, and other quality-approved lightweight work.
 - Remove every downloaded challenger after recording its benchmark result and immutable metadata.
+
+The workload allowance above never overrides the manifest's commercial-use
+and license admission gates. If the retained control is not commercially
+approved, it remains benchmark/control-only, local-primary production routing
+stays OFF, and the governed cloud fallback serves those eligible workloads
+until a commercially approved challenger qualifies.
 
 Cleanup must target only models downloaded for the Nexus bakeoff and the explicitly superseded Nexus model. Inventory and digest-check each target before removal; unrelated host models are not deleted.
 
@@ -208,11 +216,21 @@ iOS prices come dynamically from StoreKit. In-app digital purchases use StoreKit
 Migrate purchased credit lots to nonexpiring. Restore identifiable unspent expired Apple lots unless refunded or revoked. Replace best-effort Apple notification acknowledgement with verified JWS processing, a durable inbox, error responses that permit retries, and scheduled App Store reconciliation.
 
 The required real sandbox proof runs against the isolated staging backend with
-`APPLE_ALLOW_SANDBOX_GRANTS=true`, the exact production bundle and product IDs,
-and an Apple-signed StoreKit JWS. Production keeps that switch false. The test
-must prove one credit grant, exact transaction/account binding, idempotent
-replay, and a retained retry for every unrecognized or refused outcome before
-the production fulfillment switch is enabled.
+`APPLE_ALLOW_SANDBOX_GRANTS=true`, `APPLE_APP_REVIEW_SANDBOX_USER_ID` set to
+the exact authenticated proof account, the exact production bundle and product
+IDs, and an Apple-signed StoreKit JWS. Production rejects Sandbox by default and
+always rejects Xcode value grants. A bounded App Review exception requires both
+controls and only admits the explicitly configured reviewer account; remove the
+account and disable the switch when review ends. Every signed points,
+subscription, pack-notification, and pack-restoration grant must carry a valid
+`appAccountToken` that resolves to the authenticated or notification-bound
+tenant/user before value attaches. The test must prove one credit grant, exact
+transaction/account binding, idempotent replay, and a retained retry for every
+unrecognized or refused outcome before the production fulfillment switch is
+enabled. `APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET` is a dedicated stable ownership
+key: before its first rollout it must be pinned to the current effective legacy
+JWT secret, then remain unchanged across JWT signing-key rotation so historical
+StoreKit transactions and delayed notifications continue to resolve.
 
 The website App Store CTA has `unavailable`, `approved`, and `public` states. The official badge and allowlisted `apps.apple.com` URL activate only after the listing is independently verified. Apple review latency does not block backend and web production launch, but the iOS public-release item remains externally pending until Apple approves it.
 
@@ -234,6 +252,8 @@ Rotate credentials previously pasted into chat before production. Production acc
 
 Default retention is 30 days for private job material, 90 days for content-free inference telemetry, 12 months for security/admin audit records, and statutory retention for billing evidence. Privacy Policy, Terms, AI disclosure, subprocessors, App Privacy information, GDPR/LGPD handling, and adult-only declarations must be updated before release.
 
+Account erasure must fence every invoice admission and metadata insert for the full deletion interval, durably manifest filesystem ownership before writing bytes, reconcile crash-window queue/object manifests, and persist deletion proof before removing database ownership. Filesystem roots and every object parent are bound through Linux descriptor-relative, no-follow operations; configured root paths cannot contain symbolic-link components, and non-Linux hosts fail closed. A provider or filesystem cleanup that cannot prove deletion or absence blocks erasure; it never silently leaves an orphaned receipt or recreates filing metadata after the user row is removed.
+
 ### Pre-release economics
 
 The previous 30-day production gate is removed. Economics are approved before release using actual Nexus provider-account rates, ten measured scripts, existing usage data, and conservative simulations.
@@ -248,9 +268,9 @@ Required simulations include:
 | Reasoning-heavy | Entire pool used in three-credit operations |
 | Priority/pack buyer | Priority scripts plus purchased-credit consumption and channel fees |
 
-Use 95th-percentile measured token consumption, actual OpenAI/Gemini account pricing, search/tool costs, VPS allocation, Stripe fees, Apple proceeds, refunds, and taxes. Do not rely on inconsistent public Luna pricing when the account contract or invoice provides the applicable rate.
+Use 95th-percentile measured token consumption, actual OpenAI/Gemini account pricing, search/tool costs, VPS allocation, Stripe fees, Apple proceeds, refunds, and taxes. The evidence producer, not an operator-entered rate card, derives Standard and deep-operation token/tool p95 from a tenant/user-scoped, production-only, resolved-price, read-only `api_usage` snapshot over the exact preceding 90 days. Shadow inference plus `chat_live_eval:*` and `content_live_eval:*` jobs do not qualify. Every governed paid attempt qualifies even when every attempt for its operation failed. Because failed-only operations consume provider budget without consuming user credits, their complete token/model/tool overhead is divided across completed operations in that class, with token and six-decimal USD shares rounded upward before p95; the artifact records the failed-only count and allocated share. A class with no completed production operation blocks rather than inventing a denominator. Until the three-credit deep surface is active, `content_engine_script_deep` and `content_engine_deepsearch` are the conservative governed deep proxy; a missing Standard or deep class blocks the simulation. The private rate card contains actual account rates and channel costs only. For every class, economics uses the greater of current-rate recomputation and resolved measured model-cost p95, then adds measured tool cost exactly once, so an accidentally cheap rate cannot understate cost and tool fees already included in metered total cost are not double-counted. Because Standard and Scheduled consume the same ten credits, script-heavy profiles use the higher measured total cost of those two delivery paths. All five profiles are evaluated on both web and Apple; the web Priority/pack-buyer profile incurs two Stripe fixed transaction fees because the subscription and pack are separate charges, while each other web profile incurs one. Do not rely on inconsistent public Luna pricing when the account contract or invoice provides the applicable rate.
 
-Launch requires at least 80% projected blended contribution margin and at least 80% on web subscriptions. Apple is reported separately; a 70–75% initial Apple channel floor is acceptable only when blended margin remains at least 80%.
+Launch requires at least 80% projected blended contribution margin and at least 80% on web subscriptions. The private rate card must include a complete owner-approved matrix of nonnegative monthly counts for every required usage profile on both web and Apple, with at least one paid cohort overall; those profile-by-channel counts weight the blended and per-channel calculations and are digest-bound into the private artifact so a synthetic one-of-each mix cannot pass. A zero count is valid for an individual profile/channel cell, but a projected channel with zero paid users across all five profiles fails its channel gate. Apple is reported separately; a 70–75% initial Apple channel floor is acceptable only when blended margin remains at least 80%.
 
 If simulation fails, adjust routing, credit costs, included allowances, or pack pricing before release. Do not silently lower output quality or hide fallback behavior.
 
@@ -287,6 +307,10 @@ Nine may run before release and one as the production smoke artifact. Reuse thos
 Acceptance requires:
 
 - All ten scripts complete at 1,900–2,400 words, remain source-consistent, and show no critical quality regression.
+- The evidence artifact matches the exact acceptance revision and ordered four Standard/three Scheduled/three Priority, five PT-BR/five English inventory; it recomputes p95 plus separate model/tool totals from those exact rows rather than trusting state-file summaries or double-counting tool fees already included in metered total cost.
+- Every accepted script is joined through its tenant/user/job scope and unique exact `operation_id = content-script:<job_id>` to completed production inference and resolved-price usage evidence on the expected cloud OpenAI `gpt-5.6-luna` route. Every completed stage run needs its own qualifying usage row. Every paid usage row attached to any accepted production run must match the governed tenant/user scope, `automation` source, script-stage job name, exact script-stage category, timestamp, resolved pricing, provider, and model; otherwise evidence generation refuses instead of filtering the cost away. Historical failed/cancelled attempts do not poison the successful completion but their paid usage remains in cost. Governed failed-only Standard/deep operations are also retained and conservatively allocated across completed class samples, while shadow, live-evaluation, cross-tenant, and cross-user usage cannot qualify.
+- Acceptance evidence v6 binds two distinct exact commits. Before the production smoke is submitted, the private state binds the immutable workload source to an authoritative unblocked, completed v3 release receipt and captured release-state view; the smoke must postdate both. Every newly admitted script job records the server-owned signed-Compose release ID, source SHA, and backend image digest at creation and successful completion. Migration 299 introduces those nullable columns as a predecessor-compatible phase-A expansion; the current runtime writes and validates complete triples, and evidence rejects missing/partial identities, while database triggers are deferred until the predecessor retires. A predecessor worker that completes a release-bound row after code-only rollback cannot produce qualifying acceptance evidence. The production smoke's two immutable runtime identities must equal the bound workload release, so a job created or completed across a concurrent release cannot qualify. The later reviewed evidence-producer source has its own completed release receipt that must postdate the smoke and workload evidence. A versioned digest covers the ordered pair and the exact Git blob, byte digest, mode, and size of every executing repository module in the evidence producer's closed local import set; a bare source SHA, a receipt without that byte proof, or any working-tree drift refuses. Equality of the workload and producer commits is invalid. Shipping retention/evidence tooling therefore does not permit replacing, rerunning, or expanding the ten-scenario workload, and neither a bare SHA nor a producer receipt can substitute for workload deployment proof. The authenticated economics-v7 artifact embeds the full private rate card and acceptance-v6 evidence, binds both immutable producer/verifier closures, and carries an HMAC over its canonical payload digest. Production local-primary active/100% admission resolves only the server-configured private artifact, pins its exact file-byte digest, verifies the HMAC with a dedicated per-environment secret, compares the packaged verifier/producer bytes to their Git identities, revalidates the immutable ten-script and operation-usage contracts, recomputes every economics profile and gate, requires the producer source to equal the serving release, and rejects an artifact generated in the future or more than 24 hours before the trusted activation clock. Migration 301 persists the validated artifact, payload, source-binding, and producer-source digests. Successor ACTIVE is stored in `release_bound_mode` while legacy `mode`/`rollout_percent` remain OFF/0, so a predecessor code rollback reads OFF instead of bypassing the source binding; the current reader reconstructs active/100% only after the representation and source binding validate. A later serving-source change forces effective OFF and explicit reactivation. The owner API presents the artifact SHA-256 only; an arbitrary evidence label or caller-selected path cannot authorize activation.
+- The surviving acceptance-v2 inventory may cross that boundary only through the reviewed acceptance-v3 tool's one-way pre-smoke migration. It validates the exact ordered rows under the v3 schema, refuses any legacy bare source assertion or existing smoke identity, and atomically persists the receipt-backed binding before its first API request. Evidence generation never upgrades or repairs state after smoke submission.
 - At least 99% schema validity from compact structured tests, with zero tenant, receipt, credit, privacy, or authorization failures.
 - Correct duplicate/out-of-order webhook, replay, refund, dispute, restore, reservation, cancellation, restart, and provider-reconciliation behavior.
 - Local runtime maintains zero swap, 6GB headroom, at least four tokens/second, and configured queue/deadline limits.
@@ -390,13 +414,33 @@ only. Section 2 remains authoritative for launch: purchased credits never
 expire, and existing purchased lots migrate to nonexpiring per Section 3. No
 new purchased lot may ship with an expiry after the credit-ledger cutover.
 
-### Addendum D — owner-deferred credential rotation (2026-08-24)
+### Addendum D — disclosed-credential completion gate (2026-08-26)
 
-The owner explicitly instructed the release operator not to rotate credentials
-during this plan closeout. The live Stripe credential later disclosed in an
-operator chat therefore remains a documented security exception to §4 and
-execution-sequence step 1, not evidence that the rotation control passed. Never
-copy that credential into source, documentation, receipts, tests, commands, or
-logs. Continue to enforce exact Stripe account binding, root-owned runtime
-storage, webhook verification, checkout kill switches, and least privilege;
-only the owner may later withdraw this exception and authorize rotation.
+The owner's no-rotation instruction remains in force until the owner explicitly
+withdraws it. It is a documented security exception to §4 and
+execution-sequence step 1, not evidence that either credential control passed.
+Public activation remains blocked until both independently evidenced items
+below are complete. Every action and evidence record is owner-controlled.
+
+- [ ] **Payment-provider credential class.** Rotate the disclosed live Stripe
+  API credential through the provider's secure administrative path, replace
+  its authorized runtime use through the managed secret channel, and prove the
+  previous credential is revoked or otherwise unusable. Separately retain a
+  sanitized evidence reference, completion time, verifier identity, and the
+  successful expected-account/readiness result while checkout kill switches
+  remain closed.
+- [ ] **VPS-access credential class.** Supersede the access credential disclosed
+  in operator chat through the host's owner-controlled access path, remove the
+  previous credential from every authorized login surface, and prove the
+  replacement works from an independent owner-held session while the previous
+  credential no longer authenticates. Separately retain a sanitized host-scoped
+  evidence reference, completion time, verifier identity, and outcome.
+- [ ] **Activation review.** Verify that both separate evidence records exist
+  and that exact Stripe account binding, root-owned runtime storage, webhook
+  verification, checkout kill switches, SSH least privilege, and MFA remain in
+  force. A deferred exception or compensating control does not complete either
+  rotation/supersession item.
+
+Never place credential values, passwords, private keys, tokens, recovery codes,
+secret-bearing commands, raw provider responses, or authentication output in
+source, documentation, receipts, tests, logs, or completion evidence.

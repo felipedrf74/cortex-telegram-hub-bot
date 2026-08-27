@@ -415,6 +415,7 @@ describe('calibrate-routing-confidence operational CLI', () => {
       ...process.env,
       IOS_API_ENABLED: 'true',
       IOS_API_JWT_SECRET: 'known-placeholder-value',
+      APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET: 'change-me',
     });
 
     expect(result.status, result.stderr).toBe(0);

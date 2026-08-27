@@ -88,6 +88,35 @@ function createLegacyDatabase(
     );
     CREATE INDEX idx_google_auth_pending_sessions_created_at
       ON google_auth_pending_sessions(created_at_ms);
+    CREATE TABLE invoice_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE invoice_filings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE audit_trail (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      ts TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE webhook_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL DEFAULT 0,
+      provider TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+    CREATE TABLE webhook_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL DEFAULT 0,
+      provider TEXT NOT NULL,
+      subscription_id INTEGER,
+      idempotency_key TEXT,
+      status TEXT NOT NULL DEFAULT 'pending'
+    );
   `);
   if (environment === 'production') {
     database.exec(`
@@ -306,6 +335,11 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '294_apple_reversal_index_backfill_progress.sql' }),
         expect.objectContaining({ file: '295_content_script_openai_batches.sql' }),
         expect.objectContaining({ file: '296_apple_foundation_models_device_lane.sql' }),
+        expect.objectContaining({ file: '297_private_data_retention_indexes.sql' }),
+        expect.objectContaining({ file: '298_invoice_artifact_identity_journal.sql' }),
+        expect.objectContaining({ file: '299_content_script_job_release_identity.sql' }),
+        expect.objectContaining({ file: '300_webhook_owner_encryption_boundary.sql' }),
+        expect.objectContaining({ file: '301_local_inference_activation_release_binding.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

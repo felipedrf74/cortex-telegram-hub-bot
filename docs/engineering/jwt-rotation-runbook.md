@@ -37,14 +37,16 @@ the API issues tokens with `kid=ios-api-current` using `IOS_API_JWT_SECRET`.
 1. Confirm `IOS_JWT_EXPIRY` for the environment. The rotation overlap must be
    at least the configured access-token lifetime plus 24 hours and never less
    than 8 days. The current 7-day default therefore requires 192 hours.
-2. Pin two non-JWT HMAC values to the current effective legacy JWT secret
+2. Pin three non-JWT HMAC values to the current effective legacy JWT secret
    before enabling the keyring:
 
+   - `APPLE_APP_ACCOUNT_TOKEN_HMAC_SECRET` preserves StoreKit ownership for
+     existing purchases and delayed App Store Server Notifications.
    - `CHAT_CONFIRMATION_HMAC_SECRET` preserves pending confirmation tokens.
    - `CHAT_V2_EVIDENCE_HMAC_SECRET` preserves evidence identity.
 
    Store them independently in each environment and verify they are non-empty
-   without printing them. Startup rejects a configured JWT keyring until both
+   without printing them. Startup rejects a configured JWT keyring until all
    HMAC values are pinned and pass the same minimum strength policy.
 3. Run the helper with explicit current signing material. It refuses to emit a
    plan if neither a current keyring nor the legacy secret is available. Use a
@@ -64,20 +66,20 @@ npx tsx scripts/rotate-jwt-signing-key.ts --env-file=.env \
 ```
 
 4. Store the emitted `IOS_API_JWT_KEYS` and `IOS_API_JWT_ACTIVE_KID` values in
-   the deployment environment.
+   the deployment environment. Keep all three pinned HMAC values unchanged.
    The generated active entry has no cutoff. Every inactive entry has a finite
    canonical ISO-8601 cutoff. Keep `IOS_API_JWT_SECRET` unchanged throughout
    the overlap so pre-keyring no-`kid` tokens remain valid.
 5. Restart the API process. Startup must reject malformed JSON, duplicate key
    ids, a missing/conflicting active key, weak secrets, invalid lifetimes, any
-   cutoff on the active key, an unbounded inactive key, or either missing/weak
+   cutoff on the active key, an unbounded inactive key, or any missing/weak
    dedicated HMAC.
 6. Confirm `/api/v1/auth/me` and WebSocket authentication accept a
    freshly-issued token and an old-token
    smoke token from before the restart.
 7. Re-mint staging-only fixture tokens; they intentionally have a longer
    lifetime and must not lengthen the production-grade overlap.
-8. After the rotation window has elapsed, prove both pinned HMAC values are
+8. After the rotation window has elapsed, prove all three pinned HMAC values are
    unchanged from step 2, remove expired key entries from
    `IOS_API_JWT_KEYS`, and replace `IOS_API_JWT_SECRET` with a new
    environment-specific legacy/no-kid fallback. Because confirmations use the

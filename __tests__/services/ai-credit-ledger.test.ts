@@ -120,6 +120,19 @@ describe('ai-credit-ledger', () => {
     expect(replay.kind).toBe('already_granted');
     if (replay.kind !== 'already_granted') throw new Error('unreachable');
     expect(replay.lot.id).toBe(first.lot.id);
+
+    const crossOwnerReplay = grantPurchasedAiCredits({
+      userId: 41,
+      provider: 'stripe',
+      providerTransactionId: 'pi_1',
+      credits: 100,
+      now: NOW,
+    });
+    expect(crossOwnerReplay).toEqual({
+      kind: 'rejected',
+      reason: 'provider transaction belongs to another user',
+    });
+    expect(listAiCreditLots(41)).toHaveLength(0);
   });
 
   it('reserves atomically and reports the wallet with reserved credits subtracted', () => {

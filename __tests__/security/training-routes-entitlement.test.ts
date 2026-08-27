@@ -697,6 +697,7 @@ describe('training routes entitlement and AI cost guardrails', () => {
       meteringUserId: 42,
       budgetRequestSource: 'interactive',
       budgetJobName: 'coach_refresh',
+      allowSensitiveCloudRouting: false,
     });
   });
 

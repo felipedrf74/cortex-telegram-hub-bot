@@ -332,6 +332,14 @@ export interface StructuredGenerationBatchState {
   requestDigest: string;
   customId: string;
   status: StructuredGenerationBatchStatus;
+  /** Durable, content-free filename written before the provider upload call. */
+  inputFileIntentFilename?: string;
+  /** Durable marker written before the provider Batch create call. */
+  batchCreateIntent?: boolean;
+  /** Durable provider-absence proof recorded by the governed reconciler. */
+  inputFileIntentAbsenceConfirmed?: boolean;
+  /** Durable provider-absence proof recorded by the governed reconciler. */
+  batchCreateIntentAbsenceConfirmed?: boolean;
   inputFileId?: string;
   providerBatchId?: string;
   outputFileId?: string;
@@ -344,6 +352,17 @@ export interface StructuredGenerationBatchControl {
   stageKey: string;
   load(): StructuredGenerationBatchState | null;
   persist(state: StructuredGenerationBatchState): void;
+  /**
+   * Durably record an empty provider-inventory observation under the active
+   * job lease. Optional predecessor controls remain fail-closed when absent.
+   */
+  observeIntentAbsence?(
+    intent: 'input_file' | 'batch_create',
+  ): {
+    state: StructuredGenerationBatchState;
+    /** One-shot permission; the durable proof is atomically reset first. */
+    mutationAuthorized: boolean;
+  };
 }
 
 export interface StructuredGenerationBatchCancellationRequest {
@@ -355,8 +374,28 @@ export interface StructuredGenerationBatchCancellationRequest {
 }
 
 export interface StructuredGenerationBatchFileCleanupRequest {
-  providerBatchId: string;
+  /** Absent when upload succeeded but process loss happened before Batch creation. */
+  providerBatchId?: string;
   fileIds: string[];
+}
+
+export interface StructuredGenerationBatchIntentReconciliationRequest {
+  stageKey: string;
+  requestDigest: string;
+  customId: string;
+  inputFileIntentFilename?: string;
+  batchCreateIntent?: boolean;
+  inputFileId?: string;
+  abortSignal?: AbortSignal;
+}
+
+export interface StructuredGenerationBatchIntentReconciliationResult {
+  inputFileId?: string;
+  providerBatchId?: string;
+  status?: StructuredGenerationBatchStatus;
+  outputFileId?: string;
+  errorFileId?: string;
+  errorCode?: string;
 }
 
 export interface StructuredGenerationResult {
@@ -504,6 +543,14 @@ export interface AIProvider {
   deleteStructuredGenerationBatchFiles?(
     request: StructuredGenerationBatchFileCleanupRequest,
   ): Promise<void>;
+
+  /**
+   * Recover a provider object accepted after its pre-call intent was durable
+   * but before its provider identifier could be persisted locally.
+   */
+  reconcileStructuredGenerationBatchIntent?(
+    request: StructuredGenerationBatchIntentReconciliationRequest,
+  ): Promise<StructuredGenerationBatchIntentReconciliationResult>;
 
   /**
    * Single-shot reasoning with optional structured-output schema. Used

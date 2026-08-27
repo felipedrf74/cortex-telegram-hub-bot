@@ -2686,7 +2686,7 @@ paths:
       operationId: "getTrainingCoach"
       tags:
         - "training"
-      summary: "Coach briefing — SQLite-cached 6h; ?refresh=true forces a new AI analysis (Gemini primary, Anthropic fallback)"
+      summary: "Coach briefing — SQLite-cached 6h; refresh can request an explicitly authorized private-data cloud analysis"
       description: |-
         Source: src/api/routes/training.ts:528
 
@@ -2709,6 +2709,12 @@ paths:
           schema:
             type: "string"
           description: "'true' returns { cachedOnlyMiss: true } instead of generating on cache miss"
+        - name: "allowSensitiveCloudRouting"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+          description: "'true' is per-request user authority to route raw health/calendar context to the configured cloud provider chain. The server must also permit allow_raw private-data routing; otherwise generation refuses and the route uses its deterministic fallback."
       responses:
         "200":
           description: "{ briefing, recommendations, garminData, cachedAt, ... }; deterministic fallback payload with degraded:true + warnings when AI unavailable (Standard success envelope unless noted.)"
@@ -2772,7 +2778,7 @@ paths:
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): refresh?: boolean (true forces a fresh AI coach run)
+        Request body (evidenced fields): refresh?: boolean (true forces a fresh AI coach run); allowSensitiveCloudRouting?: boolean (per-request authority for raw health/calendar cloud routing)
 
         Notes: Same eligibility + AI-budget gates as GET /training/coach; deterministic fallback report (200) when the AI run fails.
       x-nexus-kind: "model-backed"
@@ -2784,12 +2790,19 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: refresh?: boolean (true forces a fresh AI coach run). Route validation code is authoritative for exact shapes."
+              properties:
+                refresh:
+                  type: "boolean"
+                  description: "True forces a fresh coach run."
+                allowSensitiveCloudRouting:
+                  type: "boolean"
+                  description: "Per-request user authority for raw health/calendar cloud routing. The server-side allow_raw privacy gate must also pass."
+              additionalProperties: false
       responses:
         "200":
           description: "briefing snapshot + report.sections[] (coach_summary, recommendation, signals_used, confidence_uncertainty, sources_details) (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): TENANT_SCOPE_REQUIRED."
+          description: "Error envelope. Stable code(s): INVALID_REQUEST_BODY, TENANT_SCOPE_REQUIRED."
         "403":
           description: "Error envelope. Stable code(s): AI_PLAN_REQUIRED, TIER_REQUIRED."
         "409":
@@ -6577,6 +6590,12 @@ paths:
         Source: src/api/routes/content-script-job-routes.ts:42
 
         Entitlement: requires the `content` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
+
+        Retention: after 30 days, a terminal job keeps its content-free identity,
+        status, stage, progress, and billing linkage but omits the private result.
+        The warnings array then includes `content_script_private_material_expired`;
+        clients must treat that completed-without-result form as an intentional
+        retention tombstone rather than as job corruption.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/content-script-job-routes.ts:42"
       x-entitlement: "content"
@@ -6588,7 +6607,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "Job view (status, stage, progressPercent, result when done) (Standard success envelope unless noted.)"
+          description: "Job view (status, stage, progressPercent, optional result while retained, warnings; `content_script_private_material_expired` explains an intentionally absent terminal result) (Standard success envelope unless noted.)"
         "403":
           description: "Error envelope. Stable code(s): CONTENT_TENANT_SCOPE_MISMATCH."
         "404":
@@ -6656,7 +6675,7 @@ paths:
         "404":
           description: "Error envelope. Stable code(s): CONTENT_SCRIPT_JOB_NOT_FOUND."
         "409":
-          description: "Error envelope. Stable code(s): CONTENT_SCRIPT_JOB_NOT_RETRYABLE, CONTENT_SCRIPT_JOB_RETRY_LIMIT, ACCOUNT_DELETION_IN_PROGRESS."
+          description: "Error envelope. Stable code(s): CONTENT_SCRIPT_JOB_NOT_RETRYABLE, CONTENT_SCRIPT_JOB_RETRY_LIMIT, CONTENT_SCRIPT_JOB_PRIVATE_MATERIAL_EXPIRED, ACCOUNT_DELETION_IN_PROGRESS."
         "429":
           description: "Error envelope. Stable code(s): CONTENT_SCRIPT_ACTIVE_LIMIT."
         "4XX":
@@ -10724,7 +10743,7 @@ paths:
 
         Request body (evidenced fields): { jwsTransaction: string (required; 3-part JWS) }
 
-        Notes: ES256 x5c signature verification is strict when NODE_ENV=production; missing x5c is tolerated outside production for sandbox/Xcode receipts (claims-only fallback). Environment claim is provenance only, never a denial gate. Any unexpected error in the try block collapses to 400 VERIFICATION_FAILED. 409 APPLE_TRANSACTION_ALREADY_CLAIMED when the subscription is attached to another account.
+        Notes: ES256 x5c signature verification is strict when NODE_ENV=production; missing x5c is tolerated outside production for sandbox/Xcode receipts (claims-only fallback). Production grants require the exact Nexus bundle, a valid appAccountToken bound to the authenticated tenant/user, and Production environment. Sandbox is admitted only by the bounded exact-account App Review controls; Xcode is refused in production. Any unexpected error in the try block collapses to 400 VERIFICATION_FAILED. 409 APPLE_TRANSACTION_ALREADY_CLAIMED when the subscription is attached to another account.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/billing.ts:498"
       requestBody:
@@ -10740,7 +10759,7 @@ paths:
         "400":
           description: "Error envelope. Stable code(s): BAD_REQUEST, INVALID_JWS, INVALID_PAYLOAD, INVALID_TRANSACTION, UNKNOWN_PRODUCT, EXPIRED, VERIFICATION_FAILED."
         "403":
-          description: "Error envelope. Stable code(s): INVALID_SIGNATURE, INVALID_BUNDLE."
+          description: "Error envelope. Stable code(s): INVALID_SIGNATURE, INVALID_BUNDLE, APPLE_TRANSACTION_ACCOUNT_MISMATCH, APPLE_TRANSACTION_ENVIRONMENT_REFUSED."
         "409":
           description: "Error envelope. Stable code(s): APPLE_TRANSACTION_ALREADY_CLAIMED."
         "4XX":
@@ -10756,7 +10775,7 @@ paths:
       description: |-
         Source: src/api/routes/billing.ts:471
 
-        Request body (evidenced fields): { signedTransactions: string[] } (each independently re-verified; grants idempotent per Apple transaction)
+        Request body (evidenced fields): { signedTransactions: string[] } (each independently re-verified, exact-bundle/environment gated, and appAccountToken-bound to the authenticated tenant/user; grants idempotent per Apple transaction)
 
         Notes: 503 APPLE_PACK_FULFILLMENT_DISABLED when the Apple pack fulfillment kill switch is engaged (runtime service state, not a registration-time flag).
       x-nexus-kind: "deterministic"
@@ -10836,7 +10855,7 @@ paths:
       description: |-
         Source: src/api/routes/billing.ts:352
 
-        Notes: No body fields read; identity comes entirely from the JWT. Requires the Nexus email to be verified (enforced inside claimWebsiteStripeSubscriptionForUser).
+        Notes: No body fields read; identity comes entirely from the JWT. Requires the Nexus email to be verified. Claims are disabled by default and operate only inside one operator-configured exact 30-day UTC compatibility window; only completed subscriptions created no later than that window's start are eligible.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/billing.ts:352"
       responses:

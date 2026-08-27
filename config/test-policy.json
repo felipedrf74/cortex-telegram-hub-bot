@@ -177,11 +177,11 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/local-inference-runtime-control.ts:426-433",
-            "anchor": "&& !input.evidenceReference?.trim())",
+            "pattern": "src/services/local-inference-runtime-control.ts:488-495",
+            "anchor": "validatedEvidence = validateLocalInferenceActivationEvidence({",
             "behavior": "Production active routing cannot open without an immutable reference to the signed ten-script acceptance and economics evidence.",
             "replacementTest": "__tests__/services/local-inference-runtime-control.test.ts",
-            "ownerTestNamePattern": "requires production auto-rollback and acceptance evidence before active/100%$",
+            "ownerTestNamePattern": "allows direct evidence-bound production activation and rejects percentage canaries$",
             "minimumMutants": 1
           }
         ],
@@ -1330,7 +1330,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:726-726",
+            "pattern": "src/services/stripe-service.ts:737-737",
             "anchor": "reason === 'refund' && charge?.refunded !== true",
             "behavior": "A refund reversal revokes the originating credit lot only when the charge is fully refunded; a partial refund must not delete credits the user still paid for.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1338,7 +1338,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/stripe-service.ts:731-731",
+            "pattern": "src/services/stripe-service.ts:746-746",
             "anchor": "return false",
             "behavior": "A partial refund exits without revoking, leaving the lot intact for reconciliation rather than reporting a successful reversal.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1427,7 +1427,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/apple-notification-inbox.ts:202-207",
+            "pattern": "src/services/apple-notification-inbox.ts:193-197",
             "anchor": "if (!resolved) {",
             "behavior": "An undecodable Apple refund or revoke remains unresolved, increments only its bounded index-attempt counter, and never receives a clean timestamp or transaction identity.",
             "replacementTest": "__tests__/services/apple-notification-inbox.test.ts",
@@ -1436,6 +1436,266 @@
           }
         ],
         "reason": "The retained inbox suite deliberately replaces the unsafe predecessor assertion that undecodable reversal evidence becomes clean with a stronger fail-closed, bounded-retry, operator-alerted contract."
+      },
+      {
+        "test": "__tests__/api/billing-routes.test.ts",
+        "replacementTests": [
+          "__tests__/api/billing-routes.test.ts"
+        ],
+        "sources": [
+          "src/services/apple-value-grant-policy.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/apple-value-grant-policy.ts:17-17",
+            "anchor": "environment !== 'Sandbox' || env.APPLE_ALLOW_SANDBOX_GRANTS !== 'true'",
+            "behavior": "Production-value Sandbox grants remain limited to the explicit App Review switch and exact authenticated review account.",
+            "replacementTest": "__tests__/api/billing-routes.test.ts",
+            "ownerTestNamePattern": "limits production Sandbox grants to the configured App Review account$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained billing route test replaces broad call-shape assertions with direct evidence that the narrow production Sandbox exception cannot admit an ordinary account."
+      },
+      {
+        "test": "__tests__/portal/portal-webhooks.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-webhooks.test.ts"
+        ],
+        "sources": [
+          "src/portal/webhooks.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/portal/webhooks.ts:83-86",
+            "anchor": ".update(`${provider}\\0${canonicalJson(payload)}`)",
+            "behavior": "Strava notification deduplication binds the provider and canonical payload instead of collapsing distinct objects that share one event timestamp.",
+            "replacementTest": "__tests__/portal/portal-webhooks.test.ts",
+            "ownerTestNamePattern": "extracts provider-specific idempotency keys$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained provider-specific idempotency test replaces brittle header-only shapes with canonical payload-bound deduplication evidence."
+      },
+      {
+        "test": "__tests__/scripts/content-ten-script-acceptance.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/content-ten-script-acceptance-mutation-owner.test.ts"
+        ],
+        "sources": [
+          "scripts/content-ten-script-acceptance.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/content-ten-script-acceptance.mjs:581-584",
+            "anchor": "JSON.stringify(state.productionSmokeSource) !== JSON.stringify(binding)",
+            "behavior": "An existing production-smoke source binding cannot be replaced by different release evidence on a later poll or submission attempt.",
+            "replacementTest": "__tests__/scripts/content-ten-script-acceptance-mutation-owner.test.ts",
+            "ownerTestNamePattern": "binds the production smoke source once and rejects mismatched polls$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained acceptance fixture replaces a broad parsed-object assertion with immutable workload binding and mismatched-poll refusal evidence."
+      },
+      {
+        "test": "__tests__/scripts/economics-simulation.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/economics-simulation.test.ts"
+        ],
+        "sources": [
+          "scripts/economics-simulation.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/economics-simulation.mjs:211-212",
+            "anchor": "if (missing.length > 0)",
+            "behavior": "Economics simulation refuses incomplete account-rate evidence instead of manufacturing a launch verdict from missing costs.",
+            "replacementTest": "__tests__/scripts/economics-simulation.test.ts",
+            "ownerTestNamePattern": "fails closed on missing, nonfinite, negative, and out-of-range rate-card values$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained economics test replaces obsolete v2 profile snapshots with exact fail-closed rate-card and current projection-contract coverage."
+      },
+      {
+        "test": "__tests__/services/apple-subscription-lifecycle.test.ts",
+        "replacementTests": [
+          "__tests__/services/apple-subscription-lifecycle.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/stripe-service.ts:2169-2169",
+            "anchor": "transactionOwner.user_id !== userId",
+            "behavior": "An active Apple notification updates only the account resolved from its signed account token, preventing cross-owner transaction replay.",
+            "replacementTest": "__tests__/services/apple-subscription-lifecycle.test.ts",
+            "ownerTestNamePattern": "refuses an active notification whose signed account token belongs to another user$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained lifecycle test replaces direct notification call-count checks with durable cross-owner subscription-state refusal evidence."
+      },
+      {
+        "test": "__tests__/services/content-script-jobs.test.ts",
+        "replacementTests": [
+          "__tests__/services/content-script-jobs.test.ts"
+        ],
+        "sources": [
+          "src/services/content-script-jobs.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/content-script-jobs.ts:2637-2637",
+            "anchor": "legacyBatchEmptyOutputExhausted ? 1 : 0",
+            "behavior": "A legacy scheduled empty-output exhaustion consumes its poisoned generation exactly once before the same durable job is reopened.",
+            "replacementTest": "__tests__/services/content-script-jobs.test.ts",
+            "ownerTestNamePattern": "advances a scheduled generation after legacy empty-output infrastructure exhaustion$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained retry fixture replaces an implementation-specific stage-key assertion with durable attempt advancement and bounded retry-limit evidence."
+      },
+      {
+        "test": "__tests__/services/content-script-provider-batches.test.ts",
+        "replacementTests": [
+          "__tests__/services/content-script-provider-batches.test.ts"
+        ],
+        "sources": [
+          "src/services/content-script-provider-batches.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/content-script-provider-batches.ts:1101-1101",
+            "anchor": "now.getTime() - retentionDays * 24 * 60 * 60 * 1_000",
+            "behavior": "Provider Batch files remain retained for the full parent-job retry window regardless of the age of an individual Batch stage.",
+            "replacementTest": "__tests__/services/content-script-provider-batches.test.ts",
+            "ownerTestNamePattern": "keeps old Batch files until the parent job has its full 30-day retry window$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained provider-batch tests replace a generic persistence throw with parent-terminal retention, cleanup eligibility, and deletion-proof coverage."
+      },
+      {
+        "test": "__tests__/services/finance-tracker.test.ts",
+        "replacementTests": [
+          "__tests__/services/finance-tracker.test.ts"
+        ],
+        "sources": [
+          "src/services/finance-tracker.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/finance-tracker.ts:997-1001",
+            "anchor": "financeTransactionAuditEvidence(transactionId, ['category', 'subcategory'])",
+            "behavior": "Finance transaction updates emit only the transaction identity and changed-field names, never private before or after values.",
+            "replacementTest": "__tests__/services/finance-tracker.test.ts",
+            "ownerTestNamePattern": "writes content-free mutation evidence when updating and deleting a transaction$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained audit test replaces private before-and-after snapshots with exact content-free mutation evidence for update and delete operations."
+      },
+      {
+        "test": "__tests__/services/garmin-coach-user-scope.test.ts",
+        "replacementTests": [
+          "__tests__/services/garmin-coach-user-scope.test.ts"
+        ],
+        "sources": [
+          "src/services/garmin-coach.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/garmin-coach.ts:925-935",
+            "anchor": "if (opts.allowSensitiveCloudRouting !== true)",
+            "behavior": "Ordinary coach reads return a deterministic local briefing before constructing or reserving any private cloud request.",
+            "replacementTest": "__tests__/services/garmin-coach-user-scope.test.ts",
+            "ownerTestNamePattern": "returns a deterministic local briefing without constructing a cloud request by default$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained coach test replaces private prompt and provider-payload assertions with direct proof that default routing never constructs a cloud request."
+      },
+      {
+        "test": "__tests__/services/skill-inference-service.test.ts",
+        "replacementTests": [
+          "__tests__/services/skill-inference-service.test.ts"
+        ],
+        "sources": [
+          "src/services/skill-inference-account-lifecycle.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/skill-inference-account-lifecycle.ts:247-256",
+            "anchor": "if (!account || account.status !== 'active')",
+            "behavior": "Erased and inactive accounts remain closed to new model work even after their transient deletion-fence row is gone.",
+            "replacementTest": "__tests__/services/skill-inference-service.test.ts",
+            "ownerTestNamePattern": "keeps erased or inactive accounts closed after their durable deletion fence is gone$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained inference test replaces direct fence-row cleanup assertions with durable post-erasure admission refusal evidence."
+      },
+      {
+        "test": "__tests__/services/stripe-service.test.ts",
+        "replacementTests": [
+          "__tests__/services/stripe-service.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/stripe-service.ts:1654-1659",
+            "anchor": "if (!resolveAppleAppAccountTokenForAuthenticatedScope({",
+            "behavior": "An Apple value grant requires the signed account token to resolve to the authenticated tenant and user scope before any subscription write.",
+            "replacementTest": "__tests__/services/stripe-service.test.ts",
+            "ownerTestNamePattern": "rejects an Apple grant when authenticated tenant and user scopes disagree$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained Stripe test replaces direct grant and notification call assertions with authenticated cross-scope refusal and unchanged durable state."
+      },
+      {
+        "test": "__tests__/services/user-data-export.test.ts",
+        "replacementTests": [
+          "__tests__/services/user-data-export.test.ts"
+        ],
+        "sources": [
+          "src/services/user-data-export.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/user-data-export.ts:1935-1946",
+            "anchor": "if (providerFilesPending !== 0)",
+            "behavior": "Transactional account erasure refuses while any owner-scoped provider Batch file or upload intent lacks durable deletion proof.",
+            "replacementTest": "__tests__/services/user-data-export.test.ts",
+            "ownerTestNamePattern": "refuses transactional erasure while a provider Batch intent lacks deletion proof$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained export and deletion suite replaces a direct fence-row assertion with end-to-end provider-file deletion-proof refusal and owner data preservation."
+      },
+      {
+        "test": "__tests__/services/webhook-registry.test.ts",
+        "replacementTests": [
+          "__tests__/services/webhook-registry.test.ts"
+        ],
+        "sources": [
+          "src/services/webhook-registry.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/webhook-registry.ts:201-204",
+            "anchor": "env.WEBHOOK_OWNER_ENCRYPTION_WRITES_ENABLED === 'true'",
+            "behavior": "Webhook owner-envelope writes activate only under the explicit successor compatibility flag and stay plaintext-readable for Release A rollback by default.",
+            "replacementTest": "__tests__/services/webhook-registry.test.ts",
+            "ownerTestNamePattern": "encrypts metadata at rest and returns it only through owner-bound decryption$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained webhook suite replaces plaintext and broad signature assertions with exact encrypted ownership, scoped replay, and verifier behavior."
       }
     ],
     "ownerTestMappings": [],

@@ -82,6 +82,10 @@ function requireFinanceHandlerScope(req: Request, operation: string): { userId: 
   return assertTenantScope(req as AuthenticatedRequest, operation);
 }
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
 const RECEIPT_VERIFICATION_COPY = Object.freeze({
   ocr_fields_backfilled: 'Filled missing receipt fields using on-device OCR.',
   ocr_local_fallback: 'AI receipt analysis was unavailable. Parsed from on-device OCR only.',
@@ -130,8 +134,8 @@ export function financeRoutes(): Router {
     try {
       const txs = getTransactions(userId, { startDate, endDate, category, limit, tenantId });
       sendSuccess(res, { transactions: txs, count: txs.length });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS finance transactions list failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance transactions list failed');
       sendInternalError(res, 'Failed to fetch transactions');
     }
   }));
@@ -198,8 +202,8 @@ export function financeRoutes(): Router {
       invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId: tx.id }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS finance transaction create failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance transaction create failed');
       sendInternalError(res, 'Failed to add transaction');
     }
   }));
@@ -295,8 +299,11 @@ export function financeRoutes(): Router {
       invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId }, 'iOS finance transaction updated');
       sendSuccess(res, { transaction: updated });
-    } catch (err: any) {
-      logger.error({ err, userId, txId }, 'iOS finance transaction update failed');
+    } catch (err: unknown) {
+      logger.error(
+        { errorName: safeErrorName(err), userId, txId },
+        'iOS finance transaction update failed',
+      );
       sendInternalError(res, 'Failed to update transaction');
     }
   }));
@@ -341,8 +348,11 @@ export function financeRoutes(): Router {
       }
       invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { deleted: true, id: txId });
-    } catch (err: any) {
-      logger.error({ err, userId, txId }, 'iOS finance transaction delete failed');
+    } catch (err: unknown) {
+      logger.error(
+        { errorName: safeErrorName(err), userId, txId },
+        'iOS finance transaction delete failed',
+      );
       sendInternalError(res, 'Failed to delete transaction');
     }
   }));
@@ -383,8 +393,8 @@ export function financeRoutes(): Router {
       const warnings = summary.mixedCurrency ? ['MIXED_CURRENCY_TAX_PREVIEW_SUPPRESSED'] : [];
 
       sendSuccess(res, { summary, budgetView, tax: taxBreakdown, warnings, preferredCurrency });
-    } catch (err: any) {
-      logger.error({ err, userId, month }, 'iOS finance monthly-summary failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance monthly-summary failed');
       sendInternalError(res, 'Failed to fetch monthly summary');
     }
   }));
@@ -405,8 +415,8 @@ export function financeRoutes(): Router {
     try {
       const events = getTaxEvents(userId, { year, limit, tenantId });
       sendSuccess(res, { events, count: events.length });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS finance tax events list failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance tax events list failed');
       sendInternalError(res, 'Failed to fetch tax events');
     }
   }));
@@ -430,8 +440,8 @@ export function financeRoutes(): Router {
     try {
       const summary = getAnnualTaxSummary(userId, year, { tenantId });
       sendSuccess(res, { summary });
-    } catch (err: any) {
-      logger.error({ err, userId, year }, 'iOS finance annual tax summary failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance annual tax summary failed');
       sendInternalError(res, 'Failed to fetch annual tax summary');
     }
   }));
@@ -488,12 +498,15 @@ export function financeRoutes(): Router {
               submitFinanceSchedulingIntent(secretaryInputWithBusyWindows);
             } else {
               logger.warn(
-                { userId, tenantId, month, status: preview.status, reasonCodes: preview.reasonCodes },
+                { userId, tenantId, status: preview.status, reasonCodes: preview.reasonCodes },
                 'Finance tax reminder was not placed by Secretary preview',
               );
             }
           } catch (secretaryErr) {
-            logger.warn({ err: secretaryErr, userId, tenantId, month }, 'Finance Secretary reminder scheduling failed');
+            logger.warn(
+              { errorName: safeErrorName(secretaryErr), userId, tenantId },
+              'Finance Secretary reminder scheduling failed',
+            );
           }
         }
         try {
@@ -525,13 +538,16 @@ export function financeRoutes(): Router {
             privacyPolicy: 'financial',
           });
         } catch (notificationErr) {
-          logger.warn({ err: notificationErr, userId, month }, 'Finance notification intent emit failed');
+          logger.warn(
+            { errorName: safeErrorName(notificationErr), userId },
+            'Finance notification intent emit failed',
+          );
         }
       }
-      logger.info({ userId, month }, 'iOS tax event calculated');
+      logger.info({ userId }, 'iOS tax event calculated');
       sendSuccess(res, { event });
-    } catch (err: any) {
-      logger.error({ err, userId, month }, 'iOS finance tax calculate failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance tax calculate failed');
       sendInternalError(res, 'Failed to calculate tax');
     }
   }));
@@ -573,10 +589,13 @@ export function financeRoutes(): Router {
       });
       invalidateNotificationInboxCaches(userId, tenantId);
 
-      logger.info({ userId, month, supersededNotifications: retired.supersededCount }, 'iOS tax event marked paid');
+      logger.info(
+        { userId, supersededNotifications: retired.supersededCount },
+        'iOS tax event marked paid',
+      );
       sendSuccess(res, { updated: true, event, supersededCount: retired.supersededCount });
-    } catch (err: any) {
-      logger.error({ err, userId, month }, 'iOS finance tax pay failed');
+    } catch (err: unknown) {
+      logger.error({ errorName: safeErrorName(err), userId }, 'iOS finance tax pay failed');
       sendInternalError(res, 'Failed to mark tax event as paid');
     }
   }));
@@ -1026,7 +1045,10 @@ export function financeRoutes(): Router {
       );
       res.send(buffer);
     } catch (err) {
-      logger.error({ err, userId, tenantId, id }, 'iOS invoice file download failed');
+      logger.error(
+        { errorName: safeErrorName(err), userId, tenantId, filingId: id },
+        'iOS invoice file download failed',
+      );
       sendInternalError(res, 'Unable to fetch invoice file right now.');
     }
   }));
