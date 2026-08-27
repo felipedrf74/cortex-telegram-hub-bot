@@ -251,8 +251,10 @@ describe('invoice object storage manifest reconciliation', () => {
   linuxIt('refuses a page whose nested enumeration exceeds its linear budget', () => {
     let directory = path.join(testConfig.objectRoot, 'invoices');
     fs.mkdirSync(directory, { mode: 0o700 });
+    const cursorParts = ['invoices'];
     for (let depth = 0; depth < 5; depth += 1) {
       directory = path.join(directory, `nested-${depth}`);
+      cursorParts.push(`nested-${depth}`);
       fs.mkdirSync(directory, { mode: 0o700 });
       fs.writeFileSync(
         path.join(directory, `sibling-${depth}.txt`),
@@ -262,7 +264,12 @@ describe('invoice object storage manifest reconciliation', () => {
     }
 
     expect(() => reconcileArtifactManifests({
-      db, dbPath, apply: false, kind: 'objects', after: '', limit: 2,
+      db,
+      dbPath,
+      apply: false,
+      kind: 'objects',
+      after: `${cursorParts.join('/')}/zzzz`,
+      limit: 2,
     })).toThrow(/enumeration budget/);
   });
 });

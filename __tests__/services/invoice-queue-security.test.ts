@@ -23,8 +23,7 @@ vi.mock('../../src/services/database', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/database')>('../../src/services/database')),
   getDb: () => testDb,
 }));
-vi.mock('../../src/services/invoice-filer', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/services/invoice-filer')>(),
+vi.mock('../../src/services/invoice-filer', () => ({
   fileInvoice: filingMocks.fileInvoice,
   filePdf: filingMocks.filePdf,
   isInvoiceFilingConfigured: () => true,
