@@ -527,11 +527,20 @@ export function trainingRoutes(): Router {
 
   /**
    * GET /api/v1/training/coach
-   * Coach briefing — cached in SQLite for 6 hours (survives restarts).
-   * Use ?refresh=true to force a new AI analysis (costs ~$0.05).
+   * Read-only coach briefing — cache, persisted-report restore, or explicit miss.
    */
   router.get('/coach', async (req, res: Response) => {
-    const { userId, tenantId } = req as AuthenticatedRequest;
+    const { tenantId } = req as AuthenticatedRequest;
+    if (req.query.refresh === 'true') {
+      sendError(
+        res,
+        'BAD_REQUEST',
+        'GET /api/v1/training/coach is read-only; use POST /api/v1/training/coach/report to generate a fresh coach report.',
+        400,
+      );
+      return;
+    }
+
     let dataUserId: number;
     try {
       dataUserId = requireTenantIdParam(tenantId, 'training.coach');
@@ -544,110 +553,31 @@ export function trainingRoutes(): Router {
     // or restored report so a stale paid snapshot cannot bypass a downgrade.
     if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
-    const forceRefresh = req.query.refresh === 'true';
-    const cacheOnly = req.query.cacheOnly === 'true';
-    const allowSensitiveCloudRouting = req.query.allowSensitiveCloudRouting === 'true';
     const cacheKey = `coach-briefing:${dataUserId}`;
-    const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
-    // Return SQLite-cached briefing (survives restarts, no AI call)
-    if (!forceRefresh) {
-      const cached = getCached<Record<string, unknown>>(cacheKey);
-      if (cached) {
-        logger.debug('Returning SQLite-cached coach briefing (no AI call)');
-        const payload = syncCoachStateForUser(dataUserId, cached);
-        sendSuccess(res, payload, { cached: true });
-        return;
-      }
-
-      const restored = restoreCoachBriefingFromLatestReport(dataUserId);
-      if (restored) {
-        const payload = syncCoachStateForUser(dataUserId, restored);
-        setCache(cacheKey, payload, COACH_BRIEFING_TTL);
-        logger.debug('Restored coach briefing from latest report document');
-        sendSuccess(res, payload, { cached: true });
-        return;
-      }
-    }
-
-    if (cacheOnly) {
-      sendSuccess(res, {
-        briefing: '',
-        recommendations: [],
-        garminData: null,
-        cachedOnlyMiss: true,
-      });
+    const cached = getCached<Record<string, unknown>>(cacheKey);
+    if (cached) {
+      logger.debug('Returning SQLite-cached coach briefing (no AI call)');
+      const payload = syncCoachStateForUser(dataUserId, cached);
+      sendSuccess(res, payload, { cached: true });
       return;
     }
 
-    try {
-      const hydratedPayload = await runWithCoachBriefingAccountLifecycle(dataUserId, {
-        tenantId: dataUserId,
-        meteringUserId: userId,
-        budgetRequestSource: 'interactive',
-        budgetJobName: 'coach_refresh',
-        allowSensitiveCloudRouting,
-      }, (briefing) => {
-        // `briefing.message` is the only briefing text field on
-        // CoachBriefingResult; hydration and cache persistence stay inside the
-        // same account lifecycle as generation so erasure cannot race them.
-        const payload = {
-          briefing: briefing?.message || 'No coach briefing available.',
-          recommendations: briefing?.recommendations || [],
-          garminData: null as unknown,
-          cachedAt: new Date().toISOString(),
-        };
-        const hydrated = syncCoachStateForUser(dataUserId, payload);
-        setCache(cacheKey, hydrated, COACH_BRIEFING_TTL);
-        return hydrated;
-      });
-      sendSuccess(res, hydratedPayload);
-    } catch (err: any) {
-      if (isSkillInferenceAccountDeletionError(err)) {
-        sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
-        return;
-      }
-      logger.error({ errorName: safeTrainingErrorName(err) }, 'iOS training/coach failed');
-      if (sendAiBudgetError(res, err)) return;
-      let hydratedFallback: Record<string, unknown> | null = null;
-      try {
-        hydratedFallback = await runAdmittedDeterministicCoachFallback(
-          dataUserId,
-          userId,
-          language,
-          'coach_refresh_fallback',
-          (fallback) => syncCoachStateForUser(dataUserId, {
-            ...fallback,
-            degraded: true,
-            warnings: [
-              ...(
-                Array.isArray(fallback.warnings)
-                  ? fallback.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
-                  : []
-              ),
-              'Coach AI unavailable; deterministic fallback used.',
-            ],
-          }),
-        );
-      } catch (fallbackErr) {
-        if (isSkillInferenceAccountDeletionError(fallbackErr)) {
-          sendError(res, 'ACCOUNT_DELETION_IN_PROGRESS', 'Coach generation is unavailable while this account is being deleted.', 409);
-          return;
-        }
-        logger.debug({ errorName: safeTrainingErrorName(fallbackErr) }, 'training/coach deterministic fallback failed');
-      }
-      if (hydratedFallback) {
-        sendSuccess(res, hydratedFallback);
-        return;
-      }
-      sendSuccess(res, {
-        briefing: 'Coach briefing unavailable.',
-        recommendations: [],
-        garminData: null,
-        degraded: true,
-        warnings: ['Coach briefing unavailable.'],
-      });
+    const restored = restoreCoachBriefingFromLatestReport(dataUserId);
+    if (restored) {
+      const payload = syncCoachStateForUser(dataUserId, restored);
+      setCache(cacheKey, payload, COACH_BRIEFING_TTL);
+      logger.debug('Restored coach briefing from latest report document');
+      sendSuccess(res, payload, { cached: true });
+      return;
     }
+
+    sendSuccess(res, {
+      briefing: '',
+      recommendations: [],
+      garminData: null,
+      cachedOnlyMiss: true,
+    });
   });
 
   router.post('/coach/report', async (req, res: Response) => {
