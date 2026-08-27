@@ -48,6 +48,49 @@ interface MigratorResult {
   pendingAfter: string[];
 }
 
+const RELEASE_MIGRATOR_BUSY_TIMEOUT_MS = 30_000;
+const RELEASE_MIGRATOR_LOCK_POLL_MS = 100;
+const releaseMigratorWaitCell = new Int32Array(new SharedArrayBuffer(4));
+
+function isSqliteContention(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  const message = error instanceof Error ? error.message : '';
+  return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED'
+    || /database (?:is )?locked/i.test(message);
+}
+
+function ensureWalJournalMode(database: Database.Database): void {
+  const deadline = Date.now() + RELEASE_MIGRATOR_BUSY_TIMEOUT_MS;
+  while (true) {
+    try {
+      const journalMode = String(database.pragma('journal_mode', { simple: true })).toUpperCase();
+      if (journalMode === 'WAL') return;
+      const selectedMode = String(
+        database.pragma('journal_mode = WAL', { simple: true }),
+      ).toUpperCase();
+      if (selectedMode === 'WAL') return;
+    } catch (error) {
+      if (!isSqliteContention(error)) throw error;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error('release migrator could not enter WAL journal mode before timeout');
+    }
+    // SQLite can return SQLITE_BUSY immediately (or return the unchanged mode)
+    // while negotiating journal mode without invoking the connection busy
+    // handler. This one-shot runs outside the request path, so a short
+    // synchronous poll is deliberate.
+    Atomics.wait(
+      releaseMigratorWaitCell,
+      0,
+      0,
+      Math.min(RELEASE_MIGRATOR_LOCK_POLL_MS, remaining),
+    );
+  }
+}
+
 export function runReleaseMigrations(
   databasePath: string = config.app.databasePath,
   options: {
@@ -101,9 +144,15 @@ export function runReleaseMigrations(
     }
   }
 
-  const database = new Database(databasePath);
+  // The predecessor keeps serving while this one-shot applies the additive
+  // migration set. Give an in-flight predecessor write a bounded opportunity
+  // to finish instead of inheriting better-sqlite3's shorter default timeout.
+  // Install the handler at open time so it also covers WAL-mode negotiation.
+  const database = new Database(databasePath, {
+    timeout: RELEASE_MIGRATOR_BUSY_TIMEOUT_MS,
+  });
   try {
-    database.pragma('journal_mode = WAL');
+    ensureWalJournalMode(database);
     database.pragma('foreign_keys = ON');
     ensureMigrationSqlFunctions(database);
 

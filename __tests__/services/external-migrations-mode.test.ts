@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -245,6 +247,68 @@ describe('external migrations mode', () => {
     const second = runReleaseMigrations(path);
     expect(second.appliedCount).toBe(0);
     expect(second.pendingBefore).toEqual([]);
+  });
+
+  it('waits for a bounded live-writer lock before applying the migration set', async () => {
+    const databasePath = join(workspace, 'live-writer-lock.db');
+    const lockHolder = spawn(process.execPath, ['-e', `
+      const Database = require('better-sqlite3');
+      const database = new Database(process.argv[1]);
+      const journalMode = database.pragma('journal_mode', { simple: true });
+      database.exec('BEGIN IMMEDIATE');
+      process.stdout.write(String(journalMode) + '\\n');
+      setTimeout(() => {
+        database.exec('COMMIT');
+        database.close();
+      }, 6_000);
+    `, databasePath], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('lock holder did not become ready')), 5_000);
+        lockHolder.once('error', reject);
+        lockHolder.stdout.once('data', (chunk) => {
+          clearTimeout(timeout);
+          expect(String(chunk).trim().toUpperCase()).toBe('DELETE');
+          resolve();
+        });
+      });
+      expect(() => runReleaseMigrations(databasePath)).not.toThrow();
+      const proof = new Database(databasePath, { readonly: true });
+      try {
+        expect(String(proof.pragma('journal_mode', { simple: true })).toUpperCase()).toBe('WAL');
+      } finally {
+        proof.close();
+      }
+    } finally {
+      if (lockHolder.exitCode === null) lockHolder.kill('SIGTERM');
+    }
+  }, 20_000);
+
+  it('fails immediately when WAL negotiation returns a non-contention SQLite error', () => {
+    const directory = join(workspace, 'readonly-journal-mode');
+    const databasePath = join(directory, 'database.db');
+    mkdirSync(directory);
+    const database = new Database(databasePath);
+    try {
+      expect(String(database.pragma('journal_mode', { simple: true })).toUpperCase()).toBe('DELETE');
+    } finally {
+      database.close();
+    }
+
+    chmodSync(databasePath, 0o444);
+    chmodSync(directory, 0o555);
+    try {
+      const startedAt = Date.now();
+      expect(() => runReleaseMigrations(databasePath)).toThrow(/read.?only/i);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    } finally {
+      chmodSync(directory, 0o755);
+      chmodSync(databasePath, 0o600);
+    }
   });
 
   it('verifies integrity and foreign keys after migrating', () => {
