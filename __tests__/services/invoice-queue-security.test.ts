@@ -24,9 +24,15 @@ vi.mock('../../src/services/database', async () => ({
   getDb: () => testDb,
 }));
 vi.mock('../../src/services/invoice-filer', () => ({
+  PT_MONTHS: [],
+  analyzeInvoiceImage: vi.fn(),
+  buildFilename: vi.fn(),
+  buildPdfFilename: vi.fn(),
   fileInvoice: filingMocks.fileInvoice,
   filePdf: filingMocks.filePdf,
+  getPortugueseMonthFolder: vi.fn(),
   isInvoiceFilingConfigured: () => true,
+  resolveTargetDirectory: vi.fn(),
 }));
 vi.mock('../../src/state/invoice-filings', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/state/invoice-filings')>(),
