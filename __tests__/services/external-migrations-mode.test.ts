@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -286,6 +287,29 @@ describe('external migrations mode', () => {
       if (lockHolder.exitCode === null) lockHolder.kill('SIGTERM');
     }
   }, 20_000);
+
+  it('fails immediately when WAL negotiation returns a non-contention SQLite error', () => {
+    const directory = join(workspace, 'readonly-journal-mode');
+    const databasePath = join(directory, 'database.db');
+    mkdirSync(directory);
+    const database = new Database(databasePath);
+    try {
+      expect(String(database.pragma('journal_mode', { simple: true })).toUpperCase()).toBe('DELETE');
+    } finally {
+      database.close();
+    }
+
+    chmodSync(databasePath, 0o444);
+    chmodSync(directory, 0o555);
+    try {
+      const startedAt = Date.now();
+      expect(() => runReleaseMigrations(databasePath)).toThrow(/read.?only/i);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    } finally {
+      chmodSync(directory, 0o755);
+      chmodSync(databasePath, 0o600);
+    }
+  });
 
   it('verifies integrity and foreign keys after migrating', () => {
     // runReleaseMigrations throws on either failure; reaching here with a
