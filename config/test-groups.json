@@ -25,6 +25,30 @@
       "reason": "Release A replaces implicit private coach fallback fixtures with an explicit pre-dispatch cloud-privacy refusal and marks the retained provider retry cases as deliberately authorized; the same suite proves that neither Gemini nor any fallback receives an unauthorized private prompt."
     },
     {
+      "baseSha": "92b722ee02242fd37453ece17d74cfc53102d961",
+      "test": "__tests__/portal/portal-cooking-routes.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/portal/portal-cooking-routes.test.ts",
+        "src/portal/cooking-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-cooking-routes.test.ts"
+      ],
+      "reason": "Release A replaces positional route-handler assertions with exact limiter-before-auth-before-target-guard registration evidence while the retained suite continues to exercise each terminal Cooking handler."
+    },
+    {
+      "baseSha": "92b722ee02242fd37453ece17d74cfc53102d961",
+      "test": "__tests__/portal/portal-user-routes.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/portal/portal-user-routes.test.ts",
+        "src/portal/user-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-user-routes.test.ts"
+      ],
+      "reason": "Release A replaces positional route-handler assertions with exact limiter-before-auth-before-target-guard registration evidence while the retained suite continues to exercise each terminal user-management handler."
+    },
+    {
       "baseSha": "98ec86210f34ad94ea250c8a1eb10ea71aee2db4",
       "test": "__tests__/services/apple-notification-inbox.test.ts",
       "requiredChangedPaths": [

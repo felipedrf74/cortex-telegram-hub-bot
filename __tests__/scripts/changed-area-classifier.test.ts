@@ -475,6 +475,22 @@ describe('lean changed-area classification', () => {
         ],
         replacementTests: ['__tests__/services/gemini-provider.test.ts'],
       }),
+      expect.objectContaining({
+        test: '__tests__/portal/portal-cooking-routes.test.ts',
+        requiredChangedPaths: [
+          '__tests__/portal/portal-cooking-routes.test.ts',
+          'src/portal/cooking-routes.ts',
+        ],
+        replacementTests: ['__tests__/portal/portal-cooking-routes.test.ts'],
+      }),
+      expect.objectContaining({
+        test: '__tests__/portal/portal-user-routes.test.ts',
+        requiredChangedPaths: [
+          '__tests__/portal/portal-user-routes.test.ts',
+          'src/portal/user-routes.ts',
+        ],
+        replacementTests: ['__tests__/portal/portal-user-routes.test.ts'],
+      }),
     ]);
 
     const controlPlaneRetirements = policy.retirementMappings.filter((mapping: {
