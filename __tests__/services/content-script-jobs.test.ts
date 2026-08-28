@@ -174,6 +174,9 @@ const migrationSql = readFileSync(
 ) + readFileSync(
   resolve(__dirname, '../../migrations/301_local_inference_activation_release_binding.sql'),
   'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/302_content_script_batch_validation_diagnostics.sql'),
+  'utf8',
 );
 
 function database(): Database.Database {

@@ -345,6 +345,10 @@ export interface StructuredGenerationBatchState {
   outputFileId?: string;
   errorFileId?: string;
   errorCode?: string;
+  /** Content-free provider input-file line number, when safely bounded. */
+  errorLine?: number;
+  /** Allowlisted provider parameter path; provider message text is never retained. */
+  errorParam?: string;
 }
 
 export interface StructuredGenerationBatchControl {
@@ -396,6 +400,8 @@ export interface StructuredGenerationBatchIntentReconciliationResult {
   outputFileId?: string;
   errorFileId?: string;
   errorCode?: string;
+  errorLine?: number;
+  errorParam?: string;
 }
 
 export interface StructuredGenerationResult {
@@ -537,7 +543,7 @@ export interface AIProvider {
   cancelStructuredGenerationBatch?(
     request: StructuredGenerationBatchCancellationRequest,
   ): Promise<Pick<StructuredGenerationBatchState,
-    'status' | 'outputFileId' | 'errorFileId' | 'errorCode'>>;
+    'status' | 'outputFileId' | 'errorFileId' | 'errorCode' | 'errorLine' | 'errorParam'>>;
 
   /** Delete terminal provider files after the caller's durable retention window. */
   deleteStructuredGenerationBatchFiles?(

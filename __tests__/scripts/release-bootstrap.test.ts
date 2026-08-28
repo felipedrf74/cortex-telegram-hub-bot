@@ -340,6 +340,7 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '299_content_script_job_release_identity.sql' }),
         expect.objectContaining({ file: '300_webhook_owner_encryption_boundary.sql' }),
         expect.objectContaining({ file: '301_local_inference_activation_release_binding.sql' }),
+        expect.objectContaining({ file: '302_content_script_batch_validation_diagnostics.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);
