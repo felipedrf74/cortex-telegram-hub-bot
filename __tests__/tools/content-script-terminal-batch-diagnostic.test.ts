@@ -149,6 +149,23 @@ describe('content-script terminal Batch diagnostic CLI', () => {
     })}\n`]);
   });
 
+  it('fails closed with an allowlisted code when a required argument is absent', async () => {
+    const stderr: string[] = [];
+    const status = await runContentScriptTerminalBatchDiagnosticCli({
+      args: ['--since', '2026-08-28T00:00:00.000Z'],
+      jobIdentitiesJson: JSON.stringify([JOB_ID]),
+      providerFactory: vi.fn(),
+      writeStdout: vi.fn(),
+      writeStderr: (value) => stderr.push(value),
+    });
+
+    expect(status).toBe(1);
+    expect(stderr).toEqual([`${JSON.stringify({
+      ok: false,
+      error: 'content_script_terminal_batch_diagnostic_missing_expected_count',
+    })}\n`]);
+  });
+
   it('keeps a real SDK debug session silent outside the content-free JSON result', async () => {
     const file = databaseFile();
     const requests: string[] = [];

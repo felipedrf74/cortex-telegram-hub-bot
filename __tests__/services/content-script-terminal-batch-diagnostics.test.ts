@@ -213,4 +213,54 @@ describe('terminal content-script Batch diagnostics', () => {
     expect(JSON.stringify(result)).not.toContain('batch_abc123');
     db.close();
   });
+
+  it('normalizes absent and nested schema parameters without retaining provider text', async () => {
+    const db = database();
+    insertCandidate(db, JOB_A, 'batch-a', '2026-08-28T16:00:00.000Z');
+    const inspect = vi.fn()
+      .mockResolvedValueOnce({
+        status: 'failed', errorCode: 'invalid_request', errorLine: 1,
+      })
+      .mockResolvedValueOnce({
+        status: 'failed', errorCode: 'invalid_request', errorLine: 1,
+        errorParam: 'body.response_format.json_schema.schema.properties.private_field',
+      });
+    const provider = { inspectStructuredGenerationBatch: inspect } as unknown as AIProvider;
+    const request = {
+      db,
+      provider,
+      expectedCount: 1,
+      jobIds: [JOB_A],
+      since: new Date('2026-08-28T00:00:00.000Z'),
+    };
+
+    await expect(inspectContentScriptTerminalBatchDiagnostics(request)).resolves.toMatchObject({
+      diagnostics: [{ errorParam: null }],
+    });
+    await expect(inspectContentScriptTerminalBatchDiagnostics(request)).resolves.toMatchObject({
+      diagnostics: [{ errorParam: 'body.response_format.json_schema.schema' }],
+    });
+    db.close();
+  });
+
+  it('rejects an invalid recency clock and an unavailable inspection capability', async () => {
+    const db = database();
+    const request = {
+      db,
+      expectedCount: 1,
+      jobIds: [JOB_A],
+      since: new Date('invalid'),
+    };
+
+    await expect(inspectContentScriptTerminalBatchDiagnostics({
+      ...request,
+      provider: {} as AIProvider,
+    })).rejects.toThrow('content_script_terminal_batch_diagnostic_since_invalid');
+    await expect(inspectContentScriptTerminalBatchDiagnostics({
+      ...request,
+      since: new Date('2026-08-28T00:00:00.000Z'),
+      provider: {} as AIProvider,
+    })).rejects.toThrow('content_script_terminal_batch_diagnostic_provider_unavailable');
+    db.close();
+  });
 });
