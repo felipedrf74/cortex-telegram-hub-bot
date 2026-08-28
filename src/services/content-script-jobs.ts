@@ -76,6 +76,7 @@ const LEASE_MS = 15 * 60 * 1000;
 const STALE_HEARTBEAT_MS = 3 * 60 * 1000;
 const MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS = 2;
 const MAX_SCHEDULED_BATCH_PROVIDER_FAILURE_ATTEMPTS = 3;
+const MAX_LEGACY_SCHEDULED_BATCH_VALIDATION_ATTEMPTS = 4;
 const MAX_CONSECUTIVE_INFRASTRUCTURE_REQUEUES = 3;
 const MAX_FINAL_REPAIR_PASSES = 1;
 const INFRASTRUCTURE_REQUEUE_BACKOFF_MS = [15_000, 60_000] as const;
@@ -436,6 +437,42 @@ function readRow(db: Database.Database, tenantId: number, userId: number, jobId:
   return (db.prepare(`SELECT * FROM content_script_jobs
     WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ?`)
     .get(jobId, tenantId, userId) as JobRow | undefined) ?? null;
+}
+
+function isLegacyScheduledBatchValidationRecovery(
+  db: Database.Database,
+  row: JobRow,
+): boolean {
+  if (row.status !== 'failed'
+      || row.delivery_mode !== 'scheduled'
+      || row.attempt_count !== MAX_SCHEDULED_BATCH_PROVIDER_FAILURE_ATTEMPTS
+      || row.last_error_code !== 'OPENAI_BATCH_FAILED'
+      || row.created_release_id !== null
+      || row.created_release_source_sha !== null
+      || row.created_release_backend_digest !== null
+      || row.completed_release_id !== null
+      || row.completed_release_source_sha !== null
+      || row.completed_release_backend_digest !== null) {
+    return false;
+  }
+  const latestBatches = db.prepare(`WITH scoped AS (
+        SELECT status, last_error_code,
+          julianday(COALESCE(completed_at, updated_at)) AS observed_at
+        FROM content_script_provider_batches
+        WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ?
+      ), latest AS (
+        SELECT MAX(observed_at) AS observed_at FROM scoped
+      )
+      SELECT scoped.status, scoped.last_error_code
+      FROM scoped JOIN latest ON scoped.observed_at = latest.observed_at
+      LIMIT 2`)
+    .all(row.job_id, row.tenant_id, row.owner_user_id) as Array<{
+      status: string;
+      last_error_code: string | null;
+    }>;
+  return latestBatches.length === 1
+    && latestBatches[0]?.status === 'failed'
+    && latestBatches[0].last_error_code === 'invalid_request';
 }
 
 function mapJob(row: JobRow): ContentScriptJobView {
@@ -2636,10 +2673,12 @@ export function retryContentScriptJob(input: {
     // exhausted generation once so the next claim advances the durable Batch
     // identity instead of reopening the poisoned provider result.
     const retryAttemptCount = row.attempt_count + (legacyBatchEmptyOutputExhausted ? 1 : 0);
-    const generationAttemptLimit = retryDeliveryMode === 'scheduled'
-      && row.last_error_code === 'OPENAI_BATCH_FAILED'
-      ? MAX_SCHEDULED_BATCH_PROVIDER_FAILURE_ATTEMPTS
-      : MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS;
+    const legacyScheduledBatchValidationRecovery = isLegacyScheduledBatchValidationRecovery(db, row);
+    const generationAttemptLimit = legacyScheduledBatchValidationRecovery
+      ? MAX_LEGACY_SCHEDULED_BATCH_VALIDATION_ATTEMPTS
+      : retryDeliveryMode === 'scheduled' && row.last_error_code === 'OPENAI_BATCH_FAILED'
+          ? MAX_SCHEDULED_BATCH_PROVIDER_FAILURE_ATTEMPTS
+          : MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS;
     if (retryAttemptCount >= generationAttemptLimit) {
       throw new ContentScriptJobError(
         'CONTENT_SCRIPT_JOB_RETRY_LIMIT',
@@ -2682,6 +2721,7 @@ export function retryContentScriptJob(input: {
     // job's pinned delivery class; a scheduled retry re-defers to the next
     // batch window rather than jumping the standard queue.
     const retryDeferredStart = retryDeliveryMode === 'scheduled'
+      && !legacyScheduledBatchValidationRecovery
       ? scheduledBatchWindowStart(new Date())
       : null;
     const changed = db.prepare(`UPDATE content_script_jobs
