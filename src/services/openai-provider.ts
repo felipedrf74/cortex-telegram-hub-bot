@@ -59,6 +59,10 @@ import {
 import { resolveApiUsageAttribution } from './api-usage-attribution';
 import { assertAiBudgetReservationForProvider } from './cost-guardrail';
 import { resolveManifestClassifierDisposition } from '../router/classifier-prompt-builder';
+import {
+  contentFreeOpenAIBatchError,
+  replaceContentFreeOpenAIBatchError,
+} from './openai-batch-diagnostics';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -111,6 +115,41 @@ const OPENAI_BATCH_FILE_READY_MAX_WAIT_MS = 2 * 60 * 1_000;
 const OPENAI_BATCH_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 const OPENAI_BATCH_RECONCILIATION_PAGE_SIZE = 100;
 const OPENAI_BATCH_RECONCILIATION_MAX_PAGES = 5;
+const OPENAI_BATCH_BODY_KEYS = new Set([
+  'model', 'messages', 'max_completion_tokens', 'max_tokens', 'response_format',
+]);
+
+function openAIBatchInputJsonl(customId: string, body: Record<string, unknown>): string {
+  const messages = body.messages;
+  const tokenFields = ['max_completion_tokens', 'max_tokens']
+    .filter((field) => Object.hasOwn(body, field));
+  const validMessages = Array.isArray(messages) && messages.length === 2
+    && messages.every((message) => message !== null
+      && typeof message === 'object' && !Array.isArray(message)
+      && typeof (message as { content?: unknown }).content === 'string')
+    && ['system', 'developer'].includes(String((messages[0] as { role?: unknown }).role))
+    && (messages[1] as { role?: unknown }).role === 'user';
+  const tokenLimit = tokenFields.length === 1 ? body[tokenFields[0]!] : undefined;
+  if (!/^[0-9a-f]{64}$/u.test(customId)
+      || typeof body.model !== 'string' || body.model.length < 1 || body.model.length > 120
+      || Object.keys(body).some((key) => !OPENAI_BATCH_BODY_KEYS.has(key))
+      || !validMessages
+      || !Number.isSafeInteger(tokenLimit) || Number(tokenLimit) < 1 || Number(tokenLimit) > 1_000_000
+      || (Object.hasOwn(body, 'response_format')
+        && (body.response_format === null || typeof body.response_format !== 'object'
+          || Array.isArray(body.response_format)))) {
+    throw batchError(
+      'OPENAI_BATCH_INPUT_ENVELOPE_INVALID',
+      'OpenAI Batch input envelope failed local structural validation.',
+    );
+  }
+  return `${JSON.stringify({
+    custom_id: customId,
+    method: 'POST',
+    url: '/v1/chat/completions',
+    body,
+  })}\n`;
+}
 
 export const _openAIBatchSleep = {
   fn: (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
@@ -1069,7 +1108,7 @@ async function reconcileOpenAIBatchIntent(
     status: batch.status,
     ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
     ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-    ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
+    ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
   };
 }
 
@@ -1211,9 +1250,10 @@ async function readOpenAIBatchOutput(
   }
   const line = matching[0];
   if (line.error || line.response?.status_code !== 200 || !line.response.body) {
+    const outputErrorCode = contentFreeOpenAIBatchError(line.error).errorCode;
     return {
-      errorCode: typeof line.error?.code === 'string'
-        ? `OPENAI_BATCH_${line.error.code.toUpperCase()}`
+      errorCode: outputErrorCode
+        ? `OPENAI_BATCH_${outputErrorCode.toUpperCase()}`
         : 'OPENAI_BATCH_REQUEST_FAILED',
     };
   }
@@ -1301,6 +1341,7 @@ async function runOpenAIBatchStructuredGeneration(
   delete body.service_tier;
   const requestDigest = crypto.createHash('sha256').update(stableBatchJson(body)).digest('hex');
   const customId = control.stageKey;
+  const inputJsonl = openAIBatchInputJsonl(customId, body);
   let state = control.load();
   if (state && (state.requestDigest !== requestDigest || state.customId !== customId)) {
     throw batchError('OPENAI_BATCH_REQUEST_IDENTITY_MISMATCH', 'Persisted OpenAI Batch identity does not match this request.');
@@ -1368,13 +1409,7 @@ async function runOpenAIBatchStructuredGeneration(
       }
     }
     if (!state.inputFileId) {
-      const jsonl = `${JSON.stringify({
-        custom_id: customId,
-        method: 'POST',
-        url: '/v1/chat/completions',
-        body,
-      })}\n`;
-      const file = await toFile(Buffer.from(jsonl, 'utf8'), state.inputFileIntentFilename!, {
+      const file = await toFile(Buffer.from(inputJsonl, 'utf8'), state.inputFileIntentFilename!, {
         type: 'application/jsonl',
       });
       const uploaded = await client.files.create(
@@ -1458,13 +1493,13 @@ async function runOpenAIBatchStructuredGeneration(
         idempotencyKey: `nexus-batch-${control.stageKey}`,
         ...(request.abortSignal ? { signal: request.abortSignal } : {}),
       });
-      state = {
+      state = replaceContentFreeOpenAIBatchError({
         ...state,
         providerBatchId: batch.id,
         status: batch.status,
         ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
         ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-      };
+      }, batch.errors?.data?.[0]);
       control.persist(state);
     }
     while (state.status !== 'completed') {
@@ -1473,12 +1508,12 @@ async function runOpenAIBatchStructuredGeneration(
       }
       if (state.status === 'cancellation_requested' || state.status === 'cancelling') {
         const cancelled = await client.batches.cancel(state.providerBatchId!, { maxRetries: 0 });
-        state = {
+        state = replaceContentFreeOpenAIBatchError({
           ...state,
           status: cancelled.status === 'cancelled' ? 'cancelled' : 'cancelling',
           ...(cancelled.output_file_id ? { outputFileId: cancelled.output_file_id } : {}),
           ...(cancelled.error_file_id ? { errorFileId: cancelled.error_file_id } : {}),
-        };
+        }, cancelled.errors?.data?.[0]);
         control.persist(state);
         throw batchError('OPENAI_BATCH_CANCELLED', 'OpenAI Batch was cancelled.');
       }
@@ -1486,13 +1521,12 @@ async function runOpenAIBatchStructuredGeneration(
         maxRetries: 0,
         ...(request.abortSignal ? { signal: request.abortSignal } : {}),
       });
-      state = {
+      state = replaceContentFreeOpenAIBatchError({
         ...state,
         status: batch.status,
         ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
         ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-        ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
-      };
+      }, batch.errors?.data?.[0]);
       control.persist(state);
       if (state.status !== 'completed') {
         await _openAIBatchSleep.fn(OPENAI_BATCH_POLL_INTERVAL_MS, request.abortSignal);
@@ -1543,12 +1577,12 @@ async function runOpenAIBatchStructuredGeneration(
         state = { ...state, status: 'cancellation_requested' };
         control.persist(state);
         const cancelled = await client.batches.cancel(providerBatchId, { maxRetries: 0 });
-        state = {
+        state = replaceContentFreeOpenAIBatchError({
           ...state,
           status: cancelled.status === 'cancelled' ? 'cancelled' : 'cancelling',
           ...(cancelled.output_file_id ? { outputFileId: cancelled.output_file_id } : {}),
           ...(cancelled.error_file_id ? { errorFileId: cancelled.error_file_id } : {}),
-        };
+        }, cancelled.errors?.data?.[0]);
         control.persist(state);
       } catch (cancelError) {
         logger.warn({
@@ -1638,6 +1672,8 @@ export class OpenAIProvider implements AIProvider {
     outputFileId?: string;
     errorFileId?: string;
     errorCode?: string;
+    errorLine?: number;
+    errorParam?: string;
   }> {
     const client = getClient();
     let batch = await client.batches.retrieve(request.providerBatchId, { maxRetries: 0 });
@@ -1669,7 +1705,7 @@ export class OpenAIProvider implements AIProvider {
       status: batch.status,
       ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
       ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-      ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
+      ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
     };
   }
 

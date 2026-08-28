@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "a1f01c77c2c1cbac4b283986d0f90ffd087c8d5acf5e67d671294398c84c92fb",
-    "baseCommit": "629276e4a989a888f78e3b657ec2f1eeeeb5bef5",
-    "baseCommitTimestamp": "2026-08-28T11:22:50+01:00",
-    "trackedFiles": 3419,
-    "sourceFiles": 1190
+    "sourceDigest": "1a1922cb5a1a7f4011cae11fbfc83cd2ae9eb43d2ded26caf2df8d61215f590d",
+    "baseCommit": "d2a8c1a6575ff0fed898bdd020a1b98bd3ff0468",
+    "baseCommitTimestamp": "2026-08-28T14:33:30+01:00",
+    "trackedFiles": 3422,
+    "sourceFiles": 1191
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 867
+      "files": 868
     },
     {
       "path": "src/skills",
@@ -4679,9 +4679,9 @@
     }
   ],
   "migrations": {
-    "count": 292,
-    "latest": "migrations/301_local_inference_activation_release_binding.sql",
-    "digest": "907ee16fead2396f183b4aa87a2388d239c35a8e2773f09ff75e15239329d415",
+    "count": 293,
+    "latest": "migrations/302_content_script_batch_validation_diagnostics.sql",
+    "digest": "0a7f548164e97cf922efc1b186cf2d8fc6662ad7f20c40249b5f87abd34067e8",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -4974,7 +4974,8 @@
       "migrations/298_invoice_artifact_identity_journal.sql",
       "migrations/299_content_script_job_release_identity.sql",
       "migrations/300_webhook_owner_encryption_boundary.sql",
-      "migrations/301_local_inference_activation_release_binding.sql"
+      "migrations/301_local_inference_activation_release_binding.sql",
+      "migrations/302_content_script_batch_validation_diagnostics.sql"
     ]
   },
   "capabilities": [

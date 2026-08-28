@@ -523,6 +523,23 @@ describe('OpenAIProvider', () => {
       serviceTier: 'batch',
     });
     expect(mockFileCreate).toHaveBeenCalledTimes(1);
+    const uploadedJsonl = String(mockFileCreate.mock.calls[0][0].file.value);
+    expect(uploadedJsonl.endsWith('\n')).toBe(true);
+    const uploadedEnvelope = JSON.parse(uploadedJsonl.trim());
+    expect(uploadedEnvelope).toMatchObject({
+      custom_id: 'a'.repeat(64),
+      method: 'POST',
+      url: '/v1/chat/completions',
+      body: {
+        model: 'gpt-5.6-luna',
+        max_completion_tokens: 512,
+        messages: [
+          { role: 'system', content: 'SYSTEM' },
+          { role: 'user', content: 'USER' },
+        ],
+      },
+    });
+    expect(uploadedEnvelope.body).not.toHaveProperty('service_tier');
     expect(mockBatchCreate).toHaveBeenCalledWith(expect.objectContaining({
       input_file_id: 'file-input-1',
       endpoint: '/v1/chat/completions',
@@ -576,6 +593,150 @@ describe('OpenAIProvider', () => {
       maxRetries: 0,
       timeout: 5_000,
     });
+  });
+
+  it('persists only allowlisted content-free Batch validation diagnostics', async () => {
+    const stageKey = '8'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-validation-failure' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-validation-failure', status: 'validating' });
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-validation-failure',
+      status: 'failed',
+      errors: {
+        data: [{
+          code: 'invalid_request',
+          line: 1,
+          param: 'body.messages[0].role',
+          message: 'private provider detail must never be retained',
+        }],
+      },
+    });
+    const originalBatchSleep = _openAIBatchSleep.fn;
+    _openAIBatchSleep.fn = async () => {};
+    try {
+      await expect(provider.callStructuredGeneration(batchReadinessRequest(
+        stageKey,
+        () => durableState,
+        (state) => { durableState = structuredClone(state); },
+      ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_FAILED' });
+    } finally {
+      _openAIBatchSleep.fn = originalBatchSleep;
+    }
+    expect(durableState).toMatchObject({
+      status: 'failed',
+      errorCode: 'invalid_request',
+      errorLine: 1,
+      errorParam: 'body.messages[0].role',
+    });
+    expect(JSON.stringify(durableState)).not.toContain('private provider detail');
+  });
+
+  it('rejects an invalid Batch envelope before persisting intent or uploading a file', async () => {
+    const stageKey = '0'.repeat(64);
+    let durableState: any = null;
+    const request = batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    );
+    request.maxTokens = 1_000_001;
+
+    await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
+      code: 'OPENAI_BATCH_INPUT_ENVELOPE_INVALID',
+    });
+    expect(durableState).toBeNull();
+    expect(mockFileCreate).not.toHaveBeenCalled();
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('drops unsafe Batch validation diagnostics instead of persisting provider text', async () => {
+    const stageKey = '9'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-unsafe-diagnostic' });
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'batch-unsafe-diagnostic',
+      status: 'failed',
+      errors: {
+        data: [{
+          code: 'invalid request with private text',
+          line: 0,
+          param: 'body.messages[0].content\nprivate',
+          message: 'private provider detail must never be retained',
+        }],
+      },
+    });
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_FAILED' });
+    expect(durableState).toMatchObject({ status: 'failed' });
+    expect(durableState).not.toHaveProperty('errorCode');
+    expect(durableState).not.toHaveProperty('errorLine');
+    expect(durableState).not.toHaveProperty('errorParam');
+    expect(JSON.stringify(durableState)).not.toContain('private provider detail');
+  });
+
+  it('replaces the Batch validation diagnostic tuple atomically across polls', async () => {
+    const stageKey = '1'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-diagnostic-replacement' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-diagnostic-replacement', status: 'validating' });
+    mockBatchRetrieve
+      .mockResolvedValueOnce({
+        id: 'batch-diagnostic-replacement',
+        status: 'in_progress',
+        errors: { data: [{ code: 'first_error', line: 1, param: 'body.messages[0].role' }] },
+      })
+      .mockResolvedValueOnce({
+        id: 'batch-diagnostic-replacement',
+        status: 'failed',
+        errors: { data: [{ code: 'second_error' }] },
+      });
+    const originalBatchSleep = _openAIBatchSleep.fn;
+    _openAIBatchSleep.fn = async () => {};
+    try {
+      await expect(provider.callStructuredGeneration(batchReadinessRequest(
+        stageKey,
+        () => durableState,
+        (state) => { durableState = structuredClone(state); },
+      ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_FAILED' });
+    } finally {
+      _openAIBatchSleep.fn = originalBatchSleep;
+    }
+    expect(durableState).toMatchObject({ status: 'failed', errorCode: 'second_error' });
+    expect(durableState).not.toHaveProperty('errorLine');
+    expect(durableState).not.toHaveProperty('errorParam');
+  });
+
+  it('maps unsafe per-line Batch output error codes to a content-free generic code', async () => {
+    const stageKey = '2'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-output-error-input' });
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'batch-output-error',
+      status: 'completed',
+      output_file_id: 'file-output-error',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: null,
+        error: {
+          code: 'private output error detail with spaces',
+          message: 'private provider detail must never be retained',
+        },
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_REQUEST_FAILED' });
+    expect(JSON.stringify(durableState)).not.toContain('private output error detail');
+    expect(JSON.stringify(durableState)).not.toContain('private provider detail');
   });
 
   it('bounds Batch input readiness polling to two minutes', async () => {
@@ -917,7 +1078,11 @@ describe('OpenAIProvider', () => {
     mockFileCreate.mockResolvedValueOnce({ id: 'file-input-cancel' });
     mockBatchCreate.mockResolvedValueOnce({ id: 'batch-cancel', status: 'validating' });
     mockBatchRetrieve.mockResolvedValueOnce({ id: 'batch-cancel', status: 'in_progress' });
-    mockBatchCancel.mockResolvedValueOnce({ id: 'batch-cancel', status: 'cancelling' });
+    mockBatchCancel.mockResolvedValueOnce({
+      id: 'batch-cancel',
+      status: 'cancelling',
+      errors: { data: [{ code: 'cancel_pending', line: 1, param: 'body' }] },
+    });
     _openAIBatchSleep.fn = async () => {
       controller.abort(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
       throw controller.signal.reason;
@@ -935,7 +1100,13 @@ describe('OpenAIProvider', () => {
         },
       })).rejects.toThrow('cancelled');
       expect(mockBatchCancel).toHaveBeenCalledWith('batch-cancel', { maxRetries: 0 });
-      expect(durableState).toMatchObject({ status: 'cancelling', providerBatchId: 'batch-cancel' });
+      expect(durableState).toMatchObject({
+        status: 'cancelling',
+        providerBatchId: 'batch-cancel',
+        errorCode: 'cancel_pending',
+        errorLine: 1,
+        errorParam: 'body',
+      });
     } finally {
       _openAIBatchSleep.fn = originalBatchSleep;
     }

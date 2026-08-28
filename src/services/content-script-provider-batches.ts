@@ -9,6 +9,7 @@ import type {
   StructuredGenerationBatchStatus,
 } from './ai-provider';
 import { logger } from '../utils/logger';
+import { contentFreeOpenAIBatchError } from './openai-batch-diagnostics';
 
 interface BatchRow {
   request_digest: string;
@@ -28,6 +29,8 @@ interface BatchRow {
   output_file_id: string | null;
   error_file_id: string | null;
   last_error_code: string | null;
+  last_error_line: number | null;
+  last_error_param: string | null;
 }
 
 const TERMINAL_BATCH_STATUSES = new Set<StructuredGenerationBatchStatus>([
@@ -36,6 +39,23 @@ const TERMINAL_BATCH_STATUSES = new Set<StructuredGenerationBatchStatus>([
 const BATCH_FILE_CLEANUP_CLAIM_STALE_MS = 15 * 60 * 1_000;
 const BATCH_INTENT_PROVIDER_VISIBILITY_GRACE_MS = 15 * 60 * 1_000;
 const BATCH_INTENT_ABSENCE_RECHECK_MS = 60 * 1_000;
+
+function contentFreeBatchErrorDiagnostics(input: {
+  errorCode?: string;
+  errorLine?: number;
+  errorParam?: string;
+}): { errorCode: string | null; errorLine: number | null; errorParam: string | null } {
+  const diagnostic = contentFreeOpenAIBatchError({
+    code: input.errorCode,
+    line: input.errorLine,
+    param: input.errorParam,
+  });
+  return {
+    errorCode: diagnostic.errorCode ?? null,
+    errorLine: diagnostic.errorLine ?? null,
+    errorParam: diagnostic.errorParam ?? null,
+  };
+}
 
 interface BatchIntentRow {
   job_id: string;
@@ -137,6 +157,8 @@ function mapBatchState(row: BatchRow): StructuredGenerationBatchState {
     ...(row.output_file_id ? { outputFileId: row.output_file_id } : {}),
     ...(row.error_file_id ? { errorFileId: row.error_file_id } : {}),
     ...(row.last_error_code ? { errorCode: row.last_error_code } : {}),
+    ...(row.last_error_line !== null ? { errorLine: row.last_error_line } : {}),
+    ...(row.last_error_param ? { errorParam: row.last_error_param } : {}),
   };
 }
 
@@ -171,7 +193,8 @@ export function createContentScriptBatchControl(input: {
         input_file_intent_absence_confirmed_at,
         batch_create_intent_at, batch_create_intent_absence_count,
         batch_create_intent_absence_observed_at, batch_create_intent_absence_confirmed_at,
-        input_file_id, provider_batch_id, output_file_id, error_file_id, last_error_code
+        input_file_id, provider_batch_id, output_file_id, error_file_id, last_error_code,
+        last_error_line, last_error_param
       FROM content_script_provider_batches
       WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ? AND stage_key = ?`)
       .get(input.jobId, input.tenantId, input.userId, input.stageKey) as BatchRow | undefined;
@@ -180,6 +203,7 @@ export function createContentScriptBatchControl(input: {
 
   const persist = (state: StructuredGenerationBatchState): void => {
     input.db.transaction(() => {
+      const diagnostics = contentFreeBatchErrorDiagnostics(state);
       const parent = input.db.prepare(`SELECT status, lease_token, cancellation_requested_at
         FROM content_script_jobs
         WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ?`)
@@ -213,7 +237,8 @@ export function createContentScriptBatchControl(input: {
           input_file_intent_absence_confirmed_at,
           batch_create_intent_at, batch_create_intent_absence_count,
           batch_create_intent_absence_observed_at, batch_create_intent_absence_confirmed_at,
-          input_file_id, provider_batch_id, output_file_id, error_file_id, last_error_code
+          input_file_id, provider_batch_id, output_file_id, error_file_id, last_error_code,
+          last_error_line, last_error_param
         FROM content_script_provider_batches
         WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ? AND stage_key = ?`)
         .get(input.jobId, input.tenantId, input.userId, input.stageKey) as BatchRow | undefined;
@@ -235,9 +260,10 @@ export function createContentScriptBatchControl(input: {
             job_id, tenant_id, owner_user_id, stage_key, request_digest,
             custom_id, input_file_intent_filename, input_file_intent_at,
             batch_create_intent_at, input_file_id, provider_batch_id, status,
-            output_file_id, error_file_id, last_error_code, submitted_at,
+            output_file_id, error_file_id, last_error_code, last_error_line,
+            last_error_param, submitted_at,
             completed_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(
             input.jobId,
             input.tenantId,
@@ -253,7 +279,9 @@ export function createContentScriptBatchControl(input: {
             state.status,
             state.outputFileId ?? null,
             state.errorFileId ?? null,
-            state.errorCode ?? null,
+            diagnostics.errorCode,
+            diagnostics.errorLine,
+            diagnostics.errorParam,
             state.providerBatchId ? now : null,
             TERMINAL_BATCH_STATUSES.has(state.status) ? now : null,
             now,
@@ -286,6 +314,7 @@ export function createContentScriptBatchControl(input: {
               THEN COALESCE(batch_create_intent_at, ?) ELSE batch_create_intent_at END,
             input_file_id = ?, provider_batch_id = ?, status = ?,
             output_file_id = ?, error_file_id = ?, last_error_code = ?,
+            last_error_line = ?, last_error_param = ?,
             submitted_at = CASE WHEN ? IS NOT NULL THEN COALESCE(submitted_at, ?) ELSE submitted_at END,
             completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, ?) ELSE completed_at END,
             updated_at = ?
@@ -301,7 +330,9 @@ export function createContentScriptBatchControl(input: {
           state.status,
           outputFileId,
           errorFileId,
-          state.errorCode ?? null,
+          diagnostics.errorCode,
+          diagnostics.errorLine,
+          diagnostics.errorParam,
           providerBatchId,
           now,
           TERMINAL_BATCH_STATUSES.has(state.status) ? 1 : 0,
@@ -340,7 +371,8 @@ export function createContentScriptBatchControl(input: {
         input_file_intent_absence_confirmed_at,
         batch_create_intent_at, batch_create_intent_absence_count,
         batch_create_intent_absence_observed_at, batch_create_intent_absence_confirmed_at,
-        input_file_id, provider_batch_id, output_file_id, error_file_id, last_error_code
+        input_file_id, provider_batch_id, output_file_id, error_file_id, last_error_code,
+        last_error_line, last_error_param
       FROM content_script_provider_batches
       WHERE job_id = ? AND tenant_id = ? AND owner_user_id = ? AND stage_key = ?`)
       .get(input.jobId, input.tenantId, input.userId, input.stageKey) as BatchRow | undefined;
@@ -515,9 +547,13 @@ export function requestContentScriptBatchCancellationReconciliation(db: Database
               tenantId: row.tenant_id,
               category: 'cloud_local_reasoning',
             });
+            const diagnostics = contentFreeBatchErrorDiagnostics(result);
             db.prepare(`UPDATE content_script_provider_batches
               SET status = ?, output_file_id = COALESCE(output_file_id, ?),
-                  error_file_id = COALESCE(error_file_id, ?), last_error_code = ?,
+                  error_file_id = COALESCE(error_file_id, ?),
+                  last_error_code = COALESCE(?, last_error_code),
+                  last_error_line = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_line END,
+                  last_error_param = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_param END,
                   completed_at = CASE WHEN ? IN ('completed', 'cancelled', 'failed', 'expired')
                     THEN COALESCE(completed_at, ?) ELSE completed_at END,
                   updated_at = ?
@@ -528,7 +564,11 @@ export function requestContentScriptBatchCancellationReconciliation(db: Database
                 result.status,
                 result.outputFileId ?? null,
                 result.errorFileId ?? null,
-                result.errorCode ?? null,
+                diagnostics.errorCode,
+                diagnostics.errorCode,
+                diagnostics.errorLine,
+                diagnostics.errorCode,
+                diagnostics.errorParam,
                 result.status,
                 new Date().toISOString(),
                 new Date().toISOString(),
@@ -611,6 +651,7 @@ async function reconcileClaimedContentScriptBatchIntent(input: {
     const outputFileId = input.row.output_file_id ?? recovered.outputFileId ?? null;
     const errorFileId = input.row.error_file_id ?? recovered.errorFileId ?? null;
     const status = recovered.status ?? input.row.status;
+    const diagnostics = contentFreeBatchErrorDiagnostics(recovered);
 
     let fileAbsence: IntentAbsenceState = {
       count: input.row.input_file_intent_absence_count,
@@ -658,6 +699,8 @@ async function reconcileClaimedContentScriptBatchIntent(input: {
       SET input_file_id = ?, provider_batch_id = ?, status = ?,
         output_file_id = ?, error_file_id = ?,
         last_error_code = COALESCE(?, last_error_code),
+        last_error_line = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_line END,
+        last_error_param = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_param END,
         input_file_intent_absence_count = ?,
         input_file_intent_absence_observed_at = ?,
         input_file_intent_absence_confirmed_at = ?,
@@ -680,7 +723,11 @@ async function reconcileClaimedContentScriptBatchIntent(input: {
         status,
         outputFileId,
         errorFileId,
-        recovered.errorCode ?? null,
+        diagnostics.errorCode,
+        diagnostics.errorCode,
+        diagnostics.errorLine,
+        diagnostics.errorCode,
+        diagnostics.errorParam,
         fileAbsence.count,
         fileAbsence.observedAt,
         fileAbsence.confirmedAt,
@@ -804,10 +851,14 @@ export async function cleanupContentScriptProviderFilesForAccountDeletion(
       tenantId: row.tenant_id,
       category: 'cloud_local_reasoning',
     });
+    const diagnostics = contentFreeBatchErrorDiagnostics(result);
     const timestamp = now.toISOString();
     const updated = db.prepare(`UPDATE content_script_provider_batches
       SET status = ?, output_file_id = COALESCE(output_file_id, ?),
-        error_file_id = COALESCE(error_file_id, ?), last_error_code = ?,
+        error_file_id = COALESCE(error_file_id, ?),
+        last_error_code = COALESCE(?, last_error_code),
+        last_error_line = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_line END,
+        last_error_param = CASE WHEN ? IS NOT NULL THEN ? ELSE last_error_param END,
         completed_at = CASE WHEN ? IN ('completed', 'cancelled', 'failed', 'expired')
           THEN COALESCE(completed_at, ?) ELSE completed_at END,
         updated_at = ?
@@ -818,7 +869,11 @@ export async function cleanupContentScriptProviderFilesForAccountDeletion(
         result.status,
         result.outputFileId ?? null,
         result.errorFileId ?? null,
-        result.errorCode ?? null,
+        diagnostics.errorCode,
+        diagnostics.errorCode,
+        diagnostics.errorLine,
+        diagnostics.errorCode,
+        diagnostics.errorParam,
         result.status,
         timestamp,
         timestamp,
