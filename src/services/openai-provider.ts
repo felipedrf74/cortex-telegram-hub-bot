@@ -105,6 +105,9 @@ function openAIServiceTierCostMultiplier(serviceTier: unknown): number {
 }
 
 const OPENAI_BATCH_POLL_INTERVAL_MS = 15_000;
+const OPENAI_BATCH_FILE_READY_POLL_INTERVAL_MS = 1_000;
+const OPENAI_BATCH_FILE_READY_REQUEST_TIMEOUT_MS = 5_000;
+const OPENAI_BATCH_FILE_READY_MAX_WAIT_MS = 2 * 60 * 1_000;
 const OPENAI_BATCH_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 const OPENAI_BATCH_RECONCILIATION_PAGE_SIZE = 100;
 const OPENAI_BATCH_RECONCILIATION_MAX_PAGES = 5;
@@ -1217,6 +1220,75 @@ async function readOpenAIBatchOutput(
   return { response: line.response.body };
 }
 
+async function waitForOpenAIBatchInputFileReady(
+  client: OpenAI,
+  inputFileId: string,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  const readinessClient = client.withOptions({
+    maxRetries: 0,
+    timeout: OPENAI_BATCH_FILE_READY_REQUEST_TIMEOUT_MS,
+  });
+  const deadline = Date.now() + OPENAI_BATCH_FILE_READY_MAX_WAIT_MS;
+  while (true) {
+    if (abortSignal?.aborted) throw openAiCancellationError(abortSignal);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file did not become provider-ready within the bounded wait.',
+      );
+    }
+    let file: OpenAI.Files.FileObject;
+    try {
+      file = await readinessClient.files.retrieve(inputFileId, {
+        maxRetries: 0,
+        timeout: Math.min(OPENAI_BATCH_FILE_READY_REQUEST_TIMEOUT_MS, remainingMs),
+        ...(abortSignal ? { signal: abortSignal } : {}),
+      });
+    } catch (error) {
+      if (isProviderRequestCancellation(error) || abortSignal?.aborted) {
+        if (abortSignal?.aborted) throw openAiCancellationError(abortSignal);
+        throw error;
+      }
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file readiness could not be proven by the provider.',
+      );
+    }
+    if (file.id !== inputFileId || file.purpose !== 'batch') {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_IDENTITY_MISMATCH',
+        'OpenAI Batch input file identity or purpose did not match the durable request.',
+      );
+    }
+    if (file.status === 'error' || String(file.status) === 'deleted') {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_PROCESSING_FAILED',
+        'OpenAI Batch input file failed provider processing.',
+      );
+    }
+    if (file.status === 'processed') return;
+    if (file.status !== 'uploaded') {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file readiness was not proven by the provider.',
+      );
+    }
+    const sleepMs = Math.min(
+      OPENAI_BATCH_FILE_READY_POLL_INTERVAL_MS,
+      Math.max(0, deadline - Date.now()),
+    );
+    if (sleepMs <= 0) {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file did not become provider-ready within the bounded wait.',
+      );
+    }
+    await _sleep.fn(sleepMs, abortSignal);
+  }
+}
+
 async function runOpenAIBatchStructuredGeneration(
   request: StructuredGenerationRequest,
   params: OpenAINonStreamingParams,
@@ -1327,10 +1399,6 @@ async function runOpenAIBatchStructuredGeneration(
       }
       const createdIntent = state.batchCreateIntent !== true;
       let createMutationAuthorized = createdIntent;
-      if (createdIntent) {
-        state = { ...state, batchCreateIntent: true };
-        control.persist(state);
-      }
       if (!createdIntent) {
         const recovered = await reconcileOpenAIBatchIntent(client, {
           stageKey: control.stageKey,
@@ -1360,6 +1428,16 @@ async function runOpenAIBatchStructuredGeneration(
             'OPENAI_BATCH_CREATE_INTENT_PENDING',
             'OpenAI Batch create intent is pending provider reconciliation.',
           );
+        }
+      }
+      if (!state.providerBatchId) {
+        if (!state.inputFileId) {
+          throw batchError('OPENAI_BATCH_INPUT_FILE_MISSING', 'OpenAI Batch readiness lost its input file identity.');
+        }
+        await waitForOpenAIBatchInputFileReady(client, state.inputFileId, request.abortSignal);
+        if (createdIntent) {
+          state = { ...state, batchCreateIntent: true };
+          control.persist(state);
         }
       }
     }
