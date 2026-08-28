@@ -675,6 +675,19 @@ Final-validation warning codes remain
 visible on failed jobs. API cancellation settles the generating checkpoint and
 clears the exact matching lease in one immediate transaction; the exiting
 worker performs no unfenced post-cancel checkpoint write.
+An unresolved durable Batch-create intent is reconciled before any input-file
+readiness poll, so a provider-accepted Batch remains recoverable even when its
+file metadata is no longer readable. Only when a new durable OpenAI Batch must
+be created does the adapter poll the provider SDK's file-retrieve contract for
+the uploaded input file. Each retrieve carries the caller's abort signal and
+bounded transport timeout, while the loop has bounded poll and total-wait
+limits; cancellation aborts the active retrieve or sleep and stops all later
+polls without creating a Batch. Because the provider has deprecated the
+file-status field, an omitted or unrecognized status is never inferred from
+metadata visibility and fails closed as unproven readiness.
+Identity mismatch, wrong purpose, and provider processing failure fail closed;
+readiness timeout or transport failure is a bounded infrastructure requeue that
+refunds the generation attempt because no Batch was created.
 Checkpoint lifecycle rows record planned, generating, validated, invalid, and
 cancelled states; only validated encrypted output is resumable.
 

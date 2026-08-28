@@ -1486,6 +1486,36 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('requeues Batch input readiness exhaustion without consuming a generation attempt', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'batch-input-readiness-infrastructure',
+      request: {
+        topic: 'Resume after Batch file propagation',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+      },
+    }, db);
+    inferenceMock.mockRejectedValueOnce(Object.assign(new Error('Batch input file not ready'), {
+      code: 'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+    }));
+
+    await expect(service.runContentScriptJob(created.job.jobId, db)).resolves.toMatchObject({
+      status: 'waiting_capacity',
+      errorCode: 'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+    });
+    expect(db.prepare(`SELECT infrastructure_requeue_count, attempt_count
+      FROM content_script_jobs WHERE job_id = ?`).get(created.job.jobId)).toEqual({
+      infrastructure_requeue_count: 1,
+      attempt_count: 0,
+    });
+    db.close();
+  });
+
   it('persists the one-pass final repair budget across an infrastructure requeue', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');
