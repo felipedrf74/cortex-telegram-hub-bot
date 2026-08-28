@@ -75,6 +75,7 @@ export const CONTENT_SCRIPT_JOB_SCHEMA_VERSION = 'nexus-content-script-job-v1';
 const LEASE_MS = 15 * 60 * 1000;
 const STALE_HEARTBEAT_MS = 3 * 60 * 1000;
 const MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS = 2;
+const MAX_SCHEDULED_BATCH_PROVIDER_FAILURE_ATTEMPTS = 3;
 const MAX_CONSECUTIVE_INFRASTRUCTURE_REQUEUES = 3;
 const MAX_FINAL_REPAIR_PASSES = 1;
 const INFRASTRUCTURE_REQUEUE_BACKOFF_MS = [15_000, 60_000] as const;
@@ -2635,7 +2636,11 @@ export function retryContentScriptJob(input: {
     // exhausted generation once so the next claim advances the durable Batch
     // identity instead of reopening the poisoned provider result.
     const retryAttemptCount = row.attempt_count + (legacyBatchEmptyOutputExhausted ? 1 : 0);
-    if (retryAttemptCount >= MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS) {
+    const generationAttemptLimit = retryDeliveryMode === 'scheduled'
+      && row.last_error_code === 'OPENAI_BATCH_FAILED'
+      ? MAX_SCHEDULED_BATCH_PROVIDER_FAILURE_ATTEMPTS
+      : MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS;
+    if (retryAttemptCount >= generationAttemptLimit) {
       throw new ContentScriptJobError(
         'CONTENT_SCRIPT_JOB_RETRY_LIMIT',
         'This script job exhausted its bounded generation attempts.',

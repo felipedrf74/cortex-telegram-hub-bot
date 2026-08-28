@@ -660,11 +660,15 @@ an idempotent replay still returns the originally pinned request after a later
 profile-language change. Explicit language remains part of the semantic hash.
 Retries move the operation's fair-use admission timestamp into the current
 rolling day, remain subject to active-job and daily allowances, and are capped
-at two claimed generation attempts for one durable job. Recoverable capacity,
-lease, heartbeat, and shutdown requeues restore the attempt because they did not
-produce a usable generation attempt. Infrastructure requeues are separately
-bounded to three consecutive failures: the first two wait 15 and 60 seconds,
-and the third terminates with
+at two claimed generation attempts for one durable job. A scheduled job whose
+second claimed attempt terminates with the exact provider result
+`OPENAI_BATCH_FAILED` may be retried once more under the same durable identity;
+the third claimed attempt is final. Delivery class and terminal error must both
+match this exception, so standard/priority work and other scheduled failures
+remain capped at two. Recoverable capacity, lease, heartbeat, and shutdown
+requeues restore the attempt because they did not produce a usable generation
+attempt. Infrastructure requeues are separately bounded to three consecutive
+failures: the first two wait 15 and 60 seconds, and the third terminates with
 `CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED`. A validated checkpoint resets
 that consecutive-infrastructure counter; explicit user retry also resets it.
 Final-validation warning codes remain
