@@ -2679,6 +2679,101 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('allows one final scheduled retry after a second OpenAI Batch failure', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'scheduled-openai-batch-final-retry',
+      request: {
+        topic: 'Recover one final scheduled provider batch',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', progress_percent = 47,
+          attempt_count = 2, last_error_code = 'OPENAI_BATCH_FAILED',
+          next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+
+    expect(service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toMatchObject({ status: 'queued', progress: 47, warnings: [] });
+    expect(db.prepare(`SELECT attempt_count, delivery_mode, next_attempt_at
+      FROM content_script_jobs WHERE job_id = ?`).get(failed.job.jobId)).toEqual({
+      attempt_count: 2,
+      delivery_mode: 'scheduled',
+      next_attempt_at: service.scheduledBatchWindowStart(new Date()),
+    });
+
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 3,
+          last_error_code = 'OPENAI_BATCH_FAILED', next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
+  it('requires both scheduled delivery and an OpenAI Batch failure for the final retry', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const scheduledOtherFailure = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'scheduled-other-failure-no-final-retry',
+      request: {
+        topic: 'Keep other scheduled failures bounded',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 2,
+          last_error_code = 'LOCAL_SCRIPT_FINAL_VALIDATION_FAILED'
+      WHERE job_id = ?`).run(scheduledOtherFailure.job.jobId);
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: scheduledOtherFailure.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+
+    const standardBatchFailure = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'standard-batch-failure-no-final-retry',
+      request: {
+        topic: 'Keep standard failures bounded',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 2,
+          last_error_code = 'OPENAI_BATCH_FAILED'
+      WHERE job_id = ?`).run(standardBatchFailure.job.jobId);
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: standardBatchFailure.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
   it('does not let a retry exceed the plan active-job entitlement', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');
