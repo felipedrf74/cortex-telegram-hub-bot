@@ -215,9 +215,10 @@ function batchReadinessRequest(
   load: () => any,
   persist: (state: any) => void,
   abortSignal?: AbortSignal,
+  model = 'gpt-5.6-luna',
 ) {
   return {
-    systemPrompt: 'SYSTEM', userPrompt: 'USER', model: 'gpt-5.6-luna',
+    systemPrompt: 'SYSTEM', userPrompt: 'USER', model,
     serviceTier: 'batch' as const, maxTokens: 512, userId: 7, tenantId: 7,
     category: 'cloud_local_reasoning' as const, responseFormat: 'text' as const,
     ...(abortSignal ? { abortSignal } : {}),
@@ -229,6 +230,7 @@ function mockCompletedReadinessBatch(
   stageKey: string,
   text = 'ready',
   onCreate?: () => void,
+  model = 'gpt-5.6-luna',
 ): void {
   mockBatchCreate.mockImplementationOnce(async () => {
     onCreate?.();
@@ -246,7 +248,7 @@ function mockCompletedReadinessBatch(
         body: {
           choices: [{ message: { content: text }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 2, completion_tokens: 1 },
-          model: 'gpt-5.6-luna',
+          model,
         },
       },
       error: null,
@@ -534,7 +536,7 @@ describe('OpenAIProvider', () => {
         model: 'gpt-5.6-luna',
         max_completion_tokens: 512,
         messages: [
-          { role: 'system', content: 'SYSTEM' },
+          { role: 'developer', content: 'SYSTEM' },
           { role: 'user', content: 'USER' },
         ],
       },
@@ -556,6 +558,28 @@ describe('OpenAIProvider', () => {
     expect(mockFileCreate).toHaveBeenCalledTimes(1);
     expect(mockBatchCreate).toHaveBeenCalledTimes(1);
     expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('preserves the legacy system instruction role for older Batch models', async () => {
+    const stageKey = '6'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-legacy-system-role' });
+    mockCompletedReadinessBatch(stageKey, 'legacy-ready', undefined, 'gpt-4o');
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+      undefined,
+      'gpt-4o',
+    ))).resolves.toMatchObject({ text: 'legacy-ready', serviceTier: 'batch' });
+
+    const uploadedJsonl = String(mockFileCreate.mock.calls[0][0].file.value);
+    const uploadedEnvelope = JSON.parse(uploadedJsonl.trim());
+    expect(uploadedEnvelope.body.messages).toEqual([
+      { role: 'system', content: 'SYSTEM' },
+      { role: 'user', content: 'USER' },
+    ]);
   });
 
   it('waits for a newly uploaded Batch file to be processed before creating the Batch', async () => {
