@@ -67,6 +67,12 @@ import {
 // ─── Client (lazy init — only created if API key is set) ────────────
 
 let _client: OpenAI | null = null;
+const SILENT_OPENAI_LOGGER = {
+  error: (_message: string, ..._rest: unknown[]) => undefined,
+  warn: (_message: string, ..._rest: unknown[]) => undefined,
+  info: (_message: string, ..._rest: unknown[]) => undefined,
+  debug: (_message: string, ..._rest: unknown[]) => undefined,
+};
 
 function getClient(): OpenAI {
   if (!_client) {
@@ -1705,6 +1711,28 @@ export class OpenAIProvider implements AIProvider {
       status: batch.status,
       ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
       ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
+      ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
+    };
+  }
+
+  async inspectStructuredGenerationBatch(
+    request: import('./ai-provider').StructuredGenerationBatchInspectionRequest,
+  ): Promise<Pick<import('./ai-provider').StructuredGenerationBatchState,
+    'status' | 'errorCode' | 'errorLine' | 'errorParam'>> {
+    const providerBatchId = request.providerBatchId;
+    if (!/^[A-Za-z0-9_-]{1,200}$/u.test(providerBatchId)) {
+      throw batchError(
+        'OPENAI_BATCH_INSPECTION_IDENTITY_INVALID',
+        'OpenAI Batch inspection identity is invalid.',
+      );
+    }
+    const silentClient = getClient().withOptions({
+      logLevel: 'off',
+      logger: SILENT_OPENAI_LOGGER,
+    });
+    const batch = await silentClient.batches.retrieve(providerBatchId, { maxRetries: 0 });
+    return {
+      status: batch.status,
       ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
     };
   }
