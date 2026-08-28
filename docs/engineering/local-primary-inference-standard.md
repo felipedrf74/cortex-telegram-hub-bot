@@ -665,7 +665,16 @@ second claimed attempt terminates with the exact provider result
 `OPENAI_BATCH_FAILED` may be retried once more under the same durable identity;
 the third claimed attempt is final. Delivery class and terminal error must both
 match this exception, so standard/priority work and other scheduled failures
-remain capped at two. Recoverable capacity, lease, heartbeat, and shutdown
+remain capped at two. One legacy compatibility exception permits an immediate
+fourth claim only when the failed scheduled job has no creation or completion
+release identity, its attempt count is exactly three, and its latest
+tenant/owner-scoped provider Batch is durably failed with safe validation code
+`invalid_request`; an ambiguous tie at the newest persisted timestamp fails
+closed. The authenticated retry preserves the same durable job,
+delivery class, and provider history but clears the future start for this one
+claim. Attempt four is terminal and cannot enter the exception again; current
+release-bound jobs and any other provider result retain the normal limits.
+Recoverable capacity, lease, heartbeat, and shutdown
 requeues restore the attempt because they did not produce a usable generation
 attempt. Infrastructure requeues are separately bounded to three consecutive
 failures: the first two wait 15 and 60 seconds, and the third terminates with
