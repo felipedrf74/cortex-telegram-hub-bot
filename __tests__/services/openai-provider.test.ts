@@ -632,6 +632,48 @@ describe('OpenAIProvider', () => {
     expect(JSON.stringify(durableState)).not.toContain('private provider detail');
   });
 
+  it('inspects a terminal Batch without mutating it or returning provider text', async () => {
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-terminal-diagnostic',
+      status: 'failed',
+      errors: {
+        data: [{
+          code: 'invalid_request',
+          line: 1,
+          param: 'body.response_format',
+          message: 'private provider detail must never be returned',
+        }],
+      },
+    });
+
+    await expect(provider.inspectStructuredGenerationBatch({
+      providerBatchId: 'batch-terminal-diagnostic',
+    })).resolves.toEqual({
+      status: 'failed',
+      errorCode: 'invalid_request',
+      errorLine: 1,
+      errorParam: 'body.response_format',
+    });
+    expect(mockBatchRetrieve).toHaveBeenCalledWith('batch-terminal-diagnostic', { maxRetries: 0 });
+    expect(mockOpenAIWithOptions).toHaveBeenCalledWith(expect.objectContaining({
+      logLevel: 'off',
+      logger: expect.objectContaining({
+        error: expect.any(Function),
+        warn: expect.any(Function),
+        info: expect.any(Function),
+        debug: expect.any(Function),
+      }),
+    }));
+    expect(mockBatchCancel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a padded Batch identity instead of normalizing it', async () => {
+    await expect(provider.inspectStructuredGenerationBatch({
+      providerBatchId: ' batch-terminal-diagnostic ',
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_INSPECTION_IDENTITY_INVALID' });
+    expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid Batch envelope before persisting intent or uploading a file', async () => {
     const stageKey = '0'.repeat(64);
     let durableState: any = null;

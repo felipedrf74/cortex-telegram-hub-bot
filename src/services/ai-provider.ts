@@ -377,6 +377,10 @@ export interface StructuredGenerationBatchCancellationRequest {
   category: StructuredGenerationRequest['category'];
 }
 
+export interface StructuredGenerationBatchInspectionRequest {
+  providerBatchId: string;
+}
+
 export interface StructuredGenerationBatchFileCleanupRequest {
   /** Absent when upload succeeded but process loss happened before Batch creation. */
   providerBatchId?: string;
@@ -544,6 +548,12 @@ export interface AIProvider {
     request: StructuredGenerationBatchCancellationRequest,
   ): Promise<Pick<StructuredGenerationBatchState,
     'status' | 'outputFileId' | 'errorFileId' | 'errorCode' | 'errorLine' | 'errorParam'>>;
+
+  /** Read a known Batch object's content-free terminal status without mutation. */
+  inspectStructuredGenerationBatch?(
+    request: StructuredGenerationBatchInspectionRequest,
+  ): Promise<Pick<StructuredGenerationBatchState,
+    'status' | 'errorCode' | 'errorLine' | 'errorParam'>>;
 
   /** Delete terminal provider files after the caller's durable retention window. */
   deleteStructuredGenerationBatchFiles?(
