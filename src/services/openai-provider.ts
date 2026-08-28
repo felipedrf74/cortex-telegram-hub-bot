@@ -178,6 +178,14 @@ function isGpt56Model(model: unknown): boolean {
   return /^gpt-5\.6(?:[-.:]|$)/i.test(String(model || '').trim());
 }
 
+function openAIBatchInstructionRole(model: unknown): 'system' | 'developer' {
+  // OpenAI's current Chat Completions contract uses developer messages in
+  // place of legacy system messages for o1 and newer reasoning models. Keep
+  // older models on their established role while aligning GPT-5.6 Batch JSONL
+  // with the provider's model-specific validation contract.
+  return isGpt56Model(model) ? 'developer' : 'system';
+}
+
 function openAIContextRateMultipliers(model: string, inputTokens: number): {
   inputRateMultiplier: number;
   outputRateMultiplier: number;
@@ -1636,7 +1644,7 @@ export class OpenAIProvider implements AIProvider {
       return runOpenAIBatchStructuredGeneration(request, withTokenLimit({
         model: request.model,
         messages: [
-          { role: 'system', content: request.systemPrompt },
+          { role: openAIBatchInstructionRole(request.model), content: request.systemPrompt },
           { role: 'user', content: request.userPrompt },
         ],
         ...(responseFormat ? { response_format: responseFormat } : {}),
