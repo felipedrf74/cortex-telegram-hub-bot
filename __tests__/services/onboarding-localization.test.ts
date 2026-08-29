@@ -30,4 +30,12 @@ describe('training questionnaire pt-PT wire copy', () => {
     const english = localizeOnboardingQuestionnaire(QUESTIONNAIRES.fitness, 'en-US');
     expect(english).toBe(QUESTIONNAIRES.fitness);
   });
+
+  it('localizes gym session duration in both Portuguese variants', () => {
+    for (const language of ['pt-PT', 'pt-BR'] as const) {
+      const localized = localizeOnboardingQuestionnaire(QUESTIONNAIRES['triathlon-gym'], language);
+      const duration = localized.steps.find((step) => step.key === 'session_duration_minutes');
+      expect(duration?.prompt).toBe('Quantos minutos podes dedicar normalmente a cada sessão de ginásio?');
+    }
+  });
 });

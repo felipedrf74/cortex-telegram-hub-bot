@@ -182,7 +182,7 @@ export function localizeOnboardingQuestionnaire(
   questionnaire: QuestionnaireDefinition,
   language: Lang,
 ): LocalizedQuestionnaire {
-  if (language !== 'pt-PT') return questionnaire;
+  if (language !== 'pt-PT' && language !== 'pt-BR') return questionnaire;
 
   const questionnaireCopy = PT_PT_TITLES[questionnaire.id];
   const questions = PT_PT_QUESTIONS[questionnaire.id] ?? {};

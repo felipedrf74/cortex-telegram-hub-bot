@@ -14,6 +14,7 @@ import {
   getMissingProfileFields,
   startOrResume,
   getActiveSession,
+  isSkippedOnboardingAnswer,
   OnboardingStepMismatchError,
 } from '../../services/onboarding';
 import { invalidateOnboardingDerivedCaches } from '../../services/cache-coherence-registry';
@@ -97,7 +98,8 @@ function buildAthleteProfileDetail(userId: number, language: Lang) {
     const data = profile?.data ?? {};
 
     const fields = questionnaire.steps.map((step) => {
-      const answered = Object.prototype.hasOwnProperty.call(data, step.key);
+      const hasStoredValue = Object.prototype.hasOwnProperty.call(data, step.key);
+      const answered = hasStoredValue && !isSkippedOnboardingAnswer(step.key, data[step.key]);
       return {
         key: step.key,
         prompt: step.prompt,
@@ -342,7 +344,7 @@ export function onboardingRoutes(): Router {
         progress: Math.min(1, advancedStep / totalSteps),
         currentStep: advancedStep,
         idempotentReplay: result.idempotentReplay === true,
-        skipped: skip === true,
+        skipped: result.skipped === true,
       });
     } catch (err: any) {
       if (err instanceof OnboardingStepMismatchError) {

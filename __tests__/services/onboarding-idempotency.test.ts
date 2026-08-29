@@ -111,6 +111,22 @@ describe('onboarding idempotent answer (stepIndex concurrency)', () => {
     expect(session?.current_step).toBe(1);
     expect(session?.answers).not.toHaveProperty('experience_level');
   });
+
+  it.each(['none', 'nenhum'])(
+    'treats %s as a skipped injury rather than an answered field',
+    (noInjuryAnswer) => {
+      startOrResume(USER, 'fitness');
+      for (let stepIndex = 0; stepIndex < 5; stepIndex++) {
+        answerStep(USER, 'fitness', undefined, { expectedStepIndex: stepIndex, skip: true });
+      }
+
+      const result = answerStep(USER, 'fitness', noInjuryAnswer, { expectedStepIndex: 5 });
+
+      expect(result.skipped).toBe(true);
+      expect(getActiveSession(USER, 'fitness')?.current_step).toBe(6);
+      expect(getActiveSession(USER, 'fitness')?.answers).not.toHaveProperty('injuries');
+    },
+  );
 });
 
 describe('onboarding completion is transactional', () => {

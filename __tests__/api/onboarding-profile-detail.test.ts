@@ -232,6 +232,30 @@ describe('GET /api/v1/onboarding/profile/detail', () => {
     expect(bench.value).toBeNull();
   });
 
+  it('does not count legacy synthetic skips or nenhum injuries as answered', async () => {
+    testDb.prepare(`
+      INSERT INTO user_profiles (user_id, profile_type, data)
+      VALUES (?, 'fitness', ?)
+    `).run(1005, JSON.stringify({
+      experience_level: 'sem resposta',
+      injuries: 'nenhum',
+    }));
+
+    const res = await dispatch('GET', '/profile/detail', 1005);
+    const fitness = res.body.data.profiles.find((p: any) => p.type === 'fitness');
+
+    expect(fitness.completedFieldCount).toBe(0);
+    expect(fitness.isComplete).toBe(false);
+    expect(fitness.fields.find((f: any) => f.key === 'experience_level')).toMatchObject({
+      answered: false,
+      value: null,
+    });
+    expect(fitness.fields.find((f: any) => f.key === 'injuries')).toMatchObject({
+      answered: false,
+      value: null,
+    });
+  });
+
   it('marks a fully-answered profile as isComplete', async () => {
     const questionnaire = getQuestionnaire('triathlon-swim')!;
     for (const step of questionnaire.steps) {

@@ -40,6 +40,19 @@ export interface QuestionnaireDefinition {
   steps: QuestionStep[];
 }
 
+const LEGACY_SKIP_ANSWER_VALUES = new Set(['skipped', 'sem resposta']);
+const INJURY_NONE_VALUES = new Set(['none', 'nenhum', 'nenhuma']);
+const INJURY_FIELDS = new Set(['injuries', 'injury_history']);
+
+/** Treat legacy synthetic skips and explicit no-injury copy as unanswered. */
+export function isSkippedOnboardingAnswer(fieldKey: string, value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLocaleLowerCase('pt-PT');
+  if (!normalized) return true;
+  if (LEGACY_SKIP_ANSWER_VALUES.has(normalized)) return true;
+  return INJURY_FIELDS.has(fieldKey) && INJURY_NONE_VALUES.has(normalized);
+}
+
 export interface OnboardingSession {
   id: number;
   user_id: number;
@@ -605,7 +618,7 @@ export function answerStep(
   rawQuestionnaireId: string,
   answer: string | undefined,
   options: { expectedStepIndex?: number; skip?: boolean } = {},
-): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean } {
+): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean; skipped?: boolean } {
   const db = getDb();
   // Canonicalize like startOrResume so an alias-id answer addresses
   // the same session row the canonical start created.
@@ -650,17 +663,19 @@ export function answerStep(
   const currentStep = def.steps[session.current_step];
   if (!currentStep) throw new Error('Session already at last step');
 
-  if (!skip && answer === undefined) {
+  const shouldSkip = skip || isSkippedOnboardingAnswer(currentStep.key, answer);
+
+  if (!shouldSkip && answer === undefined) {
     throw new Error('Answer is required unless the step is skipped');
   }
 
   // Validate non-skipped answers only. An explicit skip advances the cursor
   // without creating a profile key, so progress reflects answered fields.
-  if (!skip && currentStep.validation && !currentStep.validation.test(answer!)) {
+  if (!shouldSkip && currentStep.validation && !currentStep.validation.test(answer!)) {
     throw new Error(`Invalid answer format for ${currentStep.key}`);
   }
 
-  const answers = skip
+  const answers = shouldSkip
     ? { ...session.answers }
     : { ...session.answers, [currentStep.key]: answer! };
   const nextStepIdx = session.current_step + 1;
@@ -706,6 +721,7 @@ export function answerStep(
   return {
     nextStep: isComplete ? null : def.steps[nextStepIdx],
     session: updatedSession,
+    skipped: shouldSkip,
   };
 }
 
@@ -819,7 +835,11 @@ export function upsertProfileField(
   const canonicalType = canonicalProfileType(profileType);
   const existing = getProfile(userId, profileType);
   const data: Record<string, string> = { ...(existing?.data ?? {}) };
-  data[fieldKey] = value;
+  if (isSkippedOnboardingAnswer(fieldKey, value)) {
+    delete data[fieldKey];
+  } else {
+    data[fieldKey] = value;
+  }
   db.prepare(`
     INSERT INTO user_profiles (user_id, profile_type, data)
     VALUES (?, ?, ?)
@@ -842,7 +862,11 @@ export function getMissingProfileFields(
   const def = getQuestionnaire(profileType);
   if (!def) return [];
   const profile = getProfile(userId, profileType);
-  const answered = new Set(Object.keys(profile?.data ?? {}));
+  const answered = new Set(
+    Object.entries(profile?.data ?? {})
+      .filter(([fieldKey, value]) => !isSkippedOnboardingAnswer(fieldKey, value))
+      .map(([fieldKey]) => fieldKey),
+  );
   return def.steps.filter((step) => step.required !== false && !answered.has(step.key));
 }
 
@@ -941,6 +965,7 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   bench_1rm_kg: 'Bench 1RM (kg)',
   deadlift_1rm_kg: 'Deadlift 1RM (kg)',
   sessions_per_week: 'Sessions per week',
+  session_duration_minutes: 'Session duration (minutes)',
   equipment_access: 'Equipment access',
   // Running
   weekly_mileage_km: 'Weekly mileage (km)',
@@ -1006,7 +1031,7 @@ export function renderProfile(profile: UserProfile): string {
     // profile.data is typed as Record<string, string>, so all numeric
     // answers arrive as their string representation ("0", "0.0").
     if (value === '' || value == null) continue;
-    if (value === 'none' || value === 'None') continue;
+    if (isSkippedOnboardingAnswer(key, value) || /^none$/i.test(value)) continue;
     if (value === '0' || value === '0.0') continue;
     lines.push(`- ${labelFor(key)}: ${value}`);
   }

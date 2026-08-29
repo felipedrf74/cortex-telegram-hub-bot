@@ -229,7 +229,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
       preferredCardioTime: '07:00',
       preferredStrengthTime: '18:30',
       notes: null,
-      fitnessProfile: { injuries: 'none' },
+      fitnessProfile: { injuries: 'nenhum' },
       gymProfile: null,
       runProfile: { injury_history: 'none' },
     });

@@ -2574,7 +2574,7 @@ function sumMinutesForSport(weeklyPlan: WeeklyPlan, sport: Sport): number {
 function cleanFreeText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  if (!trimmed || /^none\b/i.test(trimmed)) return null;
+  if (!trimmed || /^(?:none|nenhum|nenhuma)\b/i.test(trimmed)) return null;
   return trimmed;
 }
 
