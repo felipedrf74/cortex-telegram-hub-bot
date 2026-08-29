@@ -660,17 +660,43 @@ an idempotent replay still returns the originally pinned request after a later
 profile-language change. Explicit language remains part of the semantic hash.
 Retries move the operation's fair-use admission timestamp into the current
 rolling day, remain subject to active-job and daily allowances, and are capped
-at two claimed generation attempts for one durable job. Recoverable capacity,
-lease, heartbeat, and shutdown requeues restore the attempt because they did not
-produce a usable generation attempt. Infrastructure requeues are separately
-bounded to three consecutive failures: the first two wait 15 and 60 seconds,
-and the third terminates with
+at two claimed generation attempts for one durable job. A scheduled job whose
+second claimed attempt terminates with the exact provider result
+`OPENAI_BATCH_FAILED` may be retried once more under the same durable identity;
+the third claimed attempt is final. Delivery class and terminal error must both
+match this exception, so standard/priority work and other scheduled failures
+remain capped at two. One legacy compatibility exception permits an immediate
+fourth claim only when the failed scheduled job has no creation or completion
+release identity, its attempt count is exactly three, and its latest
+tenant/owner-scoped provider Batch is durably failed with safe validation code
+`invalid_request`; an ambiguous tie at the newest persisted timestamp fails
+closed. The authenticated retry preserves the same durable job,
+delivery class, and provider history but clears the future start for this one
+claim. Attempt four is terminal and cannot enter the exception again; current
+release-bound jobs and any other provider result retain the normal limits.
+Recoverable capacity, lease, heartbeat, and shutdown
+requeues restore the attempt because they did not produce a usable generation
+attempt. Infrastructure requeues are separately bounded to three consecutive
+failures: the first two wait 15 and 60 seconds, and the third terminates with
 `CONTENT_SCRIPT_INFRASTRUCTURE_RETRY_EXHAUSTED`. A validated checkpoint resets
 that consecutive-infrastructure counter; explicit user retry also resets it.
 Final-validation warning codes remain
 visible on failed jobs. API cancellation settles the generating checkpoint and
 clears the exact matching lease in one immediate transaction; the exiting
 worker performs no unfenced post-cancel checkpoint write.
+An unresolved durable Batch-create intent is reconciled before any input-file
+readiness poll, so a provider-accepted Batch remains recoverable even when its
+file metadata is no longer readable. Only when a new durable OpenAI Batch must
+be created does the adapter poll the provider SDK's file-retrieve contract for
+the uploaded input file. Each retrieve carries the caller's abort signal and
+bounded transport timeout, while the loop has bounded poll and total-wait
+limits; cancellation aborts the active retrieve or sleep and stops all later
+polls without creating a Batch. Because the provider has deprecated the
+file-status field, an omitted or unrecognized status is never inferred from
+metadata visibility and fails closed as unproven readiness.
+Identity mismatch, wrong purpose, and provider processing failure fail closed;
+readiness timeout or transport failure is a bounded infrastructure requeue that
+refunds the generation attempt because no Batch was created.
 Checkpoint lifecycle rows record planned, generating, validated, invalid, and
 cancelled states; only validated encrypted output is resumable.
 

@@ -1547,7 +1547,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/content-script-jobs.ts:2637-2637",
+            "pattern": "src/services/content-script-jobs.ts:2675-2675",
             "anchor": "legacyBatchEmptyOutputExhausted ? 1 : 0",
             "behavior": "A legacy scheduled empty-output exhaustion consumes its poisoned generation exactly once before the same durable job is reopened.",
             "replacementTest": "__tests__/services/content-script-jobs.test.ts",
@@ -1567,7 +1567,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/content-script-provider-batches.ts:1101-1101",
+            "pattern": "src/services/content-script-provider-batches.ts:1156-1156",
             "anchor": "now.getTime() - retentionDays * 24 * 60 * 60 * 1_000",
             "behavior": "Provider Batch files remain retained for the full parent-job retry window regardless of the age of an individual Batch stage.",
             "replacementTest": "__tests__/services/content-script-provider-batches.test.ts",

@@ -3,6 +3,7 @@
 import dotenv from 'dotenv';
 import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation-runtime';
 import { resolveOllamaSmallOnlyRuntimeConfig } from './services/ollama-model-policy';
+import { resolveOpenAIBatchProjectCredentials } from './services/openai-batch-project-config';
 import { isHistoricalStripeMonthlyPriceId } from './services/stripe-price-identity';
 dotenv.config(contentLiveEvalDotenvOptions());
 
@@ -87,6 +88,8 @@ function optionalBoolean(key: string, fallback: boolean): boolean {
   return false;
 }
 
+const OPENAI_BATCH_PROJECT = resolveOpenAIBatchProjectCredentials();
+
 function contentWorkspaceRolloutMode(): ContentWorkspaceRolloutConfigMode {
   const fallback: ContentWorkspaceRolloutConfigMode = IS_PRODUCTION ? 'read_only' : 'write';
   const raw = process.env.CONTENT_WORKSPACE_V1_MODE?.trim().toLowerCase();
@@ -166,6 +169,8 @@ export const config = {
   // ── Alternative AI Providers (optional fallbacks) ──────────────────
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
+    batchApiKey: OPENAI_BATCH_PROJECT.apiKey,
+    batchProjectId: OPENAI_BATCH_PROJECT.projectId,
     model: process.env.OPENAI_MODEL || 'gpt-5.4-nano',
     classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-5.4-nano',
     maxTokens: 2048,            // bumped from 1024 — cooking/content need full recipe length

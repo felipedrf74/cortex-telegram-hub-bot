@@ -165,7 +165,10 @@ let cachedComparisonBase;
 function comparisonBaseIdentity() {
   if (!changedOnly) return null;
   if (cachedComparisonBase === undefined) {
-    cachedComparisonBase = activeMergeMainParent() ?? resolveBase();
+    // An explicit base is an immutable caller contract (for example, the
+    // release-manifest verifier's GitHub-derived push-before SHA). Merge-state
+    // inference is only a fallback for local invocations that omitted it.
+    cachedComparisonBase = baseRef ? resolveBase() : activeMergeMainParent() ?? resolveBase();
   }
   return cachedComparisonBase;
 }

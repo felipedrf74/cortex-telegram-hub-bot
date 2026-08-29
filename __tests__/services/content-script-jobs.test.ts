@@ -174,6 +174,9 @@ const migrationSql = readFileSync(
 ) + readFileSync(
   resolve(__dirname, '../../migrations/301_local_inference_activation_release_binding.sql'),
   'utf8',
+) + readFileSync(
+  resolve(__dirname, '../../migrations/302_content_script_batch_validation_diagnostics.sql'),
+  'utf8',
 );
 
 function database(): Database.Database {
@@ -1486,6 +1489,36 @@ describe('durable Content script jobs', () => {
     db.close();
   });
 
+  it('requeues Batch input readiness exhaustion without consuming a generation attempt', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'batch-input-readiness-infrastructure',
+      request: {
+        topic: 'Resume after Batch file propagation',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+      },
+    }, db);
+    inferenceMock.mockRejectedValueOnce(Object.assign(new Error('Batch input file not ready'), {
+      code: 'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+    }));
+
+    await expect(service.runContentScriptJob(created.job.jobId, db)).resolves.toMatchObject({
+      status: 'waiting_capacity',
+      errorCode: 'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+    });
+    expect(db.prepare(`SELECT infrastructure_requeue_count, attempt_count
+      FROM content_script_jobs WHERE job_id = ?`).get(created.job.jobId)).toEqual({
+      infrastructure_requeue_count: 1,
+      attempt_count: 0,
+    });
+    db.close();
+  });
+
   it('persists the one-pass final repair budget across an infrastructure requeue', async () => {
     const db = database();
     const service = await import('../../src/services/content-script-jobs');
@@ -2676,6 +2709,325 @@ describe('durable Content script jobs', () => {
       jobId: failed.job.jobId,
     }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
     expect(service.getContentScriptJob(42, 42, failed.job.jobId, db)?.status).toBe('failed');
+    db.close();
+  });
+
+  it('allows one final scheduled retry after a second OpenAI Batch failure', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'scheduled-openai-batch-final-retry',
+      request: {
+        topic: 'Recover one final scheduled provider batch',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', progress_percent = 47,
+          attempt_count = 2, last_error_code = 'OPENAI_BATCH_FAILED',
+          next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+
+    expect(service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toMatchObject({ status: 'queued', progress: 47, warnings: [] });
+    expect(db.prepare(`SELECT attempt_count, delivery_mode, next_attempt_at
+      FROM content_script_jobs WHERE job_id = ?`).get(failed.job.jobId)).toEqual({
+      attempt_count: 2,
+      delivery_mode: 'scheduled',
+      next_attempt_at: service.scheduledBatchWindowStart(new Date()),
+    });
+
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 3,
+          last_error_code = 'OPENAI_BATCH_FAILED', next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
+  it('allows one immediate fourth attempt only for a legacy scheduled Batch validation failure', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'legacy-scheduled-batch-validation-recovery',
+      request: {
+        topic: 'Recover one legacy provider validation failure',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', progress_percent = 47,
+          attempt_count = 3, last_error_code = 'OPENAI_BATCH_FAILED',
+          next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+    db.prepare(`INSERT INTO content_script_provider_batches (
+        job_id, tenant_id, owner_user_id, stage_key, request_digest, custom_id,
+        input_file_id, provider_batch_id, status, last_error_code, completed_at
+      ) VALUES (?, 42, 42, ?, ?, 'legacy-validation-recovery',
+        'legacy-validation-input', 'legacy-validation-batch', 'failed',
+        'invalid_request', '2026-08-28T15:00:00.000Z')`)
+      .run(failed.job.jobId, 'a'.repeat(64), 'b'.repeat(64));
+
+    expect(service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toMatchObject({ status: 'queued', progress: 47, warnings: [] });
+    expect(db.prepare(`SELECT attempt_count, delivery_mode, next_attempt_at,
+          created_release_id, created_release_source_sha, created_release_backend_digest,
+          completed_release_id, completed_release_source_sha, completed_release_backend_digest
+        FROM content_script_jobs WHERE job_id = ?`).get(failed.job.jobId)).toEqual({
+      attempt_count: 3,
+      delivery_mode: 'scheduled',
+      next_attempt_at: null,
+      created_release_id: null,
+      created_release_source_sha: null,
+      created_release_backend_digest: null,
+      completed_release_id: null,
+      completed_release_source_sha: null,
+      completed_release_backend_digest: null,
+    });
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM content_script_provider_batches
+      WHERE job_id = ?`).get(failed.job.jobId)).toEqual({ count: 1 });
+
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 4,
+          last_error_code = 'OPENAI_BATCH_FAILED', next_attempt_at = NULL
+      WHERE job_id = ?`).run(failed.job.jobId);
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+
+    db.close();
+  });
+
+  it('refuses the fourth Batch-validation attempt for a release-bound job', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'release-bound-batch-validation-limit',
+      request: {
+        topic: 'Keep current release jobs at the normal limit',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 3,
+          last_error_code = 'OPENAI_BATCH_FAILED',
+          created_release_id = ?, created_release_source_sha = ?,
+          created_release_backend_digest = ?
+      WHERE job_id = ?`).run(
+      RELEASE_A.releaseId,
+      RELEASE_A.sourceSha,
+      RELEASE_A.backendImageDigest,
+      failed.job.jobId,
+    );
+    db.prepare(`INSERT INTO content_script_provider_batches (
+        job_id, tenant_id, owner_user_id, stage_key, request_digest, custom_id,
+        input_file_id, provider_batch_id, status, last_error_code, completed_at
+      ) VALUES (?, 42, 42, ?, ?, 'release-bound-validation',
+        'release-bound-input', 'release-bound-batch', 'failed',
+        'invalid_request', '2026-08-28T15:00:00.000Z')`)
+      .run(failed.job.jobId, 'c'.repeat(64), 'd'.repeat(64));
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+
+    db.prepare(`UPDATE content_script_jobs
+      SET created_release_id = NULL, created_release_source_sha = NULL,
+          created_release_backend_digest = NULL,
+          completed_release_id = ?, completed_release_source_sha = ?,
+          completed_release_backend_digest = ?
+      WHERE job_id = ?`).run(
+      RELEASE_B.releaseId,
+      RELEASE_B.sourceSha,
+      RELEASE_B.backendImageDigest,
+      failed.job.jobId,
+    );
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
+  it('requires the latest legacy provider Batch to carry invalid_request', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'legacy-latest-batch-validation-limit',
+      request: {
+        topic: 'Use only the latest provider Batch verdict',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 3,
+          last_error_code = 'OPENAI_BATCH_FAILED'
+      WHERE job_id = ?`).run(failed.job.jobId);
+    const insertBatch = db.prepare(`INSERT INTO content_script_provider_batches (
+        job_id, tenant_id, owner_user_id, stage_key, request_digest, custom_id,
+        input_file_id, provider_batch_id, status, last_error_code, completed_at
+      ) VALUES (?, 42, 42, ?, ?, ?, ?, ?, 'failed', ?, ?)`);
+    insertBatch.run(
+      failed.job.jobId,
+      'e'.repeat(64),
+      'f'.repeat(64),
+      'older-invalid-request',
+      'older-input',
+      'older-batch',
+      'invalid_request',
+      '2026-08-28T14:00:00.000Z',
+    );
+    insertBatch.run(
+      failed.job.jobId,
+      '1'.repeat(64),
+      '2'.repeat(64),
+      'newer-other-failure',
+      'newer-input',
+      'newer-batch',
+      'provider_expired',
+      '2026-08-28T15:00:00.000Z',
+    );
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
+  it('fails closed when the latest legacy provider Batch timestamp is ambiguous', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const failed = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'legacy-ambiguous-latest-batch-limit',
+      request: {
+        topic: 'Refuse ambiguous provider Batch chronology',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 3,
+          last_error_code = 'OPENAI_BATCH_FAILED'
+      WHERE job_id = ?`).run(failed.job.jobId);
+    const insertBatch = db.prepare(`INSERT INTO content_script_provider_batches (
+        job_id, tenant_id, owner_user_id, stage_key, request_digest, custom_id,
+        input_file_id, provider_batch_id, status, last_error_code, completed_at
+      ) VALUES (?, 42, 42, ?, ?, ?, ?, ?, 'failed', ?, '2026-08-28T15:00:00.000Z')`);
+    insertBatch.run(
+      failed.job.jobId,
+      '3'.repeat(64),
+      '4'.repeat(64),
+      'ambiguous-invalid-request',
+      'ambiguous-invalid-input',
+      'ambiguous-invalid-batch',
+      'invalid_request',
+    );
+    insertBatch.run(
+      failed.job.jobId,
+      '5'.repeat(64),
+      '6'.repeat(64),
+      'ambiguous-other-failure',
+      'ambiguous-other-input',
+      'ambiguous-other-batch',
+      'provider_expired',
+    );
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: failed.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+    db.close();
+  });
+
+  it('requires both scheduled delivery and an OpenAI Batch failure for the final retry', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const scheduledOtherFailure = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'scheduled-other-failure-no-final-retry',
+      request: {
+        topic: 'Keep other scheduled failures bounded',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+        deliveryMode: 'scheduled',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 2,
+          last_error_code = 'LOCAL_SCRIPT_FINAL_VALIDATION_FAILED'
+      WHERE job_id = ?`).run(scheduledOtherFailure.job.jobId);
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: scheduledOtherFailure.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
+
+    const standardBatchFailure = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'standard-batch-failure-no-final-retry',
+      request: {
+        topic: 'Keep standard failures bounded',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        language: 'en',
+      },
+    }, db);
+    db.prepare(`UPDATE content_script_jobs
+      SET status = 'failed', stage = 'failed', attempt_count = 2,
+          last_error_code = 'OPENAI_BATCH_FAILED'
+      WHERE job_id = ?`).run(standardBatchFailure.job.jobId);
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: standardBatchFailure.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_JOB_RETRY_LIMIT' }));
     db.close();
   });
 

@@ -59,10 +59,21 @@ import {
 import { resolveApiUsageAttribution } from './api-usage-attribution';
 import { assertAiBudgetReservationForProvider } from './cost-guardrail';
 import { resolveManifestClassifierDisposition } from '../router/classifier-prompt-builder';
+import {
+  contentFreeOpenAIBatchError,
+  replaceContentFreeOpenAIBatchError,
+} from './openai-batch-diagnostics';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
 let _client: OpenAI | null = null;
+let _batchClient: OpenAI | null = null;
+const SILENT_OPENAI_LOGGER = {
+  error: (_message: string, ..._rest: unknown[]) => undefined,
+  warn: (_message: string, ..._rest: unknown[]) => undefined,
+  info: (_message: string, ..._rest: unknown[]) => undefined,
+  debug: (_message: string, ..._rest: unknown[]) => undefined,
+};
 
 function getClient(): OpenAI {
   if (!_client) {
@@ -75,6 +86,24 @@ function getClient(): OpenAI {
     _client = new OpenAI({ apiKey: config.openai.apiKey, maxRetries: 0 });
   }
   return _client;
+}
+
+function getBatchClient(): OpenAI {
+  if (!config.openai.batchApiKey || !config.openai.batchProjectId) return getClient();
+  if (!_batchClient) {
+    _batchClient = new OpenAI({
+      apiKey: config.openai.batchApiKey,
+      project: config.openai.batchProjectId,
+      maxRetries: 0,
+    });
+  }
+  return _batchClient;
+}
+
+function getOpenAIBatchClients(): OpenAI[] {
+  const primary = getBatchClient();
+  const legacy = getClient();
+  return primary === legacy ? [primary] : [primary, legacy];
 }
 
 /** Check if OpenAI is configured (has API key) */
@@ -105,11 +134,53 @@ function openAIServiceTierCostMultiplier(serviceTier: unknown): number {
 }
 
 const OPENAI_BATCH_POLL_INTERVAL_MS = 15_000;
+const OPENAI_BATCH_FILE_READY_POLL_INTERVAL_MS = 1_000;
+const OPENAI_BATCH_FILE_READY_REQUEST_TIMEOUT_MS = 5_000;
+const OPENAI_BATCH_FILE_READY_MAX_WAIT_MS = 2 * 60 * 1_000;
 const OPENAI_BATCH_OUTPUT_MAX_BYTES = 8 * 1024 * 1024;
 const OPENAI_BATCH_RECONCILIATION_PAGE_SIZE = 100;
 const OPENAI_BATCH_RECONCILIATION_MAX_PAGES = 5;
+const OPENAI_BATCH_BODY_KEYS = new Set([
+  'model', 'messages', 'max_completion_tokens', 'max_tokens', 'response_format',
+]);
+
+function openAIBatchInputJsonl(customId: string, body: Record<string, unknown>): string {
+  const messages = body.messages;
+  const tokenFields = ['max_completion_tokens', 'max_tokens']
+    .filter((field) => Object.hasOwn(body, field));
+  const validMessages = Array.isArray(messages) && messages.length === 2
+    && messages.every((message) => message !== null
+      && typeof message === 'object' && !Array.isArray(message)
+      && typeof (message as { content?: unknown }).content === 'string')
+    && ['system', 'developer'].includes(String((messages[0] as { role?: unknown }).role))
+    && (messages[1] as { role?: unknown }).role === 'user';
+  const tokenLimit = tokenFields.length === 1 ? body[tokenFields[0]!] : undefined;
+  if (!/^[0-9a-f]{64}$/u.test(customId)
+      || typeof body.model !== 'string' || body.model.length < 1 || body.model.length > 120
+      || Object.keys(body).some((key) => !OPENAI_BATCH_BODY_KEYS.has(key))
+      || !validMessages
+      || !Number.isSafeInteger(tokenLimit) || Number(tokenLimit) < 1 || Number(tokenLimit) > 1_000_000
+      || (Object.hasOwn(body, 'response_format')
+        && (body.response_format === null || typeof body.response_format !== 'object'
+          || Array.isArray(body.response_format)))) {
+    throw batchError(
+      'OPENAI_BATCH_INPUT_ENVELOPE_INVALID',
+      'OpenAI Batch input envelope failed local structural validation.',
+    );
+  }
+  return `${JSON.stringify({
+    custom_id: customId,
+    method: 'POST',
+    url: '/v1/chat/completions',
+    body,
+  })}\n`;
+}
 
 export const _openAIBatchSleep = {
+  resetClients: (): void => {
+    _client = null;
+    _batchClient = null;
+  },
   fn: (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason ?? Object.assign(new Error('OpenAI Batch cancelled'), { name: 'AbortError' }));
@@ -128,6 +199,14 @@ const GPT_56_LONG_CONTEXT_INPUT_TOKENS = 272_000;
 
 function isGpt56Model(model: unknown): boolean {
   return /^gpt-5\.6(?:[-.:]|$)/i.test(String(model || '').trim());
+}
+
+function openAIBatchInstructionRole(model: unknown): 'system' | 'developer' {
+  // OpenAI's current Chat Completions contract uses developer messages in
+  // place of legacy system messages for o1 and newer reasoning models. Keep
+  // older models on their established role while aligning GPT-5.6 Batch JSONL
+  // with the provider's model-specific validation contract.
+  return isGpt56Model(model) ? 'developer' : 'system';
 }
 
 function openAIContextRateMultipliers(model: string, inputTokens: number): {
@@ -983,10 +1062,80 @@ function batchError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+function isOpenAINotFound(error: unknown): boolean {
+  return (error as { status?: number } | undefined)?.status === 404;
+}
+
+async function resolveOpenAIBatchClientByBatchId(
+  providerBatchId: string,
+  clients = getOpenAIBatchClients(),
+  abortSignal?: AbortSignal,
+): Promise<{ client: OpenAI; batch: OpenAI.Batches.Batch }> {
+  let notFound: unknown;
+  for (const client of clients) {
+    try {
+      return {
+        client,
+        batch: await client.batches.retrieve(providerBatchId, {
+          maxRetries: 0,
+          ...(abortSignal ? { signal: abortSignal } : {}),
+        }),
+      };
+    } catch (error) {
+      if (!isOpenAINotFound(error)) throw error;
+      notFound = error;
+    }
+  }
+  throw notFound ?? batchError(
+    'OPENAI_BATCH_PROJECT_OWNERSHIP_NOT_FOUND',
+    'OpenAI Batch project ownership could not be resolved.',
+  );
+}
+
+async function resolveOpenAIBatchClientByFileId(
+  inputFileId: string,
+  abortSignal?: AbortSignal,
+): Promise<OpenAI> {
+  const clients = getOpenAIBatchClients();
+  if (clients.length === 1) return clients[0];
+  let notFound: unknown;
+  for (const client of clients) {
+    try {
+      await client.files.retrieve(inputFileId, {
+        maxRetries: 0,
+        ...(abortSignal ? { signal: abortSignal } : {}),
+      });
+      return client;
+    } catch (error) {
+      if (!isOpenAINotFound(error)) throw error;
+      notFound = error;
+    }
+  }
+  throw notFound ?? batchError(
+    'OPENAI_BATCH_FILE_PROJECT_OWNERSHIP_NOT_FOUND',
+    'OpenAI Batch file project ownership could not be resolved.',
+  );
+}
+
 interface OpenAIBoundedPage<T> {
   data: T[];
   hasNextPage(): boolean;
   getNextPage(): Promise<OpenAIBoundedPage<T>>;
+}
+
+function assertOpenAIBatchReconciliationIdentity(
+  request: StructuredGenerationBatchIntentReconciliationRequest,
+): void {
+  if (!/^[0-9a-f]{64}$/u.test(request.stageKey)
+      || !/^[0-9a-f]{64}$/u.test(request.requestDigest)
+      || request.customId !== request.stageKey) {
+    throw batchError('OPENAI_BATCH_RECONCILIATION_IDENTITY_INVALID', 'OpenAI Batch intent identity is invalid.');
+  }
+  const expectedFilename = `${request.stageKey}.jsonl`;
+  if (request.inputFileIntentFilename
+      && request.inputFileIntentFilename !== expectedFilename) {
+    throw batchError('OPENAI_BATCH_FILE_INTENT_IDENTITY_MISMATCH', 'OpenAI Batch file intent identity does not match its stage.');
+  }
 }
 
 async function collectOpenAIReconciliationPages<T>(
@@ -1010,16 +1159,7 @@ async function reconcileOpenAIBatchIntent(
   client: OpenAI,
   request: StructuredGenerationBatchIntentReconciliationRequest,
 ): Promise<StructuredGenerationBatchIntentReconciliationResult> {
-  if (!/^[0-9a-f]{64}$/u.test(request.stageKey)
-      || !/^[0-9a-f]{64}$/u.test(request.requestDigest)
-      || request.customId !== request.stageKey) {
-    throw batchError('OPENAI_BATCH_RECONCILIATION_IDENTITY_INVALID', 'OpenAI Batch intent identity is invalid.');
-  }
-  const expectedFilename = `${request.stageKey}.jsonl`;
-  if (request.inputFileIntentFilename
-      && request.inputFileIntentFilename !== expectedFilename) {
-    throw batchError('OPENAI_BATCH_FILE_INTENT_IDENTITY_MISMATCH', 'OpenAI Batch file intent identity does not match its stage.');
-  }
+  assertOpenAIBatchReconciliationIdentity(request);
 
   let inputFileId = request.inputFileId;
   if (request.inputFileIntentFilename && !inputFileId) {
@@ -1066,7 +1206,81 @@ async function reconcileOpenAIBatchIntent(
     status: batch.status,
     ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
     ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-    ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
+    ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
+  };
+}
+
+async function reconcileOpenAIBatchIntentAcrossProjects(
+  request: StructuredGenerationBatchIntentReconciliationRequest,
+): Promise<{ client: OpenAI; result: StructuredGenerationBatchIntentReconciliationResult }> {
+  assertOpenAIBatchReconciliationIdentity(request);
+  if (request.inputFileId) {
+    const clients = getOpenAIBatchClients();
+    if (clients.length === 1) {
+      return { client: clients[0], result: await reconcileOpenAIBatchIntent(clients[0], request) };
+    }
+    if (request.batchCreateIntent) {
+      const matches: Array<{
+        client: OpenAI;
+        result: StructuredGenerationBatchIntentReconciliationResult;
+      }> = [];
+      for (const client of clients) {
+        const result = await reconcileOpenAIBatchIntent(client, request);
+        if (result.providerBatchId) matches.push({ client, result });
+      }
+      if (matches.length > 1) {
+        throw batchError(
+          'OPENAI_BATCH_PROJECT_RECONCILIATION_AMBIGUOUS',
+          'OpenAI Batch intent matched provider objects in more than one project.',
+        );
+      }
+      if (matches[0]) return matches[0];
+    }
+    try {
+      const client = await resolveOpenAIBatchClientByFileId(
+        request.inputFileId,
+        request.abortSignal,
+      );
+      return { client, result: { inputFileId: request.inputFileId } };
+    } catch (error) {
+      if (!isOpenAINotFound(error)) throw error;
+      return { client: clients[0], result: { inputFileId: request.inputFileId } };
+    }
+  }
+  const clients = getOpenAIBatchClients();
+  if (!request.inputFileIntentFilename) {
+    return { client: clients[0], result: await reconcileOpenAIBatchIntent(clients[0], request) };
+  }
+  const matches: Array<{ client: OpenAI; inputFileId: string }> = [];
+  for (const client of clients) {
+    const result = await reconcileOpenAIBatchIntent(client, {
+      ...request,
+      batchCreateIntent: false,
+    });
+    if (result.inputFileId) matches.push({ client, inputFileId: result.inputFileId });
+  }
+  if (matches.length > 1) {
+    throw batchError(
+      'OPENAI_BATCH_PROJECT_RECONCILIATION_AMBIGUOUS',
+      'OpenAI Batch intent matched provider objects in more than one project.',
+    );
+  }
+  const match = matches[0];
+  if (!match) {
+    if (request.batchCreateIntent) {
+      throw batchError('OPENAI_BATCH_CREATE_INTENT_INPUT_MISSING', 'OpenAI Batch create intent has no reconciled input file.');
+    }
+    return { client: clients[0], result: {} };
+  }
+  if (!request.batchCreateIntent) {
+    return { client: match.client, result: { inputFileId: match.inputFileId } };
+  }
+  return {
+    client: match.client,
+    result: await reconcileOpenAIBatchIntent(match.client, {
+      ...request,
+      inputFileId: match.inputFileId,
+    }),
   };
 }
 
@@ -1208,13 +1422,83 @@ async function readOpenAIBatchOutput(
   }
   const line = matching[0];
   if (line.error || line.response?.status_code !== 200 || !line.response.body) {
+    const outputErrorCode = contentFreeOpenAIBatchError(line.error).errorCode;
     return {
-      errorCode: typeof line.error?.code === 'string'
-        ? `OPENAI_BATCH_${line.error.code.toUpperCase()}`
+      errorCode: outputErrorCode
+        ? `OPENAI_BATCH_${outputErrorCode.toUpperCase()}`
         : 'OPENAI_BATCH_REQUEST_FAILED',
     };
   }
   return { response: line.response.body };
+}
+
+async function waitForOpenAIBatchInputFileReady(
+  client: OpenAI,
+  inputFileId: string,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  const readinessClient = client.withOptions({
+    maxRetries: 0,
+    timeout: OPENAI_BATCH_FILE_READY_REQUEST_TIMEOUT_MS,
+  });
+  const deadline = Date.now() + OPENAI_BATCH_FILE_READY_MAX_WAIT_MS;
+  while (true) {
+    if (abortSignal?.aborted) throw openAiCancellationError(abortSignal);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file did not become provider-ready within the bounded wait.',
+      );
+    }
+    let file: OpenAI.Files.FileObject;
+    try {
+      file = await readinessClient.files.retrieve(inputFileId, {
+        maxRetries: 0,
+        timeout: Math.min(OPENAI_BATCH_FILE_READY_REQUEST_TIMEOUT_MS, remainingMs),
+        ...(abortSignal ? { signal: abortSignal } : {}),
+      });
+    } catch (error) {
+      if (isProviderRequestCancellation(error) || abortSignal?.aborted) {
+        if (abortSignal?.aborted) throw openAiCancellationError(abortSignal);
+        throw error;
+      }
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file readiness could not be proven by the provider.',
+      );
+    }
+    if (file.id !== inputFileId || file.purpose !== 'batch') {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_IDENTITY_MISMATCH',
+        'OpenAI Batch input file identity or purpose did not match the durable request.',
+      );
+    }
+    if (file.status === 'error' || String(file.status) === 'deleted') {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_PROCESSING_FAILED',
+        'OpenAI Batch input file failed provider processing.',
+      );
+    }
+    if (file.status === 'processed') return;
+    if (file.status !== 'uploaded') {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file readiness was not proven by the provider.',
+      );
+    }
+    const sleepMs = Math.min(
+      OPENAI_BATCH_FILE_READY_POLL_INTERVAL_MS,
+      Math.max(0, deadline - Date.now()),
+    );
+    if (sleepMs <= 0) {
+      throw batchError(
+        'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+        'OpenAI Batch input file did not become provider-ready within the bounded wait.',
+      );
+    }
+    await _sleep.fn(sleepMs, abortSignal);
+  }
 }
 
 async function runOpenAIBatchStructuredGeneration(
@@ -1229,6 +1513,7 @@ async function runOpenAIBatchStructuredGeneration(
   delete body.service_tier;
   const requestDigest = crypto.createHash('sha256').update(stableBatchJson(body)).digest('hex');
   const customId = control.stageKey;
+  const inputJsonl = openAIBatchInputJsonl(customId, body);
   let state = control.load();
   if (state && (state.requestDigest !== requestDigest || state.customId !== customId)) {
     throw batchError('OPENAI_BATCH_REQUEST_IDENTITY_MISMATCH', 'Persisted OpenAI Batch identity does not match this request.');
@@ -1250,9 +1535,20 @@ async function runOpenAIBatchStructuredGeneration(
     model: params.model,
     maxCostUsd: baseMaxCostUsd * (isGpt56Model(params.model) ? 2 : 1),
   });
-  const client = getClient();
   const startedAt = Date.now();
+  let client = getBatchClient();
   try {
+    const availableBatchClients = getOpenAIBatchClients();
+    if (availableBatchClients.length > 1 && state.providerBatchId) {
+      client = (await resolveOpenAIBatchClientByBatchId(
+        state.providerBatchId,
+        availableBatchClients,
+      )).client;
+    } else if (availableBatchClients.length > 1
+        && state.inputFileId
+        && state.batchCreateIntent !== true) {
+      client = await resolveOpenAIBatchClientByFileId(state.inputFileId, request.abortSignal);
+    }
     if (!state.inputFileId) {
       const inputFileIntentFilename = `${control.stageKey}.jsonl`;
       const createdIntent = state.inputFileIntentFilename === undefined;
@@ -1266,13 +1562,15 @@ async function runOpenAIBatchStructuredGeneration(
         control.persist(state);
       }
       if (!createdIntent) {
-        const recovered = await reconcileOpenAIBatchIntent(client, {
+        const recovery = await reconcileOpenAIBatchIntentAcrossProjects({
           stageKey: control.stageKey,
           requestDigest,
           customId,
           inputFileIntentFilename,
           ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
         });
+        client = recovery.client;
+        const recovered = recovery.result;
         if (recovered.inputFileId) {
           state = { ...state, inputFileId: recovered.inputFileId };
           control.persist(state);
@@ -1296,13 +1594,7 @@ async function runOpenAIBatchStructuredGeneration(
       }
     }
     if (!state.inputFileId) {
-      const jsonl = `${JSON.stringify({
-        custom_id: customId,
-        method: 'POST',
-        url: '/v1/chat/completions',
-        body,
-      })}\n`;
-      const file = await toFile(Buffer.from(jsonl, 'utf8'), state.inputFileIntentFilename!, {
+      const file = await toFile(Buffer.from(inputJsonl, 'utf8'), state.inputFileIntentFilename!, {
         type: 'application/jsonl',
       });
       const uploaded = await client.files.create(
@@ -1327,12 +1619,8 @@ async function runOpenAIBatchStructuredGeneration(
       }
       const createdIntent = state.batchCreateIntent !== true;
       let createMutationAuthorized = createdIntent;
-      if (createdIntent) {
-        state = { ...state, batchCreateIntent: true };
-        control.persist(state);
-      }
       if (!createdIntent) {
-        const recovered = await reconcileOpenAIBatchIntent(client, {
+        const recovery = await reconcileOpenAIBatchIntentAcrossProjects({
           stageKey: control.stageKey,
           requestDigest,
           customId,
@@ -1341,6 +1629,8 @@ async function runOpenAIBatchStructuredGeneration(
           inputFileId: state.inputFileId,
           ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
         });
+        client = recovery.client;
+        const recovered = recovery.result;
         if (recovered.providerBatchId) {
           state = { ...state, ...recovered };
           control.persist(state);
@@ -1362,6 +1652,16 @@ async function runOpenAIBatchStructuredGeneration(
           );
         }
       }
+      if (!state.providerBatchId) {
+        if (!state.inputFileId) {
+          throw batchError('OPENAI_BATCH_INPUT_FILE_MISSING', 'OpenAI Batch readiness lost its input file identity.');
+        }
+        await waitForOpenAIBatchInputFileReady(client, state.inputFileId, request.abortSignal);
+        if (createdIntent) {
+          state = { ...state, batchCreateIntent: true };
+          control.persist(state);
+        }
+      }
     }
     if (!state.providerBatchId) {
       if (!state.inputFileId) {
@@ -1380,13 +1680,13 @@ async function runOpenAIBatchStructuredGeneration(
         idempotencyKey: `nexus-batch-${control.stageKey}`,
         ...(request.abortSignal ? { signal: request.abortSignal } : {}),
       });
-      state = {
+      state = replaceContentFreeOpenAIBatchError({
         ...state,
         providerBatchId: batch.id,
         status: batch.status,
         ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
         ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-      };
+      }, batch.errors?.data?.[0]);
       control.persist(state);
     }
     while (state.status !== 'completed') {
@@ -1395,12 +1695,12 @@ async function runOpenAIBatchStructuredGeneration(
       }
       if (state.status === 'cancellation_requested' || state.status === 'cancelling') {
         const cancelled = await client.batches.cancel(state.providerBatchId!, { maxRetries: 0 });
-        state = {
+        state = replaceContentFreeOpenAIBatchError({
           ...state,
           status: cancelled.status === 'cancelled' ? 'cancelled' : 'cancelling',
           ...(cancelled.output_file_id ? { outputFileId: cancelled.output_file_id } : {}),
           ...(cancelled.error_file_id ? { errorFileId: cancelled.error_file_id } : {}),
-        };
+        }, cancelled.errors?.data?.[0]);
         control.persist(state);
         throw batchError('OPENAI_BATCH_CANCELLED', 'OpenAI Batch was cancelled.');
       }
@@ -1408,13 +1708,12 @@ async function runOpenAIBatchStructuredGeneration(
         maxRetries: 0,
         ...(request.abortSignal ? { signal: request.abortSignal } : {}),
       });
-      state = {
+      state = replaceContentFreeOpenAIBatchError({
         ...state,
         status: batch.status,
         ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
         ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-        ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
-      };
+      }, batch.errors?.data?.[0]);
       control.persist(state);
       if (state.status !== 'completed') {
         await _openAIBatchSleep.fn(OPENAI_BATCH_POLL_INTERVAL_MS, request.abortSignal);
@@ -1465,12 +1764,12 @@ async function runOpenAIBatchStructuredGeneration(
         state = { ...state, status: 'cancellation_requested' };
         control.persist(state);
         const cancelled = await client.batches.cancel(providerBatchId, { maxRetries: 0 });
-        state = {
+        state = replaceContentFreeOpenAIBatchError({
           ...state,
           status: cancelled.status === 'cancelled' ? 'cancelled' : 'cancelling',
           ...(cancelled.output_file_id ? { outputFileId: cancelled.output_file_id } : {}),
           ...(cancelled.error_file_id ? { errorFileId: cancelled.error_file_id } : {}),
-        };
+        }, cancelled.errors?.data?.[0]);
         control.persist(state);
       } catch (cancelError) {
         logger.warn({
@@ -1518,7 +1817,7 @@ export class OpenAIProvider implements AIProvider {
       return runOpenAIBatchStructuredGeneration(request, withTokenLimit({
         model: request.model,
         messages: [
-          { role: 'system', content: request.systemPrompt },
+          { role: openAIBatchInstructionRole(request.model), content: request.systemPrompt },
           { role: 'user', content: request.userPrompt },
         ],
         ...(responseFormat ? { response_format: responseFormat } : {}),
@@ -1560,9 +1859,12 @@ export class OpenAIProvider implements AIProvider {
     outputFileId?: string;
     errorFileId?: string;
     errorCode?: string;
+    errorLine?: number;
+    errorParam?: string;
   }> {
-    const client = getClient();
-    let batch = await client.batches.retrieve(request.providerBatchId, { maxRetries: 0 });
+    const resolved = await resolveOpenAIBatchClientByBatchId(request.providerBatchId);
+    const client = resolved.client;
+    let batch = resolved.batch;
     if (!['completed', 'cancelled', 'failed', 'expired'].includes(batch.status)) {
       batch = await client.batches.cancel(request.providerBatchId, { maxRetries: 0 });
     }
@@ -1591,30 +1893,57 @@ export class OpenAIProvider implements AIProvider {
       status: batch.status,
       ...(batch.output_file_id ? { outputFileId: batch.output_file_id } : {}),
       ...(batch.error_file_id ? { errorFileId: batch.error_file_id } : {}),
-      ...(batch.errors?.data?.[0]?.code ? { errorCode: batch.errors.data[0].code } : {}),
+      ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
+    };
+  }
+
+  async inspectStructuredGenerationBatch(
+    request: import('./ai-provider').StructuredGenerationBatchInspectionRequest,
+  ): Promise<Pick<import('./ai-provider').StructuredGenerationBatchState,
+    'status' | 'errorCode' | 'errorLine' | 'errorParam'>> {
+    const providerBatchId = request.providerBatchId;
+    if (!/^[A-Za-z0-9_-]{1,200}$/u.test(providerBatchId)) {
+      throw batchError(
+        'OPENAI_BATCH_INSPECTION_IDENTITY_INVALID',
+        'OpenAI Batch inspection identity is invalid.',
+      );
+    }
+    const silentClients = getOpenAIBatchClients().map((client) => client.withOptions({
+      logLevel: 'off', logger: SILENT_OPENAI_LOGGER,
+    }));
+    const batch = (await resolveOpenAIBatchClientByBatchId(providerBatchId, silentClients)).batch;
+    return {
+      status: batch.status,
+      ...contentFreeOpenAIBatchError(batch.errors?.data?.[0]),
     };
   }
 
   async reconcileStructuredGenerationBatchIntent(
     request: StructuredGenerationBatchIntentReconciliationRequest,
   ): Promise<StructuredGenerationBatchIntentReconciliationResult> {
-    return reconcileOpenAIBatchIntent(getClient(), request);
+    assertOpenAIBatchReconciliationIdentity(request);
+    if (request.inputFileId && !request.batchCreateIntent) {
+      return { inputFileId: request.inputFileId };
+    }
+    return (await reconcileOpenAIBatchIntentAcrossProjects(request)).result;
   }
 
   async deleteStructuredGenerationBatchFiles(
     request: StructuredGenerationBatchFileCleanupRequest,
   ): Promise<void> {
-    const client = getClient();
+    const clients = getOpenAIBatchClients();
     for (const fileId of [...new Set(request.fileIds.filter(Boolean))]) {
-      try {
-        const result = await client.files.delete(fileId, { maxRetries: 0 });
-        if (result.deleted !== true) {
-          throw new Error('openai_batch_file_delete_not_confirmed');
+      for (const client of clients) {
+        try {
+          const result = await client.files.delete(fileId, { maxRetries: 0 });
+          if (result.deleted !== true) {
+            throw new Error('openai_batch_file_delete_not_confirmed');
+          }
+          break;
+        } catch (error) {
+          if (isOpenAINotFound(error)) continue;
+          throw error;
         }
-      } catch (error) {
-        const status = (error as { status?: number } | undefined)?.status;
-        if (status === 404) continue;
-        throw error;
       }
     }
   }

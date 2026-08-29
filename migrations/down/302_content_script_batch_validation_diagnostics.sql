@@ -1,0 +1,2 @@
+ALTER TABLE content_script_provider_batches DROP COLUMN last_error_param;
+ALTER TABLE content_script_provider_batches DROP COLUMN last_error_line;

@@ -41,6 +41,10 @@ const migrationSql = readFileSync(
   resolve(__dirname, '../../migrations/295_content_script_openai_batches.sql'),
   'utf8',
 );
+const validationDiagnosticsMigrationSql = readFileSync(
+  resolve(__dirname, '../../migrations/302_content_script_batch_validation_diagnostics.sql'),
+  'utf8',
+);
 
 function database(): Database.Database {
   const db = new Database(':memory:');
@@ -57,6 +61,7 @@ function database(): Database.Database {
     );
   `);
   db.exec(migrationSql);
+  db.exec(validationDiagnosticsMigrationSql);
   db.exec(`ALTER TABLE content_script_provider_batches
       ADD COLUMN provider_files_cleanup_started_at TEXT;
     ALTER TABLE content_script_provider_batches
@@ -207,6 +212,8 @@ describe('content script provider Batch durability', () => {
       outputFileId: 'file-output',
       errorFileId: 'file-error',
       errorCode: 'provider-warning',
+      errorLine: 1,
+      errorParam: 'body.messages[0].role',
     });
     expect(batch.load()).toEqual({
       requestDigest: 'd'.repeat(64),
@@ -217,7 +224,23 @@ describe('content script provider Batch durability', () => {
       outputFileId: 'file-output',
       errorFileId: 'file-error',
       errorCode: 'provider-warning',
+      errorLine: 1,
+      errorParam: 'body.messages[0].role',
     });
+    batch.persist({ ...batch.load()!, errorLine: 0 });
+    expect(batch.load()).not.toHaveProperty('errorLine');
+    batch.persist({ ...batch.load()!, errorParam: 'body\nprivate' });
+    expect(batch.load()).not.toHaveProperty('errorParam');
+    db.prepare(`UPDATE content_script_provider_batches
+      SET last_error_code = ?, last_error_line = 1, last_error_param = ?
+      WHERE job_id = 'job-1'`).run(
+      'Invalid request: legacy provider text',
+      'body.messages[0].content',
+    );
+    batch.persist({ ...batch.load()!, status: 'in_progress' });
+    expect(batch.load()).not.toHaveProperty('errorCode');
+    expect(batch.load()).not.toHaveProperty('errorLine');
+    expect(batch.load()).not.toHaveProperty('errorParam');
     batch.persist({ requestDigest: 'd'.repeat(64), customId: 'custom-1', status: 'in_progress' });
 
     expect(() => batch.persist({

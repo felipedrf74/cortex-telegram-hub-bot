@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockCreate = vi.fn();
 const mockResponsesCreate = vi.fn();
 const mockFileCreate = vi.fn();
+const mockFileRetrieve = vi.fn();
 const mockFileList = vi.fn();
 const mockFileContent = vi.fn();
 const mockFileDelete = vi.fn();
@@ -20,6 +21,17 @@ const mockBatchCreate = vi.fn();
 const mockBatchList = vi.fn();
 const mockBatchRetrieve = vi.fn();
 const mockBatchCancel = vi.fn();
+const mockDedicatedFileCreate = vi.fn();
+const mockDedicatedFileRetrieve = vi.fn();
+const mockDedicatedFileList = vi.fn();
+const mockDedicatedFileContent = vi.fn();
+const mockDedicatedFileDelete = vi.fn();
+const mockDedicatedBatchCreate = vi.fn();
+const mockDedicatedBatchList = vi.fn();
+const mockDedicatedBatchRetrieve = vi.fn();
+const mockDedicatedBatchCancel = vi.fn();
+const mockOpenAIConstructor = vi.fn();
+const mockOpenAIWithOptions = vi.fn();
 const mockSettleNexusPointOverageForUser = vi.fn().mockResolvedValue(undefined);
 const mockAssertAiBudgetReservationForProvider = vi.fn();
 const mockRecordUsage = vi.fn();
@@ -27,16 +39,36 @@ const mockRecordUsage = vi.fn();
 vi.mock('openai', () => {
   return {
     default: class OpenAI {
-      chat = { completions: { create: mockCreate } };
-      responses = { create: mockResponsesCreate };
-      files = {
-        create: mockFileCreate, list: mockFileList,
-        content: mockFileContent, delete: mockFileDelete,
-      };
-      batches = {
-        create: mockBatchCreate, list: mockBatchList,
-        retrieve: mockBatchRetrieve, cancel: mockBatchCancel,
-      };
+      chat: unknown;
+      responses: unknown;
+      files: unknown;
+      batches: unknown;
+      constructor(options: { project?: string } = {}) {
+        mockOpenAIConstructor(options);
+        const dedicated = Boolean(options.project);
+        this.chat = { completions: { create: mockCreate } };
+        this.responses = { create: mockResponsesCreate };
+        this.files = dedicated ? {
+          create: mockDedicatedFileCreate, list: mockDedicatedFileList,
+          retrieve: mockDedicatedFileRetrieve,
+          content: mockDedicatedFileContent, delete: mockDedicatedFileDelete,
+        } : {
+          create: mockFileCreate, list: mockFileList,
+          retrieve: mockFileRetrieve,
+          content: mockFileContent, delete: mockFileDelete,
+        };
+        this.batches = dedicated ? {
+          create: mockDedicatedBatchCreate, list: mockDedicatedBatchList,
+          retrieve: mockDedicatedBatchRetrieve, cancel: mockDedicatedBatchCancel,
+        } : {
+          create: mockBatchCreate, list: mockBatchList,
+          retrieve: mockBatchRetrieve, cancel: mockBatchCancel,
+        };
+      }
+      withOptions(options: unknown) {
+        mockOpenAIWithOptions(options);
+        return this;
+      }
     },
     toFile: vi.fn(async (value: unknown, name: string) => ({ value, name })),
   };
@@ -65,6 +97,8 @@ vi.mock('../../src/config', () => ({
   config: {
     openai: {
       apiKey: 'sk-test-key',
+      batchApiKey: '',
+      batchProjectId: '',
       model: 'gpt-4o',
       classifierModel: 'gpt-4o-mini',
       maxTokens: 1024,
@@ -203,6 +237,52 @@ function mockProviderPage<T>(data: T[], next?: MockProviderPage<T>): MockProvide
   };
 }
 
+function batchReadinessRequest(
+  stageKey: string,
+  load: () => any,
+  persist: (state: any) => void,
+  abortSignal?: AbortSignal,
+  model = 'gpt-5.6-luna',
+) {
+  return {
+    systemPrompt: 'SYSTEM', userPrompt: 'USER', model,
+    serviceTier: 'batch' as const, maxTokens: 512, userId: 7, tenantId: 7,
+    category: 'cloud_local_reasoning' as const, responseFormat: 'text' as const,
+    ...(abortSignal ? { abortSignal } : {}),
+    durableBatch: { stageKey, load, persist },
+  };
+}
+
+function mockCompletedReadinessBatch(
+  stageKey: string,
+  text = 'ready',
+  onCreate?: () => void,
+  model = 'gpt-5.6-luna',
+): void {
+  mockBatchCreate.mockImplementationOnce(async () => {
+    onCreate?.();
+    return {
+      id: 'batch-after-file-readiness',
+      status: 'completed',
+      output_file_id: 'file-after-file-readiness',
+    };
+  });
+  mockFileContent.mockResolvedValueOnce({
+    text: async () => `${JSON.stringify({
+      custom_id: stageKey,
+      response: {
+        status_code: 200,
+        body: {
+          choices: [{ message: { content: text }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 2, completion_tokens: 1 },
+          model,
+        },
+      },
+      error: null,
+    })}\n`,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 
 describe('OpenAIProvider', () => {
@@ -212,6 +292,8 @@ describe('OpenAIProvider', () => {
     vi.clearAllMocks();
     _resetOverrides();
     config.openai.model = 'gpt-4o';
+    config.openai.batchApiKey = '';
+    config.openai.batchProjectId = '';
     config.openai.classifierModel = 'gpt-4o-mini';
     config.openai.maxTokens = 1024;
     config.openai.secretaryMaxTokens = 2048;
@@ -230,6 +312,12 @@ describe('OpenAIProvider', () => {
       { name: 'pricing_status' },
       { name: 'pricing_model_key' },
     ]);
+    mockFileRetrieve.mockImplementation(async (id: string) => ({
+      id,
+      purpose: 'batch',
+      status: 'processed',
+    }));
+    _openAIBatchSleep.resetClients();
     provider = new OpenAIProvider();
   });
 
@@ -417,6 +505,333 @@ describe('OpenAIProvider', () => {
     })).rejects.toThrow('service tier mismatch');
   });
 
+  it('routes new Batch work through the isolated project credential', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = '7'.repeat(64);
+    let durableState: any = null;
+    mockDedicatedFileCreate.mockResolvedValueOnce({ id: 'dedicated-input' });
+    mockDedicatedFileRetrieve.mockResolvedValueOnce({
+      id: 'dedicated-input', purpose: 'batch', status: 'processed',
+    });
+    mockDedicatedBatchCreate.mockResolvedValueOnce({
+      id: 'dedicated-batch', status: 'completed', output_file_id: 'dedicated-output',
+    });
+    mockDedicatedFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'isolated' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).resolves.toMatchObject({ text: 'isolated', serviceTier: 'batch' });
+
+    expect(mockOpenAIConstructor).toHaveBeenCalledWith({
+      apiKey: 'sk-batch-test-key', project: 'proj_batch_test_1234', maxRetries: 0,
+    });
+    expect(mockDedicatedFileCreate).toHaveBeenCalledTimes(1);
+    expect(mockDedicatedBatchCreate).toHaveBeenCalledTimes(1);
+    expect(mockFileCreate).not.toHaveBeenCalled();
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('resolves a legacy Batch by 404-only project fallback', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockBatchRetrieve.mockResolvedValueOnce({ id: 'legacy-batch', status: 'in_progress' });
+    mockBatchCancel.mockResolvedValueOnce({ id: 'legacy-batch', status: 'cancelling' });
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'legacy-batch',
+      customId: '8'.repeat(64),
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).resolves.toEqual({ status: 'cancelling' });
+    expect(mockDedicatedBatchRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockBatchRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockBatchCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cross project boundaries after a non-404 provider error', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }));
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'unknown-owner',
+      customId: '8'.repeat(64),
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when one durable file intent exists in both projects', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = '9'.repeat(64);
+    const filename = `${stageKey}.jsonl`;
+    mockDedicatedFileList.mockResolvedValueOnce(mockProviderPage([
+      { id: 'dedicated-match', filename, purpose: 'batch' },
+    ]));
+    mockFileList.mockResolvedValueOnce(mockProviderPage([
+      { id: 'legacy-match', filename, purpose: 'batch' },
+    ]));
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: 'a'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: filename,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_PROJECT_RECONCILIATION_AMBIGUOUS' });
+  });
+
+  it('recovers an accepted legacy Batch before requiring its file metadata', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = 'a'.repeat(64);
+    const requestDigest = 'b'.repeat(64);
+    mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([{
+      id: 'legacy-accepted-batch',
+      input_file_id: 'legacy-input',
+      endpoint: '/v1/chat/completions',
+      metadata: { nexus_stage_key: stageKey, nexus_request_digest: requestDigest },
+      status: 'in_progress',
+    }]));
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest,
+      customId: stageKey,
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      inputFileId: 'legacy-input',
+      batchCreateIntent: true,
+    })).resolves.toMatchObject({
+      inputFileId: 'legacy-input',
+      providerBatchId: 'legacy-accepted-batch',
+      status: 'in_progress',
+    });
+    expect(mockFileRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('preserves durable absence when an unmatched input file is gone from both projects', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = 'c'.repeat(64);
+    mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockDedicatedFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: 'd'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      inputFileId: 'expired-input',
+      batchCreateIntent: true,
+    })).resolves.toEqual({ inputFileId: 'expired-input' });
+    expect(mockDedicatedFileRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockFileRetrieve).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates cross-project reconciliation identity before provider inventory reads', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey: 'e'.repeat(64),
+      requestDigest: 'f'.repeat(64),
+      customId: 'wrong-custom-id',
+      inputFileIntentFilename: `${'e'.repeat(64)}.jsonl`,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_RECONCILIATION_IDENTITY_INVALID' });
+    expect(mockDedicatedFileList).not.toHaveBeenCalled();
+    expect(mockFileList).not.toHaveBeenCalled();
+  });
+
+  it('retains the missing-input refusal for cross-project create reconciliation', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = '1'.repeat(64);
+    mockDedicatedFileList.mockResolvedValueOnce(mockProviderPage([]));
+    mockFileList.mockResolvedValueOnce(mockProviderPage([]));
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: '2'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      batchCreateIntent: true,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_CREATE_INTENT_INPUT_MISSING' });
+  });
+
+  it('deletes a retained legacy file after isolated-project absence is proven', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockFileDelete.mockResolvedValueOnce({ id: 'legacy-file', deleted: true });
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'legacy-batch',
+      fileIds: ['legacy-file'],
+    })).resolves.toBeUndefined();
+    expect(mockDedicatedFileDelete).toHaveBeenCalledTimes(1);
+    expect(mockFileDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a retained file absent from both projects as already deleted', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'retained-batch',
+      fileIds: ['already-absent'],
+    })).resolves.toBeUndefined();
+    expect(mockDedicatedFileDelete).toHaveBeenCalledTimes(1);
+    expect(mockFileDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cross projects after a non-404 file deletion failure', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const failure = Object.assign(new Error('forbidden'), { status: 403 });
+    mockDedicatedFileDelete.mockRejectedValueOnce(failure);
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'retained-batch',
+      fileIds: ['isolated-file'],
+    })).rejects.toBe(failure);
+    expect(mockFileDelete).not.toHaveBeenCalled();
+  });
+
+  it('resumes a legacy-owned durable Batch on the legacy client after pairing is enabled', async () => {
+    const stageKey = '3'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'legacy-resume-input' });
+    mockBatchCreate.mockRejectedValueOnce(new Error('simulated worker loss after create intent'));
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toThrow('simulated worker loss');
+    expect(durableState).toMatchObject({
+      inputFileId: 'legacy-resume-input',
+      batchCreateIntent: true,
+    });
+
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockDedicatedFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'legacy-resumed-batch', status: 'completed', output_file_id: 'legacy-resumed-output',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'legacy-resumed' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    const resumedRequest = batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    );
+    Object.assign(resumedRequest.durableBatch, {
+      observeIntentAbsence: () => ({ state: durableState, mutationAuthorized: true }),
+    });
+    await expect(provider.callStructuredGeneration(resumedRequest))
+      .resolves.toMatchObject({ text: 'legacy-resumed', serviceTier: 'batch' });
+    expect(mockBatchCreate).toHaveBeenCalledTimes(2);
+    expect(mockDedicatedBatchCreate).not.toHaveBeenCalled();
+    expect(mockFileContent).toHaveBeenCalledWith('legacy-resumed-output', { maxRetries: 0 });
+    expect(mockDedicatedFileContent).not.toHaveBeenCalled();
+  });
+
+  it('cancels a legacy-owned durable Batch when abort lands during ownership resolution', async () => {
+    const stageKey = '4'.repeat(64);
+    const controller = new AbortController();
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'legacy-cancel-input' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'legacy-cancel-batch', status: 'validating' });
+    mockBatchRetrieve.mockRejectedValueOnce(new Error('simulated worker loss'));
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toThrow('simulated worker loss');
+
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const cancellation = Object.assign(new Error('cancel during ownership resolution'), {
+      name: 'AbortError',
+    });
+    mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockBatchRetrieve
+      .mockImplementationOnce(async (_id: string, options?: { signal?: AbortSignal }) => {
+        controller.abort(cancellation);
+        if (options?.signal?.aborted) throw cancellation;
+        return { id: 'legacy-cancel-batch', status: 'in_progress' };
+      })
+      .mockRejectedValueOnce(cancellation);
+    mockBatchCancel.mockResolvedValueOnce({ id: 'legacy-cancel-batch', status: 'cancelling' });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+      controller.signal,
+    ))).rejects.toBe(cancellation);
+    expect(mockBatchCancel).toHaveBeenCalledWith('legacy-cancel-batch', { maxRetries: 0 });
+    expect(mockDedicatedBatchCancel).not.toHaveBeenCalled();
+    expect(durableState).toMatchObject({
+      providerBatchId: 'legacy-cancel-batch',
+      status: 'cancelling',
+    });
+  });
+
   it('submits, polls, resumes, and accounts for an exact durable Batch result', async () => {
     const states: Array<Record<string, unknown>> = [];
     let durableState: any = null;
@@ -467,6 +882,23 @@ describe('OpenAIProvider', () => {
       serviceTier: 'batch',
     });
     expect(mockFileCreate).toHaveBeenCalledTimes(1);
+    const uploadedJsonl = String(mockFileCreate.mock.calls[0][0].file.value);
+    expect(uploadedJsonl.endsWith('\n')).toBe(true);
+    const uploadedEnvelope = JSON.parse(uploadedJsonl.trim());
+    expect(uploadedEnvelope).toMatchObject({
+      custom_id: 'a'.repeat(64),
+      method: 'POST',
+      url: '/v1/chat/completions',
+      body: {
+        model: 'gpt-5.6-luna',
+        max_completion_tokens: 512,
+        messages: [
+          { role: 'developer', content: 'SYSTEM' },
+          { role: 'user', content: 'USER' },
+        ],
+      },
+    });
+    expect(uploadedEnvelope.body).not.toHaveProperty('service_tier');
     expect(mockBatchCreate).toHaveBeenCalledWith(expect.objectContaining({
       input_file_id: 'file-input-1',
       endpoint: '/v1/chat/completions',
@@ -483,6 +915,362 @@ describe('OpenAIProvider', () => {
     expect(mockFileCreate).toHaveBeenCalledTimes(1);
     expect(mockBatchCreate).toHaveBeenCalledTimes(1);
     expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('preserves the legacy system instruction role for older Batch models', async () => {
+    const stageKey = '6'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-legacy-system-role' });
+    mockCompletedReadinessBatch(stageKey, 'legacy-ready', undefined, 'gpt-4o');
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+      undefined,
+      'gpt-4o',
+    ))).resolves.toMatchObject({ text: 'legacy-ready', serviceTier: 'batch' });
+
+    const uploadedJsonl = String(mockFileCreate.mock.calls[0][0].file.value);
+    const uploadedEnvelope = JSON.parse(uploadedJsonl.trim());
+    expect(uploadedEnvelope.body.messages).toEqual([
+      { role: 'system', content: 'SYSTEM' },
+      { role: 'user', content: 'USER' },
+    ]);
+  });
+
+  it('waits for a newly uploaded Batch file to be processed before creating the Batch', async () => {
+    const stageKey = '7'.repeat(64);
+    const events: string[] = [];
+    let durableState: any = null;
+    mockFileCreate.mockImplementationOnce(async () => {
+      events.push('uploaded');
+      return { id: 'file-readiness-race' };
+    });
+    mockFileRetrieve.mockImplementationOnce(async () => {
+      events.push('file-wait-started');
+      return { id: 'file-readiness-race', purpose: 'batch', status: 'uploaded' };
+    }).mockImplementationOnce(async () => {
+      events.push('file-processed');
+      return { id: 'file-readiness-race', purpose: 'batch', status: 'processed' };
+    });
+    _sleep.fn = async (ms) => { events.push(`file-waited-${ms}`); };
+    mockCompletedReadinessBatch(stageKey, 'ready', () => { events.push('batch-created'); });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).resolves.toMatchObject({ text: 'ready', serviceTier: 'batch' });
+    expect(events).toEqual([
+      'uploaded',
+      'file-wait-started',
+      'file-waited-1000',
+      'file-processed',
+      'batch-created',
+    ]);
+    expect(mockOpenAIWithOptions).toHaveBeenCalledWith({ maxRetries: 0, timeout: 5_000 });
+    expect(mockFileRetrieve).toHaveBeenCalledWith('file-readiness-race', {
+      maxRetries: 0,
+      timeout: 5_000,
+    });
+  });
+
+  it('persists only allowlisted content-free Batch validation diagnostics', async () => {
+    const stageKey = '8'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-validation-failure' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-validation-failure', status: 'validating' });
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-validation-failure',
+      status: 'failed',
+      errors: {
+        data: [{
+          code: 'invalid_request',
+          line: 1,
+          param: 'body.messages[0].role',
+          message: 'private provider detail must never be retained',
+        }],
+      },
+    });
+    const originalBatchSleep = _openAIBatchSleep.fn;
+    _openAIBatchSleep.fn = async () => {};
+    try {
+      await expect(provider.callStructuredGeneration(batchReadinessRequest(
+        stageKey,
+        () => durableState,
+        (state) => { durableState = structuredClone(state); },
+      ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_FAILED' });
+    } finally {
+      _openAIBatchSleep.fn = originalBatchSleep;
+    }
+    expect(durableState).toMatchObject({
+      status: 'failed',
+      errorCode: 'invalid_request',
+      errorLine: 1,
+      errorParam: 'body.messages[0].role',
+    });
+    expect(JSON.stringify(durableState)).not.toContain('private provider detail');
+  });
+
+  it('inspects a terminal Batch without mutating it or returning provider text', async () => {
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-terminal-diagnostic',
+      status: 'failed',
+      errors: {
+        data: [{
+          code: 'invalid_request',
+          line: 1,
+          param: 'body.response_format',
+          message: 'private provider detail must never be returned',
+        }],
+      },
+    });
+
+    await expect(provider.inspectStructuredGenerationBatch({
+      providerBatchId: 'batch-terminal-diagnostic',
+    })).resolves.toEqual({
+      status: 'failed',
+      errorCode: 'invalid_request',
+      errorLine: 1,
+      errorParam: 'body.response_format',
+    });
+    expect(mockBatchRetrieve).toHaveBeenCalledWith('batch-terminal-diagnostic', { maxRetries: 0 });
+    expect(mockOpenAIWithOptions).toHaveBeenCalledWith(expect.objectContaining({
+      logLevel: 'off',
+      logger: expect.objectContaining({
+        error: expect.any(Function),
+        warn: expect.any(Function),
+        info: expect.any(Function),
+        debug: expect.any(Function),
+      }),
+    }));
+    expect(mockBatchCancel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a padded Batch identity instead of normalizing it', async () => {
+    await expect(provider.inspectStructuredGenerationBatch({
+      providerBatchId: ' batch-terminal-diagnostic ',
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_INSPECTION_IDENTITY_INVALID' });
+    expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid Batch envelope before persisting intent or uploading a file', async () => {
+    const stageKey = '0'.repeat(64);
+    let durableState: any = null;
+    const request = batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    );
+    request.maxTokens = 1_000_001;
+
+    await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
+      code: 'OPENAI_BATCH_INPUT_ENVELOPE_INVALID',
+    });
+    expect(durableState).toBeNull();
+    expect(mockFileCreate).not.toHaveBeenCalled();
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('drops unsafe Batch validation diagnostics instead of persisting provider text', async () => {
+    const stageKey = '9'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-unsafe-diagnostic' });
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'batch-unsafe-diagnostic',
+      status: 'failed',
+      errors: {
+        data: [{
+          code: 'invalid request with private text',
+          line: 0,
+          param: 'body.messages[0].content\nprivate',
+          message: 'private provider detail must never be retained',
+        }],
+      },
+    });
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_FAILED' });
+    expect(durableState).toMatchObject({ status: 'failed' });
+    expect(durableState).not.toHaveProperty('errorCode');
+    expect(durableState).not.toHaveProperty('errorLine');
+    expect(durableState).not.toHaveProperty('errorParam');
+    expect(JSON.stringify(durableState)).not.toContain('private provider detail');
+  });
+
+  it('replaces the Batch validation diagnostic tuple atomically across polls', async () => {
+    const stageKey = '1'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-diagnostic-replacement' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'batch-diagnostic-replacement', status: 'validating' });
+    mockBatchRetrieve
+      .mockResolvedValueOnce({
+        id: 'batch-diagnostic-replacement',
+        status: 'in_progress',
+        errors: { data: [{ code: 'first_error', line: 1, param: 'body.messages[0].role' }] },
+      })
+      .mockResolvedValueOnce({
+        id: 'batch-diagnostic-replacement',
+        status: 'failed',
+        errors: { data: [{ code: 'second_error' }] },
+      });
+    const originalBatchSleep = _openAIBatchSleep.fn;
+    _openAIBatchSleep.fn = async () => {};
+    try {
+      await expect(provider.callStructuredGeneration(batchReadinessRequest(
+        stageKey,
+        () => durableState,
+        (state) => { durableState = structuredClone(state); },
+      ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_FAILED' });
+    } finally {
+      _openAIBatchSleep.fn = originalBatchSleep;
+    }
+    expect(durableState).toMatchObject({ status: 'failed', errorCode: 'second_error' });
+    expect(durableState).not.toHaveProperty('errorLine');
+    expect(durableState).not.toHaveProperty('errorParam');
+  });
+
+  it('maps unsafe per-line Batch output error codes to a content-free generic code', async () => {
+    const stageKey = '2'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-output-error-input' });
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'batch-output-error',
+      status: 'completed',
+      output_file_id: 'file-output-error',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: null,
+        error: {
+          code: 'private output error detail with spaces',
+          message: 'private provider detail must never be retained',
+        },
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_REQUEST_FAILED' });
+    expect(JSON.stringify(durableState)).not.toContain('private output error detail');
+    expect(JSON.stringify(durableState)).not.toContain('private provider detail');
+  });
+
+  it('bounds Batch input readiness polling to two minutes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+    _sleep.fn = _origSleep;
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-readiness-timeout' });
+    mockFileRetrieve.mockResolvedValue({
+      id: 'file-readiness-timeout', purpose: 'batch', status: 'uploaded',
+    });
+    try {
+      const generation = provider.callStructuredGeneration(batchReadinessRequest(
+        '1'.repeat(64),
+        () => durableState,
+        (state) => { durableState = structuredClone(state); },
+      ));
+      const expectation = expect(generation).rejects.toMatchObject({
+        code: 'OPENAI_BATCH_INPUT_FILE_NOT_READY',
+      });
+      await vi.runAllTimersAsync();
+      await expectation;
+      expect(Date.now()).toBe(120_000);
+      expect(mockBatchCreate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed without creating a Batch when the provider returns no ready status', async () => {
+    const stageKey = '6'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-statusless' });
+    mockFileRetrieve.mockResolvedValueOnce({ id: 'file-statusless', purpose: 'batch' });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_INPUT_FILE_NOT_READY' });
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['identity', { id: 'file-other', purpose: 'batch', status: 'processed' }],
+    ['purpose', { id: 'file-readiness-invalid', purpose: 'assistants', status: 'processed' }],
+  ])('fails closed on Batch input file %s mismatch', async (_field, retrievedFile) => {
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-readiness-invalid' });
+    mockFileRetrieve.mockResolvedValueOnce(retrievedFile);
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      '5'.repeat(64),
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_INPUT_FILE_IDENTITY_MISMATCH' });
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when Batch input file processing fails', async () => {
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-processing-error' });
+    mockFileRetrieve.mockResolvedValueOnce({
+      id: 'file-processing-error', purpose: 'batch', status: 'error',
+    });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      '4'.repeat(64),
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_INPUT_FILE_PROCESSING_FAILED' });
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('maps bounded provider-wait failures to infrastructure without creating a Batch', async () => {
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-retrieve-exhausted' });
+    mockFileRetrieve.mockRejectedValueOnce(new Error('transient provider wait failure'));
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      '3'.repeat(64),
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toMatchObject({ code: 'OPENAI_BATCH_INPUT_FILE_NOT_READY' });
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('stops file readiness polling on cancellation without creating a Batch', async () => {
+    const controller = new AbortController();
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'file-readiness-cancelled' });
+    mockFileRetrieve.mockResolvedValue({
+      id: 'file-readiness-cancelled', purpose: 'batch', status: 'uploaded',
+    });
+    _sleep.fn = async (_ms, signal) => {
+      controller.abort(Object.assign(new Error('readiness cancelled'), { name: 'AbortError' }));
+      if (signal?.aborted) throw signal.reason;
+    };
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      '2'.repeat(64),
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+      controller.signal,
+    ))).rejects.toThrow('readiness cancelled');
+    expect(mockFileRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockFileRetrieve).toHaveBeenCalledWith('file-readiness-cancelled', expect.objectContaining({
+      maxRetries: 0,
+      signal: controller.signal,
+    }));
+    expect(mockBatchCreate).not.toHaveBeenCalled();
   });
 
   it('fails an immutable completed Batch with empty text instead of replaying it as infrastructure', async () => {
@@ -636,6 +1424,8 @@ describe('OpenAIProvider', () => {
       batchCreateIntent: true,
     });
     expect(durableState).not.toHaveProperty('providerBatchId');
+    mockFileRetrieve.mockClear();
+    mockFileRetrieve.mockRejectedValue(new Error('input file metadata is no longer readable'));
     const requestDigest = durableState.requestDigest;
     mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
     await expect(provider.callStructuredGeneration(request)).rejects.toMatchObject({
@@ -671,6 +1461,7 @@ describe('OpenAIProvider', () => {
     });
     expect(mockBatchCreate).toHaveBeenCalledTimes(1);
     expect(mockBatchList).toHaveBeenCalledWith({ limit: 100 }, { maxRetries: 0 });
+    expect(mockFileRetrieve).not.toHaveBeenCalled();
     expect(durableState).toMatchObject({
       providerBatchId: 'recovered-provider-batch', status: 'completed',
     });
@@ -710,7 +1501,11 @@ describe('OpenAIProvider', () => {
     mockFileCreate.mockResolvedValueOnce({ id: 'file-input-cancel' });
     mockBatchCreate.mockResolvedValueOnce({ id: 'batch-cancel', status: 'validating' });
     mockBatchRetrieve.mockResolvedValueOnce({ id: 'batch-cancel', status: 'in_progress' });
-    mockBatchCancel.mockResolvedValueOnce({ id: 'batch-cancel', status: 'cancelling' });
+    mockBatchCancel.mockResolvedValueOnce({
+      id: 'batch-cancel',
+      status: 'cancelling',
+      errors: { data: [{ code: 'cancel_pending', line: 1, param: 'body' }] },
+    });
     _openAIBatchSleep.fn = async () => {
       controller.abort(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
       throw controller.signal.reason;
@@ -728,7 +1523,13 @@ describe('OpenAIProvider', () => {
         },
       })).rejects.toThrow('cancelled');
       expect(mockBatchCancel).toHaveBeenCalledWith('batch-cancel', { maxRetries: 0 });
-      expect(durableState).toMatchObject({ status: 'cancelling', providerBatchId: 'batch-cancel' });
+      expect(durableState).toMatchObject({
+        status: 'cancelling',
+        providerBatchId: 'batch-cancel',
+        errorCode: 'cancel_pending',
+        errorLine: 1,
+        errorParam: 'body',
+      });
     } finally {
       _openAIBatchSleep.fn = originalBatchSleep;
     }
