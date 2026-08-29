@@ -697,6 +697,12 @@ metadata visibility and fails closed as unproven readiness.
 Identity mismatch, wrong purpose, and provider processing failure fail closed;
 readiness timeout or transport failure is a bounded infrastructure requeue that
 refunds the generation attempt because no Batch was created.
+For GPT-5.6 output-only scheduled Content stages, the Batch Chat Completions
+envelope pins `reasoning_effort` to `none`. Hidden reasoning tokens share the
+bounded completion-token allowance with visible contract output, so the adapter
+validates this exact field locally and omits it for older Batch models. An exact
+durable GPT-5.6 stage admitted before this pin resumes only with its predecessor
+envelope and request digest; the compatibility path cannot admit a new stage.
 Checkpoint lifecycle rows record planned, generating, validated, invalid, and
 cancelled states; only validated encrypted output is resumable.
 

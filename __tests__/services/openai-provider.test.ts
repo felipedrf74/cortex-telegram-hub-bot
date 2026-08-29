@@ -7,6 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 // ─── Mock OpenAI SDK ────────────────────────────────────────────────
 
@@ -221,6 +222,13 @@ function mockChatResponse(content: string, toolCalls?: any[], finishReason = 'st
     usage: usage ?? { prompt_tokens: 100, completion_tokens: 50 },
     model: 'gpt-4o',
   });
+}
+
+function stableBatchJsonForTest(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableBatchJsonForTest).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableBatchJsonForTest(record[key])}`).join(',')}}`;
 }
 
 interface MockProviderPage<T> {
@@ -892,6 +900,7 @@ describe('OpenAIProvider', () => {
       body: {
         model: 'gpt-5.6-luna',
         max_completion_tokens: 512,
+        reasoning_effort: 'none',
         messages: [
           { role: 'developer', content: 'SYSTEM' },
           { role: 'user', content: 'USER' },
@@ -937,6 +946,58 @@ describe('OpenAIProvider', () => {
       { role: 'system', content: 'SYSTEM' },
       { role: 'user', content: 'USER' },
     ]);
+    expect(uploadedEnvelope.body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('resumes an in-flight GPT-5.6 Batch admitted before the reasoning pin', async () => {
+    const stageKey = '5'.repeat(64);
+    const legacyBody = {
+      model: 'gpt-5.6-luna',
+      max_completion_tokens: 512,
+      messages: [
+        { role: 'developer', content: 'SYSTEM' },
+        { role: 'user', content: 'USER' },
+      ],
+    };
+    const legacyRequestDigest = createHash('sha256')
+      .update(stableBatchJsonForTest(legacyBody)).digest('hex');
+    let durableState: any = {
+      requestDigest: legacyRequestDigest,
+      customId: stageKey,
+      status: 'in_progress',
+      inputFileId: 'legacy-input-file',
+      providerBatchId: 'legacy-provider-batch',
+    };
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'legacy-provider-batch',
+      status: 'completed',
+      output_file_id: 'legacy-output-file',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'legacy completed' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).resolves.toMatchObject({ text: 'legacy completed', serviceTier: 'batch' });
+
+    expect(durableState.requestDigest).toBe(legacyRequestDigest);
+    expect(mockBatchRetrieve).toHaveBeenCalledWith('legacy-provider-batch', { maxRetries: 0 });
+    expect(mockFileCreate).not.toHaveBeenCalled();
+    expect(mockBatchCreate).not.toHaveBeenCalled();
   });
 
   it('waits for a newly uploaded Batch file to be processed before creating the Batch', async () => {

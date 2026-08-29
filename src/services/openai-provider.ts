@@ -142,9 +142,14 @@ const OPENAI_BATCH_RECONCILIATION_PAGE_SIZE = 100;
 const OPENAI_BATCH_RECONCILIATION_MAX_PAGES = 5;
 const OPENAI_BATCH_BODY_KEYS = new Set([
   'model', 'messages', 'max_completion_tokens', 'max_tokens', 'response_format',
+  'reasoning_effort',
 ]);
 
-function openAIBatchInputJsonl(customId: string, body: Record<string, unknown>): string {
+function openAIBatchInputJsonl(
+  customId: string,
+  body: Record<string, unknown>,
+  options: { allowLegacyGpt56ReasoningOmission?: boolean } = {},
+): string {
   const messages = body.messages;
   const tokenFields = ['max_completion_tokens', 'max_tokens']
     .filter((field) => Object.hasOwn(body, field));
@@ -155,11 +160,16 @@ function openAIBatchInputJsonl(customId: string, body: Record<string, unknown>):
     && ['system', 'developer'].includes(String((messages[0] as { role?: unknown }).role))
     && (messages[1] as { role?: unknown }).role === 'user';
   const tokenLimit = tokenFields.length === 1 ? body[tokenFields[0]!] : undefined;
+  const reasoningEffort = body.reasoning_effort;
+  const hasReasoningEffort = Object.hasOwn(body, 'reasoning_effort');
+  const gpt56Model = isGpt56Model(body.model);
   if (!/^[0-9a-f]{64}$/u.test(customId)
       || typeof body.model !== 'string' || body.model.length < 1 || body.model.length > 120
       || Object.keys(body).some((key) => !OPENAI_BATCH_BODY_KEYS.has(key))
       || !validMessages
       || !Number.isSafeInteger(tokenLimit) || Number(tokenLimit) < 1 || Number(tokenLimit) > 1_000_000
+      || (gpt56Model && !hasReasoningEffort && !options.allowLegacyGpt56ReasoningOmission)
+      || (hasReasoningEffort && (!gpt56Model || reasoningEffort !== 'none'))
       || (Object.hasOwn(body, 'response_format')
         && (body.response_format === null || typeof body.response_format !== 'object'
           || Array.isArray(body.response_format)))) {
@@ -1509,12 +1519,30 @@ async function runOpenAIBatchStructuredGeneration(
   if (!control || !/^[0-9a-f]{64}$/u.test(control.stageKey)) {
     throw batchError('OPENAI_BATCH_DURABLE_STATE_REQUIRED', 'OpenAI Batch requires a durable stage binding.');
   }
-  const body = { ...params } as Record<string, unknown>;
+  let body = { ...params } as Record<string, unknown>;
   delete body.service_tier;
-  const requestDigest = crypto.createHash('sha256').update(stableBatchJson(body)).digest('hex');
+  let requestDigest = crypto.createHash('sha256').update(stableBatchJson(body)).digest('hex');
   const customId = control.stageKey;
-  const inputJsonl = openAIBatchInputJsonl(customId, body);
   let state = control.load();
+  let allowLegacyGpt56ReasoningOmission = false;
+  if (state && state.customId === customId && state.requestDigest !== requestDigest
+      && isGpt56Model(body.model) && body.reasoning_effort === 'none') {
+    const legacyBody = { ...body };
+    delete legacyBody.reasoning_effort;
+    const legacyRequestDigest = crypto.createHash('sha256')
+      .update(stableBatchJson(legacyBody)).digest('hex');
+    if (state.requestDigest === legacyRequestDigest) {
+      // Preserve the immutable envelope and digest of a GPT-5.6 Batch stage
+      // admitted before the visible-output pin. New stages still require the
+      // pin; this compatibility path only resumes that exact durable identity.
+      body = legacyBody;
+      requestDigest = legacyRequestDigest;
+      allowLegacyGpt56ReasoningOmission = true;
+    }
+  }
+  const inputJsonl = openAIBatchInputJsonl(customId, body, {
+    allowLegacyGpt56ReasoningOmission,
+  });
   if (state && (state.requestDigest !== requestDigest || state.customId !== customId)) {
     throw batchError('OPENAI_BATCH_REQUEST_IDENTITY_MISMATCH', 'Persisted OpenAI Batch identity does not match this request.');
   }
@@ -1820,6 +1848,11 @@ export class OpenAIProvider implements AIProvider {
           { role: openAIBatchInstructionRole(request.model), content: request.systemPrompt },
           { role: 'user', content: request.userPrompt },
         ],
+        // GPT-5.6 defaults to medium reasoning, whose hidden tokens share the
+        // same max_completion_tokens budget as visible output. These durable
+        // output-only stages need the full bounded budget for contract text;
+        // the provider documents `none` for Chat Completions and this model.
+        ...(isGpt56Model(request.model) ? { reasoning_effort: 'none' as const } : {}),
         ...(responseFormat ? { response_format: responseFormat } : {}),
       }, request.maxTokens));
     }

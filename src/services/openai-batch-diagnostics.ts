@@ -6,7 +6,7 @@ const ERROR_CODE = /^[A-Za-z0-9_.:-]{1,120}$/u;
 const ERROR_PARAM_PATH = /^[A-Za-z0-9_.$:[\]-]{1,160}$/u;
 const ERROR_PARAM_ROOTS = new Set([
   'custom_id', 'method', 'url', 'body', 'model', 'messages',
-  'max_completion_tokens', 'max_tokens', 'response_format',
+  'max_completion_tokens', 'max_tokens', 'response_format', 'reasoning_effort',
 ]);
 
 export interface ContentFreeOpenAIBatchErrorDiagnostic {

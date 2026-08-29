@@ -75,7 +75,7 @@ describe('terminal content-script Batch diagnostics', () => {
       })
       .mockResolvedValueOnce({
         status: 'failed', errorCode: 'invalid_request', errorLine: 1,
-        errorParam: 'body.response_format', message: 'private',
+        errorParam: 'body.reasoning_effort', message: 'private',
       });
     const result = await inspectContentScriptTerminalBatchDiagnostics({
       db,
@@ -95,7 +95,7 @@ describe('terminal content-script Batch diagnostics', () => {
       selected: 2,
       diagnostics: [
         { errorCode: 'invalid_request', errorLine: 1, errorParam: 'body.messages[].role' },
-        { errorCode: 'invalid_request', errorLine: 1, errorParam: 'body.response_format' },
+        { errorCode: 'invalid_request', errorLine: 1, errorParam: 'body.reasoning_effort' },
       ],
     });
     expect(JSON.stringify(result)).not.toContain('private');
