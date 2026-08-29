@@ -106,11 +106,6 @@ function getOpenAIBatchClients(): OpenAI[] {
   return primary === legacy ? [primary] : [primary, legacy];
 }
 
-export function _resetOpenAIClientsForTests(): void {
-  _client = null;
-  _batchClient = null;
-}
-
 /** Check if OpenAI is configured (has API key) */
 export function isOpenAIConfigured(): boolean {
   return !!config.openai.apiKey;
@@ -182,6 +177,10 @@ function openAIBatchInputJsonl(customId: string, body: Record<string, unknown>):
 }
 
 export const _openAIBatchSleep = {
+  resetClients: (): void => {
+    _client = null;
+    _batchClient = null;
+  },
   fn: (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason ?? Object.assign(new Error('OpenAI Batch cancelled'), { name: 'AbortError' }));

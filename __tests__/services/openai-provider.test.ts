@@ -195,7 +195,7 @@ vi.mock('../../src/services/cost-guardrail', async () => {
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { OpenAIProvider, _openAIBatchSleep, _resetOpenAIClientsForTests, _sleep, completeOneShot, completeOneShotWithWebSearch } from '../../src/services/openai-provider';
+import { OpenAIProvider, _openAIBatchSleep, _sleep, completeOneShot, completeOneShotWithWebSearch } from '../../src/services/openai-provider';
 import { pushEvent } from '../../src/portal/telemetry';
 import { config } from '../../src/config';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
@@ -317,7 +317,7 @@ describe('OpenAIProvider', () => {
       purpose: 'batch',
       status: 'processed',
     }));
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     provider = new OpenAIProvider();
   });
 
@@ -508,7 +508,7 @@ describe('OpenAIProvider', () => {
   it('routes new Batch work through the isolated project credential', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const stageKey = '7'.repeat(64);
     let durableState: any = null;
     mockDedicatedFileCreate.mockResolvedValueOnce({ id: 'dedicated-input' });
@@ -551,7 +551,7 @@ describe('OpenAIProvider', () => {
   it('resolves a legacy Batch by 404-only project fallback', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
     mockBatchRetrieve.mockResolvedValueOnce({ id: 'legacy-batch', status: 'in_progress' });
     mockBatchCancel.mockResolvedValueOnce({ id: 'legacy-batch', status: 'cancelling' });
@@ -571,7 +571,7 @@ describe('OpenAIProvider', () => {
   it('does not cross project boundaries after a non-404 provider error', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }));
 
     await expect(provider.cancelStructuredGenerationBatch({
@@ -587,7 +587,7 @@ describe('OpenAIProvider', () => {
   it('fails closed when one durable file intent exists in both projects', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const stageKey = '9'.repeat(64);
     const filename = `${stageKey}.jsonl`;
     mockDedicatedFileList.mockResolvedValueOnce(mockProviderPage([
@@ -608,7 +608,7 @@ describe('OpenAIProvider', () => {
   it('recovers an accepted legacy Batch before requiring its file metadata', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const stageKey = 'a'.repeat(64);
     const requestDigest = 'b'.repeat(64);
     mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
@@ -637,7 +637,7 @@ describe('OpenAIProvider', () => {
   it('preserves durable absence when an unmatched input file is gone from both projects', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const stageKey = 'c'.repeat(64);
     mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
     mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
@@ -659,7 +659,7 @@ describe('OpenAIProvider', () => {
   it('validates cross-project reconciliation identity before provider inventory reads', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
 
     await expect(provider.reconcileStructuredGenerationBatchIntent({
       stageKey: 'e'.repeat(64),
@@ -674,7 +674,7 @@ describe('OpenAIProvider', () => {
   it('retains the missing-input refusal for cross-project create reconciliation', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const stageKey = '1'.repeat(64);
     mockDedicatedFileList.mockResolvedValueOnce(mockProviderPage([]));
     mockFileList.mockResolvedValueOnce(mockProviderPage([]));
@@ -691,7 +691,7 @@ describe('OpenAIProvider', () => {
   it('deletes a retained legacy file after isolated-project absence is proven', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     mockDedicatedFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
     mockFileDelete.mockResolvedValueOnce({ id: 'legacy-file', deleted: true });
 
@@ -706,7 +706,7 @@ describe('OpenAIProvider', () => {
   it('treats a retained file absent from both projects as already deleted', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     mockDedicatedFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
     mockFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
 
@@ -721,7 +721,7 @@ describe('OpenAIProvider', () => {
   it('does not cross projects after a non-404 file deletion failure', async () => {
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const failure = Object.assign(new Error('forbidden'), { status: 403 });
     mockDedicatedFileDelete.mockRejectedValueOnce(failure);
 
@@ -750,7 +750,7 @@ describe('OpenAIProvider', () => {
 
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
     mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
     mockDedicatedFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
@@ -804,7 +804,7 @@ describe('OpenAIProvider', () => {
 
     config.openai.batchApiKey = 'sk-batch-test-key';
     config.openai.batchProjectId = 'proj_batch_test_1234';
-    _resetOpenAIClientsForTests();
+    _openAIBatchSleep.resetClients();
     const cancellation = Object.assign(new Error('cancel during ownership resolution'), {
       name: 'AbortError',
     });

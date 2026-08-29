@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveOpenAIBatchProjectCredentials } from '../../src/config';
+import { resolveOpenAIBatchProjectCredentials } from '../../src/services/openai-batch-project-config';
 
 describe('OpenAI Batch project configuration', () => {
   it('keeps the isolated project disabled when both values are absent', () => {
