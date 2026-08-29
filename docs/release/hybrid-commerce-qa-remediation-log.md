@@ -1223,3 +1223,31 @@ columns, and passed integrity and foreign-key checks. The clone and diagnostic
 output were deleted. Production remains on the healthy predecessor and the
 ten-script smoke remains locked. A distinct protected-main Release A3 identity
 is required because the failed A2 identity is terminal and non-retryable.
+
+### Owner-exception release closure (2026-08-30)
+
+The final two successor acceptance scenarios remained operationally expensive
+release blockers after multiple bounded, owner-authorized same-job recoveries.
+Protected-main source `e9afc77cf1af6b3cece3022e0744bcc2dc27a689`
+is serving under a completed, provable v3 receipt and contains the diagnosed
+GPT-5.6 Batch visible-output correction. The immutable ten-row inventory still
+records seven contract-valid pre-release completions, the two same successor
+identities, and one pending production smoke; no replacement or eleventh
+scenario was created. A GET-only authenticated reconciliation by the reviewed
+successor-v4 tool wrote the mode-0600 private state at
+`2026-08-30T00:25:34+01:00`, with server-owned metadata observed through
+`2026-08-29T23:25:21.775Z`; that snapshot records one successor running, one
+queued, and zero terminal failures.
+
+The owner explicitly directed release finalization in the release thread on
+2026-08-30 to stop treating the two remaining scenarios as blockers. This is
+the canonical repository record of that instruction; no private conversation
+transcript is embedded. This is an evidence exception, not a test
+result: neither row is relabeled, the smoke is not submitted, 7/9 is not called
+9/9, and acceptance v6 or economics v7 cannot be reported as passing. Draft PR
+#389 is superseded because its launcher and evidence contract require 9/9 and
+the source-bound smoke. Release closure may ship documentation and already
+default-off guarded code, but Stripe sales, Apple sales, hybrid-credit
+fulfillment, and production local-primary activation remain OFF. No further
+retry, replacement, acceleration, or credential refresh is authorized for the
+two successor identities.
