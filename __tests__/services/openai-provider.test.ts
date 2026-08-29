@@ -21,6 +21,16 @@ const mockBatchCreate = vi.fn();
 const mockBatchList = vi.fn();
 const mockBatchRetrieve = vi.fn();
 const mockBatchCancel = vi.fn();
+const mockDedicatedFileCreate = vi.fn();
+const mockDedicatedFileRetrieve = vi.fn();
+const mockDedicatedFileList = vi.fn();
+const mockDedicatedFileContent = vi.fn();
+const mockDedicatedFileDelete = vi.fn();
+const mockDedicatedBatchCreate = vi.fn();
+const mockDedicatedBatchList = vi.fn();
+const mockDedicatedBatchRetrieve = vi.fn();
+const mockDedicatedBatchCancel = vi.fn();
+const mockOpenAIConstructor = vi.fn();
 const mockOpenAIWithOptions = vi.fn();
 const mockSettleNexusPointOverageForUser = vi.fn().mockResolvedValue(undefined);
 const mockAssertAiBudgetReservationForProvider = vi.fn();
@@ -29,17 +39,32 @@ const mockRecordUsage = vi.fn();
 vi.mock('openai', () => {
   return {
     default: class OpenAI {
-      chat = { completions: { create: mockCreate } };
-      responses = { create: mockResponsesCreate };
-      files = {
-        create: mockFileCreate, list: mockFileList,
-        retrieve: mockFileRetrieve,
-        content: mockFileContent, delete: mockFileDelete,
-      };
-      batches = {
-        create: mockBatchCreate, list: mockBatchList,
-        retrieve: mockBatchRetrieve, cancel: mockBatchCancel,
-      };
+      chat: unknown;
+      responses: unknown;
+      files: unknown;
+      batches: unknown;
+      constructor(options: { project?: string } = {}) {
+        mockOpenAIConstructor(options);
+        const dedicated = Boolean(options.project);
+        this.chat = { completions: { create: mockCreate } };
+        this.responses = { create: mockResponsesCreate };
+        this.files = dedicated ? {
+          create: mockDedicatedFileCreate, list: mockDedicatedFileList,
+          retrieve: mockDedicatedFileRetrieve,
+          content: mockDedicatedFileContent, delete: mockDedicatedFileDelete,
+        } : {
+          create: mockFileCreate, list: mockFileList,
+          retrieve: mockFileRetrieve,
+          content: mockFileContent, delete: mockFileDelete,
+        };
+        this.batches = dedicated ? {
+          create: mockDedicatedBatchCreate, list: mockDedicatedBatchList,
+          retrieve: mockDedicatedBatchRetrieve, cancel: mockDedicatedBatchCancel,
+        } : {
+          create: mockBatchCreate, list: mockBatchList,
+          retrieve: mockBatchRetrieve, cancel: mockBatchCancel,
+        };
+      }
       withOptions(options: unknown) {
         mockOpenAIWithOptions(options);
         return this;
@@ -72,6 +97,8 @@ vi.mock('../../src/config', () => ({
   config: {
     openai: {
       apiKey: 'sk-test-key',
+      batchApiKey: '',
+      batchProjectId: '',
       model: 'gpt-4o',
       classifierModel: 'gpt-4o-mini',
       maxTokens: 1024,
@@ -265,6 +292,8 @@ describe('OpenAIProvider', () => {
     vi.clearAllMocks();
     _resetOverrides();
     config.openai.model = 'gpt-4o';
+    config.openai.batchApiKey = '';
+    config.openai.batchProjectId = '';
     config.openai.classifierModel = 'gpt-4o-mini';
     config.openai.maxTokens = 1024;
     config.openai.secretaryMaxTokens = 2048;
@@ -288,6 +317,7 @@ describe('OpenAIProvider', () => {
       purpose: 'batch',
       status: 'processed',
     }));
+    _openAIBatchSleep.resetClients();
     provider = new OpenAIProvider();
   });
 
@@ -473,6 +503,333 @@ describe('OpenAIProvider', () => {
       category: 'cloud_script_generation_plan',
       responseFormat: 'json',
     })).rejects.toThrow('service tier mismatch');
+  });
+
+  it('routes new Batch work through the isolated project credential', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = '7'.repeat(64);
+    let durableState: any = null;
+    mockDedicatedFileCreate.mockResolvedValueOnce({ id: 'dedicated-input' });
+    mockDedicatedFileRetrieve.mockResolvedValueOnce({
+      id: 'dedicated-input', purpose: 'batch', status: 'processed',
+    });
+    mockDedicatedBatchCreate.mockResolvedValueOnce({
+      id: 'dedicated-batch', status: 'completed', output_file_id: 'dedicated-output',
+    });
+    mockDedicatedFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'isolated' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).resolves.toMatchObject({ text: 'isolated', serviceTier: 'batch' });
+
+    expect(mockOpenAIConstructor).toHaveBeenCalledWith({
+      apiKey: 'sk-batch-test-key', project: 'proj_batch_test_1234', maxRetries: 0,
+    });
+    expect(mockDedicatedFileCreate).toHaveBeenCalledTimes(1);
+    expect(mockDedicatedBatchCreate).toHaveBeenCalledTimes(1);
+    expect(mockFileCreate).not.toHaveBeenCalled();
+    expect(mockBatchCreate).not.toHaveBeenCalled();
+  });
+
+  it('resolves a legacy Batch by 404-only project fallback', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockBatchRetrieve.mockResolvedValueOnce({ id: 'legacy-batch', status: 'in_progress' });
+    mockBatchCancel.mockResolvedValueOnce({ id: 'legacy-batch', status: 'cancelling' });
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'legacy-batch',
+      customId: '8'.repeat(64),
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).resolves.toEqual({ status: 'cancelling' });
+    expect(mockDedicatedBatchRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockBatchRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockBatchCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cross project boundaries after a non-404 provider error', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }));
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'unknown-owner',
+      customId: '8'.repeat(64),
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(mockBatchRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when one durable file intent exists in both projects', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = '9'.repeat(64);
+    const filename = `${stageKey}.jsonl`;
+    mockDedicatedFileList.mockResolvedValueOnce(mockProviderPage([
+      { id: 'dedicated-match', filename, purpose: 'batch' },
+    ]));
+    mockFileList.mockResolvedValueOnce(mockProviderPage([
+      { id: 'legacy-match', filename, purpose: 'batch' },
+    ]));
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: 'a'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: filename,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_PROJECT_RECONCILIATION_AMBIGUOUS' });
+  });
+
+  it('recovers an accepted legacy Batch before requiring its file metadata', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = 'a'.repeat(64);
+    const requestDigest = 'b'.repeat(64);
+    mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([{
+      id: 'legacy-accepted-batch',
+      input_file_id: 'legacy-input',
+      endpoint: '/v1/chat/completions',
+      metadata: { nexus_stage_key: stageKey, nexus_request_digest: requestDigest },
+      status: 'in_progress',
+    }]));
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest,
+      customId: stageKey,
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      inputFileId: 'legacy-input',
+      batchCreateIntent: true,
+    })).resolves.toMatchObject({
+      inputFileId: 'legacy-input',
+      providerBatchId: 'legacy-accepted-batch',
+      status: 'in_progress',
+    });
+    expect(mockFileRetrieve).not.toHaveBeenCalled();
+  });
+
+  it('preserves durable absence when an unmatched input file is gone from both projects', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = 'c'.repeat(64);
+    mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockDedicatedFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: 'd'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      inputFileId: 'expired-input',
+      batchCreateIntent: true,
+    })).resolves.toEqual({ inputFileId: 'expired-input' });
+    expect(mockDedicatedFileRetrieve).toHaveBeenCalledTimes(1);
+    expect(mockFileRetrieve).toHaveBeenCalledTimes(1);
+  });
+
+  it('validates cross-project reconciliation identity before provider inventory reads', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey: 'e'.repeat(64),
+      requestDigest: 'f'.repeat(64),
+      customId: 'wrong-custom-id',
+      inputFileIntentFilename: `${'e'.repeat(64)}.jsonl`,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_RECONCILIATION_IDENTITY_INVALID' });
+    expect(mockDedicatedFileList).not.toHaveBeenCalled();
+    expect(mockFileList).not.toHaveBeenCalled();
+  });
+
+  it('retains the missing-input refusal for cross-project create reconciliation', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const stageKey = '1'.repeat(64);
+    mockDedicatedFileList.mockResolvedValueOnce(mockProviderPage([]));
+    mockFileList.mockResolvedValueOnce(mockProviderPage([]));
+
+    await expect(provider.reconcileStructuredGenerationBatchIntent({
+      stageKey,
+      requestDigest: '2'.repeat(64),
+      customId: stageKey,
+      inputFileIntentFilename: `${stageKey}.jsonl`,
+      batchCreateIntent: true,
+    })).rejects.toMatchObject({ code: 'OPENAI_BATCH_CREATE_INTENT_INPUT_MISSING' });
+  });
+
+  it('deletes a retained legacy file after isolated-project absence is proven', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockFileDelete.mockResolvedValueOnce({ id: 'legacy-file', deleted: true });
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'legacy-batch',
+      fileIds: ['legacy-file'],
+    })).resolves.toBeUndefined();
+    expect(mockDedicatedFileDelete).toHaveBeenCalledTimes(1);
+    expect(mockFileDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a retained file absent from both projects as already deleted', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockFileDelete.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'retained-batch',
+      fileIds: ['already-absent'],
+    })).resolves.toBeUndefined();
+    expect(mockDedicatedFileDelete).toHaveBeenCalledTimes(1);
+    expect(mockFileDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cross projects after a non-404 file deletion failure', async () => {
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const failure = Object.assign(new Error('forbidden'), { status: 403 });
+    mockDedicatedFileDelete.mockRejectedValueOnce(failure);
+
+    await expect(provider.deleteStructuredGenerationBatchFiles({
+      providerBatchId: 'retained-batch',
+      fileIds: ['isolated-file'],
+    })).rejects.toBe(failure);
+    expect(mockFileDelete).not.toHaveBeenCalled();
+  });
+
+  it('resumes a legacy-owned durable Batch on the legacy client after pairing is enabled', async () => {
+    const stageKey = '3'.repeat(64);
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'legacy-resume-input' });
+    mockBatchCreate.mockRejectedValueOnce(new Error('simulated worker loss after create intent'));
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toThrow('simulated worker loss');
+    expect(durableState).toMatchObject({
+      inputFileId: 'legacy-resume-input',
+      batchCreateIntent: true,
+    });
+
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    mockDedicatedBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockBatchList.mockResolvedValueOnce(mockProviderPage([]));
+    mockDedicatedFileRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockBatchCreate.mockResolvedValueOnce({
+      id: 'legacy-resumed-batch', status: 'completed', output_file_id: 'legacy-resumed-output',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: stageKey,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'legacy-resumed' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 2, completion_tokens: 1 },
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    const resumedRequest = batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    );
+    Object.assign(resumedRequest.durableBatch, {
+      observeIntentAbsence: () => ({ state: durableState, mutationAuthorized: true }),
+    });
+    await expect(provider.callStructuredGeneration(resumedRequest))
+      .resolves.toMatchObject({ text: 'legacy-resumed', serviceTier: 'batch' });
+    expect(mockBatchCreate).toHaveBeenCalledTimes(2);
+    expect(mockDedicatedBatchCreate).not.toHaveBeenCalled();
+    expect(mockFileContent).toHaveBeenCalledWith('legacy-resumed-output', { maxRetries: 0 });
+    expect(mockDedicatedFileContent).not.toHaveBeenCalled();
+  });
+
+  it('cancels a legacy-owned durable Batch when abort lands during ownership resolution', async () => {
+    const stageKey = '4'.repeat(64);
+    const controller = new AbortController();
+    let durableState: any = null;
+    mockFileCreate.mockResolvedValueOnce({ id: 'legacy-cancel-input' });
+    mockBatchCreate.mockResolvedValueOnce({ id: 'legacy-cancel-batch', status: 'validating' });
+    mockBatchRetrieve.mockRejectedValueOnce(new Error('simulated worker loss'));
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+    ))).rejects.toThrow('simulated worker loss');
+
+    config.openai.batchApiKey = 'sk-batch-test-key';
+    config.openai.batchProjectId = 'proj_batch_test_1234';
+    _openAIBatchSleep.resetClients();
+    const cancellation = Object.assign(new Error('cancel during ownership resolution'), {
+      name: 'AbortError',
+    });
+    mockDedicatedBatchRetrieve.mockRejectedValueOnce(Object.assign(new Error('absent'), { status: 404 }));
+    mockBatchRetrieve
+      .mockImplementationOnce(async (_id: string, options?: { signal?: AbortSignal }) => {
+        controller.abort(cancellation);
+        if (options?.signal?.aborted) throw cancellation;
+        return { id: 'legacy-cancel-batch', status: 'in_progress' };
+      })
+      .mockRejectedValueOnce(cancellation);
+    mockBatchCancel.mockResolvedValueOnce({ id: 'legacy-cancel-batch', status: 'cancelling' });
+
+    await expect(provider.callStructuredGeneration(batchReadinessRequest(
+      stageKey,
+      () => durableState,
+      (state) => { durableState = structuredClone(state); },
+      controller.signal,
+    ))).rejects.toBe(cancellation);
+    expect(mockBatchCancel).toHaveBeenCalledWith('legacy-cancel-batch', { maxRetries: 0 });
+    expect(mockDedicatedBatchCancel).not.toHaveBeenCalled();
+    expect(durableState).toMatchObject({
+      providerBatchId: 'legacy-cancel-batch',
+      status: 'cancelling',
+    });
   });
 
   it('submits, polls, resumes, and accounts for an exact durable Batch result', async () => {

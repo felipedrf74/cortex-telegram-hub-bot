@@ -31,6 +31,15 @@ Cloudflare Tunnel ingress, and recovery-first continuous deployment.
 4. **Secrets never appear in `process.env` log dumps.** A debug helper
    that dumps env should redact every key matching
    `/(token|secret|key|password|webhook)/i`.
+5. **OpenAI Batch project isolation is paired and backward-compatible.**
+   `OPENAI_BATCH_API_KEY` and `OPENAI_BATCH_PROJECT_ID` must be configured
+   together with the legacy `OPENAI_API_KEY`. Genuinely new Batch uploads and
+   jobs use the isolated project; recovered legacy input files and retained
+   Batch/file operations stay on the legacy project after a provider `404`.
+   Both keys must remain project-scoped to different projects, and the isolated
+   pair must not be removed while any isolated Batch or file remains retained.
+   Authorization failures, ambiguous intent matches, and every other provider
+   error fail closed.
 
 ## 2. Process model (must)
 

@@ -1547,7 +1547,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/content-script-jobs.ts:2638-2638",
+            "pattern": "src/services/content-script-jobs.ts:2675-2675",
             "anchor": "legacyBatchEmptyOutputExhausted ? 1 : 0",
             "behavior": "A legacy scheduled empty-output exhaustion consumes its poisoned generation exactly once before the same durable job is reopened.",
             "replacementTest": "__tests__/services/content-script-jobs.test.ts",
