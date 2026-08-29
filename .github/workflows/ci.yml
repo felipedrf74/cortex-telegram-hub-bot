@@ -549,12 +549,21 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Stage selected-test coverage
+        if: ${{ needs.classify.outputs.vitest_mode == 'focused' }}
+        run: |
+          test -s .local/coverage/selected/coverage-final.json
+          test -s .local/coverage/selected/coverage-summary.json
+          test -s .local/coverage/selected/lcov.info
+          mkdir -p selected-coverage
+          cp -R .local/coverage/selected/. selected-coverage/
+
       - name: Upload selected-test coverage
         if: ${{ always() && needs.classify.outputs.vitest_mode == 'focused' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: selected-coverage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .local/coverage/selected/
+          path: selected-coverage/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

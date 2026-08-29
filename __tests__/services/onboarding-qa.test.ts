@@ -394,7 +394,7 @@ describe('QA: Full completion flow — fitness', () => {
     expect(profile.data.preferred_training_days).toBe('Monday, Wednesday, Saturday');
     expect(profile.data.blocked_days).toBe('none');
     expect(profile.data.training_goals).toBe('Strength');
-    expect(profile.data.injuries).toBe('none');
+    expect(profile.data).not.toHaveProperty('injuries');
     expect(profile.data.available_equipment).toBe('Full gym');
   });
 });

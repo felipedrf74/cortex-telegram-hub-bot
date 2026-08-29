@@ -41,6 +41,19 @@ describe('lean required CI contracts', () => {
     expect(focusedJob).not.toContain('--skip-tests');
   });
 
+  it('fails closed unless selected coverage can be staged for upload', () => {
+    const focusedJob = workflow.match(
+      /  test_focused:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
+    )?.groups?.body ?? '';
+
+    expect(focusedJob).toContain('test -s .local/coverage/selected/coverage-final.json');
+    expect(focusedJob).toContain('test -s .local/coverage/selected/coverage-summary.json');
+    expect(focusedJob).toContain('test -s .local/coverage/selected/lcov.info');
+    expect(focusedJob).toContain('cp -R .local/coverage/selected/. selected-coverage/');
+    expect(focusedJob).toContain('path: selected-coverage/');
+    expect(focusedJob).toContain('if-no-files-found: error');
+  });
+
   it('publishes exact selected-test metadata for the protected main SHA', () => {
     expect(workflow).toContain('NEXUS_TEST_SELECTION_OUTPUT: .local/ci-evidence/test-selection.json');
     expect(workflow).toContain('protected-main-test-selection-${{ github.run_id }}-${{ github.run_attempt }}');
