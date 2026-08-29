@@ -27,6 +27,7 @@ const DIRECT_DIAGNOSTIC_PARAMS = new Set([
   'body.model',
   'body.messages',
   'body.max_completion_tokens',
+  'body.reasoning_effort',
   'body.response_format',
   'body.response_format.type',
   'body.response_format.json_schema',
@@ -37,6 +38,7 @@ const DIRECT_DIAGNOSTIC_PARAMS = new Set([
   'model',
   'messages',
   'max_completion_tokens',
+  'reasoning_effort',
   'response_format',
   'service_tier',
 ]);
