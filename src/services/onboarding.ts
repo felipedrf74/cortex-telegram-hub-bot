@@ -603,8 +603,8 @@ export function startOrResume(userId: number, rawQuestionnaireId: string): Onboa
 export function answerStep(
   userId: number,
   rawQuestionnaireId: string,
-  answer: string,
-  options: { expectedStepIndex?: number } = {},
+  answer: string | undefined,
+  options: { expectedStepIndex?: number; skip?: boolean } = {},
 ): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean } {
   const db = getDb();
   // Canonicalize like startOrResume so an alias-id answer addresses
@@ -616,7 +616,7 @@ export function answerStep(
   const session = getActiveSession(userId, questionnaireId);
   if (!session) throw new Error('No active session');
 
-  const { expectedStepIndex } = options;
+  const { expectedStepIndex, skip = false } = options;
   if (typeof expectedStepIndex === 'number') {
     if (expectedStepIndex < session.current_step) {
       // Client is re-sending a step the server already advanced past.
@@ -650,13 +650,19 @@ export function answerStep(
   const currentStep = def.steps[session.current_step];
   if (!currentStep) throw new Error('Session already at last step');
 
-  // Validate answer
-  if (currentStep.validation && !currentStep.validation.test(answer)) {
+  if (!skip && answer === undefined) {
+    throw new Error('Answer is required unless the step is skipped');
+  }
+
+  // Validate non-skipped answers only. An explicit skip advances the cursor
+  // without creating a profile key, so progress reflects answered fields.
+  if (!skip && currentStep.validation && !currentStep.validation.test(answer!)) {
     throw new Error(`Invalid answer format for ${currentStep.key}`);
   }
 
-  // Store answer
-  const answers = { ...session.answers, [currentStep.key]: answer };
+  const answers = skip
+    ? { ...session.answers }
+    : { ...session.answers, [currentStep.key]: answer! };
   const nextStepIdx = session.current_step + 1;
   const isComplete = nextStepIdx >= def.steps.length;
 

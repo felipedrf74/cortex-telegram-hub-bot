@@ -12633,7 +12633,7 @@ paths:
       x-source: "src/api/routes/onboarding.ts:448"
       responses:
         "200":
-          description: "{ profiles: [{ type, title, description, fields: [{ key, prompt, type, options, value, answered }], completedFieldCount, totalFieldCount, isComplete, updatedAt }], summary: { totalAnswered, totalFields, allComplete } } (Standard success envelope unless noted.)"
+          description: "{ profiles: [{ type, title, description, fields: [{ key, prompt, type, options (canonical values), optionLabels (localized display values), value, answered }], completedFieldCount, totalFieldCount, isComplete, updatedAt }], summary: { totalAnswered, totalFields, allComplete } }. User-facing copy follows X-Language; option values remain canonical for writes. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -12704,7 +12704,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ id, title, steps: [{ index, field, question, type, options, min, max }], currentStep } (Standard success envelope unless noted.)"
+          description: "{ id, title, steps: [{ index, field, question, type, options (canonical values), optionLabels (localized display values), min, max }], currentStep }. User-facing copy follows X-Language; option values remain canonical for writes. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "404":
@@ -12724,9 +12724,9 @@ paths:
       description: |-
         Source: src/api/routes/onboarding.ts:288
 
-        Request body (evidenced fields): { stepIndex: number (required, optimistic-concurrency token), answer: any (required) }
+        Request body (evidenced fields): { stepIndex: number (required, optimistic-concurrency token), answer: string (required unless skip=true), skip: boolean (optional) }
 
-        Notes: 409 STEP_MISMATCH carries details { currentStep, clientStep } and instructs resync via GET /onboarding/{id}/status. Duplicate retries are idempotent-replayed rather than double-written.
+        Notes: skip=true advances without storing a value for the field, so a skipped field is not counted as answered. 409 STEP_MISMATCH carries details { currentStep, clientStep } and instructs resync via GET /onboarding/{id}/status. Duplicate retries are idempotent-replayed rather than double-written.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/onboarding.ts:288"
       parameters:
@@ -12741,10 +12741,10 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: { stepIndex: number (required, optimistic-concurrency token), answer: any (required) }. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: { stepIndex: number (required, optimistic-concurrency token), answer: string (required unless skip=true), skip: boolean (optional) }. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ nextStep: { index, field, question, type, options, min, max } | null, isComplete: boolean, progress: number 0..1, currentStep: number, idempotentReplay: boolean } (Standard success envelope unless noted.)"
+          description: "{ nextStep: { index, field, question, type, options, optionLabels, min, max } | null, isComplete: boolean, progress: number 0..1, currentStep: number, idempotentReplay: boolean, skipped: boolean } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_REQUEST."
         "401":
@@ -12784,7 +12784,7 @@ paths:
               description: "Evidenced fields: none required (body only inspected for logging). Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ id, title, steps: [{ index, field, question, type, options, min, max }], currentStep } (Standard success envelope unless noted.)"
+          description: "{ id, title, steps: [{ index, field, question, type, options (canonical values), optionLabels (localized display values), min, max }], currentStep }. User-facing copy follows X-Language; option values remain canonical for writes. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "404":

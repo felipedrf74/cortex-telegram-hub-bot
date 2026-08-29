@@ -88,6 +88,7 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  headers: Record<string, string> = {},
 ): Promise<MockRes> {
   const router = onboardingRoutes();
   const [pathPart] = url.split('?');
@@ -103,7 +104,10 @@ async function dispatch(
     path: pathPart,
     query: {},
     params: {} as Record<string, string>,
-    headers: {},
+    headers,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name];
+    },
   } as unknown as Request;
 
   if (segments[0] && !['pending', 'profile'].includes(segments[0])) {
@@ -181,6 +185,34 @@ describe('GET /onboarding/:questionnaireId/status', () => {
   });
 });
 
+describe('GET /onboarding/:questionnaireId localized wire copy', () => {
+  beforeEach(() => {
+    testDb = createMigratedTestDatabase();
+    clearTenantScopeAnomaliesForTests();
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('returns pt-PT swim prompts and labels with canonical option values', async () => {
+    const res = await dispatch(
+      'GET',
+      '/triathlon-swim',
+      2501,
+      undefined,
+      { 'x-language': 'pt-PT' },
+    );
+
+    expect(res.statusCode).toBe(200);
+    const sessions = res.body.data.steps.find((step: any) => step.field === 'sessions_per_week');
+    expect(sessions.question).toBe('Quantas sessões de natação podes fazer por semana?');
+    const gear = res.body.data.steps.find((step: any) => step.field === 'equipment_access');
+    expect(gear.options[0]).toBe('Pull buoy');
+    expect(gear.optionLabels[0]).toBe('Flutuador de pernas');
+  });
+});
+
 describe('POST /onboarding/:questionnaireId/answer stepIndex concurrency', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
@@ -237,5 +269,45 @@ describe('POST /onboarding/:questionnaireId/answer stepIndex concurrency', () =>
     });
     // Server cursor is untouched.
     expect(getActiveSession(3002, 'fitness')?.current_step).toBe(0);
+  });
+
+  it('accepts skip=true without answer and does not mark the field answered', async () => {
+    startOrResume(3003, 'fitness');
+    const res = await dispatch('POST', '/fitness/answer', 3003, {
+      stepIndex: 0,
+      skip: true,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.skipped).toBe(true);
+    expect(res.body.data.currentStep).toBe(1);
+    expect(getActiveSession(3003, 'fitness')?.answers).toEqual({});
+  });
+
+  it('rejects a missing answer when skip is not explicitly true', async () => {
+    startOrResume(3004, 'fitness');
+    const res = await dispatch('POST', '/fitness/answer', 3004, {
+      stepIndex: 0,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(getActiveSession(3004, 'fitness')?.current_step).toBe(0);
+  });
+
+  it('reports zero answered fields after every fitness step is skipped', async () => {
+    startOrResume(3005, 'fitness');
+    for (let stepIndex = 0; stepIndex < 7; stepIndex++) {
+      const skipped = await dispatch('POST', '/fitness/answer', 3005, {
+        stepIndex,
+        skip: true,
+      });
+      expect(skipped.statusCode).toBe(200);
+    }
+
+    const detail = await dispatch('GET', '/profile/detail', 3005);
+    const fitness = detail.body.data.profiles.find((profile: any) => profile.type === 'fitness');
+    expect(fitness.completedFieldCount).toBe(0);
+    expect(fitness.fields.every((field: any) => field.answered === false)).toBe(true);
   });
 });
