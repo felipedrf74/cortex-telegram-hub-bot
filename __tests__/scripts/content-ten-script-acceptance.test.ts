@@ -14,14 +14,18 @@ import {
   TEN_SCRIPT_ACCEPTANCE_SCENARIOS,
   TEN_SCRIPT_ACCEPTANCE_REVISION,
   TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+  TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+  TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA,
   LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA,
   TEN_SCRIPT_WORKLOAD_SOURCE_SCHEMA,
   bindProductionSmokeSource,
+  createSuccessorAcceptanceState,
   migrateLegacyAcceptanceState,
   updateAcceptanceScenarioFromView,
   validateAcceptanceStateShape,
   validateAuthoritativeWorkloadReleaseView,
   validateCompletedReleaseView,
+  validateSuccessorAcceptancePredecessor,
 } from '../../scripts/content-ten-script-acceptance.mjs';
 import {
   CONTENT_TEN_SCRIPT_EVIDENCE_SCHEMA,
@@ -157,6 +161,36 @@ function pendingAcceptanceState() {
   };
 }
 
+function predecessorRecoveryState() {
+  const state: any = pendingAcceptanceState();
+  state.schemaVersion = LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA;
+  state.scenarios.forEach((row, index) => {
+    if (row.phase !== 'pre-release') return;
+    row.jobId = fixtureJobId(index + 1);
+    row.submittedAt = '2026-08-23T00:00:00Z';
+    row.updatedAt = '2026-08-24T00:00:00Z';
+    row.progress = index < 7 ? 100 : 0;
+    row.stage = index < 7 ? 'completed' : 'failed';
+    if (index < 7) {
+      row.status = 'completed';
+      row.output = {
+        scriptSha256: `sha256:${String(index + 1).padStart(64, '0')}`,
+        wordCount: 2_100,
+        warnings: [],
+        route: 'cloud',
+        modelDigest: null,
+        sourceConsistent: true,
+        contractPass: true,
+      };
+    } else {
+      row.status = 'failed';
+      row.output = null;
+      row.errorCode = 'OPENAI_BATCH_FAILED';
+    }
+  });
+  return state;
+}
+
 describe('content acceptance evidence CLI error privacy', () => {
   it('preserves controlled refusals and redacts unexpected exception details', () => {
     const controlled = Object.assign(new Error('controlled evidence refusal'), { exitCode: 78 });
@@ -207,6 +241,77 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       expect(statSync(state).mode & 0o777).toBe(0o600);
       expect(JSON.parse(readFileSync(state, 'utf8')).scenarios).toHaveLength(10);
       chmodSync(state, 0o600);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a digest-bound successor carrying seven passes and resetting only two failures', () => {
+    const predecessorBytes = Buffer.from(`${JSON.stringify(predecessorRecoveryState())}\n`);
+    const successor: any = createSuccessorAcceptanceState(
+      predecessorBytes,
+      '2026-08-29T00:00:00Z',
+    );
+    expect(successor).toMatchObject({
+      schemaVersion: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA,
+      acceptanceRevision: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+    });
+    expect(successor.predecessor.stateSha256)
+      .toBe(`sha256:${crypto.createHash('sha256').update(predecessorBytes).digest('hex')}`);
+    expect(successor.scenarios.filter((row) => row.carriedForward)).toHaveLength(7);
+    expect(successor.scenarios.filter((row) => row.phase === 'pre-release'
+      && !row.carriedForward)).toHaveLength(2);
+    expect(successor.scenarios.filter((row) => !row.carriedForward)
+      .every((row) => row.status === 'pending' && row.jobId === null)).toBe(true);
+    expect(validateSuccessorAcceptancePredecessor(successor, predecessorBytes)).toBe(successor);
+
+    successor.scenarios.find((row) => row.carriedForward).progress = 99;
+    expect(() => validateSuccessorAcceptancePredecessor(successor, predecessorBytes))
+      .toThrow(/completed state|carried scenario/);
+  });
+
+  it('initializes a private successor state without mutating its predecessor file', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'nexus-ten-script-successor-'));
+    const predecessorPath = join(directory, 'predecessor.json');
+    const successorPath = join(directory, 'successor.json');
+    const predecessorBytes = Buffer.from(`${JSON.stringify(predecessorRecoveryState())}\n`);
+    try {
+      writeFileSync(predecessorPath, predecessorBytes, { mode: 0o600 });
+      const output = execFileSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status',
+        '--state', successorPath,
+        '--initialize-successor-from', predecessorPath,
+      ], { encoding: 'utf8' });
+      expect(JSON.parse(output)).toMatchObject({
+        schemaVersion: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA,
+        acceptanceRevision: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+        inventoryCount: 10,
+        completed: 7,
+        terminalFailures: 0,
+      });
+      expect(readFileSync(predecessorPath)).toEqual(predecessorBytes);
+      expect(statSync(successorPath).mode & 0o777).toBe(0o600);
+
+      const missingPredecessor = spawnSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status',
+        '--state', successorPath,
+      ], { encoding: 'utf8' });
+      expect(missingPredecessor.status).not.toBe(0);
+      expect(missingPredecessor.stderr)
+        .toContain('successor acceptance requires exactly one predecessor-state source');
+
+      const resumed = execFileSync(process.execPath, [
+        'scripts/content-ten-script-acceptance.mjs',
+        '--phase', 'status',
+        '--state', successorPath,
+        '--predecessor-state', predecessorPath,
+      ], { encoding: 'utf8' });
+      expect(JSON.parse(resumed)).toMatchObject({
+        acceptanceRevision: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+        completed: 7,
+      });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -440,9 +545,10 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     expect(() => validateAcceptanceStateShape(forged)).toThrow(/derived verdict/);
   });
 
-  it('binds private evidence to distinct workload and producer SHAs plus attributed usage', () => {
+  it('binds successor evidence to its predecessor, distinct release SHAs, and attributed usage', () => {
     const directory = mkdtempSync(join(tmpdir(), 'nexus-ten-script-evidence-'));
     const statePath = join(directory, 'state.json');
+    const predecessorPath = join(directory, 'predecessor.json');
     const databasePath = join(directory, 'acceptance.db');
     const qualityReviewPath = join(directory, 'quality-review.json');
     const workloadReleaseViewPath = join(directory, 'workload-release-view.json');
@@ -499,33 +605,28 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       capturedAt: '2026-08-22T23:45:00Z',
     });
     const workloadReleaseViewBytes = Buffer.from(`${JSON.stringify(workloadReleaseView)}\n`);
-    const state = {
-      schemaVersion: TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+    const predecessor = {
+      schemaVersion: LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA,
       acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
       createdAt: '2026-08-22T22:00:00Z',
-      productionSmokeSource: {
-        schemaVersion: TEN_SCRIPT_WORKLOAD_SOURCE_SCHEMA,
-        sourceSha: workloadSourceSha,
-        boundAt: '2026-08-22T23:50:00Z',
-        releaseViewSha256: digest(workloadReleaseViewBytes),
-        releaseId: workloadReleaseView.activeReceipt.releaseId,
-        releasePayloadDigest: workloadReleaseView.activeReceipt.releasePayloadDigest,
-        receiptCompletedAt: workloadReleaseView.activeReceipt.completedAt,
-        viewCapturedAt: workloadReleaseView.capturedAt,
-      },
       scenarios: TEN_SCRIPT_ACCEPTANCE_SCENARIOS.map((scenario, index) => ({
         id: scenario.id,
         phase: scenario.phase,
         deliveryMode: scenario.deliveryMode,
         language: scenario.language,
         topicSha256: digest(scenario.topic),
-        status: 'completed',
-        jobId: fixtureJobId(index),
-        submittedAt: '2026-08-22T23:59:00Z',
-        stage: 'completed',
-        progress: 100,
-        updatedAt: '2026-08-23T00:01:00Z',
-        output: {
+        status: scenario.phase === 'pre-release' && index < 7 ? 'completed'
+          : scenario.phase === 'pre-release' ? 'failed' : 'pending',
+        jobId: scenario.phase === 'pre-release' ? fixtureJobId(index) : null,
+        ...(scenario.phase === 'pre-release' ? {
+          submittedAt: '2026-08-22T22:10:00Z',
+          stage: index < 7 ? 'completed' : 'failed',
+          progress: index < 7 ? 100 : 0,
+          updatedAt: '2026-08-22T23:00:00Z',
+        } : {}),
+        ...(scenario.phase === 'pre-release' && index >= 7
+          ? { errorCode: 'OPENAI_BATCH_FAILED' } : {}),
+        output: scenario.phase === 'pre-release' && index < 7 ? {
           scriptSha256: digest(scriptBodies[index]),
           wordCount: 2_100,
           warnings: [],
@@ -533,9 +634,44 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
           modelDigest: null,
           sourceConsistent: true,
           contractPass: true,
-        },
+        } : null,
       })),
     };
+    const predecessorBytes = Buffer.from(`${JSON.stringify(predecessor)}\n`);
+    const state: any = createSuccessorAcceptanceState(
+      predecessorBytes,
+      '2026-08-22T23:55:00Z',
+    );
+    state.productionSmokeSource = {
+      schemaVersion: TEN_SCRIPT_WORKLOAD_SOURCE_SCHEMA,
+      sourceSha: workloadSourceSha,
+      boundAt: '2026-08-22T23:56:00Z',
+      releaseViewSha256: digest(workloadReleaseViewBytes),
+      releaseId: workloadReleaseView.activeReceipt.releaseId,
+      releasePayloadDigest: workloadReleaseView.activeReceipt.releasePayloadDigest,
+      receiptCompletedAt: workloadReleaseView.activeReceipt.completedAt,
+      viewCapturedAt: workloadReleaseView.capturedAt,
+    };
+    state.scenarios.forEach((scenario, index) => {
+      if (scenario.carriedForward) return;
+      scenario.status = 'completed';
+      scenario.jobId = fixtureJobId(index + 20);
+      scenario.submittedAt = '2026-08-22T23:59:00Z';
+      scenario.stage = 'completed';
+      scenario.progress = 100;
+      scenario.updatedAt = '2026-08-23T00:01:00Z';
+      scenario.output = {
+        scriptSha256: digest(scriptBodies[index]),
+        wordCount: 2_100,
+        warnings: [],
+        route: 'cloud',
+        modelDigest: null,
+        sourceConsistent: true,
+        contractPass: true,
+      };
+    });
+    validateSuccessorAcceptancePredecessor(state, predecessorBytes);
+    writeFileSync(predecessorPath, predecessorBytes, { mode: 0o600 });
     writeFileSync(statePath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
     writeFileSync(workloadReleaseViewPath, workloadReleaseViewBytes, { mode: 0o600 });
     writeFileSync(scriptJobKeyPath, `${JSON.stringify({
@@ -621,7 +757,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
           : [null, null, null, null, null, null];
         insertJob.run(
           scenario.jobId, operationId, 42, 42, 'completed',
-          `hybrid-plan-acceptance-${immutableScenario.id}-${TEN_SCRIPT_ACCEPTANCE_REVISION}`,
+          `hybrid-plan-acceptance-${immutableScenario.id}-${scenario.requestRevision}`,
           acceptanceRequestHash(immutableScenario),
           encryptContentJobFixture(request, scriptJobSecret, 42),
           900,
@@ -749,7 +885,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     const stateSha256 = digest(readFileSync(statePath));
     const qualityReview = {
       schemaVersion: CONTENT_TEN_SCRIPT_QUALITY_REVIEW_SCHEMA,
-      acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
+      acceptanceRevision: state.acceptanceRevision,
       reviewedAt: '2026-08-23T01:00:00Z',
       workloadSourceSha,
       stateSha256,
@@ -797,6 +933,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     try {
       const stdout = execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', outputPath,
@@ -822,7 +959,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
           entrypoint: 'scripts/content-ten-script-evidence.mjs',
           bindingSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         },
-        acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
+        acceptanceRevision: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
         acceptancePass: true,
         stateSha256,
         workloadRelease: {
@@ -832,7 +969,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
         },
         productionSmokeRuntimeRelease: {
           schemaVersion: CONTENT_SCRIPT_RUNTIME_RELEASE_SCHEMA,
-          jobId: fixtureJobId(9),
+          jobId: state.scenarios[9].jobId,
           creation: {
             releaseId: workloadReleaseView.active.releaseId,
             sourceSha: workloadSourceSha,
@@ -894,6 +1031,43 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
         provider: 'openai',
         model: 'gpt-5.6-luna',
       });
+      const missingPredecessorOutput = join(directory, 'missing-predecessor-evidence.json');
+      const missingPredecessor = spawnSync(process.execPath, [
+        'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--quality-review', qualityReviewPath,
+        '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
+        '--database', databasePath, '--output', missingPredecessorOutput,
+        '--script-job-key-file', scriptJobKeyPath,
+        '--workload-source-sha', workloadSourceSha,
+        '--producer-source-sha', producerSourceSha,
+        '--producer-source-repository', producerSourceRepository,
+      ], { encoding: 'utf8' });
+      expect(missingPredecessor.status).not.toBe(0);
+      expect(missingPredecessor.stderr).toContain('successor acceptance evidence requires --predecessor-state');
+      expect(() => statSync(missingPredecessorOutput)).toThrow();
+
+      const tamperedPredecessorPath = join(directory, 'tampered-predecessor.json');
+      const tamperedPredecessorOutput = join(directory, 'tampered-predecessor-evidence.json');
+      writeFileSync(
+        tamperedPredecessorPath,
+        Buffer.concat([predecessorBytes, Buffer.from(' ')]),
+        { mode: 0o600 },
+      );
+      const tamperedPredecessor = spawnSync(process.execPath, [
+        'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', tamperedPredecessorPath,
+        '--quality-review', qualityReviewPath,
+        '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
+        '--database', databasePath, '--output', tamperedPredecessorOutput,
+        '--script-job-key-file', scriptJobKeyPath,
+        '--workload-source-sha', workloadSourceSha,
+        '--producer-source-sha', producerSourceSha,
+        '--producer-source-repository', producerSourceRepository,
+      ], { encoding: 'utf8' });
+      expect(tamperedPredecessor.status).not.toBe(0);
+      expect(tamperedPredecessor.stderr).toContain('does not match the predecessor bytes');
+      expect(() => statSync(tamperedPredecessorOutput)).toThrow();
+
       const mismatchedModule = join(
         producerSourceRepository,
         'scripts/content-ten-script-evidence.mjs',
@@ -961,13 +1135,14 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const releaseMismatchDb = new Database(databasePath);
       try {
         releaseMismatchDb.prepare(`UPDATE content_script_jobs SET completed_release_id = ?
-          WHERE job_id = ?`).run('7'.repeat(32), fixtureJobId(9));
+          WHERE job_id = ?`).run('7'.repeat(32), state.scenarios[9].jobId);
       } finally {
         releaseMismatchDb.close();
       }
       const releaseMismatchOutputPath = join(directory, 'release-mismatch-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', releaseMismatchOutputPath,
@@ -980,7 +1155,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const restoreReleaseDb = new Database(databasePath);
       try {
         restoreReleaseDb.prepare(`UPDATE content_script_jobs SET completed_release_id = ?
-          WHERE job_id = ?`).run(workloadReleaseView.active.releaseId, fixtureJobId(9));
+          WHERE job_id = ?`).run(workloadReleaseView.active.releaseId, state.scenarios[9].jobId);
       } finally {
         restoreReleaseDb.close();
       }
@@ -998,6 +1173,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const duplicateOperationOutputPath = join(directory, 'duplicate-operation-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', duplicateOperationOutputPath,
@@ -1033,6 +1209,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const wrongSourceSpendOutputPath = join(directory, 'wrong-source-spend-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', wrongSourceSpendOutputPath,
@@ -1065,6 +1242,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const wrongCategorySpendOutputPath = join(directory, 'wrong-category-spend-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', wrongCategorySpendOutputPath,
@@ -1094,6 +1272,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const incompleteCoverageOutputPath = join(directory, 'incomplete-coverage-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', incompleteCoverageOutputPath,
@@ -1149,6 +1328,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const unattributedOutputPath = join(directory, 'unattributed-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', unattributedOutputPath,
@@ -1188,6 +1368,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const crossClassOutputPath = join(directory, 'cross-class-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', crossClassOutputPath,
@@ -1216,6 +1397,7 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
       const unresolvedOutputPath = join(directory, 'unresolved-evidence.json');
       expect(() => execFileSync(process.execPath, [
         'scripts/content-ten-script-evidence.mjs', '--state', statePath,
+        '--predecessor-state', predecessorPath,
         '--quality-review', qualityReviewPath,
         '--workload-release-view', workloadReleaseViewPath, '--release-view', releaseViewPath,
         '--database', databasePath, '--output', unresolvedOutputPath,

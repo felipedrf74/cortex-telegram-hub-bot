@@ -10,6 +10,10 @@ import { pathToFileURL } from 'node:url';
 export const TEN_SCRIPT_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v3';
 export const LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v2';
 export const TEN_SCRIPT_ACCEPTANCE_REVISION = '2026-08-24-v3';
+export const TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v4';
+export const TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION = '2026-08-29-v4';
+export const TEN_SCRIPT_SUCCESSOR_PREDECESSOR_SCHEMA =
+  'nexus.content-ten-script-predecessor.v1';
 export const TEN_SCRIPT_WORKLOAD_SOURCE_SCHEMA = 'nexus.content-ten-script-workload-source.v1';
 export const TEN_SCRIPT_ACCEPTANCE_SCENARIOS = Object.freeze([
   { id: 'std-en-01', phase: 'pre-release', deliveryMode: 'standard', language: 'en', topic: 'Build a practical meal-prep system for busy professionals using timeless planning, food-safety, and consistency principles.' },
@@ -33,7 +37,7 @@ const MAX_RELEASE_VIEW_BYTES = 1024 * 1024;
 const MAX_ACCEPTANCE_STATE_BYTES = 1024 * 1024;
 const MAX_AUTH_FILE_BYTES = 64 * 1024;
 const PRODUCTION_API_ORIGIN = 'https://api.nexushub.me';
-const EXPECTED_PRODUCTION_SOURCE_SHA = 'bc129db7db35c669692d9916d0007cb90288a490';
+const EXPECTED_PRODUCTION_SOURCE_SHA = '815582be8127bafb97d7edaae2a4eab96e37c4cf';
 const RELEASE_VIEW_COMMAND = '/usr/local/sbin/nexus-release-state-view';
 const SUDO = '/usr/bin/sudo';
 const JOB_STATUSES = new Set([
@@ -42,7 +46,7 @@ const JOB_STATUSES = new Set([
 const ROW_KEYS = new Set([
   'id', 'phase', 'deliveryMode', 'language', 'topicSha256', 'status', 'jobId', 'output',
   'stage', 'progress', 'updatedAt', 'submittedAt', 'errorCode', 'lastPollError',
-  'lastPollErrorAt',
+  'lastPollErrorAt', 'requestRevision', 'carriedForward',
 ]);
 
 function exactKeys(value, required, optional, label) {
@@ -226,16 +230,38 @@ function validateWorkloadSourceBinding(binding) {
 }
 
 export function validateAcceptanceStateShape(state) {
-  exactKeys(state, ['schemaVersion', 'acceptanceRevision', 'createdAt', 'scenarios'], [
-    'productionSmokeSource',
-  ], 'acceptance state');
-  if (state.schemaVersion !== TEN_SCRIPT_ACCEPTANCE_SCHEMA
-      || state.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+  const successor = state?.schemaVersion === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA;
+  exactKeys(state, [
+    'schemaVersion', 'acceptanceRevision', 'createdAt', 'scenarios',
+    ...(successor ? ['predecessor'] : []),
+  ], ['productionSmokeSource'], 'acceptance state');
+  if ((!successor && (state.schemaVersion !== TEN_SCRIPT_ACCEPTANCE_SCHEMA
+        || state.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION))
+      || (successor && state.acceptanceRevision !== TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION)
       || !Array.isArray(state.scenarios)
       || state.scenarios.length !== TEN_SCRIPT_ACCEPTANCE_SCENARIOS.length) {
     throw new Error('acceptance state does not match the immutable ten-scenario inventory');
   }
   canonicalTimestamp(state.createdAt, 'acceptance state createdAt');
+  let carriedScenarioIds = [];
+  if (successor) {
+    exactKeys(state.predecessor, [
+      'schemaVersion', 'stateSchemaVersion', 'acceptanceRevision', 'stateSha256',
+      'carriedScenarioIds',
+    ], [], 'acceptance predecessor');
+    carriedScenarioIds = state.predecessor.carriedScenarioIds;
+    if (state.predecessor.schemaVersion !== TEN_SCRIPT_SUCCESSOR_PREDECESSOR_SCHEMA
+        || ![LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA, TEN_SCRIPT_ACCEPTANCE_SCHEMA]
+          .includes(state.predecessor.stateSchemaVersion)
+        || state.predecessor.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+        || !SHA256.test(state.predecessor.stateSha256 ?? '')
+        || !Array.isArray(carriedScenarioIds)
+        || carriedScenarioIds.length !== 7
+        || new Set(carriedScenarioIds).size !== carriedScenarioIds.length
+        || carriedScenarioIds.some((id) => typeof id !== 'string')) {
+      throw new Error('acceptance predecessor identity is invalid');
+    }
+  }
   if (state.productionSmokeSource !== undefined) {
     validateWorkloadSourceBinding(state.productionSmokeSource);
     if (Date.parse(state.productionSmokeSource.boundAt) < Date.parse(state.createdAt)) {
@@ -255,6 +281,18 @@ export function validateAcceptanceStateShape(state) {
     }
     for (const key of ['id', 'phase', 'deliveryMode', 'language', 'topicSha256', 'status', 'jobId', 'output']) {
       if (!Object.hasOwn(row, key)) throw new Error(`acceptance scenario ${expected.id} fields are incomplete`);
+    }
+    if (successor) {
+      if (typeof row.carriedForward !== 'boolean'
+          || ![TEN_SCRIPT_ACCEPTANCE_REVISION, TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION]
+            .includes(row.requestRevision)
+          || (row.carriedForward && row.requestRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION)
+          || (!row.carriedForward
+            && row.requestRevision !== TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION)) {
+        throw new Error(`${expected.id} successor provenance is invalid`);
+      }
+    } else if (Object.hasOwn(row, 'carriedForward') || Object.hasOwn(row, 'requestRevision')) {
+      throw new Error(`${expected.id} predecessor state cannot assert successor provenance`);
     }
     if (row.jobId === null && row.status !== 'pending') {
       throw new Error(`acceptance scenario ${expected.id} has status without a job identity`);
@@ -276,7 +314,7 @@ export function validateAcceptanceStateShape(state) {
     for (const key of ['updatedAt', 'submittedAt', 'lastPollErrorAt']) {
       if (row[key] !== undefined) canonicalTimestamp(row[key], `${expected.id} ${key}`);
     }
-    if (row.submittedAt !== undefined
+    if (row.submittedAt !== undefined && !row.carriedForward
         && Date.parse(row.submittedAt) < Date.parse(state.createdAt)) {
       throw new Error(`${expected.id} submission predates acceptance state creation`);
     }
@@ -287,6 +325,17 @@ export function validateAcceptanceStateShape(state) {
     if (row.errorCode !== undefined) boundedString(row.errorCode, `${expected.id} errorCode`, 120);
     if (row.lastPollError !== undefined) boundedString(row.lastPollError, `${expected.id} lastPollError`);
   });
+  if (successor) {
+    const actualCarried = state.scenarios
+      .filter((row) => row.carriedForward)
+      .map((row) => row.id);
+    if (JSON.stringify(actualCarried) !== JSON.stringify(carriedScenarioIds)
+        || state.scenarios.some((row) => row.carriedForward
+          && (row.phase !== 'pre-release' || row.status !== 'completed'
+            || row.output?.contractPass !== true))) {
+      throw new Error('acceptance successor carry-forward set is invalid');
+    }
+  }
   return state;
 }
 
@@ -317,6 +366,108 @@ export function migrateLegacyAcceptanceState(state) {
     'id', 'phase', 'deliveryMode', 'language', 'topicSha256', 'status', 'jobId', 'output',
   ], [], 'legacy production smoke scenario');
   return migrated;
+}
+
+function predecessorStateFromBytes(predecessorBytes) {
+  if (!Buffer.isBuffer(predecessorBytes) || predecessorBytes.length < 1
+      || predecessorBytes.length > MAX_ACCEPTANCE_STATE_BYTES) {
+    throw new Error('acceptance predecessor bytes are missing or oversized');
+  }
+  let raw;
+  try {
+    raw = JSON.parse(predecessorBytes.toString('utf8'));
+  } catch {
+    throw new Error('acceptance predecessor is not valid JSON');
+  }
+  const validated = raw?.schemaVersion === LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA
+    ? migrateLegacyAcceptanceState(raw)
+    : validateAcceptanceStateShape(raw);
+  if (validated.schemaVersion !== TEN_SCRIPT_ACCEPTANCE_SCHEMA
+      || validated.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+      || Object.hasOwn(validated, 'productionSmokeSource')) {
+    throw new Error('acceptance predecessor is not the exact pre-smoke v3 workload');
+  }
+  const preRelease = validated.scenarios.filter((row) => row.phase === 'pre-release');
+  const carried = preRelease.filter((row) => row.status === 'completed'
+    && row.output?.contractPass === true);
+  const recoverable = preRelease.filter((row) => row.status === 'failed');
+  const smoke = validated.scenarios.find((row) => row.phase === 'production-smoke');
+  if (carried.length !== 7 || recoverable.length !== 2
+      || preRelease.length !== 9
+      || preRelease.some((row) => !carried.includes(row) && !recoverable.includes(row))
+      || !smoke || smoke.status !== 'pending' || smoke.jobId !== null || smoke.output !== null) {
+    throw new Error('acceptance predecessor is not the authorized seven-pass/two-failure state');
+  }
+  return { raw, validated, carried, recoverable };
+}
+
+export function createSuccessorAcceptanceState(predecessorBytes, createdAt = new Date().toISOString()) {
+  canonicalTimestamp(createdAt, 'acceptance successor createdAt');
+  const predecessor = predecessorStateFromBytes(predecessorBytes);
+  if (Date.parse(createdAt) < Date.parse(predecessor.validated.createdAt)) {
+    throw new Error('acceptance successor predates its predecessor');
+  }
+  const carriedIds = predecessor.carried.map((row) => row.id);
+  const predecessorStateSha256 = sha256(predecessorBytes);
+  const state = {
+    schemaVersion: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA,
+    acceptanceRevision: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+    createdAt,
+    predecessor: {
+      schemaVersion: TEN_SCRIPT_SUCCESSOR_PREDECESSOR_SCHEMA,
+      stateSchemaVersion: predecessor.raw.schemaVersion,
+      acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
+      stateSha256: predecessorStateSha256,
+      carriedScenarioIds: carriedIds,
+    },
+    scenarios: TEN_SCRIPT_ACCEPTANCE_SCENARIOS.map(({ topic, ...definition }) => {
+      const previous = predecessor.validated.scenarios.find((row) => row.id === definition.id);
+      if (carriedIds.includes(definition.id)) {
+        return {
+          ...structuredClone(previous),
+          requestRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
+          carriedForward: true,
+        };
+      }
+      return {
+        ...definition,
+        topicSha256: sha256(topic),
+        status: 'pending',
+        jobId: null,
+        output: null,
+        requestRevision: TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+        carriedForward: false,
+      };
+    }),
+  };
+  return validateAcceptanceStateShape(state);
+}
+
+export function validateSuccessorAcceptancePredecessor(state, predecessorBytes) {
+  validateAcceptanceStateShape(state);
+  if (state.schemaVersion !== TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA) {
+    throw new Error('acceptance state is not a successor revision');
+  }
+  const predecessor = predecessorStateFromBytes(predecessorBytes);
+  if (state.predecessor.stateSha256 !== sha256(predecessorBytes)
+      || state.predecessor.stateSchemaVersion !== predecessor.raw.schemaVersion) {
+    throw new Error('acceptance successor does not match the predecessor bytes');
+  }
+  for (const id of state.predecessor.carriedScenarioIds) {
+    const carried = state.scenarios.find((row) => row.id === id);
+    const original = predecessor.validated.scenarios.find((row) => row.id === id);
+    const { requestRevision: _requestRevision, carriedForward: _carriedForward, ...rest } = carried;
+    if (JSON.stringify(rest) !== JSON.stringify(original)) {
+      throw new Error(`acceptance successor changed carried scenario ${id}`);
+    }
+  }
+  const recoveryIds = state.scenarios
+    .filter((row) => row.phase === 'pre-release' && !row.carriedForward)
+    .map((row) => row.id);
+  if (JSON.stringify(recoveryIds) !== JSON.stringify(predecessor.recoverable.map((row) => row.id))) {
+    throw new Error('acceptance successor recovery identities differ from predecessor failures');
+  }
+  return state;
 }
 
 function fail(message, code = 1) {
@@ -514,8 +665,9 @@ export function runCliUnderStateLock() {
     assertPrivateRegularFile(lockPath, 'acceptance state lock');
     if (linuxProcessOwnsExclusiveStateLock(lockPath)) return main();
   }
-  if (process.argv.includes('--auth-file-fd')) {
-    fail('auth-file descriptors require an already-held acceptance state lock', 77);
+  if (['--auth-file-fd', '--workload-release-view-fd', '--predecessor-state-fd']
+    .some((argument) => process.argv.includes(argument))) {
+    fail('anonymous descriptors require an already-held acceptance state lock', 77);
   }
   const noFollow = fs.constants.O_NOFOLLOW;
   if (typeof noFollow !== 'number') fail('acceptance evidence requires no-follow lock support', 77);
@@ -615,7 +767,7 @@ async function api(baseUrl, token, method, endpoint, body) {
   return payload?.data ?? payload;
 }
 
-function requestFor(scenario) {
+function requestFor(scenario, requestRevision = TEN_SCRIPT_ACCEPTANCE_REVISION) {
   return {
     topic: scenario.topic,
     niche: 'general education',
@@ -628,7 +780,7 @@ function requestFor(scenario) {
     maxDurationMinutes: 15,
     targetDurationSeconds: 900,
     forceRefresh: true,
-    idempotencyKey: `hybrid-plan-acceptance-${scenario.id}-${TEN_SCRIPT_ACCEPTANCE_REVISION}`,
+    idempotencyKey: `hybrid-plan-acceptance-${scenario.id}-${requestRevision}`,
   };
 }
 
@@ -734,7 +886,7 @@ function summary(state) {
   const contractPasses = completed.filter((row) => row.output?.contractPass === true);
   return {
     schemaVersion: state.schemaVersion,
-    acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
+    acceptanceRevision: state.acceptanceRevision,
     inventoryCount: rows.length,
     submitted: rows.filter((row) => row.jobId).length,
     completed: completed.length,
@@ -752,6 +904,24 @@ async function main() {
   const phase = option('--phase', true);
   if (!['pre-release', 'production-smoke', 'status'].includes(phase)) fail('--phase must be pre-release, production-smoke, or status', 64);
   const statePath = path.resolve(option('--state', true));
+  const successorPredecessorPathValue = option('--initialize-successor-from');
+  let initializedPredecessorBytes = null;
+  if (successorPredecessorPathValue) {
+    if (fs.existsSync(statePath)) fail('acceptance successor state already exists', 73);
+    const predecessorBytes = readPrivateRegularFileBytes(
+      path.resolve(successorPredecessorPathValue),
+      'acceptance predecessor state',
+      MAX_ACCEPTANCE_STATE_BYTES,
+    );
+    let successor;
+    try {
+      successor = createSuccessorAcceptanceState(predecessorBytes);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'acceptance successor initialization failed', 78);
+    }
+    initializedPredecessorBytes = predecessorBytes;
+    atomicPrivateWrite(statePath, successor);
+  }
   const expectedStateDev = option('--state-expected-dev');
   const expectedStateIno = option('--state-expected-ino');
   const expectedStateSha256 = option('--state-expected-sha256');
@@ -778,6 +948,46 @@ async function main() {
     phase === 'status' || phase === 'production-smoke',
     expectedStateIdentity,
   );
+  const predecessorStatePathValue = option('--predecessor-state');
+  const predecessorStateDescriptorValue = option('--predecessor-state-fd');
+  if (state.schemaVersion === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA) {
+    const predecessorSourceCount = [
+      initializedPredecessorBytes,
+      predecessorStatePathValue,
+      predecessorStateDescriptorValue,
+    ].filter(Boolean).length;
+    if (predecessorSourceCount !== 1) {
+      fail('successor acceptance requires exactly one predecessor-state source', 64);
+    }
+    if (phase === 'production-smoke' && !predecessorStateDescriptorValue) {
+      fail('production smoke requires an anonymous predecessor-state descriptor', 77);
+    }
+    let predecessorBytes = initializedPredecessorBytes;
+    if (predecessorStateDescriptorValue) {
+      const descriptor = Number(predecessorStateDescriptorValue);
+      if (!Number.isSafeInteger(descriptor) || descriptor < 3 || descriptor > 255) {
+        fail('predecessor-state descriptor is invalid', 64);
+      }
+      predecessorBytes = readPrivateAnonymousFileDescriptor(
+        descriptor,
+        'acceptance predecessor state',
+        MAX_ACCEPTANCE_STATE_BYTES,
+      );
+    } else if (predecessorStatePathValue) {
+      predecessorBytes = readPrivateRegularFileBytes(
+        path.resolve(predecessorStatePathValue),
+        'acceptance predecessor state',
+        MAX_ACCEPTANCE_STATE_BYTES,
+      );
+    }
+    try {
+      validateSuccessorAcceptancePredecessor(state, predecessorBytes);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'acceptance predecessor proof failed', 78);
+    }
+  } else if (predecessorStatePathValue || predecessorStateDescriptorValue) {
+    fail('predecessor-state is valid only for a successor acceptance revision', 64);
+  }
 
   if (phase !== 'status') {
     const authPathValue = option('--auth-file');
@@ -896,9 +1106,16 @@ async function main() {
     const targets = TEN_SCRIPT_ACCEPTANCE_SCENARIOS.filter((scenario) => scenario.phase === phase);
     for (const scenario of targets) {
       const row = state.scenarios.find((candidate) => candidate.id === scenario.id);
+      if (row.carriedForward === true) continue;
       try {
         if (!row.jobId) {
-          const created = await api(baseUrl, token, 'POST', '/api/v1/content/script-jobs', requestFor(scenario));
+          const created = await api(
+            baseUrl,
+            token,
+            'POST',
+            '/api/v1/content/script-jobs',
+            requestFor(scenario, row.requestRevision ?? state.acceptanceRevision),
+          );
           row.jobId = created.jobId;
           row.status = created.status;
           row.submittedAt = new Date().toISOString();

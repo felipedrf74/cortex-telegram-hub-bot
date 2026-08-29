@@ -1487,7 +1487,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/content-ten-script-acceptance.mjs:717-721",
+            "pattern": "scripts/content-ten-script-acceptance.mjs:870-874",
             "anchor": "JSON.stringify(state.productionSmokeSource) !== JSON.stringify(binding)",
             "behavior": "An existing production-smoke source binding cannot be replaced by different release evidence on a later poll or submission attempt.",
             "replacementTest": "__tests__/scripts/content-ten-script-acceptance-mutation-owner.test.ts",

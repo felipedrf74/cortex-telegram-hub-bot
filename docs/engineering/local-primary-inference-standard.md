@@ -926,6 +926,17 @@ economics evidence. Compact structured tests own the 99% schema gate without
 spending the long-form budget. Reporting never decrypts customer requests merely
 to classify acceptance evidence.
 
+An exhausted historical acceptance revision is immutable evidence and must not
+be repaired in place. A separately reviewed successor revision may preserve the
+same ordered ten-scenario inventory by digest-binding the exact predecessor
+bytes, carrying forward only predecessor scenarios that already completed with
+the full contract pass, and creating work only for predecessor failures plus the
+still-pristine production smoke. The successor records the request revision on
+every row. Successor execution, the production-smoke launcher, and evidence
+production each require the exact private predecessor file to revalidate the
+carry-forward set. The predecessor is never rewritten, retried, or represented
+as a completed acceptance run.
+
 The write-once acceptance artifact must carry the exact acceptance revision,
 the ordered ten-scenario inventory, the source/release/quality bindings, and a
 tenant/user/production scope digest. Its producer recomputes script totals and

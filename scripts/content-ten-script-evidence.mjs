@@ -11,9 +11,12 @@ import {
   TEN_SCRIPT_ACCEPTANCE_REVISION,
   TEN_SCRIPT_ACCEPTANCE_SCENARIOS,
   TEN_SCRIPT_ACCEPTANCE_SCHEMA,
+  TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
+  TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA,
   TEN_SCRIPT_WORKLOAD_SOURCE_SCHEMA,
   validateAcceptanceStateShape,
   validateCompletedReleaseView,
+  validateSuccessorAcceptancePredecessor,
 } from './content-ten-script-acceptance.mjs';
 
 export { validateCompletedReleaseView };
@@ -572,8 +575,8 @@ function validatePersistedScenarioPayloads(job, definition, acceptedScenario, ke
   const expected = expectedScenarioRequest(definition);
   const expectedTier = definition.deliveryMode === 'standard'
     ? 'flex' : definition.deliveryMode === 'scheduled' ? 'batch' : 'default';
-  const expectedIdempotencyKey =
-    `hybrid-plan-acceptance-${definition.id}-${TEN_SCRIPT_ACCEPTANCE_REVISION}`;
+  const requestRevision = acceptedScenario.requestRevision ?? TEN_SCRIPT_ACCEPTANCE_REVISION;
+  const expectedIdempotencyKey = `hybrid-plan-acceptance-${definition.id}-${requestRevision}`;
   if (job.idempotency_key !== expectedIdempotencyKey
       || job.request_hash !== expectedScenarioRequestHash(definition)
       || Number(job.target_duration_seconds) !== expected.targetDurationSeconds) {
@@ -826,7 +829,7 @@ export function validateQualityReview(review, { state, stateSha256, workloadSour
   ], 'quality review');
   if (!review || typeof review !== 'object' || Array.isArray(review)
       || review.schemaVersion !== CONTENT_TEN_SCRIPT_QUALITY_REVIEW_SCHEMA
-      || review.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+      || review.acceptanceRevision !== state.acceptanceRevision
       || review.workloadSourceSha !== workloadSourceSha || review.stateSha256 !== stateSha256
       || review.reviewType !== 'independent'
       || review.attestation !== 'no_critical_quality_regression'
@@ -859,8 +862,11 @@ function validateAcceptanceState(state, workloadSourceSha, workloadRelease, work
   } catch (error) {
     refuse(error instanceof Error ? error.message : 'acceptance state shape is invalid', 65);
   }
-  if (state?.schemaVersion !== TEN_SCRIPT_ACCEPTANCE_SCHEMA
-      || state.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+  const supportedRevision = (state?.schemaVersion === TEN_SCRIPT_ACCEPTANCE_SCHEMA
+      && state.acceptanceRevision === TEN_SCRIPT_ACCEPTANCE_REVISION)
+    || (state?.schemaVersion === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA
+      && state.acceptanceRevision === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION);
+  if (!supportedRevision
       || !Array.isArray(state.scenarios) || state.scenarios.length !== 10) {
     refuse('acceptance state schema or inventory is invalid', 65);
   }
@@ -930,6 +936,7 @@ function productionSmokeRuntimeRelease(job, workloadRelease, workloadReleaseView
 
 export async function main() {
   const statePath = path.resolve(option('--state', true));
+  const predecessorStatePathValue = option('--predecessor-state', false);
   const qualityReviewPath = path.resolve(option('--quality-review', true));
   const workloadReleaseViewPath = path.resolve(option('--workload-release-view', true));
   const releaseViewPath = path.resolve(option('--release-view', true));
@@ -963,6 +970,22 @@ export async function main() {
   );
   const workloadReleaseViewSha256 = sha256(workloadReleaseViewInput.bytes);
   const stateInput = parsePrivateJson(statePath, 'acceptance state');
+  if (stateInput.value?.schemaVersion === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA) {
+    if (!predecessorStatePathValue) {
+      refuse('successor acceptance evidence requires --predecessor-state', 64);
+    }
+    const predecessorBytes = readPrivateBytes(
+      path.resolve(predecessorStatePathValue),
+      'acceptance predecessor state',
+    );
+    try {
+      validateSuccessorAcceptancePredecessor(stateInput.value, predecessorBytes);
+    } catch (error) {
+      refuse(error instanceof Error ? error.message : 'acceptance predecessor proof failed', 78);
+    }
+  } else if (predecessorStatePathValue) {
+    refuse('--predecessor-state is valid only for a successor acceptance revision', 64);
+  }
   const state = validateAcceptanceState(
     stateInput.value,
     workloadSourceSha,
@@ -1490,7 +1513,7 @@ export async function main() {
   }));
   const artifact = {
     schemaVersion: CONTENT_TEN_SCRIPT_EVIDENCE_SCHEMA,
-    acceptanceRevision: TEN_SCRIPT_ACCEPTANCE_REVISION,
+    acceptanceRevision: state.acceptanceRevision,
     generatedAt: new Date().toISOString(),
     workloadSourceSha,
     producerSourceSha,

@@ -1223,3 +1223,28 @@ columns, and passed integrity and foreign-key checks. The clone and diagnostic
 output were deleted. Production remains on the healthy predecessor and the
 ten-script smoke remains locked. A distinct protected-main Release A3 identity
 is required because the failed A2 identity is terminal and non-retryable.
+
+### Isolated Batch binding and successor acceptance (2026-08-29)
+
+Protected-main source `815582be8127bafb97d7edaae2a4eab96e37c4cf`
+completed its signed one-shot deployment under an unblocked provable v3
+receipt. The sanitized isolation probe proved that the configured Batch project
+can resolve its own resource while the legacy cross-project resource is hidden.
+No credential value or provider payload entered release evidence.
+
+The original ten-scenario acceptance state remains immutable historical
+evidence with seven contract-valid pre-release completions and two terminal
+failures; it is not a completed acceptance run and receives no further retry or
+repair. The reviewed successor contract uses revision `2026-08-29-v4`, binds the
+exact predecessor bytes and ordered seven-row carry-forward set, and resets only
+the two predecessor failures plus the pristine production smoke. Each row binds
+the request revision that created its job. Successor execution, the smoke
+launcher, and evidence v6 require the exact private predecessor file and reject
+a missing, changed, or mismatched predecessor. Production smoke remains locked
+until all nine successor
+pre-release scenarios complete with `contractPass=true` under one stable signed
+workload receipt.
+
+Xcode Cloud App Store Release Build 300 succeeded and supersedes Build 289. The
+submitted App Store version is `Waiting for Review`; Apple sales remain disabled
+until Apple approves the submission.

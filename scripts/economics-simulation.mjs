@@ -38,6 +38,7 @@ import {
 } from './content-ten-script-evidence.mjs';
 import {
   TEN_SCRIPT_ACCEPTANCE_REVISION,
+  TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION,
   TEN_SCRIPT_ACCEPTANCE_SCENARIOS,
 } from './content-ten-script-acceptance.mjs';
 
@@ -335,7 +336,8 @@ export function validateAcceptanceEvidence(
   }
   assertExactKeys(evidence, EVIDENCE_TOP_LEVEL_KEYS, 'acceptance evidence');
   if (evidence.schemaVersion !== CONTENT_TEN_SCRIPT_EVIDENCE_SCHEMA
-      || evidence.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+      || ![TEN_SCRIPT_ACCEPTANCE_REVISION, TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION]
+        .includes(evidence.acceptanceRevision)
       || evidence.workloadSourceSha !== workloadSourceSha
       || evidence.producerSourceSha !== producerSourceSha
       || evidence.acceptancePass !== true) {

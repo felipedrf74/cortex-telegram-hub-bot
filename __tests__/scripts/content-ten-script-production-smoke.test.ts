@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   bindProductionSmokeSource,
+  createSuccessorAcceptanceState,
   LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA,
   migrateLegacyAcceptanceState,
   TEN_SCRIPT_ACCEPTANCE_REVISION,
@@ -237,9 +238,9 @@ async function runActualAcceptance(
 }
 
 describe('content ten-script production smoke launcher', () => {
-  it('pins the smoke workload to the reviewed Release A3 merge receipt', () => {
+  it('pins the smoke workload to the isolated-Batch serving receipt', () => {
     expect(EXPECTED_PRODUCTION_SOURCE_SHA)
-      .toBe('bc129db7db35c669692d9916d0007cb90288a490');
+      .toBe('815582be8127bafb97d7edaae2a4eab96e37c4cf');
   });
 
   it('accepts only a complete legacy pre-release inventory with pristine smoke', () => {
@@ -262,6 +263,93 @@ describe('content ten-script production smoke launcher', () => {
     smoke.submittedAt = '2026-08-22T23:05:00Z';
     smoke.updatedAt = '2026-08-22T23:05:00Z';
     expect(() => validateReadyAcceptanceState(submittedSmoke)).toThrow(/legacy acceptance state/);
+  });
+
+  it('accepts a completed digest-bound successor while preserving the pristine smoke', () => {
+    const predecessor: any = readyLegacyState();
+    const preRelease = predecessor.scenarios.filter((row) => row.phase === 'pre-release');
+    for (const row of preRelease.slice(7)) {
+      row.status = 'failed';
+      row.stage = 'failed';
+      row.progress = 0;
+      row.output = null;
+      row.errorCode = 'OPENAI_BATCH_FAILED';
+    }
+    const successor: any = createSuccessorAcceptanceState(
+      Buffer.from(`${JSON.stringify(predecessor)}\n`),
+      '2026-08-23T02:00:00Z',
+    );
+    successor.scenarios.filter((row) => row.phase === 'pre-release' && !row.carriedForward)
+      .forEach((row, index) => {
+        row.jobId = jobId(index + 20);
+        row.status = 'completed';
+        row.stage = 'completed';
+        row.progress = 100;
+        row.submittedAt = '2026-08-23T02:05:00Z';
+        row.updatedAt = '2026-08-23T03:00:00Z';
+        row.output = completedOutput(index + 20);
+      });
+    expect(validateReadyAcceptanceState(successor)).toBe(true);
+  });
+
+  it('stages the exact successor predecessor bytes for the reviewed smoke tool', () => {
+    const predecessor: any = readyLegacyState();
+    const preRelease = predecessor.scenarios.filter((row) => row.phase === 'pre-release');
+    for (const row of preRelease.slice(7)) {
+      row.status = 'failed';
+      row.stage = 'failed';
+      row.progress = 0;
+      row.output = null;
+      row.errorCode = 'OPENAI_BATCH_FAILED';
+    }
+    const predecessorBytes = Buffer.from(`${JSON.stringify(predecessor)}\n`);
+    const successor: any = createSuccessorAcceptanceState(
+      predecessorBytes,
+      '2026-08-23T02:00:00Z',
+    );
+    successor.scenarios.filter((row) => row.phase === 'pre-release' && !row.carriedForward)
+      .forEach((row, index) => {
+        row.jobId = jobId(index + 20);
+        row.status = 'completed';
+        row.stage = 'completed';
+        row.progress = 100;
+        row.submittedAt = '2026-08-23T02:05:00Z';
+        row.updatedAt = '2026-08-23T03:00:00Z';
+        row.output = completedOutput(index + 20);
+      });
+    const fixture = launcherFixture(successor);
+    const predecessorPath = path.join(fixture.directory, 'predecessor.json');
+    writePrivate(predecessorPath, predecessorBytes);
+    fixture.argv.push('--predecessor-state', predecessorPath);
+
+    let childArguments: string[] = [];
+    expect(runProductionSmoke({
+      argv: fixture.argv,
+      platform: 'linux',
+      acceptanceToolIdentityPath: fixture.toolPath,
+      existsSyncImpl: () => true,
+      captureReleaseView: () => Buffer.from(JSON.stringify(completedReleaseView(fixture.deployedSha))),
+      spawnSyncImpl: (_command, args, options) => {
+        childArguments = args;
+        expect(fs.readFileSync(options.stdio[6] as number)).toEqual(predecessorBytes);
+        expect(fs.fstatSync(options.stdio[6] as number).nlink).toBe(0);
+        return { status: 0, signal: null, error: undefined };
+      },
+    })).toBe(0);
+    expect(childArguments).toEqual(expect.arrayContaining([
+      '--predecessor-state-fd', '6',
+    ]));
+    expect(childArguments).not.toContain(predecessorPath);
+
+    writePrivate(predecessorPath, Buffer.concat([predecessorBytes, Buffer.from(' ')]));
+    expect(() => runProductionSmoke({
+      argv: fixture.argv,
+      platform: 'linux',
+      acceptanceToolIdentityPath: fixture.toolPath,
+      existsSyncImpl: () => true,
+      captureReleaseView: () => Buffer.from(JSON.stringify(completedReleaseView(fixture.deployedSha))),
+      spawnSyncImpl: () => ({ status: 0 }),
+    })).toThrow(/predecessor bytes do not match/);
   });
 
   it('resumes only the existing smoke identity bound to the reviewed source', () => {

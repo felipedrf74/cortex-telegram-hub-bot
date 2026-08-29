@@ -16,6 +16,8 @@ const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
 const LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v2';
 const TEN_SCRIPT_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v3';
 const TEN_SCRIPT_ACCEPTANCE_REVISION = '2026-08-24-v3';
+const TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA = 'nexus.content-ten-script-acceptance.v4';
+const TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION = '2026-08-29-v4';
 const MAX_RELEASE_VIEW_BYTES = 1024 * 1024;
 const MAX_ACCEPTANCE_TOOL_BYTES = 1024 * 1024;
 const MAX_ACCEPTANCE_STATE_BYTES = 1024 * 1024;
@@ -28,8 +30,9 @@ const PRODUCTION_API_ORIGIN = 'https://api.nexushub.me';
 const CHILD_TOOL_FD = 3;
 const CHILD_RELEASE_VIEW_FD = 4;
 const CHILD_AUTH_FD = 5;
-export const EXPECTED_PRODUCTION_SOURCE_SHA = 'bc129db7db35c669692d9916d0007cb90288a490';
-export const EXPECTED_ACCEPTANCE_TOOL_SHA256 = 'a31483d0ba43cf2d3c8e8ed208a30504f9cdddff88a8eaa054723c08e7c1154f';
+const CHILD_PREDECESSOR_STATE_FD = 6;
+export const EXPECTED_PRODUCTION_SOURCE_SHA = '815582be8127bafb97d7edaae2a4eab96e37c4cf';
+export const EXPECTED_ACCEPTANCE_TOOL_SHA256 = '94aca82aa55d9d3226d50a54a5dd576e7b22259641e1603c676d8c81ad03162e';
 const REVIEWED_ACCEPTANCE_TOOL_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   'content-ten-script-acceptance.mjs',
@@ -147,9 +150,11 @@ function sha256Value(bytes) {
 }
 
 export function validateReadyAcceptanceState(input) {
-  if (![LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA, TEN_SCRIPT_ACCEPTANCE_SCHEMA]
-    .includes(input?.schemaVersion)
-      || input.acceptanceRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION
+  const predecessorState = [LEGACY_TEN_SCRIPT_ACCEPTANCE_SCHEMA, TEN_SCRIPT_ACCEPTANCE_SCHEMA]
+    .includes(input?.schemaVersion) && input?.acceptanceRevision === TEN_SCRIPT_ACCEPTANCE_REVISION;
+  const successorState = input?.schemaVersion === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA
+    && input?.acceptanceRevision === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION;
+  if ((!predecessorState && !successorState)
       || !Array.isArray(input.scenarios)
       || input.scenarios.length !== EXPECTED_SCENARIOS.length) {
     fail('acceptance state schema is not supported for production smoke', 78);
@@ -161,6 +166,19 @@ export function validateReadyAcceptanceState(input) {
       fail('acceptance state does not match the immutable ten-scenario inventory', 78);
     }
   });
+  if (successorState) {
+    const carriedIds = input.predecessor?.carriedScenarioIds;
+    const actualCarried = input.scenarios.filter((row) => row.carriedForward).map((row) => row.id);
+    if (!SHA256_VALUE.test(input.predecessor?.stateSha256 ?? '')
+        || !Array.isArray(carriedIds) || carriedIds.length !== 7
+        || JSON.stringify(actualCarried) !== JSON.stringify(carriedIds)
+        || input.scenarios.some((row) => typeof row.carriedForward !== 'boolean'
+          || (row.carriedForward && row.requestRevision !== TEN_SCRIPT_ACCEPTANCE_REVISION)
+          || (!row.carriedForward
+            && row.requestRevision !== TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_REVISION))) {
+      fail('acceptance successor provenance is invalid', 78);
+    }
+  }
   const preRelease = input.scenarios.filter((row) => row.phase === 'pre-release');
   const smoke = input.scenarios.find((row) => row.phase === 'production-smoke');
   if (preRelease.length !== 9
@@ -514,6 +532,7 @@ export function runProductionSmoke({
   if (platform !== 'linux') fail('production smoke launcher requires Linux', 69);
   const statePath = path.resolve(option('--state', true, argv));
   const authPath = path.resolve(option('--auth-file', true, argv));
+  const predecessorStatePathValue = option('--predecessor-state', false, argv);
   const acceptanceTool = path.resolve(option('--acceptance-tool', true, argv));
   const expectedToolSha256 = option('--acceptance-tool-sha256', true, argv);
   const workloadReleaseView = path.resolve(option('--workload-release-view', true, argv));
@@ -533,6 +552,22 @@ export function runProductionSmoke({
   if (!validateReadyAcceptanceState(state)) {
     fail('nine pre-release scenarios have not completed their contracts', 75);
   }
+  let predecessorStateSnapshot = null;
+  if (state.schemaVersion === TEN_SCRIPT_SUCCESSOR_ACCEPTANCE_SCHEMA) {
+    if (!predecessorStatePathValue) {
+      fail('successor production smoke requires --predecessor-state', 64);
+    }
+    predecessorStateSnapshot = readPrivateRegularFileSnapshot(
+      path.resolve(predecessorStatePathValue),
+      'acceptance predecessor state',
+      MAX_ACCEPTANCE_STATE_BYTES,
+    );
+    if (sha256Value(predecessorStateSnapshot.bytes) !== state.predecessor.stateSha256) {
+      fail('acceptance predecessor bytes do not match the successor binding', 78);
+    }
+  } else if (predecessorStatePathValue) {
+    fail('--predecessor-state is valid only for a successor acceptance revision', 64);
+  }
   const authSnapshot = readPrivateRegularFileSnapshot(
     authPath,
     'auth file',
@@ -548,6 +583,7 @@ export function runProductionSmoke({
   let toolDescriptor = null;
   let releaseViewDescriptor = null;
   let authDescriptor = null;
+  let predecessorStateDescriptor = null;
   try {
     toolDescriptor = stageVerifiedAcceptanceTool(
       acceptanceTool,
@@ -566,10 +602,18 @@ export function runProductionSmoke({
       'auth-file',
       '.token',
     );
+    if (predecessorStateSnapshot) {
+      predecessorStateDescriptor = stagePrivateBytes(
+        predecessorStateSnapshot.bytes,
+        stagingDirectory,
+        'predecessor-state',
+        '.json',
+      );
+    }
     const lockPath = `${statePath}.lock`;
     ensurePrivateLockFile(lockPath);
     if (!existsSyncImpl(FLOCK)) fail('production acceptance requires /usr/bin/flock', 69);
-    const result = spawnSyncImpl(FLOCK, [
+    const childArguments = [
       '-E', '75', '-n', '-x', '-F', lockPath,
       NODE,
       '--input-type=module',
@@ -582,16 +626,24 @@ export function runProductionSmoke({
       '--state-expected-sha256', stateIdentity.sha256,
       '--auth-file-fd', String(CHILD_AUTH_FD),
       '--workload-release-view-fd', String(CHILD_RELEASE_VIEW_FD),
+      ...(predecessorStateDescriptor === null ? [] : [
+        '--predecessor-state-fd', String(CHILD_PREDECESSOR_STATE_FD),
+      ]),
       '--base-url', baseUrl,
       '--deployed-sha', deployedSha,
-    ], {
+    ];
+    const childStdio = [
+      'inherit',
+      'inherit',
+      'inherit',
+      toolDescriptor,
+      releaseViewDescriptor,
+      authDescriptor,
+      ...(predecessorStateDescriptor === null ? [] : [predecessorStateDescriptor]),
+    ];
+    const result = spawnSyncImpl(FLOCK, childArguments, {
       stdio: [
-        'inherit',
-        'inherit',
-        'inherit',
-        toolDescriptor,
-        releaseViewDescriptor,
-        authDescriptor,
+        ...childStdio,
       ],
       env: { PATH: '/usr/bin:/bin' },
     });
@@ -602,6 +654,7 @@ export function runProductionSmoke({
     if (toolDescriptor !== null) fs.closeSync(toolDescriptor);
     if (releaseViewDescriptor !== null) fs.closeSync(releaseViewDescriptor);
     if (authDescriptor !== null) fs.closeSync(authDescriptor);
+    if (predecessorStateDescriptor !== null) fs.closeSync(predecessorStateDescriptor);
   }
   return 0;
 }
