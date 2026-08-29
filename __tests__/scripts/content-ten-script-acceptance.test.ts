@@ -545,6 +545,21 @@ describe('ten-script hybrid-plan acceptance inventory', () => {
     expect(() => validateAcceptanceStateShape(forged)).toThrow(/derived verdict/);
   });
 
+  it('allows bounded API clock skew but rejects materially pre-submission updates', () => {
+    const state: any = pendingAcceptanceState();
+    const row = state.scenarios[0];
+    row.jobId = fixtureJobId(0);
+    row.status = 'queued';
+    row.stage = 'queued';
+    row.progress = 0;
+    row.submittedAt = '2026-08-22T23:00:00.021Z';
+    row.updatedAt = '2026-08-22T23:00:00.000Z';
+    expect(() => validateAcceptanceStateShape(state)).not.toThrow();
+
+    row.updatedAt = '2026-08-22T22:59:30.000Z';
+    expect(() => validateAcceptanceStateShape(state)).toThrow(/update predates submission/);
+  });
+
   it('binds successor evidence to its predecessor, distinct release SHAs, and attributed usage', () => {
     const directory = mkdtempSync(join(tmpdir(), 'nexus-ten-script-evidence-'));
     const statePath = join(directory, 'state.json');

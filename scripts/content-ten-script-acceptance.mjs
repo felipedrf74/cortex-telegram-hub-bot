@@ -35,6 +35,7 @@ const JOB_ID = /^script_job_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
 const MAX_RELEASE_VIEW_BYTES = 1024 * 1024;
 const MAX_ACCEPTANCE_STATE_BYTES = 1024 * 1024;
+const MAX_ACCEPTANCE_SERVER_CLOCK_SKEW_MS = 30_000;
 const MAX_AUTH_FILE_BYTES = 64 * 1024;
 const PRODUCTION_API_ORIGIN = 'https://api.nexushub.me';
 const EXPECTED_PRODUCTION_SOURCE_SHA = '815582be8127bafb97d7edaae2a4eab96e37c4cf';
@@ -319,7 +320,8 @@ export function validateAcceptanceStateShape(state) {
       throw new Error(`${expected.id} submission predates acceptance state creation`);
     }
     if (row.updatedAt !== undefined && row.submittedAt !== undefined
-        && Date.parse(row.updatedAt) < Date.parse(row.submittedAt)) {
+        && Date.parse(row.updatedAt) + MAX_ACCEPTANCE_SERVER_CLOCK_SKEW_MS
+          < Date.parse(row.submittedAt)) {
       throw new Error(`${expected.id} update predates submission`);
     }
     if (row.errorCode !== undefined) boundedString(row.errorCode, `${expected.id} errorCode`, 120);
@@ -1109,6 +1111,7 @@ async function main() {
       if (row.carriedForward === true) continue;
       try {
         if (!row.jobId) {
+          const submittedAt = new Date().toISOString();
           const created = await api(
             baseUrl,
             token,
@@ -1118,7 +1121,7 @@ async function main() {
           );
           row.jobId = created.jobId;
           row.status = created.status;
-          row.submittedAt = new Date().toISOString();
+          row.submittedAt = submittedAt;
           validateAcceptanceStateShape(state);
           atomicPrivateWrite(statePath, state);
         }

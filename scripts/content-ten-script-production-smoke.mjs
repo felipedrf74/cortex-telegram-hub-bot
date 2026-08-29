@@ -32,7 +32,7 @@ const CHILD_RELEASE_VIEW_FD = 4;
 const CHILD_AUTH_FD = 5;
 const CHILD_PREDECESSOR_STATE_FD = 6;
 export const EXPECTED_PRODUCTION_SOURCE_SHA = '815582be8127bafb97d7edaae2a4eab96e37c4cf';
-export const EXPECTED_ACCEPTANCE_TOOL_SHA256 = '94aca82aa55d9d3226d50a54a5dd576e7b22259641e1603c676d8c81ad03162e';
+export const EXPECTED_ACCEPTANCE_TOOL_SHA256 = 'c29832d5869b675a77298efdee78b3988529046d2d7576862ce124dcfd824af8';
 const REVIEWED_ACCEPTANCE_TOOL_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   'content-ten-script-acceptance.mjs',
