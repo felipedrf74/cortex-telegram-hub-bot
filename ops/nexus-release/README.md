@@ -9791,6 +9791,39 @@ failed verification is not permission to restore PM2 or remove evidence: rerun
 the detached apply with the same confirmation so the exact durable phase can
 resume. A malformed/conflicting journal, tombstone, or receipt blocks.
 
+If an interrupted transaction is already exactly at `systemd_retired` and a
+subsequent signed control-plane repair makes the immutable controller differ
+from the controller admitted by the journal, do not edit the journal, roll back
+the controller, or weaken continuity to branch ancestry. With explicit owner
+authorization, inspect and authorize exactly that installed successor once:
+
+```bash
+PM2_SUCCESSOR_CONFIRM="$({
+  sudo /usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HOME=/var/lib/nexus-release/home \
+    /usr/bin/node \
+    /opt/nexus-release/checkout/scripts/retire-pm2-fallback.mjs \
+    --inspect-control-plane-successor
+} | /usr/bin/jq -er '.candidate.authorizationDigest')"
+
+sudo /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  HOME=/var/lib/nexus-release/home \
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  /usr/bin/node \
+  /opt/nexus-release/checkout/scripts/retire-pm2-fallback.mjs \
+  --authorize-control-plane-successor --confirm "$PM2_SUCCESSOR_CONFIRM"
+unset PM2_SUCCESSOR_CONFIRM
+```
+
+The authorization is a root-owned mode `0600`, no-replace record bound to the
+exact transaction ID, unchanged plan digest, `systemd_retired` phase, admitted
+controller identity, and installed successor identity. Later controller drift,
+a different phase, an altered record, or a second authorization refuses. The
+same original four-part retirement confirmation still resumes the journal, and
+the terminal receipt retains and hashes the successor record.
+
 The removal allowlist is closed: the two canonical PM2 unit files and their
 `multi-user.target.wants` links when captured by the plan,
 `/usr/local/bin/pm2`,
@@ -9810,7 +9843,8 @@ trees, `/home/dominguez/.pm2`, `/etc/nexus-release`, `/var/lib/nexus-release`,
 `/var/lib/nexus-hub`, and `/srv/nexus-backups/application`; the transaction has
 no allowlisted mutation for unrelated content in them. Its only
 `/var/lib/nexus-release` mutations are the exact journal, tombstone, terminal
-receipt, and retained closure-manifest evidence paths named above.
+receipt, retained closure-manifest, and, only for the bounded recovery above,
+the transaction-bound control-plane-successor evidence paths named above.
 `scripts/retire-legacy-release-machinery.sh` is not this procedure and must not
 be reused for it.
 

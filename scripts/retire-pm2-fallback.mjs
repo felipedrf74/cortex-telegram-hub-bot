@@ -7,38 +7,46 @@ import { loadContinuousDeploymentPolicy } from './lib/release-manifest.mjs';
 import {
   Pm2FallbackRetirementRefusal,
   acquirePm2FallbackRetirementLocks,
+  authorizePm2FallbackControlPlaneSuccessor,
   assertDetachedRetirementService,
   createLinuxPm2FallbackRetirementMutator,
   inspectLinuxPm2FallbackRetirement,
+  inspectPm2FallbackControlPlaneSuccessor,
   readPm2FallbackRetirementStatus,
   runPm2FallbackRetirementTransaction,
 } from './lib/pm2-fallback-retirement.mjs';
 
 const args = process.argv.slice(2);
-let apply = false;
+let mode = 'inspect';
 let confirmation = '';
 for (let index = 0; index < args.length; index += 1) {
   const value = args[index];
-  if (value === '--apply' && !apply) {
-    apply = true;
+  if (value === '--apply' && mode === 'inspect') {
+    mode = 'apply';
+  } else if (value === '--inspect-control-plane-successor' && mode === 'inspect') {
+    mode = 'inspect-successor';
+  } else if (value === '--authorize-control-plane-successor' && mode === 'inspect') {
+    mode = 'authorize-successor';
   } else if (value === '--confirm' && !confirmation) {
     confirmation = args[index + 1] ?? '';
     index += 1;
   } else {
-    process.stderr.write('usage: retire-pm2-fallback.mjs [--apply --confirm <identity>]\n');
+    process.stderr.write('usage: retire-pm2-fallback.mjs [--apply --confirm <identity> | --inspect-control-plane-successor | --authorize-control-plane-successor --confirm <digest>]\n');
     process.exit(64);
   }
 }
-if ((apply && !confirmation) || (!apply && confirmation)) {
-  process.stderr.write('usage: retire-pm2-fallback.mjs [--apply --confirm <identity>]\n');
+if ((['apply', 'authorize-successor'].includes(mode) && !confirmation)
+    || (!['apply', 'authorize-successor'].includes(mode) && confirmation)) {
+  process.stderr.write('usage: retire-pm2-fallback.mjs [--apply --confirm <identity> | --inspect-control-plane-successor | --authorize-control-plane-successor --confirm <digest>]\n');
   process.exit(64);
 }
 if (process.getuid?.() !== 0) {
   process.stderr.write('PM2 fallback retirement requires root\n');
   process.exit(77);
 }
-if (apply && process.env.NEXUS_RELEASE_OWNER_AUTHORIZED !== '1') {
-  process.stderr.write('apply requires NEXUS_RELEASE_OWNER_AUTHORIZED=1\n');
+if (['apply', 'authorize-successor'].includes(mode)
+    && process.env.NEXUS_RELEASE_OWNER_AUTHORIZED !== '1') {
+  process.stderr.write('mutation requires NEXUS_RELEASE_OWNER_AUTHORIZED=1\n');
   process.exit(77);
 }
 
@@ -49,7 +57,7 @@ try {
   releaseLocks = acquirePm2FallbackRetirementLocks({ includeBackup: true });
   const status = readPm2FallbackRetirementStatus();
 
-  if (!apply) {
+  if (mode === 'inspect') {
     if (status.status !== 'not_started') {
       process.stdout.write(`${JSON.stringify({
         schema: 'nexus.pm2-fallback-retirement-inspection.v1',
@@ -65,6 +73,41 @@ try {
         plan,
       })}\n`);
     }
+  } else if (mode === 'inspect-successor') {
+    if (status.status !== 'in_progress') {
+      throw new Pm2FallbackRetirementRefusal(
+        'control-plane successor inspection requires an interrupted transaction',
+        'control_plane_successor_phase',
+      );
+    }
+    const candidate = inspectPm2FallbackControlPlaneSuccessor({
+      plan: status.journal.plan,
+      phase: status.journal.phase,
+    });
+    process.stdout.write(`${JSON.stringify({
+      schema: 'nexus.pm2-fallback-control-plane-successor-inspection.v1',
+      mode,
+      status: 'eligible',
+      candidate,
+    })}\n`);
+  } else if (mode === 'authorize-successor') {
+    if (status.status !== 'in_progress') {
+      throw new Pm2FallbackRetirementRefusal(
+        'control-plane successor authorization requires an interrupted transaction',
+        'control_plane_successor_phase',
+      );
+    }
+    const evidence = authorizePm2FallbackControlPlaneSuccessor({
+      plan: status.journal.plan,
+      phase: status.journal.phase,
+      confirmation,
+    });
+    process.stdout.write(`${JSON.stringify({
+      schema: 'nexus.pm2-fallback-control-plane-successor-result.v1',
+      mode,
+      outcome: 'authorized',
+      evidence,
+    })}\n`);
   } else if (status.status === 'completed') {
     process.stdout.write(`${JSON.stringify({
       schema: 'nexus.pm2-fallback-retirement-result.v1',
