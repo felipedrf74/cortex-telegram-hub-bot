@@ -2,6 +2,7 @@
   "schema": "nexus.release-control-plane-inputs.v1",
   "nodeVersion": "22.23.1",
   "entrypoints": [
+    "scripts/recover-pm2-root-attestation.mjs",
     "scripts/release-acknowledge.mjs",
     "scripts/release-artifact-manifest.mjs",
     "scripts/release-bootstrap-baseline.mjs",

@@ -234,9 +234,9 @@ export function classifyChangedFiles({
     || has(/^docs\/release\/evidence\/release-manifest-public-key\.pem$/)
     || has(/^scripts\/release-.*\.(?:mjs|py|sh)$/)
     || has(/^scripts\/remote-(?:pm2-root-install|start-sanitized-pm2|user-release-transaction)\.sh$/)
-    || has(/^scripts\/retire-pm2-fallback\.mjs$/)
+    || has(/^scripts\/(?:recover-pm2-root-attestation|retire-pm2-fallback)\.mjs$/)
     || has(/^scripts\/lib\/release-.*\.mjs$/)
-    || has(/^scripts\/lib\/(?:git-(?:changed-paths|ref)|migration-(?:cd-eligibility|safety-policy-classifier)|pm2-fallback-retirement|production-migration-lineage)\.mjs$/);
+    || has(/^scripts\/lib\/(?:git-(?:changed-paths|ref)|migration-(?:cd-eligibility|safety-policy-classifier)|pm2-(?:fallback-retirement|root-attestation-recovery)|production-migration-lineage)\.mjs$/);
   const localBackupRuntime = has(/^ops\/local-backup(?:\/|$)/)
     || has(/^scripts\/local-backup(?:\.py|-(?:retry-launcher|systemd-install)\.sh)$/);
   if (releaseControlPlane) {

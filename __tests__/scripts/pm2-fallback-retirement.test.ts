@@ -740,6 +740,39 @@ describe('container-era PM2 fallback retirement', () => {
     })).toThrowError(expect.objectContaining({ code: 'unsafe_removal' }));
   });
 
+  it('binds closure reads to the checked inode and refuses a path swap', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-read-race-'));
+    temporaryRoots.push(root);
+    fs.chmodSync(root, 0o755);
+    const target = path.join(root, 'pm2.js');
+    fs.writeFileSync(target, 'known\n', { mode: 0o644 });
+    let swapped = false;
+    const fsApi = new Proxy(fs, {
+      get(source, key) {
+        if (key === 'lstatSync') {
+          return (file: fs.PathLike) => {
+            const stat = fs.lstatSync(file);
+            if (!swapped && file === target) {
+              swapped = true;
+              const original = `${target}.original`;
+              fs.renameSync(target, original);
+              fs.symlinkSync(original, target);
+            }
+            return stat;
+          };
+        }
+        const value = Reflect.get(source, key);
+        return typeof value === 'function' ? value.bind(source) : value;
+      },
+    });
+
+    expect(() => inspectPm2ClosureForRetirement(root, {
+      fsApi,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toThrowError(expect.objectContaining({ code: 'artifact_changed' }));
+  });
+
   it('filters absent legacy DB sidecars before lsof and refuses an open base', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-db-'));
     temporaryRoots.push(root);
@@ -775,6 +808,45 @@ describe('container-era PM2 fallback retirement', () => {
       .toBe('/var/lib/nexus-release-promotion/pm2-root-install.v1.json');
     expect(PM2_FALLBACK_PRESERVED_PATHS).toContain('/home/dominguez/.pm2');
     expect(PM2_FALLBACK_PRESERVED_PATHS).toContain('/etc/nexus-release');
+  });
+
+  it('admits a recovered exact-closure attestation without fabricating archive provenance', () => {
+    const input = validInput();
+    const original = input.host.pm2Attestation;
+    input.host.pm2Attestation = {
+      schema: 'nexus.pm2-root-install-recovered.v1',
+      version: original.version,
+      recoveryMethod: 'exact-installed-closure',
+      closureDigest: original.closureDigest,
+      payloadDigest: original.payloadDigest,
+      packageLockSha256: original.packageLockSha256,
+      fileCount: original.fileCount,
+      closureRoot: original.closureRoot,
+      launcher: original.launcher,
+      launcherSha256: original.launcherSha256,
+      entrypoint: original.entrypoint,
+      node: original.node,
+      attestedAt: '2026-08-30T00:00:00.000Z',
+    };
+
+    expect(evaluatePm2FallbackRetirementAdmission(input as never).pm2.version)
+      .toBe(original.version);
+    expect(input.host.pm2Attestation).not.toHaveProperty('sourceArchiveSha256');
+  });
+
+  it('refuses an unknown recovered-attestation method', () => {
+    const input = validInput();
+    input.host.pm2Attestation = {
+      ...input.host.pm2Attestation,
+      schema: 'nexus.pm2-root-install-recovered.v1',
+      recoveryMethod: 'unverified-copy',
+      attestedAt: '2026-08-30T00:00:00.000Z',
+    } as never;
+    delete (input.host.pm2Attestation as Record<string, unknown>).sourceArchiveSha256;
+    delete (input.host.pm2Attestation as Record<string, unknown>).installedAt;
+
+    expect(() => evaluatePm2FallbackRetirementAdmission(input as never))
+      .toThrowError(expect.objectContaining({ code: 'pm2_attestation_mismatch' }));
   });
 
   it('blocks in-progress retirement without blocking ordinary releases after completion', () => {

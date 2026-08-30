@@ -9714,6 +9714,38 @@ Apply only that value with explicit owner authorization. The service must be
 detached from SSH and execute Node directly so `SYSTEMD_EXEC_PID` identifies the
 retirement process; do not add `--wait` or `--pipe`:
 
+If and only if the historical root closure is exact but
+`/var/lib/nexus-release-promotion/pm2-root-install.v1.json` is absent, use the
+governed recovery entrypoint before repeating the retirement dry-run. Recovery
+does not infer or fabricate the missing source archive digest: it verifies the
+entire installed closure against its exact manifest and trusted package lock,
+the launcher, PM2 package, and Node runtime, then publishes the distinct
+`nexus.pm2-root-install-recovered.v1` schema with a no-replace atomic write.
+Any install/retirement journal, tombstone, additional closure, changed file, or
+existing attestation refuses recovery. First capture the dry-run confirmation,
+then apply that exact digest only with explicit owner authorization:
+
+```bash
+PM2_ATTESTATION_CONFIRM="$({
+  sudo /usr/bin/env -i \
+    PATH=/usr/bin:/bin \
+    HOME=/var/lib/nexus-release/home \
+    /usr/bin/node \
+    /opt/nexus-release/checkout/scripts/recover-pm2-root-attestation.mjs
+} | /usr/bin/jq -er '.confirmation')"
+
+sudo /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  HOME=/var/lib/nexus-release/home \
+  NEXUS_RELEASE_OWNER_AUTHORIZED=1 \
+  /usr/bin/node \
+  /opt/nexus-release/checkout/scripts/recover-pm2-root-attestation.mjs \
+  --apply --confirm "$PM2_ATTESTATION_CONFIRM"
+```
+
+This is a one-time evidence recovery for an already-installed exact closure,
+not permission to rebuild, replace, start, or otherwise mutate PM2.
+
 ```bash
 PM2_RETIRE_CONFIRM='<exact confirmation from the immediately preceding dry-run>'
 PM2_RETIRE_UNIT="nexus-pm2-fallback-retirement-$(date -u +%Y%m%dT%H%M%SZ)"
