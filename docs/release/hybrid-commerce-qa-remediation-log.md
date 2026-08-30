@@ -1251,3 +1251,30 @@ default-off guarded code, but Stripe sales, Apple sales, hybrid-credit
 fulfillment, and production local-primary activation remain OFF. No further
 retry, replacement, acceleration, or credential refresh is authorized for the
 two successor identities.
+
+### Signed release and PM2 fallback retirement (2026-08-30)
+
+Protected-main source `02da8e27a31c39d24887f6fa40f816ecad694e38`
+is serving under a completed, provable, non-stale v3 receipt. Its runtime and
+signed image evidence match, and it contains Release A plus the reviewed
+transaction-bound PM2 control-plane successor by ancestry. A root-only live
+audit proved the healthy three-service production topology, SQLite integrity,
+zero foreign-key violations, migration 299 exactly once, and all six script-job
+creation/completion release-identity columns.
+
+The owner-authorized PM2 retirement resumed only after exact successor evidence
+bound the unchanged transaction plan to the installed controller. The terminal
+v2 receipt, closure manifest, and successor evidence validate as root-owned
+mode-0600 artifacts. PM2 executable authority, package prefix, root attestation,
+canonical service units, and wants are absent; permanent masks preserve the
+retired path as inert. The release poller, heartbeat, backup-liveness, local
+backup, and restore-verification timers are active and enabled. The acceptance
+timer is intentionally inactive and disabled because the owner exception closed
+the retry loop without fabricating 9/9 evidence.
+
+This completes the signed backend release and fallback-retirement work. It does
+not alter the acceptance verdict: the inventory remains 7/9 contract-valid,
+the smoke remains unsubmitted, and acceptance v6 plus authenticated economics
+v7 cannot pass. Hybrid credits, subscriptions, Stripe packs, Apple sales, and
+local-primary production routing remain OFF pending their independent legal,
+account, credential, acceptance, and measured-economics gates.
