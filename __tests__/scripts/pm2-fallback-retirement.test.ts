@@ -293,6 +293,21 @@ afterEach(() => {
 });
 
 describe('container-era PM2 fallback retirement', () => {
+  it('binds restore-verification receipts to canonical millisecond UTC', () => {
+    const source = fs.readFileSync('scripts/local-backup.py', 'utf8');
+    const restoreStart = source.indexOf('def decrypt_and_verify(');
+    const restoreEnd = source.indexOf('\ndef verify_freshness_locked(', restoreStart);
+    const restoreProducer = source.slice(restoreStart, restoreEnd);
+
+    expect(restoreStart).toBeGreaterThanOrEqual(0);
+    expect(restoreEnd).toBeGreaterThan(restoreStart);
+    expect(restoreProducer).toContain([
+      '"verifiedAt": datetime.now(timezone.utc).isoformat(',
+      '                timespec="milliseconds"',
+      '            ).replace("+00:00", "Z"),',
+    ].join('\n'));
+  });
+
   it('holds and exports the governed backup lock for the full retirement observation', () => {
     const paths = {
       ...DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,

@@ -1146,15 +1146,12 @@ describe('same-host Nexus backups', () => {
 
       const verified = run(fixture, 'restore-verify');
       expect(verified.status, verified.stderr).toBe(0);
-      const verificationReceipt = JSON.parse(verified.stdout);
-      expect(verificationReceipt).toMatchObject({
+      expect(JSON.parse(verified.stdout)).toMatchObject({
         schema: 'nexus.local-backup-restore-verification.v1',
         status: 'passed',
         integrityCheck: 'ok',
         foreignKeyCheck: 'ok',
       });
-      expect(new Date(verificationReceipt.verifiedAt).toISOString())
-        .toBe(verificationReceipt.verifiedAt);
       expect(readdirSync(fixture.backupRoot)).not.toContain('restored.sqlite');
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
