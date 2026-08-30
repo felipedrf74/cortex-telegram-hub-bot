@@ -19,6 +19,7 @@ import {
   inspectLegacyDatabaseQuiescence,
   inspectPm2ClosureForRetirement,
   inspectTerminalRebaselineEvidenceForRetirement,
+  isPm2SystemdAuthorityUnit,
   purgeDetachedPm2Closure,
   readPm2FallbackRetirementStatus,
   runPm2FallbackRetirementTransaction,
@@ -428,6 +429,17 @@ afterEach(() => {
 });
 
 describe('container-era PM2 fallback retirement', () => {
+  it('does not classify TPM2 operating-system services as PM2 authorities', () => {
+    expect(isPm2SystemdAuthorityUnit('systemd-tpm2-setup.service')).toBe(false);
+    expect(isPm2SystemdAuthorityUnit('systemd-tpm2-setup-early.service')).toBe(false);
+    expect(isPm2SystemdAuthorityUnit('pm2-dominguez.service')).toBe(true);
+    expect(isPm2SystemdAuthorityUnit('nexus-release-pm2-recovery-daemon.service')).toBe(true);
+    expect(isPm2SystemdAuthorityUnit('nexus-pm2-fallback-retirement.service')).toBe(true);
+    expect(isPm2SystemdAuthorityUnit('evilpm2.service')).toBe(true);
+    expect(isPm2SystemdAuthorityUnit('custompm2svc.service')).toBe(true);
+    expect(isPm2SystemdAuthorityUnit('tpm2-abrmd.service')).toBe(true);
+  });
+
   it('binds restore-verification receipts to canonical millisecond UTC', () => {
     const source = fs.readFileSync('scripts/local-backup.py', 'utf8');
     const restoreStart = source.indexOf('def decrypt_and_verify(');
