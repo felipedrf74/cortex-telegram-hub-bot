@@ -5,6 +5,7 @@ import path from 'node:path';
 import { canonicalJson, exactKeys, sha256 } from './release-canonical.mjs';
 import {
   DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+  Pm2FallbackRetirementRefusal,
   acquirePm2FallbackRetirementLocks,
   inspectPm2ClosureForRetirement,
 } from './pm2-fallback-retirement.mjs';
@@ -158,7 +159,12 @@ function inspectManifest({ closureRoot, inspection, trustedLockBytes, fsApi, own
     .filter((entry) => entry.kind === 'file' && entry.path !== 'closure-manifest.json')
     .map(({ path: filePath, size, mode, sha256: digest }) => ({
       path: filePath, size, mode, sha256: digest,
-    }));
+    }))
+    // The offline closure producer records members in its exact JavaScript
+    // string path order, while the retirement walker is deliberately
+    // depth-first. Normalize the observed set to the archive contract before
+    // comparing exact rows.
+    .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
   compare(manifest.files, payloadFiles, 'installed PM2 files differ from the exact closure manifest');
   const payloadDigest = sha256(canonicalJson({
     schema: 'nexus.pm2-root-closure-payload.v1', files: payloadFiles,
@@ -214,9 +220,17 @@ export function inspectPm2RootAttestationRecovery({
   }
   const version = versions[0];
   const closureRoot = path.join(paths.pm2Prefix, version);
-  const inspection = inspectPm2ClosureForRetirement(closureRoot, {
-    fsApi, ownerUid, ownerGid,
-  });
+  let inspection;
+  try {
+    inspection = inspectPm2ClosureForRetirement(closureRoot, {
+      fsApi, ownerUid, ownerGid,
+    });
+  } catch (error) {
+    if (error instanceof Pm2FallbackRetirementRefusal) {
+      refuse('installed PM2 closure is unsafe or changed', error.code);
+    }
+    throw error;
+  }
   const trustedLockBytes = readRegular(paths.pm2Lock, {
     fsApi, ownerUid, ownerGid, mode: 0o644,
   });
@@ -286,6 +300,39 @@ function fsyncDirectory(directory, fsApi = fs) {
   try { fsApi.fsyncSync(descriptor); } finally { fsApi.closeSync(descriptor); }
 }
 
+function ensureAttestationDirectory(directory, {
+  fsApi = fs,
+  ownerUid = 0,
+  ownerGid = 0,
+} = {}) {
+  try {
+    fsApi.lstatSync(directory);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      refuse('PM2 attestation recovery directory is unreadable', 'unsafe_state');
+    }
+    const parent = path.dirname(directory);
+    const parentStat = fsApi.lstatSync(parent);
+    if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+        || parentStat.uid !== ownerUid || parentStat.gid !== ownerGid
+        || (modeOf(parentStat) & 0o022) !== 0) {
+      refuse('PM2 attestation recovery parent directory is unsafe', 'unsafe_state');
+    }
+    try {
+      fsApi.mkdirSync(directory, { mode: 0o700 });
+      fsyncDirectory(parent, fsApi);
+    } catch (mkdirError) {
+      if (mkdirError?.code !== 'EEXIST') throw mkdirError;
+    }
+  }
+  const directoryStat = fsApi.lstatSync(directory);
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()
+      || directoryStat.uid !== ownerUid || directoryStat.gid !== ownerGid
+      || modeOf(directoryStat) !== 0o700) {
+    refuse('PM2 attestation recovery directory is unsafe', 'unsafe_state');
+  }
+}
+
 export function recoverPm2RootAttestation({
   confirm,
   ownerAuthorized = false,
@@ -318,12 +365,7 @@ export function recoverPm2RootAttestation({
       attestedAt,
     };
     const directory = path.dirname(paths.pm2Attestation);
-    const directoryStat = fsApi.lstatSync(directory);
-    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()
-        || directoryStat.uid !== ownerUid || directoryStat.gid !== ownerGid
-        || modeOf(directoryStat) !== 0o700) {
-      refuse('PM2 attestation recovery directory is unsafe', 'unsafe_state');
-    }
+    ensureAttestationDirectory(directory, { fsApi, ownerUid, ownerGid });
     const temporary = path.join(directory, `.pm2-root-attestation-recovery-${process.pid}`);
     const attestationBytes = Buffer.from(`${JSON.stringify(attestation, null, 2)}\n`);
     let descriptor;

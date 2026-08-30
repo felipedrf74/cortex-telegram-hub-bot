@@ -41,7 +41,9 @@ function payloadFiles(root: string) {
     }
   }
   walk(root);
-  return files.sort((left, right) => left.path.localeCompare(right.path));
+  return files.sort((left, right) => (
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+  ));
 }
 
 function fixture() {
@@ -83,7 +85,14 @@ function fixture() {
     name: 'pm2', version,
   }, null, 2)}\n`);
   write(path.join(closureRoot, 'node_modules/pm2/bin/pm2'), '#!/usr/bin/env node\n', 0o755);
+  // Preserve the archive builder's globally sorted sibling-file/directory
+  // ordering case: `locale.json` precedes `locale/af.js` bytewise, while a
+  // depth-first filesystem walk observes the directory first.
+  write(path.join(closureRoot, 'node_modules/pm2/locale.json'), '{}\n');
+  write(path.join(closureRoot, 'node_modules/pm2/locale/af.js'), 'module.exports = {};\n');
   const files = payloadFiles(closureRoot);
+  expect(files.findIndex((entry) => entry.path.endsWith('/locale.json')))
+    .toBeLessThan(files.findIndex((entry) => entry.path.endsWith('/locale/af.js')));
   const packageLockPackages = [{
     path: 'node_modules/pm2', version, resolved: null, integrity: null,
   }];
@@ -155,6 +164,59 @@ describe('PM2 root attestation recovery', () => {
     expect(() => recoverPm2RootAttestation({
       ...f, confirm: inspected.confirmation, ownerAuthorized: true,
     })).toThrowError(expect.objectContaining({ code: 'conflicting_state' }));
+  });
+
+  it('creates an absent legacy attestation directory with exact root-only mode', () => {
+    const f = fixture();
+    const promotionRoot = path.dirname(f.paths.pm2Attestation);
+    fs.rmSync(promotionRoot, { recursive: true });
+    const inspected = inspectPm2RootAttestationRecovery(f);
+    const result = recoverPm2RootAttestation({
+      ...f,
+      confirm: inspected.confirmation,
+      ownerAuthorized: true,
+      now: () => new Date('2026-08-30T00:00:00.000Z'),
+    });
+    expect(result.status).toBe('recovered');
+    expect(fs.statSync(promotionRoot).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(f.paths.pm2Attestation).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses an unsafe pre-existing attestation directory', () => {
+    const f = fixture();
+    const promotionRoot = path.dirname(f.paths.pm2Attestation);
+    fs.chmodSync(promotionRoot, 0o777);
+    const inspected = inspectPm2RootAttestationRecovery(f);
+    expect(() => recoverPm2RootAttestation({
+      ...f,
+      confirm: inspected.confirmation,
+      ownerAuthorized: true,
+    })).toThrowError(expect.objectContaining({ code: 'unsafe_state' }));
+  });
+
+  it('preserves a target created immediately before no-replace publication', () => {
+    const f = fixture();
+    const inspected = inspectPm2RootAttestationRecovery(f);
+    const racedBytes = 'concurrent evidence\n';
+    const fsApi = new Proxy(fs, {
+      get(target, key) {
+        if (key === 'linkSync') {
+          return (existingPath: fs.PathLike, targetPath: fs.PathLike) => {
+            fs.writeFileSync(targetPath, racedBytes, { mode: 0o600 });
+            return fs.linkSync(existingPath, targetPath);
+          };
+        }
+        const value = Reflect.get(target, key);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    expect(() => recoverPm2RootAttestation({
+      ...f,
+      fsApi,
+      confirm: inspected.confirmation,
+      ownerAuthorized: true,
+    })).toThrowError(expect.objectContaining({ code: 'conflicting_state' }));
+    expect(fs.readFileSync(f.paths.pm2Attestation, 'utf8')).toBe(racedBytes);
   });
 
   it('refuses apply when the exact closure changed after confirmation', () => {
