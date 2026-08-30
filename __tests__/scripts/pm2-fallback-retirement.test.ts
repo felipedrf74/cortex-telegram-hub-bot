@@ -8,21 +8,26 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { canonicalJson, sha256 } from '../../scripts/lib/release-canonical.mjs';
 import {
   DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+  PM2_FALLBACK_CONTROL_PLANE_SUCCESSOR_SCHEMA,
   PM2_FALLBACK_PRESERVED_PATHS,
   PM2_FALLBACK_STABLE_SECONDS,
   Pm2FallbackRetirementRefusal,
   acquirePm2FallbackRetirementLocks,
+  assertPm2FallbackControlPlaneContinuity,
   assertRemainingPlannedSystemdArtifacts,
+  authorizePm2FallbackControlPlaneSuccessor,
   createLinuxPm2FallbackRetirementMutator,
   detachPm2ClosureAtomically,
   evaluatePm2FallbackRetirementAdmission,
   inspectLegacyDatabaseQuiescence,
   inspectPm2ClosureForRetirement,
+  inspectPm2FallbackControlPlaneSuccessor,
   inspectTerminalRebaselineEvidenceForRetirement,
   isPm2SystemdAuthorityUnit,
   purgeDetachedPm2Closure,
   readPm2FallbackRetirementStatus,
   runPm2FallbackRetirementTransaction,
+  verifyPm2FallbackControlPlaneSuccessorEvidence,
 } from '../../scripts/lib/pm2-fallback-retirement.mjs';
 
 const ANCHOR_ID = '1'.repeat(32);
@@ -55,6 +60,13 @@ const CLOSURE_SHA = sha256(canonicalJson({
 }));
 const ATTESTATION_SHA = 'b'.repeat(64);
 const CONTROL_PLANE_DIGEST = 'c'.repeat(64);
+const SUCCESSOR_CONTROL_PLANE = {
+  schema: 'nexus.release-control-plane.v1',
+  digest: 'd'.repeat(64),
+  sourceSha: 'e'.repeat(40),
+  treeSha256: 'f'.repeat(64),
+  transactionGatePresent: false,
+};
 const BASELINE = {
   target: {
     releaseId: ANCHOR_ID,
@@ -799,6 +811,283 @@ describe('container-era PM2 fallback retirement', () => {
         plan: { terminalRebaseline: TERMINAL_REBASELINE },
       },
     });
+  });
+
+  it('authorizes one exact no-replace successor and binds it into terminal evidence', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-successor-'));
+    temporaryRoots.push(root);
+    const paths = transactionPaths(root);
+    const admittedPlan = plan();
+    const calls: string[] = [];
+    const options = {
+      plan: admittedPlan,
+      confirmation: admittedPlan.confirmation,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT,
+      host: fakeHost(calls, paths),
+    };
+    await expect(runPm2FallbackRetirementTransaction({
+      ...options,
+      crashAfterPhase: 'systemd_retired',
+    })).rejects.toThrow('simulated crash after systemd_retired');
+
+    const candidate = inspectPm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+    });
+    expect(candidate).toMatchObject({
+      schema: PM2_FALLBACK_CONTROL_PLANE_SUCCESSOR_SCHEMA,
+      transactionId: admittedPlan.transactionId,
+      planDigest: admittedPlan.planDigest,
+      authorizedPhase: 'systemd_retired',
+      predecessor: admittedPlan.controlPlane,
+      successor: SUCCESSOR_CONTROL_PLANE,
+    });
+    expect(candidate.authorizationDigest).toMatch(/^[0-9a-f]{64}$/u);
+
+    expect(() => authorizePm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      confirmation: '0'.repeat(64),
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT + 1,
+    })).toThrowError(expect.objectContaining({
+      code: 'control_plane_successor_confirmation_mismatch',
+    }));
+    expect(() => authorizePm2FallbackControlPlaneSuccessor({
+      plan: { ...admittedPlan, notBefore: new Date(ELIGIBLE_AT + 1).toISOString() },
+      phase: 'systemd_retired',
+      confirmation: candidate.authorizationDigest,
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT + 1,
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_phase' }));
+    expect(() => authorizePm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'fallback_barred',
+      confirmation: candidate.authorizationDigest,
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT + 1,
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_phase' }));
+
+    const evidence = authorizePm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      confirmation: candidate.authorizationDigest,
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT + 1,
+    });
+    expect(fs.statSync(evidence!.path).mode & 0o777).toBe(0o600);
+    expect(assertPm2FallbackControlPlaneContinuity({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      observed: SUCCESSOR_CONTROL_PLANE,
+      successorEvidence: evidence,
+    })).toMatchObject({ successorEvidence: evidence });
+    expect(verifyPm2FallbackControlPlaneSuccessorEvidence({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      observed: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toMatchObject({ successorEvidence: evidence });
+    expect(() => verifyPm2FallbackControlPlaneSuccessorEvidence({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      observed: { ...SUCCESSOR_CONTROL_PLANE, sourceSha: '0'.repeat(40) },
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_mismatch' }));
+    expect(() => verifyPm2FallbackControlPlaneSuccessorEvidence({
+      plan: admittedPlan,
+      phase: 'fallback_barred',
+      observed: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_mismatch' }));
+
+    expect(() => authorizePm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      confirmation: candidate.authorizationDigest,
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT + 2,
+    })).toThrowError(expect.objectContaining({ code: 'immutable_exists' }));
+
+    const result = await runPm2FallbackRetirementTransaction(options);
+    expect(result.receipt.controlPlane).toEqual(admittedPlan.controlPlane);
+    expect(result.receipt.controlPlaneSuccessor).toEqual(evidence);
+    expect(readPm2FallbackRetirementStatus({
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toMatchObject({
+      status: 'completed',
+      receipt: { controlPlaneSuccessor: evidence },
+    });
+  });
+
+  it('reads completed legacy v1 terminal receipts when no successor evidence exists', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-v1-receipt-'));
+    temporaryRoots.push(root);
+    const paths = transactionPaths(root);
+    const admittedPlan = plan();
+    const result = await runPm2FallbackRetirementTransaction({
+      plan: admittedPlan,
+      confirmation: admittedPlan.confirmation,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT,
+      host: fakeHost([], paths),
+    });
+    const legacy = JSON.parse(fs.readFileSync(result.receiptPath, 'utf8'));
+    legacy.schema = 'nexus.pm2-fallback-retirement-receipt.v1';
+    delete legacy.controlPlaneSuccessor;
+    fs.writeFileSync(result.receiptPath, `${JSON.stringify(legacy, null, 2)}\n`, { mode: 0o600 });
+    expect(readPm2FallbackRetirementStatus({
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toMatchObject({ status: 'completed', receipt: { schema: legacy.schema } });
+  });
+
+  it('keeps test-only successor injection unavailable outside tests', () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(() => inspectPm2FallbackControlPlaneSuccessor({
+        plan: plan(),
+        phase: 'systemd_retired',
+        testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_mismatch' }));
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
+  });
+
+  it('refuses a pre-existing successor evidence name without following it', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-successor-link-'));
+    temporaryRoots.push(root);
+    const paths = transactionPaths(root);
+    const admittedPlan = plan();
+    const options = {
+      plan: admittedPlan,
+      confirmation: admittedPlan.confirmation,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT,
+      host: fakeHost([], paths),
+    };
+    await expect(runPm2FallbackRetirementTransaction({
+      ...options,
+      crashAfterPhase: 'systemd_retired',
+    })).rejects.toThrow('simulated crash after systemd_retired');
+    fs.mkdirSync(paths.retirementRoot, { recursive: true, mode: 0o700 });
+    const evidencePath = path.join(
+      paths.retirementRoot,
+      `${admittedPlan.transactionId}.control-plane-successor.json`,
+    );
+    fs.symlinkSync('/dev/null', evidencePath);
+    const candidate = inspectPm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+    });
+    expect(() => authorizePm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      confirmation: candidate.authorizationDigest,
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT + 1,
+    })).toThrowError(expect.objectContaining({ code: 'immutable_exists' }));
+    expect(fs.lstatSync(evidencePath).isSymbolicLink()).toBe(true);
+  });
+
+  it.each([
+    ['wrong phase', 'fallback_barred', SUCCESSOR_CONTROL_PLANE,
+      'control_plane_successor_phase'],
+    ['same control plane', 'systemd_retired', null,
+      'control_plane_successor_mismatch'],
+  ] as const)('refuses successor inspection with %s', (_label, phase, successor, code) => {
+    const admittedPlan = plan();
+    expect(() => inspectPm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase,
+      testOnlySuccessor: successor ?? admittedPlan.controlPlane,
+    })).toThrowError(expect.objectContaining({ code }));
+  });
+
+  it('refuses missing, tampered, stale-phase, and arbitrary-successor continuity', () => {
+    const admittedPlan = plan();
+    const candidate = inspectPm2FallbackControlPlaneSuccessor({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      testOnlySuccessor: SUCCESSOR_CONTROL_PLANE,
+    });
+    const evidence = {
+      path: '/var/lib/nexus-release/retirements/pm2-fallback/exact.json',
+      sha256: '1'.repeat(64),
+      authorization: {
+        ...candidate,
+        createdAt: new Date(ELIGIBLE_AT).toISOString(),
+      },
+    };
+    expect(() => assertPm2FallbackControlPlaneContinuity({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      observed: SUCCESSOR_CONTROL_PLANE,
+      successorEvidence: null,
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_unsettled' }));
+    expect(() => assertPm2FallbackControlPlaneContinuity({
+      plan: admittedPlan,
+      phase: 'fallback_barred',
+      observed: SUCCESSOR_CONTROL_PLANE,
+      successorEvidence: evidence,
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_mismatch' }));
+    expect(() => assertPm2FallbackControlPlaneContinuity({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      observed: { ...SUCCESSOR_CONTROL_PLANE, sourceSha: '0'.repeat(40) },
+      successorEvidence: evidence,
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_mismatch' }));
+    expect(() => assertPm2FallbackControlPlaneContinuity({
+      plan: admittedPlan,
+      phase: 'systemd_retired',
+      observed: SUCCESSOR_CONTROL_PLANE,
+      successorEvidence: {
+        ...evidence,
+        authorization: {
+          ...evidence.authorization,
+          transactionId: '0'.repeat(32),
+        },
+      },
+    })).toThrowError(expect.objectContaining({ code: 'control_plane_successor_mismatch' }));
   });
 
   it.each([

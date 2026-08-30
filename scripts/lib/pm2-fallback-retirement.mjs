@@ -32,7 +32,11 @@ import {
 export const PM2_FALLBACK_RETIREMENT_SCHEMA = 'nexus.pm2-fallback-retirement.v1';
 export const PM2_FALLBACK_RETIRED_SCHEMA = 'nexus.pm2-fallback-retired.v1';
 export const PM2_FALLBACK_RETIREMENT_RECEIPT_SCHEMA =
+  'nexus.pm2-fallback-retirement-receipt.v2';
+const PM2_FALLBACK_RETIREMENT_RECEIPT_LEGACY_SCHEMA =
   'nexus.pm2-fallback-retirement-receipt.v1';
+export const PM2_FALLBACK_CONTROL_PLANE_SUCCESSOR_SCHEMA =
+  'nexus.pm2-fallback-control-plane-successor.v1';
 export const PM2_FALLBACK_STABLE_SECONDS = 14 * 24 * 60 * 60;
 
 const HEX_32 = /^[0-9a-f]{32}$/u;
@@ -695,6 +699,216 @@ function closureManifestPath(plan, paths) {
   return path.join(paths.retirementRoot, `${plan.transactionId}.closure-manifest.json`);
 }
 
+function controlPlaneSuccessorPath(plan, paths) {
+  return path.join(
+    paths.retirementRoot,
+    `${plan.transactionId}.control-plane-successor.json`,
+  );
+}
+
+function controlPlaneSuccessorAuthorizationDigest({
+  transactionId,
+  planDigest,
+  authorizedPhase,
+  predecessor,
+  successor,
+}) {
+  return sha256(`${PM2_FALLBACK_CONTROL_PLANE_SUCCESSOR_SCHEMA}\0${canonicalJson({
+    transactionId,
+    planDigest,
+    authorizedPhase,
+    predecessor,
+    successor,
+  })}`);
+}
+
+function assertControlPlaneSuccessorAuthorization(record, plan) {
+  exactObject(record, [
+    'schema', 'createdAt', 'transactionId', 'planDigest', 'authorizedPhase',
+    'predecessor', 'successor', 'authorizationDigest',
+  ], 'PM2 fallback control-plane successor authorization');
+  if (record.schema !== PM2_FALLBACK_CONTROL_PLANE_SUCCESSOR_SCHEMA
+      || record.transactionId !== plan.transactionId
+      || record.planDigest !== plan.planDigest
+      || record.authorizedPhase !== 'systemd_retired') {
+    refuse('control-plane successor authorization does not bind the interrupted transaction',
+      'control_plane_successor_mismatch');
+  }
+  assertTimestamp(record.createdAt, 'control-plane successor authorization createdAt');
+  assertHex(
+    record.authorizationDigest,
+    HEX_64,
+    'control-plane successor authorization digest',
+  );
+  const predecessor = assertControlPlaneEvidence(record.predecessor);
+  const successor = assertControlPlaneEvidence(record.successor);
+  if (canonicalJson(predecessor) !== canonicalJson(plan.controlPlane)
+      || canonicalJson(successor) === canonicalJson(predecessor)
+      || successor.sourceSha === predecessor.sourceSha
+      || record.authorizationDigest !== controlPlaneSuccessorAuthorizationDigest(record)) {
+    refuse('control-plane successor authorization identity is invalid',
+      'control_plane_successor_mismatch');
+  }
+  return record;
+}
+
+export function inspectPm2FallbackControlPlaneSuccessor({
+  plan,
+  phase,
+  testOnlySuccessor = null,
+  paths = DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+} = {}) {
+  assertPlan(plan);
+  if (phase !== 'systemd_retired') {
+    refuse('control-plane successor authorization is limited to systemd_retired recovery',
+      'control_plane_successor_phase');
+  }
+  if (testOnlySuccessor !== null && process.env.NODE_ENV !== 'test') {
+    refuse('test-only control-plane successor injection is unavailable',
+      'control_plane_successor_mismatch');
+  }
+  const installed = assertControlPlaneEvidence(testOnlySuccessor
+    ?? collectInstalledControlPlaneEvidence(paths));
+  const core = {
+    transactionId: plan.transactionId,
+    planDigest: plan.planDigest,
+    authorizedPhase: phase,
+    predecessor: plan.controlPlane,
+    successor: installed,
+  };
+  if (canonicalJson(installed) === canonicalJson(plan.controlPlane)
+      || installed.sourceSha === plan.controlPlane.sourceSha) {
+    refuse('installed control plane is not a distinct successor',
+      'control_plane_successor_mismatch');
+  }
+  return {
+    schema: PM2_FALLBACK_CONTROL_PLANE_SUCCESSOR_SCHEMA,
+    ...core,
+    authorizationDigest: controlPlaneSuccessorAuthorizationDigest(core),
+  };
+}
+
+function readControlPlaneSuccessorEvidence(plan, paths, {
+  fsApi = fs,
+  ownerUid = 0,
+  ownerGid = 0,
+} = {}) {
+  const file = controlPlaneSuccessorPath(plan, paths);
+  if (!pathExists(file, fsApi)) return null;
+  const raw = parseBoundedJson(file, {
+    fsApi,
+    label: 'PM2 fallback control-plane successor authorization',
+    ownerUid,
+    ownerGid,
+  });
+  const authorization = assertControlPlaneSuccessorAuthorization(raw.value, plan);
+  return {
+    path: file,
+    sha256: sha256(raw.bytes),
+    authorization,
+  };
+}
+
+export function authorizePm2FallbackControlPlaneSuccessor({
+  plan: suppliedPlan,
+  phase: suppliedPhase,
+  confirmation,
+  testOnlySuccessor = null,
+  paths = DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+  ownerUid = 0,
+  ownerGid = 0,
+  fsApi = fs,
+  now = () => Date.now(),
+} = {}) {
+  const status = readPm2FallbackRetirementStatus({ paths, ownerUid, ownerGid, fsApi });
+  if (status.status !== 'in_progress'
+      || (suppliedPlan && canonicalJson(suppliedPlan) !== canonicalJson(status.journal.plan))
+      || (suppliedPhase && suppliedPhase !== status.journal.phase)) {
+    refuse('control-plane successor authorization requires the exact interrupted journal',
+      'control_plane_successor_phase');
+  }
+  const { plan } = status.journal;
+  const phase = status.journal.phase;
+  const candidate = inspectPm2FallbackControlPlaneSuccessor({
+    plan,
+    phase,
+    testOnlySuccessor,
+    paths,
+  });
+  if (confirmation !== candidate.authorizationDigest
+      || !HEX_64.test(confirmation ?? '')) {
+    refuse('control-plane successor confirmation does not match the exact recovery identity',
+      'control_plane_successor_confirmation_mismatch');
+  }
+  const authorization = assertControlPlaneSuccessorAuthorization({
+    ...candidate,
+    createdAt: new Date(now()).toISOString(),
+  }, plan);
+  const file = controlPlaneSuccessorPath(plan, paths);
+  atomicWriteJson(file, authorization, {
+    fsApi,
+    ownerUid,
+    ownerGid,
+    noReplace: true,
+  });
+  return readControlPlaneSuccessorEvidence(plan, paths, { fsApi, ownerUid, ownerGid });
+}
+
+export function assertPm2FallbackControlPlaneContinuity({
+  plan,
+  phase,
+  observed,
+  successorEvidence,
+}) {
+  assertPlan(plan);
+  const installed = assertControlPlaneEvidence(observed);
+  if (canonicalJson(installed) === canonicalJson(plan.controlPlane)) {
+    if (successorEvidence !== null) {
+      refuse('unused control-plane successor authorization conflicts with the admitted identity',
+        'control_plane_successor_mismatch');
+    }
+    return { controlPlane: installed, successorEvidence: null };
+  }
+  if (!successorEvidence) {
+    refuse('control-plane identity changed after retirement admission',
+      'control_plane_unsettled');
+  }
+  const authorization = assertControlPlaneSuccessorAuthorization(
+    successorEvidence.authorization,
+    plan,
+  );
+  const authorizedIndex = PHASES.indexOf(authorization.authorizedPhase);
+  const currentIndex = PHASES.indexOf(phase);
+  if (currentIndex < authorizedIndex
+      || canonicalJson(installed) !== canonicalJson(authorization.successor)) {
+    refuse('installed control plane does not match the exact authorized successor',
+      'control_plane_successor_mismatch');
+  }
+  return { controlPlane: installed, successorEvidence };
+}
+
+export function verifyPm2FallbackControlPlaneSuccessorEvidence({
+  plan,
+  phase,
+  observed,
+  paths = DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+  fsApi = fs,
+  ownerUid = 0,
+  ownerGid = 0,
+}) {
+  const successorEvidence = readControlPlaneSuccessorEvidence(plan, paths, {
+    fsApi,
+    ownerUid,
+    ownerGid,
+  });
+  return assertPm2FallbackControlPlaneContinuity({
+    plan,
+    phase,
+    observed,
+    successorEvidence,
+  });
+}
+
 function assertClosureEvidence(evidence, plan, {
   paths = null,
 } = {}) {
@@ -777,13 +991,18 @@ function assertTombstone(tombstone) {
 
 function assertTerminalReceipt(receipt, {
   paths = DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+  fsApi = fs,
+  ownerUid = 0,
+  ownerGid = 0,
 } = {}) {
+  const legacy = receipt?.schema === PM2_FALLBACK_RETIREMENT_RECEIPT_LEGACY_SCHEMA;
   exactObject(receipt, [
     'schema', 'transactionId', 'createdAt', 'planDigest', 'confirmation', 'anchor',
-    'active', 'controlPlane', 'plan', 'retired', 'preservedPaths', 'persistentGuards',
-    'result', 'completedAt',
+    'active', 'controlPlane', ...(legacy ? [] : ['controlPlaneSuccessor']), 'plan', 'retired',
+    'preservedPaths', 'persistentGuards', 'result', 'completedAt',
   ], 'PM2 fallback terminal retirement receipt');
-  if (receipt.schema !== PM2_FALLBACK_RETIREMENT_RECEIPT_SCHEMA
+  if (![PM2_FALLBACK_RETIREMENT_RECEIPT_SCHEMA,
+    PM2_FALLBACK_RETIREMENT_RECEIPT_LEGACY_SCHEMA].includes(receipt.schema)
       || receipt.result !== 'completed') {
     refuse('PM2 fallback terminal retirement receipt is unsupported',
       'malformed_terminal_receipt');
@@ -832,6 +1051,12 @@ function assertTerminalReceipt(receipt, {
       || canonicalJson(receipt.anchor) !== canonicalJson(receipt.plan.anchor)
       || canonicalJson(receipt.active) !== canonicalJson(receipt.plan.active)
       || canonicalJson(receipt.controlPlane) !== canonicalJson(receipt.plan.controlPlane)
+      || canonicalJson(legacy ? null : receipt.controlPlaneSuccessor)
+        !== canonicalJson(readControlPlaneSuccessorEvidence(receipt.plan, paths, {
+          fsApi,
+          ownerUid,
+          ownerGid,
+        }))
       || canonicalJson(receipt.retired.units) !== canonicalJson(PM2_UNITS)
       || canonicalJson(receipt.retired.systemdArtifacts)
         !== canonicalJson(receipt.plan.pm2.systemdArtifacts)
@@ -914,7 +1139,7 @@ export function readPm2FallbackRetirementStatus({
   }
   const receipt = assertTerminalReceipt(parseBoundedJson(receiptPath, {
     fsApi, label: 'PM2 fallback terminal retirement receipt', ownerUid, ownerGid,
-  }).value, { paths });
+  }).value, { paths, fsApi, ownerUid, ownerGid });
   const {
     path: _closurePath,
     sha256: _closureSha256,
@@ -987,6 +1212,11 @@ export async function runPm2FallbackRetirementTransaction({
     refuse(`PM2 fallback retirement is not eligible before ${plan.notBefore}`, 'stable_window_open');
   }
   await host.verifyResume(plan, journal.phase, journal.closureEvidence);
+  const controlPlaneSuccessor = readControlPlaneSuccessorEvidence(
+    plan,
+    paths,
+    { fsApi, ownerUid, ownerGid },
+  );
 
   const advance = (phase, closureEvidence = journal.closureEvidence) => {
     journal = journalFor(plan, phase, journal.createdAt, now(), closureEvidence);
@@ -1040,6 +1270,7 @@ export async function runPm2FallbackRetirementTransaction({
     anchor: plan.anchor,
     active: plan.active,
     controlPlane: plan.controlPlane,
+    controlPlaneSuccessor,
     plan,
     retired: {
       units: PM2_UNITS,
@@ -1063,7 +1294,7 @@ export async function runPm2FallbackRetirementTransaction({
   if (pathExists(receiptPath, fsApi)) {
     const existing = assertTerminalReceipt(parseBoundedJson(receiptPath, {
       fsApi, label: 'PM2 fallback terminal retirement receipt', ownerUid, ownerGid,
-    }).value, { paths });
+    }).value, { paths, fsApi, ownerUid, ownerGid });
     const { completedAt, ...existingCore } = existing;
     assertTimestamp(completedAt, 'PM2 fallback retirement receipt completedAt');
     if (canonicalJson(existingCore) !== canonicalJson(receiptCore)) {
@@ -2277,10 +2508,15 @@ function verifyLinuxPlanContinuity({ plan, phase, closureEvidence, policy, paths
       'artifact_changed');
   }
   const controlPlane = collectInstalledControlPlaneEvidence(paths);
-  if (canonicalJson(controlPlane) !== canonicalJson(plan.controlPlane)) {
-    refuse('control-plane identity changed after retirement admission',
-      'control_plane_unsettled');
-  }
+  verifyPm2FallbackControlPlaneSuccessorEvidence({
+    plan,
+    phase,
+    observed: controlPlane,
+    paths,
+    fsApi: fs,
+    ownerUid: 0,
+    ownerGid: 0,
+  });
   for (const unit of PM2_UNITS) {
     assertUnitGuard(collectGuards(paths).find((entry) => entry.unit === unit), unit);
   }
