@@ -1098,6 +1098,113 @@ describe('container-era PM2 fallback retirement', () => {
     })).toThrowError(expect.objectContaining({ code: 'unsafe_removal' }));
   });
 
+  it('allows an exact execute-only quarantine parent for atomic detachment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-parent-'));
+    temporaryRoots.push(root);
+    fs.chmodSync(root, 0o711);
+    const prefix = path.join(root, 'pm2');
+    const source = path.join(prefix, '6.0.8');
+    fs.mkdirSync(source, { recursive: true, mode: 0o755 });
+    fs.chmodSync(prefix, 0o755);
+    fs.chmodSync(source, 0o755);
+    fs.writeFileSync(path.join(source, 'pm2.js'), 'known\n', { mode: 0o644 });
+    const ownerUid = process.getuid!();
+    const ownerGid = process.getgid!();
+    const inspection = inspectPm2ClosureForRetirement(source, { ownerUid, ownerGid });
+    const quarantine = path.join(root, '.pm2-retirement-fixture');
+
+    expect(detachPm2ClosureAtomically({
+      source,
+      quarantine,
+      expectedSha256: inspection.sha256,
+      expectedDevice: inspection.device,
+      expectedEntries: inspection.entries,
+      ownerUid,
+      ownerGid,
+    }).sha256).toBe(inspection.sha256);
+    expect(fs.existsSync(source)).toBe(false);
+    expect(fs.existsSync(quarantine)).toBe(true);
+  });
+
+  it('does not relax the source-parent mode during atomic detachment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-parent-'));
+    temporaryRoots.push(root);
+    fs.chmodSync(root, 0o755);
+    const prefix = path.join(root, 'pm2');
+    const source = path.join(prefix, '6.0.8');
+    fs.mkdirSync(source, { recursive: true, mode: 0o755 });
+    fs.chmodSync(prefix, 0o711);
+    fs.chmodSync(source, 0o755);
+    fs.writeFileSync(path.join(source, 'pm2.js'), 'known\n', { mode: 0o644 });
+    const ownerUid = process.getuid!();
+    const ownerGid = process.getgid!();
+    const inspection = inspectPm2ClosureForRetirement(source, { ownerUid, ownerGid });
+
+    expect(() => detachPm2ClosureAtomically({
+      source,
+      quarantine: path.join(root, '.pm2-retirement-fixture'),
+      expectedSha256: inspection.sha256,
+      expectedDevice: inspection.device,
+      expectedEntries: inspection.entries,
+      ownerUid,
+      ownerGid,
+    })).toThrowError(expect.objectContaining({
+      code: 'unsafe_removal',
+      message: expect.stringContaining('PM2 closure parent'),
+    }));
+  });
+
+  it('refuses any non-exact quarantine-parent mode during atomic detachment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-parent-'));
+    temporaryRoots.push(root);
+    fs.chmodSync(root, 0o715);
+    const prefix = path.join(root, 'pm2');
+    const source = path.join(prefix, '6.0.8');
+    fs.mkdirSync(source, { recursive: true, mode: 0o755 });
+    fs.chmodSync(prefix, 0o755);
+    fs.chmodSync(source, 0o755);
+    fs.writeFileSync(path.join(source, 'pm2.js'), 'known\n', { mode: 0o644 });
+    const ownerUid = process.getuid!();
+    const ownerGid = process.getgid!();
+    const inspection = inspectPm2ClosureForRetirement(source, { ownerUid, ownerGid });
+
+    expect(() => detachPm2ClosureAtomically({
+      source,
+      quarantine: path.join(root, '.pm2-retirement-fixture'),
+      expectedSha256: inspection.sha256,
+      expectedDevice: inspection.device,
+      expectedEntries: inspection.entries,
+      ownerUid,
+      ownerGid,
+    })).toThrowError(expect.objectContaining({
+      code: 'unsafe_removal',
+      message: expect.stringContaining('PM2 quarantine parent'),
+    }));
+  });
+
+  it('does not relax the detached quarantine-content mode', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-parent-'));
+    temporaryRoots.push(root);
+    fs.chmodSync(root, 0o755);
+    const quarantine = path.join(root, 'quarantine');
+    fs.mkdirSync(quarantine, { mode: 0o755 });
+    fs.writeFileSync(path.join(quarantine, 'known'), 'known\n', { mode: 0o644 });
+    const ownerUid = process.getuid!();
+    const ownerGid = process.getgid!();
+    const inspection = inspectPm2ClosureForRetirement(quarantine, { ownerUid, ownerGid });
+    fs.chmodSync(quarantine, 0o711);
+
+    expect(() => purgeDetachedPm2Closure({
+      quarantine,
+      manifest: { device: inspection.device, entries: inspection.entries },
+      ownerUid,
+      ownerGid,
+    })).toThrowError(expect.objectContaining({
+      code: 'unsafe_removal',
+      message: expect.stringContaining('PM2 closure quarantine'),
+    }));
+  });
+
   it('binds closure reads to the checked inode and refuses a path swap', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-read-race-'));
     temporaryRoots.push(root);

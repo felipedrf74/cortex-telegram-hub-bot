@@ -1310,9 +1310,18 @@ function readClosureManifest(plan, paths, {
   return { ...parsed, manifest };
 }
 
-function assertTrustedClosureDirectory(stat, expectedDevice, ownerUid, ownerGid, label) {
+function assertTrustedClosureDirectory(
+  stat,
+  expectedDevice,
+  ownerUid,
+  ownerGid,
+  label,
+  { allowExecuteOnlyParent = false } = {},
+) {
+  const mode = fileMode(stat);
+  const trustedMode = mode === 0o755 || (allowExecuteOnlyParent && mode === 0o711);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== expectedDevice
-      || stat.uid !== ownerUid || stat.gid !== ownerGid || fileMode(stat) !== 0o755) {
+      || stat.uid !== ownerUid || stat.gid !== ownerGid || !trustedMode) {
     refuse(`${label} is not a trusted same-filesystem directory`, 'unsafe_removal');
   }
 }
@@ -1361,6 +1370,7 @@ export function detachPm2ClosureAtomically({
   );
   assertTrustedClosureDirectory(
     quarantineParentBefore, expectedDevice, ownerUid, ownerGid, 'PM2 quarantine parent',
+    { allowExecuteOnlyParent: true },
   );
   if (pathExists(quarantine, fsApi)) {
     refuse('PM2 closure quarantine already exists', 'artifact_changed');
