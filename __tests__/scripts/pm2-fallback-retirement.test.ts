@@ -18,6 +18,7 @@ import {
   evaluatePm2FallbackRetirementAdmission,
   inspectLegacyDatabaseQuiescence,
   inspectPm2ClosureForRetirement,
+  inspectTerminalRebaselineEvidenceForRetirement,
   purgeDetachedPm2Closure,
   readPm2FallbackRetirementStatus,
   runPm2FallbackRetirementTransaction,
@@ -27,6 +28,8 @@ const ANCHOR_ID = '1'.repeat(32);
 const ACTIVE_ID = '2'.repeat(32);
 const ANCHOR_SHA = 'a'.repeat(40);
 const ACTIVE_SHA = 'b'.repeat(40);
+const LEGACY_PRODUCTION_SHA = 'c'.repeat(40);
+const LEGACY_STAGING_SHA = 'd'.repeat(40);
 const BASELINE_SHA = '3'.repeat(64);
 const ANCHOR_RECEIPT_SHA = '4'.repeat(64);
 const ACTIVE_RECEIPT_SHA = '5'.repeat(64);
@@ -58,8 +61,19 @@ const BASELINE = {
     releasePayloadDigest: PAYLOAD_DIGEST,
     manifestDigest: MANIFEST_DIGEST,
   },
+  legacyRuntime: {
+    productionSourceSha: LEGACY_PRODUCTION_SHA,
+    stagingSourceSha: LEGACY_STAGING_SHA,
+  },
 };
 const BASELINE_AUTHORIZATION_DIGEST = sha256(canonicalJson(BASELINE));
+const TERMINAL_REBASELINE = {
+  path: `/var/lib/nexus-release/state/bootstrap-rebaseline-${ANCHOR_ID}.json`,
+  sha256: 'a'.repeat(64),
+  releaseId: ANCHOR_ID,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:05:00.000Z',
+};
 
 const temporaryRoots: string[] = [];
 const ORIGINAL_BACKUP_LOCK_FD = process.env.NEXUS_RELEASE_BACKUP_LOCK_FD;
@@ -138,7 +152,10 @@ function validInput() {
     policy: {},
     state: { blocked: null, active: { releaseId: ACTIVE_ID } },
     effective: { provable: true, status: 'completed', releaseId: ACTIVE_ID },
-    baseline: { target: { ...BASELINE.target } },
+    baseline: {
+      target: { ...BASELINE.target },
+      legacyRuntime: { ...BASELINE.legacyRuntime },
+    },
     baselineSha256: BASELINE_SHA,
     baselineAuthorizationDigest: BASELINE_AUTHORIZATION_DIGEST,
     anchorReceipt,
@@ -149,6 +166,7 @@ function validInput() {
     host: {
       clockSynchronized: true,
       conflictingState: [],
+      terminalRebaseline: null,
       controlPlane: {
         schema: 'nexus.release-control-plane.v1',
         digest: CONTROL_PLANE_DIGEST,
@@ -243,6 +261,123 @@ function transactionPaths(root: string) {
     tombstone: path.join(stateRoot, 'pm2-fallback-retired.json'),
     retirementRoot: path.join(root, 'retirements'),
     guardRoot: path.join(root, 'guards'),
+  };
+}
+
+function terminalRebaselineFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-terminal-rebaseline-'));
+  temporaryRoots.push(root);
+  const stateDir = path.join(root, 'state');
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const runtimeEvidence = path.join(stateDir, 'bootstrap-legacy-runtime.json');
+  const transitionEvidence = path.join(stateDir, 'bootstrap-database-transition.json');
+  const runtimeBytes = Buffer.from('{"schema":"runtime"}\n');
+  const transitionBytes = Buffer.from('{"schema":"transition"}\n');
+  fs.writeFileSync(runtimeEvidence, runtimeBytes, { mode: 0o600 });
+  fs.writeFileSync(transitionEvidence, transitionBytes, { mode: 0o600 });
+  const incidentDir = `/var/lib/nexus-release/incidents/bootstrap-rebaseline/${ANCHOR_ID}`;
+  const logicalDigest = 'd'.repeat(64);
+  const oldReleaseId = '0'.repeat(32);
+  const record = {
+    schema: 'nexus.bootstrap-rebaseline.v1',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:05:00.000Z',
+    phase: 'complete',
+    incidentDir,
+    expectedTarget: { releaseId: ANCHOR_ID, payloadDigest: PAYLOAD_DIGEST },
+    oldBaseline: {
+      sha256: '1'.repeat(64),
+      releaseId: oldReleaseId,
+      payloadDigest: `sha256:${'2'.repeat(64)}`,
+      archivePath: `/var/lib/nexus-release/incidents/bootstrap-baselines/${ANCHOR_ID}-${oldReleaseId}.json`,
+    },
+    oldEvidence: {
+      runtimeSha256: '3'.repeat(64),
+      transitionSha256: '4'.repeat(64),
+      recoveryStateSha256: '5'.repeat(64),
+      runtimeArchivePath: path.join(incidentDir, 'bootstrap-legacy-runtime.before.json'),
+      transitionArchivePath: path.join(
+        incidentDir,
+        'bootstrap-database-transition.before.json',
+      ),
+    },
+    legacy: {
+      production: {
+        path: '/home/dominguez/telegram-hub-bot/data/bot.db',
+        identity: '1:2',
+        logicalDigest,
+      },
+      staging: {
+        path: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+        identity: '1:3',
+        logicalDigest,
+      },
+    },
+    runtime: {
+      production: {
+        path: `/home/dominguez/telegram-hub-bot/releases/${LEGACY_PRODUCTION_SHA}`,
+        sourceSha: LEGACY_PRODUCTION_SHA,
+        artifactDigest: '6'.repeat(64),
+        markerSha256: '7'.repeat(64),
+      },
+      staging: {
+        path: `/home/dominguez/telegram-hub-bot-staging/releases/${LEGACY_STAGING_SHA}`,
+        sourceSha: LEGACY_STAGING_SHA,
+        artifactDigest: '8'.repeat(64),
+        markerSha256: '9'.repeat(64),
+      },
+    },
+    targetArchives: {
+      production: {
+        path: path.join(incidentDir, 'production-data.before'),
+        treeSha256: 'a'.repeat(64),
+      },
+      staging: {
+        path: path.join(incidentDir, 'staging-data.before'),
+        treeSha256: 'b'.repeat(64),
+      },
+    },
+    target: {
+      production: {
+        path: '/var/lib/nexus-hub/production/data/bot.db',
+        identity: '2:3',
+        logicalDigest,
+      },
+      staging: {
+        path: '/var/lib/nexus-hub/staging/data/bot.db',
+        identity: '2:4',
+        logicalDigest,
+      },
+    },
+    newEvidence: {
+      runtimeSha256: sha256(runtimeBytes),
+      transitionSha256: sha256(transitionBytes),
+    },
+    candidateBaselineSha256: BASELINE_SHA,
+  };
+  const file = path.join(stateDir, `bootstrap-rebaseline-${ANCHOR_ID}.json`);
+  const writeRecord = () => fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  writeRecord();
+  return {
+    file,
+    record,
+    runtimeEvidence,
+    transitionEvidence,
+    writeRecord,
+    options: {
+      baseline: BASELINE,
+      baselineSha256: BASELINE_SHA,
+      paths: {
+        ...DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+        journal: path.join(stateDir, 'pm2-fallback-retirement.json'),
+        bootstrapRuntimeEvidence: runtimeEvidence,
+        bootstrapTransitionEvidence: transitionEvidence,
+      },
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    },
   };
 }
 
@@ -396,13 +531,87 @@ describe('container-era PM2 fallback retirement', () => {
     expect(DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS.controlPlaneFinalization)
       .toBe('/var/lib/nexus-release/state/control-plane-finalization.json');
     const source = fs.readFileSync('scripts/lib/pm2-fallback-retirement.mjs', 'utf8');
-    const collectorStart = source.indexOf('function collectConflictingState(paths)');
+    const collectorStart = source.indexOf('function collectRetirementStateEvidence(paths');
     const collector = source.slice(
       collectorStart,
       source.indexOf('\nfunction collectSystemdArtifacts', collectorStart),
     );
     expect(collector).toContain('paths.controlPlanePostGate');
     expect(collector).toContain('paths.controlPlaneFinalization');
+    expect(collector).toContain('inspectTerminalRebaselineEvidenceForRetirement');
+    expect(collector).toContain('terminalRebaseline');
+  });
+
+  it('validates terminal rebaseline bytes and canonical evidence digests', () => {
+    const fixture = terminalRebaselineFixture();
+    const evidence = inspectTerminalRebaselineEvidenceForRetirement(
+      fixture.file,
+      ANCHOR_ID,
+      fixture.options,
+    );
+    expect(evidence).toEqual({
+      path: fixture.file,
+      sha256: sha256(fs.readFileSync(fixture.file)),
+      releaseId: ANCHOR_ID,
+      createdAt: fixture.record.createdAt,
+      updatedAt: fixture.record.updatedAt,
+    });
+  });
+
+  it.each([
+    ['incomplete phase', (fixture: ReturnType<typeof terminalRebaselineFixture>) => {
+      fixture.record.phase = 'baseline_published';
+      fixture.writeRecord();
+    }, 'conflicting_state'],
+    ['unknown field', (fixture: ReturnType<typeof terminalRebaselineFixture>) => {
+      Object.assign(fixture.record, { unexpected: true });
+      fixture.writeRecord();
+    }, 'malformed_evidence'],
+    ['changed canonical runtime evidence', (
+      fixture: ReturnType<typeof terminalRebaselineFixture>,
+    ) => {
+      fs.writeFileSync(fixture.runtimeEvidence, '{"changed":true}\n', { mode: 0o600 });
+    }, 'conflicting_state'],
+    ['changed canonical transition evidence', (
+      fixture: ReturnType<typeof terminalRebaselineFixture>,
+    ) => {
+      fs.writeFileSync(fixture.transitionEvidence, '{"changed":true}\n', { mode: 0o600 });
+    }, 'conflicting_state'],
+    ['different candidate baseline', (
+      fixture: ReturnType<typeof terminalRebaselineFixture>,
+    ) => {
+      fixture.record.candidateBaselineSha256 = 'f'.repeat(64);
+      fixture.writeRecord();
+    }, 'conflicting_state'],
+    ['different target payload', (
+      fixture: ReturnType<typeof terminalRebaselineFixture>,
+    ) => {
+      fixture.record.expectedTarget.payloadDigest = `sha256:${'f'.repeat(64)}`;
+      fixture.writeRecord();
+    }, 'conflicting_state'],
+    ['different production runtime source', (
+      fixture: ReturnType<typeof terminalRebaselineFixture>,
+    ) => {
+      fixture.record.runtime.production.sourceSha = ACTIVE_SHA;
+      fixture.writeRecord();
+    }, 'malformed_evidence'],
+    ['swapped staging runtime source', (
+      fixture: ReturnType<typeof terminalRebaselineFixture>,
+    ) => {
+      fixture.record.runtime.staging.sourceSha = LEGACY_PRODUCTION_SHA;
+      fixture.writeRecord();
+    }, 'malformed_evidence'],
+    ['unsafe record mode', (fixture: ReturnType<typeof terminalRebaselineFixture>) => {
+      fs.chmodSync(fixture.file, 0o644);
+    }, 'unsafe_evidence'],
+  ] as const)('refuses terminal rebaseline %s', (_label, mutate, code) => {
+    const fixture = terminalRebaselineFixture();
+    mutate(fixture);
+    expect(() => inspectTerminalRebaselineEvidenceForRetirement(
+      fixture.file,
+      ANCHOR_ID,
+      fixture.options,
+    )).toThrowError(expect.objectContaining({ code }));
   });
 
   it('admits only at the exact 14-day baseline/receipt boundary', () => {
@@ -423,6 +632,13 @@ describe('container-era PM2 fallback retirement', () => {
       releaseId: ACTIVE_ID,
       receiptSha256: ACTIVE_RECEIPT_SHA,
     });
+  });
+
+  it('binds a completed current-baseline rebaseline checkpoint into the plan', () => {
+    const input = validInput();
+    input.host.terminalRebaseline = { ...TERMINAL_REBASELINE };
+    const admitted = evaluatePm2FallbackRetirementAdmission(input as never);
+    expect(admitted.terminalRebaseline).toEqual(TERMINAL_REBASELINE);
   });
 
   it.each([
@@ -481,6 +697,19 @@ describe('container-era PM2 fallback retirement', () => {
     ['open legacy database handle', (input: ReturnType<typeof validInput>) => {
       input.host.legacyDatabaseQuiescent = false;
     }, 'legacy_database_not_quiescent'],
+    ['malformed terminal rebaseline evidence', (input: ReturnType<typeof validInput>) => {
+      input.host.terminalRebaseline = {
+        ...TERMINAL_REBASELINE,
+        path: '/var/lib/nexus-release/state/bootstrap-rebaseline-wrong.json',
+      };
+    }, 'malformed_evidence'],
+    ['terminal rebaseline for another anchor', (input: ReturnType<typeof validInput>) => {
+      input.host.terminalRebaseline = {
+        ...TERMINAL_REBASELINE,
+        path: `/var/lib/nexus-release/state/bootstrap-rebaseline-${ACTIVE_ID}.json`,
+        releaseId: ACTIVE_ID,
+      };
+    }, 'bootstrap_receipt_mismatch'],
   ] as const)('fails closed for %s', (_label, mutate, code) => {
     const input = validInput();
     mutate(input);
@@ -530,6 +759,34 @@ describe('container-era PM2 fallback retirement', () => {
     expect(fs.existsSync(paths.journal)).toBe(false);
     expect(fs.existsSync(paths.tombstone)).toBe(false);
     expect(calls).toEqual([]);
+  });
+
+  it('round-trips non-null terminal rebaseline evidence through terminal status', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm2-retirement-rebaseline-'));
+    temporaryRoots.push(root);
+    const paths = transactionPaths(root);
+    const input = validInput();
+    input.host.terminalRebaseline = { ...TERMINAL_REBASELINE };
+    const admittedPlan = evaluatePm2FallbackRetirementAdmission(input as never);
+    await runPm2FallbackRetirementTransaction({
+      plan: admittedPlan,
+      confirmation: admittedPlan.confirmation,
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+      now: () => ELIGIBLE_AT,
+      host: fakeHost([], paths),
+    });
+    expect(readPm2FallbackRetirementStatus({
+      paths,
+      ownerUid: process.getuid!(),
+      ownerGid: process.getgid!(),
+    })).toMatchObject({
+      status: 'completed',
+      receipt: {
+        plan: { terminalRebaseline: TERMINAL_REBASELINE },
+      },
+    });
   });
 
   it.each([

@@ -9674,11 +9674,20 @@ until the dry-run admits all of the following at one locked observation:
   `baselineAuthorizationDigest` is the canonical-JSON digest bound by those
   existing bootstrap checks;
 - current state resolves to the exact active immutable `completed` receipt with
-  no block, recovery gate, control-plane transaction, rebaseline stage, or PM2
-  install journal, and that v3 receipt's control-plane schema/digest equals the
-  identity recomputed from `/opt/nexus-release/checkout`; the complete immutable
-  tree digest is recomputed and its selected `better-sqlite3` binding must load
-  and execute a query at admission;
+  no block, recovery gate, control-plane transaction, incomplete rebaseline
+  stage, or PM2 install journal. One exact terminal `complete`
+  `nexus.bootstrap-rebaseline.v1` checkpoint is accepted only when its root-only
+  bytes, filename release identity, target payload, candidate-baseline digest,
+  and production/staging runtime sources bind the current canonical baseline,
+  while its new-evidence digests still match the canonical runtime and
+  database-transition evidence files. Any incomplete,
+  malformed, additional, or prior-target rebaseline record remains conflicting.
+  The accepted terminal evidence is hashed into the retirement plan and must
+  remain byte-identical through resume. The v3 receipt's
+  control-plane schema/digest equals the identity recomputed from
+  `/opt/nexus-release/checkout`; the complete immutable tree digest is recomputed
+  and its selected `better-sqlite3` binding must load and execute a query at
+  admission;
 - NTP is synchronized; production and staging have their exact healthy active
   images; the poller, heartbeat, backup-liveness, backup, and restore-verify
   timers are enabled and active; the poller, backup, and restore services have

@@ -94,6 +94,9 @@ export const DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS = Object.freeze({
   tombstone: '/var/lib/nexus-release/state/pm2-fallback-retired.json',
   retirementRoot: '/var/lib/nexus-release/retirements/pm2-fallback',
   recovery: '/var/lib/nexus-release/state/bootstrap-first-cutover-recovery.json',
+  bootstrapRuntimeEvidence: '/var/lib/nexus-release/state/bootstrap-legacy-runtime.json',
+  bootstrapTransitionEvidence:
+    '/var/lib/nexus-release/state/bootstrap-database-transition.json',
   controlPlaneTransaction: '/var/lib/nexus-release/state/control-plane-transaction.json',
   controlPlanePostGate: '/var/lib/nexus-release/state/control-plane-post-gate.json',
   controlPlaneFinalization: '/var/lib/nexus-release/state/control-plane-finalization.json',
@@ -483,6 +486,14 @@ export function evaluatePm2FallbackRetirementAdmission({
     refuse(`retirement-conflicting state exists: ${host.conflictingState.join(',')}`,
       'conflicting_state');
   }
+  const terminalRebaseline = assertTerminalRebaselineEvidence(
+    host.terminalRebaseline ?? null,
+  );
+  if (terminalRebaseline !== null
+      && terminalRebaseline.releaseId !== baseline.target.releaseId) {
+    refuse('terminal bootstrap rebaseline does not bind the retirement anchor',
+      'bootstrap_receipt_mismatch');
+  }
   if (state.blocked !== null || effective?.provable !== true
       || effective.status !== RELEASE_STATUSES.COMPLETED
       || effective.releaseId !== state.active?.releaseId
@@ -547,6 +558,7 @@ export function evaluatePm2FallbackRetirementAdmission({
       receiptSha256: activeReceiptSha256,
       releasePayloadDigest: activeReceipt.identity.releasePayloadDigest,
     },
+    terminalRebaseline,
     controlPlane: { ...controlPlane },
     backupLiveness,
     pm2: {
@@ -569,8 +581,9 @@ export function evaluatePm2FallbackRetirementAdmission({
 
 function assertPlan(plan) {
   exactObject(plan, [
-    'schema', 'notBefore', 'anchor', 'active', 'controlPlane', 'backupLiveness',
-    'pm2', 'preservedPaths', 'planDigest', 'transactionId', 'confirmation',
+    'schema', 'notBefore', 'anchor', 'active', 'terminalRebaseline',
+    'controlPlane', 'backupLiveness', 'pm2', 'preservedPaths', 'planDigest',
+    'transactionId', 'confirmation',
   ], 'PM2 fallback retirement plan');
   if (plan.schema !== 'nexus.pm2-fallback-retirement-plan.v1') {
     refuse('PM2 fallback retirement plan schema is unsupported', 'malformed_journal');
@@ -585,6 +598,12 @@ function assertPlan(plan) {
   exactObject(plan.active, [
     'releaseId', 'sourceSha', 'receiptSha256', 'releasePayloadDigest',
   ], 'retirement active release');
+  assertTerminalRebaselineEvidence(plan.terminalRebaseline);
+  if (plan.terminalRebaseline !== null
+      && plan.terminalRebaseline.releaseId !== plan.anchor.releaseId) {
+    refuse('terminal bootstrap rebaseline does not bind the retirement anchor',
+      'malformed_journal');
+  }
   assertControlPlaneEvidence(plan.controlPlane);
   assertBackupLiveness(plan.backupLiveness);
   exactObject(plan.pm2, [
@@ -1634,7 +1653,172 @@ function safeJson(file, options) {
   return parseBoundedJson(file, options);
 }
 
-function collectConflictingState(paths) {
+function assertTerminalRebaselineEvidence(evidence, {
+  stateDir = path.dirname(DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS.journal),
+} = {}) {
+  if (evidence === null) return null;
+  exactObject(evidence, [
+    'path', 'sha256', 'releaseId', 'createdAt', 'updatedAt',
+  ], 'terminal bootstrap rebaseline evidence');
+  assertHex(evidence.releaseId, HEX_32, 'terminal bootstrap rebaseline release id');
+  assertHex(evidence.sha256, HEX_64, 'terminal bootstrap rebaseline digest');
+  assertTimestamp(evidence.createdAt, 'terminal bootstrap rebaseline createdAt');
+  assertTimestamp(evidence.updatedAt, 'terminal bootstrap rebaseline updatedAt');
+  if (evidence.path !== path.join(
+    stateDir, `bootstrap-rebaseline-${evidence.releaseId}.json`,
+  ) || Date.parse(evidence.updatedAt) < Date.parse(evidence.createdAt)) {
+    refuse('terminal bootstrap rebaseline evidence is invalid', 'malformed_evidence');
+  }
+  return evidence;
+}
+
+export function inspectTerminalRebaselineEvidenceForRetirement(file, releaseId, {
+  baseline,
+  baselineSha256,
+  paths = DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+  ownerUid = 0,
+  ownerGid = 0,
+}) {
+  const raw = parseBoundedJson(file, {
+    label: 'terminal bootstrap rebaseline state',
+    maxBytes: 256 * 1024,
+    ownerUid,
+    ownerGid,
+  });
+  const evidence = raw.value;
+  exactObject(evidence, [
+    'schema', 'createdAt', 'updatedAt', 'phase', 'incidentDir',
+    'expectedTarget', 'oldBaseline', 'oldEvidence', 'legacy', 'runtime',
+    'targetArchives', 'target', 'newEvidence', 'candidateBaselineSha256',
+  ], 'terminal bootstrap rebaseline state');
+  exactObject(evidence.expectedTarget, [
+    'releaseId', 'payloadDigest',
+  ], 'terminal bootstrap rebaseline target');
+  exactObject(evidence.oldBaseline, [
+    'sha256', 'releaseId', 'payloadDigest', 'archivePath',
+  ], 'terminal bootstrap rebaseline old baseline');
+  exactObject(evidence.oldEvidence, [
+    'runtimeSha256', 'transitionSha256', 'recoveryStateSha256',
+    'runtimeArchivePath', 'transitionArchivePath',
+  ], 'terminal bootstrap rebaseline old evidence');
+  exactObject(evidence.legacy, ['production', 'staging'],
+    'terminal bootstrap rebaseline legacy data');
+  exactObject(evidence.runtime, ['production', 'staging'],
+    'terminal bootstrap rebaseline runtime');
+  exactObject(evidence.targetArchives, ['production', 'staging'],
+    'terminal bootstrap rebaseline target archives');
+  exactObject(evidence.target, ['production', 'staging'],
+    'terminal bootstrap rebaseline governed targets');
+  exactObject(evidence.newEvidence, ['runtimeSha256', 'transitionSha256'],
+    'terminal bootstrap rebaseline new evidence');
+
+  const incidentDir = `/var/lib/nexus-release/incidents/bootstrap-rebaseline/${releaseId}`;
+  if (evidence.schema !== 'nexus.bootstrap-rebaseline.v1'
+      || evidence.phase !== 'complete'
+      || evidence.incidentDir !== incidentDir
+      || evidence.expectedTarget.releaseId !== releaseId
+      || evidence.expectedTarget.releaseId !== baseline.target.releaseId
+      || evidence.expectedTarget.payloadDigest !== baseline.target.releasePayloadDigest
+      || evidence.candidateBaselineSha256 !== baselineSha256) {
+    refuse('bootstrap rebaseline state is not a terminal current-baseline checkpoint',
+      'conflicting_state');
+  }
+  assertTimestamp(evidence.createdAt, 'terminal bootstrap rebaseline createdAt');
+  assertTimestamp(evidence.updatedAt, 'terminal bootstrap rebaseline updatedAt');
+  if (Date.parse(evidence.updatedAt) < Date.parse(evidence.createdAt)) {
+    refuse('terminal bootstrap rebaseline timestamps are incoherent', 'malformed_evidence');
+  }
+  for (const [value, pattern, label] of [
+    [evidence.oldBaseline.sha256, HEX_64, 'old baseline digest'],
+    [evidence.oldBaseline.releaseId, HEX_32, 'old baseline release id'],
+    [evidence.oldEvidence.runtimeSha256, HEX_64, 'old runtime evidence digest'],
+    [evidence.oldEvidence.transitionSha256, HEX_64, 'old transition evidence digest'],
+    [evidence.oldEvidence.recoveryStateSha256, HEX_64, 'old recovery evidence digest'],
+    [evidence.newEvidence.runtimeSha256, HEX_64, 'new runtime evidence digest'],
+    [evidence.newEvidence.transitionSha256, HEX_64, 'new transition evidence digest'],
+  ]) assertHex(value, pattern, `terminal bootstrap rebaseline ${label}`);
+  for (const [canonicalPath, expectedDigest, label] of [
+    [paths.bootstrapRuntimeEvidence, evidence.newEvidence.runtimeSha256,
+      'runtime evidence'],
+    [paths.bootstrapTransitionEvidence, evidence.newEvidence.transitionSha256,
+      'transition evidence'],
+  ]) {
+    const canonicalBytes = readBoundedFile(canonicalPath, {
+      label: `terminal bootstrap rebaseline canonical ${label}`,
+      maxBytes: 256 * 1024,
+      ownerUid,
+      ownerGid,
+    });
+    if (sha256(canonicalBytes) !== expectedDigest) {
+      refuse(`terminal bootstrap rebaseline canonical ${label} changed`,
+        'conflicting_state');
+    }
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(evidence.oldBaseline.payloadDigest ?? '')
+      || evidence.oldBaseline.archivePath
+        !== `/var/lib/nexus-release/incidents/bootstrap-baselines/${releaseId}-${evidence.oldBaseline.releaseId}.json`
+      || evidence.oldEvidence.runtimeArchivePath
+        !== path.join(incidentDir, 'bootstrap-legacy-runtime.before.json')
+      || evidence.oldEvidence.transitionArchivePath
+        !== path.join(incidentDir, 'bootstrap-database-transition.before.json')) {
+    refuse('terminal bootstrap rebaseline archive boundary is invalid', 'malformed_evidence');
+  }
+
+  const roleContracts = {
+    production: {
+      legacyPath: '/home/dominguez/telegram-hub-bot/data/bot.db',
+      runtimePrefix: '/home/dominguez/telegram-hub-bot/releases/',
+      targetPath: '/var/lib/nexus-hub/production/data/bot.db',
+      archivePath: path.join(incidentDir, 'production-data.before'),
+    },
+    staging: {
+      legacyPath: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
+      runtimePrefix: '/home/dominguez/telegram-hub-bot-staging/releases/',
+      targetPath: '/var/lib/nexus-hub/staging/data/bot.db',
+      archivePath: path.join(incidentDir, 'staging-data.before'),
+    },
+  };
+  for (const [role, contract] of Object.entries(roleContracts)) {
+    const legacy = evidence.legacy[role];
+    const runtime = evidence.runtime[role];
+    const targetArchive = evidence.targetArchives[role];
+    const target = evidence.target[role];
+    exactObject(legacy, ['path', 'identity', 'logicalDigest'],
+      `terminal bootstrap rebaseline ${role} legacy data`);
+    exactObject(runtime, ['path', 'sourceSha', 'artifactDigest', 'markerSha256'],
+      `terminal bootstrap rebaseline ${role} runtime`);
+    exactObject(targetArchive, ['path', 'treeSha256'],
+      `terminal bootstrap rebaseline ${role} target archive`);
+    exactObject(target, ['path', 'identity', 'logicalDigest'],
+      `terminal bootstrap rebaseline ${role} target`);
+    if (legacy.path !== contract.legacyPath
+        || !/^\d+:\d+$/u.test(legacy.identity ?? '')
+        || !HEX_64.test(legacy.logicalDigest ?? '')
+        || typeof runtime.path !== 'string'
+        || !runtime.path.startsWith(contract.runtimePrefix)
+        || !HEX_40.test(runtime.sourceSha ?? '')
+        || runtime.sourceSha !== baseline.legacyRuntime[`${role}SourceSha`]
+        || !HEX_64.test(runtime.artifactDigest ?? '')
+        || !HEX_64.test(runtime.markerSha256 ?? '')
+        || targetArchive.path !== contract.archivePath
+        || !HEX_64.test(targetArchive.treeSha256 ?? '')
+        || target.path !== contract.targetPath
+        || !/^\d+:\d+$/u.test(target.identity ?? '')
+        || target.logicalDigest !== legacy.logicalDigest) {
+      refuse(`terminal bootstrap rebaseline ${role} boundary is invalid`,
+        'malformed_evidence');
+    }
+  }
+  return assertTerminalRebaselineEvidence({
+    path: file,
+    sha256: sha256(raw.bytes),
+    releaseId,
+    createdAt: evidence.createdAt,
+    updatedAt: evidence.updatedAt,
+  }, { stateDir: path.dirname(paths.journal) });
+}
+
+function collectRetirementStateEvidence(paths, { baseline, baselineSha256 }) {
   const conflicts = [];
   for (const file of [
     paths.recovery,
@@ -1646,12 +1830,32 @@ function collectConflictingState(paths) {
     if (pathExists(file)) conflicts.push(file);
   }
   const stateDir = path.dirname(paths.journal);
+  let terminalRebaseline = null;
   for (const name of fs.readdirSync(stateDir)) {
-    if (/^(?:bootstrap-rebaseline-|bootstrap-baseline\.json\.next-|bootstrap-(?:legacy-runtime|database-transition)\.json\.next-)/u.test(name)) {
+    const terminalMatch = /^bootstrap-rebaseline-([0-9a-f]{32})\.json$/u.exec(name);
+    if (terminalMatch) {
+      const file = path.join(stateDir, name);
+      try {
+        const candidate = inspectTerminalRebaselineEvidenceForRetirement(
+          file,
+          terminalMatch[1],
+          {
+            baseline,
+            baselineSha256,
+            paths,
+          },
+        );
+        if (terminalRebaseline !== null) conflicts.push(file);
+        else terminalRebaseline = candidate;
+      } catch (error) {
+        if (!(error instanceof Pm2FallbackRetirementRefusal)) throw error;
+        conflicts.push(file);
+      }
+    } else if (/^(?:bootstrap-rebaseline-|bootstrap-baseline\.json\.next-|bootstrap-(?:legacy-runtime|database-transition)\.json\.next-)/u.test(name)) {
       conflicts.push(path.join(stateDir, name));
     }
   }
-  return conflicts.sort();
+  return { conflicts: conflicts.sort(), terminalRebaseline };
 }
 
 function collectSystemdArtifacts(paths) {
@@ -1887,6 +2091,7 @@ export function inspectLinuxPm2FallbackRetirement({ policy, paths = DEFAULT_PM2_
   const effective = resolveEffectiveRelease({ state, readReceipt: () => activeReceipt });
   const baselineRaw = safeJson(paths.baseline, { label: 'release bootstrap baseline' });
   const baseline = assertReleaseBootstrapBaselineShape(baselineRaw.value, policy);
+  const baselineSha256 = sha256(baselineRaw.bytes);
   const anchorPath = path.join(paths.receiptDir, `${baseline.target.releaseId}.json`);
   const anchorRaw = anchorPath === activePath
     ? activeRaw
@@ -1903,11 +2108,16 @@ export function inspectLinuxPm2FallbackRetirement({ policy, paths = DEFAULT_PM2_
   }
   const controlPlane = collectInstalledControlPlaneEvidence(paths);
   const pm2Closure = inspectPm2ClosureForRetirement(attestation.closureRoot);
+  const retirementState = collectRetirementStateEvidence(paths, {
+    baseline,
+    baselineSha256,
+  });
   const host = {
     clockSynchronized: commandResult('/usr/bin/timedatectl', [
       'show', '--property=NTPSynchronized', '--value',
     ]) === 'yes',
-    conflictingState: collectConflictingState(paths),
+    conflictingState: retirementState.conflicts,
+    terminalRebaseline: retirementState.terminalRebaseline,
     controlPlane,
     guards: collectGuards(paths),
     timers: collectTimers(),
@@ -1928,7 +2138,7 @@ export function inspectLinuxPm2FallbackRetirement({ policy, paths = DEFAULT_PM2_
   return evaluatePm2FallbackRetirementAdmission({
     policy, state, effective, activeReceipt,
     activeReceiptSha256: sha256(activeRaw.bytes),
-    baseline, baselineSha256: sha256(baselineRaw.bytes),
+    baseline, baselineSha256,
     baselineAuthorizationDigest: sha256(canonicalJson(baseline)),
     anchorReceipt, anchorReceiptSha256: sha256(anchorRaw.bytes),
     host,
@@ -2035,10 +2245,18 @@ function verifyLinuxPlanContinuity({ plan, phase, closureEvidence, policy, paths
   ]) !== 'yes') {
     refuse('host clock synchronization is not proved', 'clock_untrusted');
   }
-  const conflictingState = collectConflictingState(paths);
-  if (conflictingState.length > 0) {
-    refuse(`retirement-conflicting state exists: ${conflictingState.join(',')}`,
+  const retirementState = collectRetirementStateEvidence(paths, {
+    baseline,
+    baselineSha256,
+  });
+  if (retirementState.conflicts.length > 0) {
+    refuse(`retirement-conflicting state exists: ${retirementState.conflicts.join(',')}`,
       'conflicting_state');
+  }
+  if (canonicalJson(retirementState.terminalRebaseline)
+      !== canonicalJson(plan.terminalRebaseline)) {
+    refuse('terminal bootstrap rebaseline evidence changed after retirement admission',
+      'artifact_changed');
   }
   const controlPlane = collectInstalledControlPlaneEvidence(paths);
   if (canonicalJson(controlPlane) !== canonicalJson(plan.controlPlane)) {
