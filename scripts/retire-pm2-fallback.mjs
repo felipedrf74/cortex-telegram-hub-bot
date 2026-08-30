@@ -46,7 +46,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let releaseLocks;
 try {
   const policy = loadContinuousDeploymentPolicy(root);
-  releaseLocks = acquirePm2FallbackRetirementLocks();
+  releaseLocks = acquirePm2FallbackRetirementLocks({ includeBackup: true });
   const status = readPm2FallbackRetirementStatus();
 
   if (!apply) {

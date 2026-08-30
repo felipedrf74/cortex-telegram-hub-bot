@@ -9696,9 +9696,11 @@ until the dry-run admits all of the following at one locked observation:
   start.
 
 Dry-run from the installed, immutable control-plane checkout. It takes the
-control-plane, user-release, and shared maintenance flocks and performs no host
-mutation. Exit 75 with `stable_window_open` before the exact deadline is the
-expected result, not authorization to override it:
+control-plane, user-release, shared maintenance, and shared governed-backup
+flocks and performs no host mutation. The backup flock descriptor remains
+bound throughout backup and restore-evidence inspection. Exit 75 with
+`stable_window_open` before the exact deadline is the expected result, not
+authorization to override it:
 
 ```bash
 sudo /usr/bin/env -i \

@@ -86,6 +86,7 @@ export const DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS = Object.freeze({
   controlPlaneLock: '/var/lib/nexus-release/locks/control-plane.lock',
   userReleaseLock: '/home/dominguez/.local/state/nexus-release/.release.lock',
   maintenanceLock: '/run/lock/nexus-release-sonar.lock',
+  backupLock: '/srv/nexus-backups/application/.backup.lock',
   baseline: '/var/lib/nexus-release/state/bootstrap-baseline.json',
   state: '/var/lib/nexus-release/state/release-state.json',
   receiptDir: '/var/lib/nexus-release/receipts',
@@ -2270,53 +2271,92 @@ export function createLinuxPm2FallbackRetirementMutator({
 export function acquirePm2FallbackRetirementLocks({
   paths = DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
   flockBin = '/usr/bin/flock',
+  includeBackup = false,
+  rootUid = 0,
+  rootGid = 0,
   dominguezUid = Number(commandResult('/usr/bin/id', ['-u', 'dominguez'])),
   dominguezGid = Number(commandResult('/usr/bin/id', ['-g', 'dominguez'])),
+  fsApi = fs,
+  spawn = spawnSync,
 } = {}) {
+  if (!Number.isSafeInteger(rootUid) || rootUid < 0
+      || !Number.isSafeInteger(rootGid) || rootGid < 0) {
+    refuse('root lock owner identity is invalid', 'unsafe_lock');
+  }
   if (!Number.isSafeInteger(dominguezUid) || dominguezUid <= 0
       || !Number.isSafeInteger(dominguezGid) || dominguezGid <= 0) {
     refuse('dominguez lock owner identity is invalid', 'unsafe_lock');
   }
   const locks = [
-    [paths.controlPlaneLock, 0, 0, 0o600],
+    [paths.controlPlaneLock, rootUid, rootGid, 0o600, false],
     [paths.userReleaseLock, dominguezUid, dominguezGid, 0o600],
-    [paths.maintenanceLock, 0, dominguezGid, 0o660],
+    [paths.maintenanceLock, rootUid, dominguezGid, 0o660, false],
   ];
+  if (includeBackup) {
+    locks.push([paths.backupLock, rootUid, rootGid, 0o600, true]);
+  }
   const descriptors = [];
+  let backupLockDescriptor;
+  const previousBackupLockDescriptor = process.env.NEXUS_RELEASE_BACKUP_LOCK_FD;
   try {
-    for (const [file, uid, gid, mode] of locks) {
-      const before = fs.lstatSync(file);
+    for (const [file, uid, gid, mode, shared = false] of locks) {
+      const before = fsApi.lstatSync(file);
       if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1
           || (uid !== null && before.uid !== uid) || (gid !== null && before.gid !== gid)
           || fileMode(before) !== mode) {
         refuse(`retirement lock metadata is unsafe: ${file}`, 'unsafe_lock');
       }
-      const descriptor = fs.openSync(file, 'r+');
-      const opened = fs.fstatSync(descriptor);
+      const descriptor = fsApi.openSync(file, 'r+');
+      const opened = fsApi.fstatSync(descriptor);
       if (opened.dev !== before.dev || opened.ino !== before.ino) {
-        fs.closeSync(descriptor);
+        fsApi.closeSync(descriptor);
         refuse(`retirement lock changed before acquisition: ${file}`, 'unsafe_lock');
       }
-      const locked = spawnSync(flockBin, ['--nonblock', '3'], {
+      const locked = spawn(flockBin, [
+        ...(shared ? ['--shared'] : []),
+        '--nonblock',
+        '3',
+      ], {
         encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', descriptor],
         env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' },
       });
       if (locked.status !== 0) {
-        fs.closeSync(descriptor);
+        fsApi.closeSync(descriptor);
         refuse(`retirement lock is contended: ${file}`, 'lock_contended');
       }
-      const after = fs.lstatSync(file);
+      const after = fsApi.lstatSync(file);
       if (after.dev !== opened.dev || after.ino !== opened.ino) {
-        fs.closeSync(descriptor);
+        fsApi.closeSync(descriptor);
         refuse(`retirement lock changed after acquisition: ${file}`, 'unsafe_lock');
       }
       descriptors.push(descriptor);
+      if (shared) backupLockDescriptor = descriptor;
+    }
+    if (includeBackup) {
+      if (!Number.isSafeInteger(backupLockDescriptor) || backupLockDescriptor < 3) {
+        refuse('backup lock descriptor is absent after acquisition', 'unsafe_lock');
+      }
+      process.env.NEXUS_RELEASE_BACKUP_LOCK_FD = String(backupLockDescriptor);
     }
     return () => {
-      while (descriptors.length > 0) fs.closeSync(descriptors.pop());
+      while (descriptors.length > 0) fsApi.closeSync(descriptors.pop());
+      if (includeBackup) {
+        if (previousBackupLockDescriptor === undefined) {
+          delete process.env.NEXUS_RELEASE_BACKUP_LOCK_FD;
+        } else {
+          process.env.NEXUS_RELEASE_BACKUP_LOCK_FD = previousBackupLockDescriptor;
+        }
+      }
     };
   } catch (error) {
-    while (descriptors.length > 0) fs.closeSync(descriptors.pop());
+    while (descriptors.length > 0) fsApi.closeSync(descriptors.pop());
+    if (includeBackup) {
+      if (previousBackupLockDescriptor === undefined) {
+        delete process.env.NEXUS_RELEASE_BACKUP_LOCK_FD;
+      } else {
+        process.env.NEXUS_RELEASE_BACKUP_LOCK_FD = previousBackupLockDescriptor;
+      }
+    }
     throw error;
   }
 }
