@@ -1235,7 +1235,9 @@ def decrypt_and_verify(
             "status": "passed",
             "backup": str(selected),
             "encryptedSha256": expected,
-            "verifiedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "verifiedAt": datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            ).replace("+00:00", "Z"),
             **metadata,
         }
         if destination is not None:

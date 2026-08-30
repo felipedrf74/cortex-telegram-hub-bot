@@ -11,6 +11,7 @@ import {
   PM2_FALLBACK_PRESERVED_PATHS,
   PM2_FALLBACK_STABLE_SECONDS,
   Pm2FallbackRetirementRefusal,
+  acquirePm2FallbackRetirementLocks,
   assertRemainingPlannedSystemdArtifacts,
   createLinuxPm2FallbackRetirementMutator,
   detachPm2ClosureAtomically,
@@ -61,6 +62,7 @@ const BASELINE = {
 const BASELINE_AUTHORIZATION_DIGEST = sha256(canonicalJson(BASELINE));
 
 const temporaryRoots: string[] = [];
+const ORIGINAL_BACKUP_LOCK_FD = process.env.NEXUS_RELEASE_BACKUP_LOCK_FD;
 
 function check(name: string, detail: string) {
   return { name, result: 'passed', durationMs: 0, detail };
@@ -280,12 +282,99 @@ function fakeHost(calls: string[], paths: ReturnType<typeof transactionPaths>) {
 }
 
 afterEach(() => {
+  if (ORIGINAL_BACKUP_LOCK_FD === undefined) {
+    delete process.env.NEXUS_RELEASE_BACKUP_LOCK_FD;
+  } else {
+    process.env.NEXUS_RELEASE_BACKUP_LOCK_FD = ORIGINAL_BACKUP_LOCK_FD;
+  }
   for (const root of temporaryRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 describe('container-era PM2 fallback retirement', () => {
+  it('binds restore-verification receipts to canonical millisecond UTC', () => {
+    const source = fs.readFileSync('scripts/local-backup.py', 'utf8');
+    const restoreStart = source.indexOf('def decrypt_and_verify(');
+    const restoreEnd = source.indexOf('\ndef verify_freshness_locked(', restoreStart);
+    const restoreProducer = source.slice(restoreStart, restoreEnd);
+
+    expect(restoreStart).toBeGreaterThanOrEqual(0);
+    expect(restoreEnd).toBeGreaterThan(restoreStart);
+    expect(restoreProducer).toContain([
+      '"verifiedAt": datetime.now(timezone.utc).isoformat(',
+      '                timespec="milliseconds"',
+      '            ).replace("+00:00", "Z"),',
+    ].join('\n'));
+  });
+
+  it('holds and exports the governed backup lock for the full retirement observation', () => {
+    const paths = {
+      ...DEFAULT_PM2_FALLBACK_RETIREMENT_PATHS,
+      controlPlaneLock: '/locks/control-plane',
+      userReleaseLock: '/locks/user-release',
+      maintenanceLock: '/locks/maintenance',
+      backupLock: '/locks/backup',
+    };
+    const metadata = new Map([
+      [paths.controlPlaneLock, { uid: 0, gid: 0, mode: 0o100600, ino: 1 }],
+      [paths.userReleaseLock, { uid: 501, gid: 20, mode: 0o100600, ino: 2 }],
+      [paths.maintenanceLock, { uid: 0, gid: 20, mode: 0o100660, ino: 3 }],
+      [paths.backupLock, { uid: 0, gid: 0, mode: 0o100600, ino: 4 }],
+    ]);
+    const descriptorPaths = new Map<number, string>();
+    const closed: number[] = [];
+    const flockCalls: string[][] = [];
+    let nextDescriptor = 10;
+    const statFor = (file: string) => {
+      const entry = metadata.get(file)!;
+      return {
+        ...entry,
+        dev: 7,
+        nlink: 1,
+        isFile: () => true,
+        isSymbolicLink: () => false,
+      };
+    };
+    const fsApi = {
+      lstatSync: (file: string) => statFor(file),
+      openSync: (file: string) => {
+        const descriptor = nextDescriptor;
+        nextDescriptor += 1;
+        descriptorPaths.set(descriptor, file);
+        return descriptor;
+      },
+      fstatSync: (descriptor: number) => statFor(descriptorPaths.get(descriptor)!),
+      closeSync: (descriptor: number) => { closed.push(descriptor); },
+    };
+    const spawn = (_binary: string, args: string[]) => {
+      flockCalls.push(args);
+      return { status: 0 };
+    };
+    process.env.NEXUS_RELEASE_BACKUP_LOCK_FD = '91';
+
+    const release = acquirePm2FallbackRetirementLocks({
+      paths,
+      includeBackup: true,
+      dominguezUid: 501,
+      dominguezGid: 20,
+      fsApi,
+      spawn,
+    });
+
+    expect(flockCalls).toEqual([
+      ['--nonblock', '3'],
+      ['--nonblock', '3'],
+      ['--nonblock', '3'],
+      ['--shared', '--nonblock', '3'],
+    ]);
+    expect(process.env.NEXUS_RELEASE_BACKUP_LOCK_FD).toBe('13');
+    expect(closed).toEqual([]);
+    release();
+    expect(closed).toEqual([13, 12, 11, 10]);
+    expect(process.env.NEXUS_RELEASE_BACKUP_LOCK_FD).toBe('91');
+  });
+
   it('re-proves the full installed controller and poller before admission', () => {
     const source = fs.readFileSync('scripts/lib/pm2-fallback-retirement.mjs', 'utf8');
     const collectorStart = source.indexOf('function collectInstalledControlPlaneEvidence(paths)');
