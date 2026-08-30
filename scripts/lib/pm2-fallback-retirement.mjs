@@ -365,13 +365,29 @@ function assertControlPlaneEvidence(evidence) {
 }
 
 function assertAttestation(attestation) {
-  exactObject(attestation, [
-    'schema', 'version', 'sourceArchiveSha256', 'closureDigest', 'payloadDigest',
-    'packageLockSha256', 'fileCount', 'closureRoot', 'launcher', 'launcherSha256',
-    'entrypoint', 'node', 'installedAt',
-  ], 'PM2 root installation attestation');
-  if (attestation.schema !== 'nexus.pm2-root-install.v1'
-      || !/^\d+\.\d+\.\d+$/u.test(attestation.version ?? '')
+  if (attestation?.schema === 'nexus.pm2-root-install.v1') {
+    exactObject(attestation, [
+      'schema', 'version', 'sourceArchiveSha256', 'closureDigest', 'payloadDigest',
+      'packageLockSha256', 'fileCount', 'closureRoot', 'launcher', 'launcherSha256',
+      'entrypoint', 'node', 'installedAt',
+    ], 'PM2 root installation attestation');
+    assertHex(attestation.sourceArchiveSha256, HEX_64, 'PM2 attestation sourceArchiveSha256');
+    assertTimestamp(attestation.installedAt, 'PM2 attestation installedAt');
+  } else if (attestation?.schema === 'nexus.pm2-root-install-recovered.v1') {
+    exactObject(attestation, [
+      'schema', 'version', 'recoveryMethod', 'closureDigest', 'payloadDigest',
+      'packageLockSha256', 'fileCount', 'closureRoot', 'launcher', 'launcherSha256',
+      'entrypoint', 'node', 'attestedAt',
+    ], 'PM2 recovered root installation attestation');
+    if (attestation.recoveryMethod !== 'exact-installed-closure') {
+      refuse('PM2 recovered attestation method is invalid', 'pm2_attestation_mismatch');
+    }
+    assertTimestamp(attestation.attestedAt, 'PM2 recovered attestation attestedAt');
+  } else {
+    refuse('PM2 root installation attestation schema is unsupported',
+      'pm2_attestation_mismatch');
+  }
+  if (!/^\d+\.\d+\.\d+$/u.test(attestation.version ?? '')
       || !Number.isSafeInteger(attestation.fileCount) || attestation.fileCount < 2
       || attestation.closureRoot !== `/opt/nexus-release/pm2/${attestation.version}`
       || attestation.launcher !== '/usr/local/bin/pm2'
@@ -379,7 +395,6 @@ function assertAttestation(attestation) {
     refuse('PM2 root installation attestation identity is invalid', 'pm2_attestation_mismatch');
   }
   for (const [key, value] of Object.entries({
-    sourceArchiveSha256: attestation.sourceArchiveSha256,
     closureDigest: attestation.closureDigest,
     payloadDigest: attestation.payloadDigest,
     packageLockSha256: attestation.packageLockSha256,
@@ -390,7 +405,6 @@ function assertAttestation(attestation) {
     refuse('PM2 attested Node runtime identity is invalid', 'pm2_attestation_mismatch');
   }
   assertHex(attestation.node.sha256, HEX_64, 'PM2 attested Node runtime digest');
-  assertTimestamp(attestation.installedAt, 'PM2 attestation installedAt');
   return attestation;
 }
 
@@ -1090,6 +1104,36 @@ export function inspectPm2ClosureForRetirement(root, {
   const entries = [];
   const rootStat = fsApi.lstatSync(root);
   const rootDevice = rootStat.dev;
+  function readStableFile(absolute, observed) {
+    let descriptor;
+    try {
+      descriptor = fsApi.openSync(
+        absolute,
+        fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+      );
+      const opened = fsApi.fstatSync(descriptor);
+      if (opened.dev !== observed.dev || opened.ino !== observed.ino
+          || opened.nlink !== 1 || opened.uid !== ownerUid || opened.gid !== ownerGid
+          || opened.size !== observed.size || fileMode(opened) !== fileMode(observed)) {
+        refuse('PM2 closure file changed while it was opened', 'artifact_changed');
+      }
+      const bytes = fsApi.readFileSync(descriptor);
+      const after = fsApi.fstatSync(descriptor);
+      const pathAfter = fsApi.lstatSync(absolute);
+      if (after.dev !== opened.dev || after.ino !== opened.ino
+          || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs
+          || after.ctimeMs !== opened.ctimeMs
+          || pathAfter.dev !== opened.dev || pathAfter.ino !== opened.ino) {
+        refuse('PM2 closure file changed while it was read', 'artifact_changed');
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof Pm2FallbackRetirementRefusal) throw error;
+      refuse('PM2 closure file could not be read safely', 'artifact_changed');
+    } finally {
+      if (descriptor !== undefined) fsApi.closeSync(descriptor);
+    }
+  }
   if (expectedDevice !== null && rootDevice !== expectedDevice) {
     refuse('PM2 closure filesystem changed after admission', 'artifact_changed');
   }
@@ -1118,7 +1162,7 @@ export function inspectPm2ClosureForRetirement(root, {
       } else if (stat.isFile() && stat.nlink === 1
           && stat.uid === ownerUid && stat.gid === ownerGid
           && [0o644, 0o755].includes(fileMode(stat))) {
-        const bytes = fsApi.readFileSync(absolute);
+        const bytes = readStableFile(absolute, stat);
         const file = {
           path: path.relative(root, absolute).split(path.sep).join('/'),
           size: bytes.length,
