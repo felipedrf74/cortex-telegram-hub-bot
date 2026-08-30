@@ -1858,13 +1858,21 @@ function collectRetirementStateEvidence(paths, { baseline, baselineSha256 }) {
   return { conflicts: conflicts.sort(), terminalRebaseline };
 }
 
+export function isPm2SystemdAuthorityUnit(unit) {
+  // Ubuntu's TPM2 setup units contain the same substring. Exempt only their
+  // exact reviewed names so every other PM2-looking authority remains closed.
+  return typeof unit === 'string'
+    && /pm2/iu.test(unit)
+    && !/^systemd-tpm2-setup(?:-early)?\.service$/u.test(unit);
+}
+
 function collectSystemdArtifacts(paths) {
   const artifacts = [];
   const ownUnit = currentRetirementServiceUnit();
   const listedPm2Units = commandResult('/usr/bin/systemctl', [
     'list-unit-files', '--type=service', '--no-legend', '--no-pager',
   ]).split('\n').map((line) => line.trim().split(/\s+/u)[0]).filter((unit) => (
-    unit && /pm2/iu.test(unit)
+    isPm2SystemdAuthorityUnit(unit)
   ));
   for (const unit of listedPm2Units) {
     if (!PM2_UNITS.includes(unit) && unit !== ownUnit) {
