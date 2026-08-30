@@ -2,19 +2,19 @@
 
 Status: current
 Owner: Felipe Dominguez
-Last verified: 2026-08-10
+Last verified: 2026-08-30
 Update policy: update after each security-hardening wave, production ops window,
 or QA finding closure.
 
 ## Local Readiness
 
-Local code is ready for independent hostile QA, with live-ops conditions listed
-below.
+Repository controls and the governed PM2 fallback retirement are ready for
+independent hostile QA, with remaining live-ops conditions listed below.
 
-The local code/testable portion of the security plan is implemented. Live
-infrastructure and account/authenticator changes remain blocked until an
-approved production operations window because this pass was explicitly
-non-production-mutating.
+The local code/testable portion of the security plan is implemented. The PM2
+fallback has also been retired through the signed, transaction-bound production
+path. Other infrastructure and account/authenticator changes remain blocked
+until their separately approved operations windows and external evidence exist.
 
 Completion rule: every item from the implementation plan is either represented
 in `Completed In This Wave` below or explicitly listed as
@@ -38,6 +38,7 @@ There are no intentionally hidden open tasks in this local pass.
 | Python content-engine dependency audit | DONE | The reviewed direct source generates `content-engine/requirements-release.txt`; CI byte-compares that complete hash lock and `pip-audit` reports no known vulnerabilities in its exact deployed closure. |
 | Incident response and privacy ops runbook | DONE | `docs/security/security-operations-runbook.md` covers account takeover, provider leak, cross-tenant exposure, webhook abuse, lost JWT/signing key, compromised VPS, production secret leak, restore drill, and breach checklist. |
 | Local encrypted recovery | DONE_IN_REPOSITORY | Root-owned tooling creates `age`-encrypted, checksum-bound SQLite recovery points with 24 hourly, 30 daily, four weekly, and pre-promotion retention; weekly verification restores only to a private scratch path. The Sonar PostgreSQL dump retention referenced here is retired with SonarQube (2026-08-07). No AWS or off-host service is required. |
+| PM2 fallback retirement | DONE_IN_PRODUCTION | A completed signed source and exact successor authorization produced a validated terminal v2 receipt, closure manifest, and successor evidence. PM2 executable/package/unit authority is absent, permanent masks remain inert, and the container release plus backup timers are active. |
 
 ## Claude QA Follow-Up Closure
 
@@ -53,7 +54,7 @@ There are no intentionally hidden open tasks in this local pass.
 | Item | Status | Exact reason |
 |---|---|---|
 | Cloudflare firewall/origin lock-down, WAF, staging Access | BLOCKED_WITH_EXACT_REASON | Requires live Cloudflare/VPS changes and production/staging connectivity validation. The plan forbids production mutation without separate approval. |
-| VPS UFW/fail2ban/SSH/systemd/PM2 permission changes | BLOCKED_WITH_EXACT_REASON | Requires a production operations window with rollback access. Local repo changes cannot prove host firewall or service-user state. |
+| VPS UFW/fail2ban/SSH permission changes | BLOCKED_WITH_EXACT_REASON | Requires a separately reviewed production operations window with connectivity and rollback access. PM2 retirement is complete; this row does not reopen or qualify that terminal evidence. |
 | Off-host backup durability | ACCEPTED_RESIDUAL_RISK | Backups are encrypted but remain on the same ServerDominguez disk. They protect bad-release, operator-error, and corruption recovery, not total NVMe/server loss. A USB SSD, NAS, or another non-AWS host is deliberately deferred for the current project size; no AWS service is a backup or release dependency. |
 | Secret rotation for JWT/provider/Stripe/Cloudflare/Resend/Telegram/model keys | BLOCKED_WITH_EXACT_REASON | Requires production secret inventory, provider dashboards, coordinated deploy, and user/provider reauth impact review. |
 | Route-by-route mass-assignment allowlist migration | BLOCKED_WITH_EXACT_REASON | Requires a route-contract migration across every mutation surface, compatibility review for existing iOS clients, and route-owner fixtures. This wave added the auth-boundary gate and existing high-risk sweeps, but a safe full allowlist migration must be its own API-contract wave. |
