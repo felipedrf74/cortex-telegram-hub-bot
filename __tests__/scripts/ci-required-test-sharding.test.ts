@@ -52,7 +52,14 @@ describe('lean required CI contracts', () => {
     expect(lane).toContain('npm run training:e2e:smoke');
     expect(lane).toContain('npm run training:e2e:flow');
     expect(lane).toContain('npm run training:e2e:down');
-    expect(lane).toContain('.local/training-e2e/');
+    const evidenceRoot = '.local/training-e2e/ci-${{ github.run_id }}-${{ github.run_attempt }}';
+    expect(lane).toContain(`${evidenceRoot}/metadata.json`);
+    expect(lane).toContain(`${evidenceRoot}/training-flow-evidence.json`);
+    expect(lane).toContain(`${evidenceRoot}/training-e2e-contract-evidence.json`);
+    expect(lane).not.toContain('path: .local/training-e2e/\n');
+    expect(lane).not.toContain('training-e2e.db');
+    expect(lane).not.toContain('local-ios-auth.json');
+    expect(lane).not.toContain('quality-ios-jwt-secret');
     expect(workflow).toContain('TRAINING_E2E_RESULT: ${{ needs.training_e2e.result }}');
   });
 
