@@ -30,6 +30,23 @@ describe('training coach briefing helpers', () => {
     clearTenantScopeAnomaliesForTests();
   });
 
+  it('uses a distinct cache entry for the same user in each tenant', async () => {
+    const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
+    mockGetCached.mockImplementation((key: string) => ({
+      briefing: key === 'coach-briefing:101:12' ? 'Tenant 101 briefing' : 'Tenant 202 briefing',
+      recommendations: [],
+    }));
+
+    expect(getCoachBriefingSnapshot(12, 101)?.briefing).toBe('Tenant 101 briefing');
+    expect(getCoachBriefingSnapshot(12, 202)?.briefing).toBe('Tenant 202 briefing');
+    expect(mockGetCached.mock.calls.map(([key]) => key)).toEqual([
+      'coach-briefing:101:12',
+      'coach-briefing:202:12',
+    ]);
+    expect(mockSetLastCoachState).toHaveBeenNthCalledWith(1, 12, [], 'Tenant 101 briefing', 101);
+    expect(mockSetLastCoachState).toHaveBeenNthCalledWith(2, 12, [], 'Tenant 202 briefing', 202);
+  });
+
   it('normalizes cached payloads and syncs the persisted coach state', async () => {
     const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
     mockGetCached.mockReturnValue({
@@ -204,23 +221,6 @@ describe('training coach briefing helpers', () => {
     });
 
     expect(restoreCoachBriefingFromLatestReport(12, 12, 60)).toBeNull();
-  });
-
-  it('uses a distinct cache entry for the same user in each tenant', async () => {
-    const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
-    mockGetCached.mockImplementation((key: string) => ({
-      briefing: key === 'coach-briefing:101:12' ? 'Tenant 101 briefing' : 'Tenant 202 briefing',
-      recommendations: [],
-    }));
-
-    expect(getCoachBriefingSnapshot(12, 101)?.briefing).toBe('Tenant 101 briefing');
-    expect(getCoachBriefingSnapshot(12, 202)?.briefing).toBe('Tenant 202 briefing');
-    expect(mockGetCached.mock.calls.map(([key]) => key)).toEqual([
-      'coach-briefing:101:12',
-      'coach-briefing:202:12',
-    ]);
-    expect(mockSetLastCoachState).toHaveBeenNthCalledWith(1, 12, [], 'Tenant 101 briefing', 101);
-    expect(mockSetLastCoachState).toHaveBeenNthCalledWith(2, 12, [], 'Tenant 202 briefing', 202);
   });
 
   it('queries durable reports with both the data user and active tenant', async () => {

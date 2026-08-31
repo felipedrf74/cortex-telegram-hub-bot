@@ -1179,6 +1179,17 @@ describe('training-read-models', () => {
         [5, 5, 5, 42, '7', 'google'],
         [5, 5, 5, 42, '7', 'outlook'],
       ]);
+
+      mockAgendaDb.providerCounts.google = {
+        deadLetteredCount: 0,
+        retryingCount: 2,
+        actionRequiredCount: 0,
+      };
+      const retryingOnly = await getAllPlanWeeks(42, 7);
+      expect(retryingOnly.calendarCleanup).toMatchObject({
+        deadLetteredCount: 0,
+        retryingCount: 2,
+      });
     });
 
     it('returns null calendarCleanup when nothing is dead-lettered', async () => {

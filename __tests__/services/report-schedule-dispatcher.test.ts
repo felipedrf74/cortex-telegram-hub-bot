@@ -61,6 +61,30 @@ describe('report-schedule-dispatcher', () => {
     else process.env.REPORT_SCHEDULE_CATCHUP_MINUTES = OLD_ENV;
   });
 
+  it('claims the same user independently in two explicit tenant scopes', () => {
+    const tenantA = { tenantId: 420, userId: 42 };
+    const tenantB = { tenantId: 421, userId: 42 };
+
+    expect(resolveDueReportTargets(
+      'morning_briefing',
+      [tenantA, tenantB],
+      utc(`${FRIDAY}T05:02:00Z`),
+    )).toEqual([tenantA, tenantB]);
+    expect(resolveDueReportTargets(
+      'morning_briefing',
+      [tenantA, tenantB],
+      utc(`${FRIDAY}T05:07:00Z`),
+    )).toEqual([]);
+    expect(testDb.prepare(`
+      SELECT tenant_id AS tenantId, user_id AS userId
+      FROM report_schedule_ledger_scoped
+      ORDER BY tenant_id
+    `).all()).toEqual([
+      { tenantId: 420, userId: 42 },
+      { tenantId: 421, userId: 42 },
+    ]);
+  });
+
   it('fires the morning briefing at the global default when no preference is set', () => {
     // Default TODO_DIGEST_TIME=06:00 in the profile default zone Europe/Lisbon.
     const due = resolveDueReportTargets('morning_briefing', [USER], utc(`${FRIDAY}T05:02:00Z`));
@@ -79,25 +103,6 @@ describe('report-schedule-dispatcher', () => {
     expect(sameTickAgain).toEqual([]);
     const nextDay = resolveDueReportTargets('morning_briefing', [USER], utc('2026-07-11T05:02:00Z'));
     expect(nextDay).toEqual([USER]);
-  });
-
-  it('claims the same user independently in two explicit tenant scopes', () => {
-    const tenantA = { tenantId: 420, userId: 42 };
-    const tenantB = { tenantId: 421, userId: 42 };
-
-    expect(resolveDueReportTargets(
-      'morning_briefing',
-      [tenantA, tenantB],
-      utc(`${FRIDAY}T05:02:00Z`),
-    )).toEqual([tenantA, tenantB]);
-    expect(testDb.prepare(`
-      SELECT tenant_id AS tenantId, user_id AS userId
-      FROM report_schedule_ledger_scoped
-      ORDER BY tenant_id
-    `).all()).toEqual([
-      { tenantId: 420, userId: 42 },
-      { tenantId: 421, userId: 42 },
-    ]);
   });
 
   it('honors an explicit per-user time preference', () => {

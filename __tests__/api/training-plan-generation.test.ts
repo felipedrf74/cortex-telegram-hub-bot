@@ -192,7 +192,8 @@ vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
 }));
 
-vi.mock('../../src/services/health-data-lifecycle', () => ({
+vi.mock('../../src/services/health-data-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/health-data-lifecycle')>()),
   getEffectiveHealthSafetyOutput: (...args: unknown[]) => mockGetEffectiveHealthSafetyOutput(...args),
 }));
 

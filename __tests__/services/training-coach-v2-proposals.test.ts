@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/database')>()),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),

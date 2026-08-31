@@ -33,13 +33,15 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/unified-calendar', () => ({
+vi.mock('../../src/services/unified-calendar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/unified-calendar')>()),
   getEvents: vi.fn(),
   hasConnectedCalendarForUser: vi.fn(() => false),
   updateEvent: (...args: unknown[]) => applyMocks.updateEvent(...args),
 }));
 
-vi.mock('../../src/services/training-plans', () => ({
+vi.mock('../../src/services/training-plans', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/training-plans')>()),
   getActivePlanSummary: vi.fn(() => null),
   getSessionByCalendarEvent: (...args: unknown[]) => applyMocks.getSessionByCalendarEvent(...args),
   syncSessionWithCoachRecommendation: (...args: unknown[]) => (
@@ -47,41 +49,54 @@ vi.mock('../../src/services/training-plans', () => ({
   ),
 }));
 
-vi.mock('../../src/services/training-plan-revision-legacy-guard', () => ({
+vi.mock('../../src/services/training-plan-revision-legacy-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/training-plan-revision-legacy-guard')>()),
   assertLegacyCalendarEventMutationAllowed: (...args: unknown[]) => (
     applyMocks.assertLegacyCalendarEventMutationAllowed(...args)
   ),
 }));
 
-vi.mock('../../src/services/training-operation-locks', () => ({
+vi.mock('../../src/services/training-operation-locks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/training-operation-locks')>()),
   withTrainingCalendarOperationLock: (...args: unknown[]) => (
     applyMocks.withTrainingCalendarOperationLock(...args)
   ),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/user-service')>()),
   getUserLanguageById: vi.fn(() => 'en-US'),
   getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
   resolveCurrentTenantIdForUser: vi.fn((userId: number) => userId),
 }));
 
-vi.mock('../../src/state/conversation', () => ({
+vi.mock('../../src/state/conversation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/state/conversation')>()),
   getConversationHistory: vi.fn(() => []),
   addToConversation: vi.fn(),
 }));
 
-vi.mock('../../src/state/todos', () => ({ listTodos: vi.fn(() => []) }));
-vi.mock('../../src/state/shared-memory', () => ({
+vi.mock('../../src/state/todos', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/state/todos')>()),
+  listTodos: vi.fn(() => []),
+}));
+vi.mock('../../src/state/shared-memory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/state/shared-memory')>()),
   getSharedMemorySummary: vi.fn(() => ''),
   getSharedMemory: vi.fn(() => []),
   getSharedMemoryByScope: vi.fn(() => ({ userPrivate: [], tenantShared: [] })),
 }));
-vi.mock('../../src/services/tool-executor', () => ({ executeToolCall: vi.fn() }));
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/tool-executor', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/tool-executor')>()),
+  executeToolCall: vi.fn(),
+}));
+vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/provider-registry')>()),
   getActiveProvider: vi.fn(() => null),
   ensureActiveProvider: vi.fn(() => null),
 }));
-vi.mock('../../src/services/anthropic', () => ({
+vi.mock('../../src/services/anthropic', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/anthropic')>()),
   callDomain: vi.fn(),
   continueWithToolResults: vi.fn(),
   getDomainSystemPrompt: vi.fn(() => ''),

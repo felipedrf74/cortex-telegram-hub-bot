@@ -255,7 +255,8 @@ vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.f
 vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
 vi.mock('../../src/agents/voice-evolution-agent', () => ({ runScheduledVoiceEvolutionAgent: vi.fn() }));
 vi.mock('../../src/services/intelligence-bus', () => ({ expireStaleSignals: vi.fn() }));
-vi.mock('../../src/services/health-data-lifecycle', () => ({
+vi.mock('../../src/services/health-data-lifecycle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/health-data-lifecycle')>()),
   sweepExpiredStructuredHealthData: (...args: unknown[]) => mockSweepExpiredStructuredHealthData(...args),
 }));
 vi.mock('../../src/commands/books', () => ({ seedBooksIfEmpty: vi.fn() }));
@@ -359,7 +360,8 @@ vi.mock('../../src/services/event-backbone-worker', () => ({
 vi.mock('../../src/tools/event-backbone-cleanup', () => ({
   runEventBackboneCleanup: (...args: unknown[]) => mockRunEventBackboneCleanup(...args),
 }));
-vi.mock('../../src/services/training-plans', () => ({
+vi.mock('../../src/services/training-plans', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/training-plans')>()),
   getActivePlans: vi.fn(() => []),
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
@@ -368,14 +370,17 @@ vi.mock('../../src/services/training-plans', () => ({
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: vi.fn(() => []),
 }));
-vi.mock('../../src/services/training-coach-v2-proposals', () => ({
+vi.mock('../../src/services/training-coach-v2-proposals', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/training-coach-v2-proposals')>()),
   createTrainingCoachV2Proposal: (...args: unknown[]) => mockCreateTrainingCoachV2Proposal(...args),
   bindTrainingCoachV2ProposalDecision: (...args: unknown[]) => mockBindTrainingCoachV2ProposalDecision(...args),
 }));
-vi.mock('../../src/services/coach-kernel/knowledge-loader', () => ({
+vi.mock('../../src/services/coach-kernel/knowledge-loader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/coach-kernel/knowledge-loader')>()),
   loadCoachKnowledge: vi.fn(() => ({ principles: {} })),
 }));
-vi.mock('../../src/services/coach-kernel/training-principles', () => ({
+vi.mock('../../src/services/coach-kernel/training-principles', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/coach-kernel/training-principles')>()),
   getSciencePolicyVersion: vi.fn(() => 'science-test-v1'),
 }));
 vi.mock('../../src/services/readiness-scorer', () => ({

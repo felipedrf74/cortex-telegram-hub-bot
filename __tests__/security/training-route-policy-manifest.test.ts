@@ -21,6 +21,7 @@ import {
   TRAINING_CONSTANT_REGISTERED_ROUTES,
   TRAINING_ROUTE_POLICY,
   TRAINING_ROUTE_SOURCE_FILES,
+  findTrainingRoutePolicy,
   trainingRoutePolicyKey,
 } from '../../src/api/routes/training-route-policy';
 
@@ -97,9 +98,9 @@ describe('Training route policy manifest', () => {
   });
 
   it('governs calendar-cleanup retry as an authenticated Training mutation', () => {
-    expect(TRAINING_ROUTE_POLICY.find((entry) => (
-      entry.method === 'POST' && entry.path === '/calendar-cleanup/retry'
-    ))).toMatchObject({
+    expect(findTrainingRoutePolicy('post', '/calendar-cleanup/retry')).toEqual({
+      method: 'POST',
+      path: '/calendar-cleanup/retry',
       auth: 'jwt',
       entitlement: 'skill:training',
       capability: 'none',

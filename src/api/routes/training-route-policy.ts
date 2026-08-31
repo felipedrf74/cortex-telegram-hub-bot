@@ -177,3 +177,11 @@ export const TRAINING_CONSTANT_REGISTERED_ROUTES: readonly string[] = [
 export function trainingRoutePolicyKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
+
+/** Runtime lookup keeps policy consumers on the same normalized route key. */
+export function findTrainingRoutePolicy(method: string, path: string): TrainingRoutePolicy | null {
+  const key = trainingRoutePolicyKey(method, path);
+  return TRAINING_ROUTE_POLICY.find(
+    (entry) => trainingRoutePolicyKey(entry.method, entry.path) === key,
+  ) ?? null;
+}

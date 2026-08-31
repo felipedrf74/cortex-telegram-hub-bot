@@ -88,7 +88,8 @@ vi.mock('../../src/services/anthropic', () => ({
   getDomainSystemPrompt: vi.fn(() => 'system'),
 }));
 
-vi.mock('../../src/services/provider-registry', () => ({
+vi.mock('../../src/services/provider-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/provider-registry')>()),
   getActiveProvider: () => ({
     name: 'routing(gemini,openai)',
     callDomain: (...args: unknown[]) => mockCallDomain(...args),

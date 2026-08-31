@@ -138,6 +138,23 @@ describe('Phase 2 — notification producers', () => {
       seedAgendaTable();
     });
 
+    it('delivers every due reminder through deterministic pagination', async () => {
+      updateNotificationProfile(210, 710, { workoutReminderMinutes: 60 } as never);
+      for (let index = 0; index < 23; index += 1) {
+        insertTrainingAgendaItem({
+          id: `ag-210-${String(index).padStart(2, '0')}`,
+          userId: 210,
+          tenantId: 710,
+          startAt: `2026-05-07T13:0${index % 5}:00.000Z`,
+        });
+      }
+
+      const summary = await runTrainingSessionReminders([{ userId: 210, tenantId: 710 }], undefined, 7);
+
+      expect(summary).toMatchObject({ inspected: 23, notified: 23, failed: 0 });
+      expect(listNotificationCenterItems(210, 710)).toHaveLength(23);
+    });
+
     it('honours the user-configured lead time', async () => {
       updateNotificationProfile(201, 201, { workoutReminderMinutes: 60 } as never);
       // 60 minutes out — inside the window.
@@ -243,21 +260,5 @@ describe('Phase 2 — notification producers', () => {
       expect(listNotificationCenterItems(209, 702)).toHaveLength(0);
     });
 
-    it('delivers every due reminder through deterministic pagination', async () => {
-      updateNotificationProfile(210, 710, { workoutReminderMinutes: 60 } as never);
-      for (let index = 0; index < 23; index += 1) {
-        insertTrainingAgendaItem({
-          id: `ag-210-${String(index).padStart(2, '0')}`,
-          userId: 210,
-          tenantId: 710,
-          startAt: `2026-05-07T13:0${index % 5}:00.000Z`,
-        });
-      }
-
-      const summary = await runTrainingSessionReminders([{ userId: 210, tenantId: 710 }], undefined, 7);
-
-      expect(summary).toMatchObject({ inspected: 23, notified: 23, failed: 0 });
-      expect(listNotificationCenterItems(210, 710)).toHaveLength(23);
-    });
   });
 });
