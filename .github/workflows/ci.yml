@@ -446,7 +446,10 @@ jobs:
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
     # Multi-area changes can conservatively select every group with coverage;
     # keep enough headroom for Vitest to emit its governed result artifact.
-    timeout-minutes: 45
+    # The complete selected suite reached the old 45-minute limit before
+    # coverage finalization on 2026-08-31, so retain the scope and extend only
+    # the execution budget.
+    timeout-minutes: 75
     needs: [runner, runner_guardrails, classify]
     if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
     steps:
