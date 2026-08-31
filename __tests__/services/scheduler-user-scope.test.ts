@@ -1473,6 +1473,7 @@ describe('scheduler tenant scoping', () => {
         source: 'scheduled_adherence_review',
         currentWeekId: 601,
         adherenceRate: 75,
+        reasonCodes: ['scheduled_weekly_adjustment'],
       }),
       idempotencyKey: 'training-weekly-adjust:22:22:501:602:0',
     }));

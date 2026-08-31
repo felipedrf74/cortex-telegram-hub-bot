@@ -133,6 +133,38 @@ describe('Training Coach V2 proposal governance', () => {
     });
   });
 
+  it('records a scoped launch-rule firing for scheduled weekly adjustment proposals', () => {
+    const created = createTrainingCoachV2Proposal({
+      tenantId: 41,
+      userId: 41,
+      kind: 'week_reflow',
+      planId: 901,
+      weekId: 902,
+      expectedVersion: 0,
+      request: {
+        trigger: 'scheduled_weekly_adjustment',
+        scheduledAdjustment: { intensityPct: 80, reason: 'Adherence dipped this week' },
+      },
+      evidence: {
+        source: 'scheduled_adherence_review',
+        reasonCodes: ['scheduled_weekly_adjustment'],
+      },
+      idempotencyKey: 'scheduled-weekly-adjustment',
+      db: testDb,
+    });
+
+    expect(testDb.prepare(`
+      SELECT tenant_id, user_id, proposal_id, rule_id
+      FROM training_coach_v2_rule_firings
+      WHERE proposal_id = ?
+    `).all(created.proposal.proposalId)).toEqual([{
+      tenant_id: 41,
+      user_id: 41,
+      proposal_id: created.proposal.proposalId,
+      rule_id: 'scheduled_weekly_adjustment',
+    }]);
+  });
+
   it('requires the exact bound approval, activates under adapt lock with CAS readback, and replays idempotently', async () => {
     const created = createProposal();
     await bindTrainingCoachV2ProposalDecision({

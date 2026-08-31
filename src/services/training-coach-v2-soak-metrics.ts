@@ -32,6 +32,7 @@ export const TRAINING_COACH_V2_LAUNCH_RULE_SET = Object.freeze({
     'return_from_gap_post_exertional_symptom_risk',
     'return_from_gap_unknown_conservative',
     'return_from_gap_vacation_or_life_gap',
+    'scheduled_weekly_adjustment',
     'taper_session_never_cram',
     'taper_volume_scaled',
     'travel_equipment_limited',
