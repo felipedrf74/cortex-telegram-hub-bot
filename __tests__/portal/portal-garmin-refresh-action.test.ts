@@ -78,6 +78,7 @@ vi.mock('../../src/services/scheduler', () => ({
   sendCoachBriefings: vi.fn(),
   runEndOfDaySummaryForTarget: vi.fn(),
   sendDailyBriefingForTarget: vi.fn(),
+  sendWeeklyReviewForTarget: vi.fn(),
   sendDailyBriefing: vi.fn(),
   runContentTopicCronForActiveUsers: vi.fn(),
   runWeeklyContentPackageCronForActiveUsers: vi.fn(),

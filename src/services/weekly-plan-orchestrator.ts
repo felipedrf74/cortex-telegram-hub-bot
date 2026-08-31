@@ -13,6 +13,7 @@ import {
   readSecretaryMeshContext,
   readTrainingMeshContext,
   type ContentMeshContext,
+  type CookingCalendarStatus,
   type CookingMeshContext,
   type FinanceMeshContext,
   type MeshSignalDraft,
@@ -37,11 +38,11 @@ import {
 } from './conflict-resolver';
 import { formatCurrencyAmount } from './finance-tracker';
 import { logger } from '../utils/logger';
-import { getUserById, type User } from './user-service';
+import { getUserById, getUserTimezoneById, type User } from './user-service';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
 import { checkSkillAccess } from './skill-tiers';
 import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './training-plans';
-import { resolveTrainingPlanTimezone } from './training-date-utils';
+import { resolveTrainingPlanTimezone, resolveTrainingTimezone } from './training-date-utils';
 import type { MealPlan } from './cooking-chef';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
@@ -69,6 +70,12 @@ export interface WeeklyPlanMealItem {
   title: string;
   note: string;
   decisions: PlanDecision[];
+}
+
+export interface WeeklyPlanCookingSummary {
+  status: 'ready' | 'empty' | 'degraded' | 'unavailable' | 'gated';
+  headline: string;
+  warningCodes: string[];
 }
 
 export interface WeeklyPlanContentItem {
@@ -118,6 +125,8 @@ export interface WeeklyPlanDay {
   headline: string;
   training: WeeklyPlanTrainingItem;
   meals: WeeklyPlanMealItem[];
+  /** Source-aware Cooking state so an outage is never rendered as an empty plan. */
+  cooking?: WeeklyPlanCookingSummary;
   content: WeeklyPlanContentItem | null;
   secretary: WeeklyPlanSecretaryItem;
   finance: WeeklyPlanFinanceItem | null;
@@ -144,10 +153,10 @@ export interface WeeklyPlanResponse {
   days: WeeklyPlanDay[];
 }
 
-function buildEmptyWeeklyPlanDay(date: string): WeeklyPlanDay {
+function buildEmptyWeeklyPlanDay(date: string, timezone: string): WeeklyPlanDay {
   return {
     date,
-    weekday: DateTime.fromISO(date, { zone: config.app.timezone || 'Europe/Lisbon' }).toFormat('cccc'),
+    weekday: DateTime.fromISO(date, { zone: timezone }).toFormat('cccc'),
     headline: 'Plan unavailable because tenant scope is invalid for this request.',
     training: {
       title: 'Planning unavailable',
@@ -159,6 +168,11 @@ function buildEmptyWeeklyPlanDay(date: string): WeeklyPlanDay {
       decisions: [],
     },
     meals: [],
+    cooking: {
+      status: 'unavailable',
+      headline: 'Cooking plan unavailable for this day.',
+      warningCodes: ['COOKING_CONTEXT_UNAVAILABLE'],
+    },
     content: null,
     secretary: {
       focusBlock: null,
@@ -202,9 +216,11 @@ async function loadMeshContextOrFallback<T>(opts: {
 function buildEmptyWeeklyPlanResponse(opts: {
   userId: number;
   weekStart?: string;
+  timezone?: string;
 }): WeeklyPlanResponse {
-  const window = resolveWeekWindow(opts.weekStart);
-  const days = weekIsoDates(window.start).map((date) => buildEmptyWeeklyPlanDay(date));
+  const timezone = resolveWeeklyPlanTimezone(opts.userId, opts.timezone);
+  const window = resolveWeekWindow(opts.weekStart, timezone);
+  const days = weekIsoDates(window.start).map((date) => buildEmptyWeeklyPlanDay(date, timezone));
   return {
     weekStart: window.weekStart,
     weekEnd: window.weekEnd,
@@ -231,6 +247,7 @@ export async function composeWeeklyPlan(opts: {
   userId: number;
   tenantId?: number;
   weekStart?: string;
+  timezone?: string;
   forceRefresh?: boolean;
   syncSignals?: boolean;
 }): Promise<WeeklyPlanResponse> {
@@ -262,9 +279,10 @@ export async function composeWeeklyPlan(opts: {
     });
   }
 
-  const window = resolveWeekWindow(opts.weekStart);
+  const timezone = resolveWeeklyPlanTimezone(opts.userId, opts.timezone);
+  const window = resolveWeekWindow(opts.weekStart, timezone);
   const shouldSyncSignals = opts.syncSignals === true;
-  const cacheKey = `plan:week:u:${opts.userId}:t:${tenantId}:${window.weekStart}:sync:${shouldSyncSignals ? '1' : '0'}`;
+  const cacheKey = `plan:week:u:${opts.userId}:t:${tenantId}:${window.weekStart}:tz:${timezone}:sync:${shouldSyncSignals ? '1' : '0'}`;
   if (!opts.forceRefresh) {
     const cached = getCached<WeeklyPlanResponse>(cacheKey);
     if (cached) {
@@ -296,8 +314,8 @@ export async function composeWeeklyPlan(opts: {
       label: 'secretary',
       userId: opts.userId,
       weekStart: window.weekStart,
-      loader: readSecretaryMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
-      fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      loader: readSecretaryMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart, timezone }),
+      fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart, timezone }),
     }),
     gatedSkills.includes('cooking')
       ? Promise.resolve<{ value: CookingMeshContext | null; degraded: boolean }>({ value: null, degraded: false })
@@ -305,7 +323,7 @@ export async function composeWeeklyPlan(opts: {
           label: 'cooking',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readCookingMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
+          loader: readCookingMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart, timezone }),
           fallback: null,
         }),
     gatedSkills.includes('content')
@@ -339,11 +357,19 @@ export async function composeWeeklyPlan(opts: {
     || cookingLoad.degraded
     || contentLoad.degraded
     || financeLoad.degraded;
+  if (cooking && !isCookingCalendarAvailabilityVerified(cooking.calendar?.status)) {
+    orchestrationDegraded = true;
+  }
+  if (cooking && (!cooking.sourceHealth
+      || !cooking.sourceHealth.safety
+      || Object.values(cooking.sourceHealth).some((source) => source.status !== 'ready'))) {
+    orchestrationDegraded = true;
+  }
 
   const derivedSignalDrafts = [
     ...training.derivedSignals,
     ...secretary.derivedSignals,
-    ...(cooking ? buildCookingMeshSignals(cooking, training, secretary, content) : []),
+    ...(cooking ? buildCookingMeshSignals(cooking, training, content) : []),
     ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
     ...(finance ? finance.derivedSignals : []),
   ];
@@ -373,6 +399,7 @@ export async function composeWeeklyPlan(opts: {
   const shadowedByDay = indexAcceptedDirectives(resolution.shadowed);
   const days = weekIsoDates(window.start).map((date) => buildPlanDay({
     date,
+    timezone,
     variant,
     gatedSkills,
     training,
@@ -447,7 +474,6 @@ function groupDerivedSignalDrafts(
 function buildCookingMeshSignals(
   cooking: CookingMeshContext,
   training: TrainingMeshContext,
-  secretary: SecretaryMeshContext,
   content: ContentMeshContext | null,
 ): MeshSignalDraft[] {
   const fuelingSupport = readFuelingSupportSignal(cooking);
@@ -457,12 +483,36 @@ function buildCookingMeshSignals(
     (session) => sessionDateForWeek(session, cooking.weekStart, trainingTimezone),
   ));
   const mealDates = new Set(cooking.meals.map((meal) => meal.date));
-  const riskyDates = fuelingSupport?.hardDatesMissingMeals.length
-    ? fuelingSupport.hardDatesMissingMeals
-    : fuelingSupport?.trainingDatesMissingMeals.length
-      ? fuelingSupport.trainingDatesMissingMeals
-      : [...sessionDates].filter((date) => !mealDates.has(date));
-  const batchCookDate = chooseBatchCookDate(training, secretary, content, cooking.weekStart);
+  const sourceHealth = cooking.sourceHealth;
+  const hasVerifiedMealCoverage = sourceHealth != null
+    && sourceHealth.mealPlan.status === 'ready'
+    && sourceHealth.shoppingList.status === 'ready'
+    && sourceHealth.safety != null
+    && sourceHealth.safety.status !== 'unavailable';
+  const riskyDates = !hasVerifiedMealCoverage
+    ? []
+    : fuelingSupport?.hardDatesMissingMeals.length
+      ? fuelingSupport.hardDatesMissingMeals
+      : fuelingSupport?.trainingDatesMissingMeals.length
+        ? fuelingSupport.trainingDatesMissingMeals
+        : [...sessionDates].filter((date) => !mealDates.has(date));
+  const hasVerifiedAvailability = isCookingCalendarAvailabilityVerified(cooking.calendar?.status)
+    && sourceHealth != null
+    && sourceHealth.focus.status === 'ready'
+    && sourceHealth.safety != null
+    && sourceHealth.safety.status !== 'unavailable'
+    && (cooking.calendar?.status === 'not_configured' || Boolean(cooking.availability));
+  const hasActualPrepNeed = executionReadiness != null
+    && cooking.meals.length > 0
+    && (
+      executionReadiness.prepPressureDates.length > 0
+      || executionReadiness.highEffortMealCount > 0
+      || executionReadiness.totalPrepMinutes + executionReadiness.totalCookMinutes >= 90
+      || (cooking.meals.length >= 3 && !executionReadiness.shoppingReady)
+    );
+  const batchCookDate = hasVerifiedAvailability && hasActualPrepNeed
+    ? chooseBatchCookDate(training, cooking, content, cooking.weekStart)
+    : null;
 
   const drafts: MeshSignalDraft[] = [];
   if (riskyDates.length > 0) {
@@ -482,24 +532,26 @@ function buildCookingMeshSignals(
     });
   }
 
-  drafts.push({
-    sourceAgent: 'mesh.cooking-orchestrator',
-    signalType: 'batch_cook_day',
-    meshPriority: executionReadiness?.status === 'at_risk' ? 2 : 3,
-    priority: executionReadiness?.status === 'at_risk' ? 'normal' : 'background',
-    payload: {
-      date: batchCookDate,
-      reason: executionReadiness?.status === 'at_risk'
-        ? executionReadiness.prepPressureDates.length > 0
-          ? `Meal execution is at risk this week, especially around ${executionReadiness.prepPressureDates.join(', ')} — use the lightest day to prep ahead.`
-          : 'Meal execution is at risk this week — use the lightest day to prep ahead.'
-        : executionReadiness?.status === 'partial'
+  if (batchCookDate) {
+    drafts.push({
+      sourceAgent: 'mesh.cooking-orchestrator',
+      signalType: 'batch_cook_day',
+      meshPriority: executionReadiness?.status === 'at_risk' ? 2 : 3,
+      priority: executionReadiness?.status === 'at_risk' ? 'normal' : 'background',
+      payload: {
+        date: batchCookDate,
+        reason: executionReadiness?.status === 'at_risk'
           ? executionReadiness.prepPressureDates.length > 0
-            ? `Meal coverage still needs cleanup and prep pressure already lands on ${executionReadiness.prepPressureDates.join(', ')}.`
-            : 'Meal coverage still needs cleanup, so use the lightest day to prep ahead.'
-          : 'Lowest planned training load this week.',
-    },
-  });
+            ? `Meal execution is at risk this week, especially around ${executionReadiness.prepPressureDates.join(', ')} — use the lightest day to prep ahead.`
+            : 'Meal execution is at risk this week — use the lightest day to prep ahead.'
+          : executionReadiness?.status === 'partial'
+            ? executionReadiness.prepPressureDates.length > 0
+              ? `Meal coverage still needs cleanup and prep pressure already lands on ${executionReadiness.prepPressureDates.join(', ')}.`
+              : 'Meal coverage still needs cleanup, so use the lightest day to prep ahead.'
+            : 'Lowest planned training load this week.',
+      },
+    });
+  }
 
   return drafts;
 }
@@ -948,6 +1000,7 @@ function secretaryContentExecutionTradeoffLabel(directive: MeshDirective): strin
 
 function buildPlanDay(opts: {
   date: string;
+  timezone: string;
   variant: 'conservative' | 'steady' | 'push';
   gatedSkills: string[];
   training: TrainingMeshContext;
@@ -959,7 +1012,7 @@ function buildPlanDay(opts: {
   shadowedDirectives: MeshDirective[];
 }): WeeklyPlanDay {
   const trainingTimezone = resolveTrainingPlanTimezone(opts.training.activePlan);
-  const weekday = DateTime.fromISO(opts.date, { zone: trainingTimezone }).toFormat('cccc');
+  const weekday = DateTime.fromISO(opts.date, { zone: opts.timezone }).toFormat('cccc');
   const trainingSession = sessionForDate(
     opts.training.sessions,
     opts.date,
@@ -978,10 +1031,11 @@ function buildPlanDay(opts: {
   const spendingDirective = opts.acceptedDirectives.find((directive) => directive.target === 'spending');
   const deferredPrimaryDirective = opts.shadowedDirectives.find((directive) => directive.target === 'primary-commitment');
   const budget = opts.finance ? readBudgetSignal(opts.finance) : null;
+  const persistedMealsForDate = opts.cooking ? mealsForDate(opts.cooking.meals, opts.date) : [];
   const meals = opts.gatedSkills.includes('cooking') || !opts.cooking
     ? []
     : buildMealPlanForDay({
-        meals: mealsForDate(opts.cooking.meals, opts.date),
+        meals: persistedMealsForDate,
         trainingSession,
         availabilityDirective,
         mealCoverageDirective,
@@ -989,6 +1043,12 @@ function buildPlanDay(opts: {
         spendingDirective,
         budget,
       });
+  const cookingSummary = buildCookingDaySummary({
+    gated: opts.gatedSkills.includes('cooking'),
+    cooking: opts.cooking,
+    date: opts.date,
+    persistedMealCount: persistedMealsForDate.length,
+  });
 
   const trainingItem = buildTrainingItem({
     trainingSession,
@@ -1019,6 +1079,7 @@ function buildPlanDay(opts: {
   const secretaryItem = buildSecretaryItem({
     secretary: opts.secretary,
     date: opts.date,
+    timezone: opts.timezone,
     availabilityDirective,
     trainingFocusDirective,
     trainingProtectionDirective,
@@ -1043,6 +1104,7 @@ function buildPlanDay(opts: {
           decisions: [],
         }]
       : meals,
+    cooking: cookingSummary,
     content: opts.gatedSkills.includes('content')
       ? {
           status: 'gated',
@@ -1063,6 +1125,109 @@ function buildPlanDay(opts: {
         }
       : financeItem,
   };
+}
+
+function buildCookingDaySummary(opts: {
+  gated: boolean;
+  cooking: CookingMeshContext | null;
+  date: string;
+  persistedMealCount: number;
+}): WeeklyPlanCookingSummary {
+  if (opts.gated) {
+    return {
+      status: 'gated',
+      headline: 'Cooking coordination is gated for this account.',
+      warningCodes: [],
+    };
+  }
+  if (!opts.cooking?.sourceHealth) {
+    return {
+      status: 'unavailable',
+      headline: 'Cooking plan unavailable for this day.',
+      warningCodes: ['COOKING_CONTEXT_UNAVAILABLE'],
+    };
+  }
+  const safetyHealth = opts.cooking.sourceHealth.safety;
+  if (!safetyHealth) {
+    return {
+      status: 'unavailable',
+      headline: 'Cooking safety context is unavailable for this day; saved meals are not assumed safe.',
+      warningCodes: ['COOKING_SAFETY_CONTEXT_UNAVAILABLE'],
+    };
+  }
+  const sourceEntries = Object.values(opts.cooking.sourceHealth);
+  const warningCodes = [...new Set([
+    ...sourceEntries.flatMap((source) => source.warningCodes),
+    ...(opts.cooking.calendar?.warningCodes ?? []),
+  ])];
+  if (opts.cooking.sourceHealth.mealPlan.status === 'unavailable') {
+    return {
+      status: 'unavailable',
+      headline: 'Meal-plan data is unavailable for this day; an empty result is not assumed.',
+      warningCodes,
+    };
+  }
+  if (safetyHealth.status === 'unavailable') {
+    return {
+      status: 'unavailable',
+      headline: 'Cooking safety preferences are unavailable for this day; saved meals are withheld rather than assumed safe.',
+      warningCodes,
+    };
+  }
+  const excludedMealCount = safetyHealth.excludedMealDates.filter((date) => date === opts.date).length;
+  if (excludedMealCount > 0) {
+    const excludedMealsForDate = safetyHealth.excludedMeals?.filter((meal) => meal.date === opts.date) ?? [];
+    const conflict = excludedMealsForDate.length > 0
+      ? excludedMealsForDate.some((meal) => meal.reason !== 'unverified_recipe')
+      : warningCodes.includes('COOKING_SAVED_MEAL_ALLERGY_CONFLICT')
+        || warningCodes.includes('COOKING_SAVED_MEAL_DIETARY_RESTRICTION_CONFLICT');
+    const unverified = excludedMealsForDate.length > 0
+      ? excludedMealsForDate.some((meal) => meal.reason !== 'preference_conflict')
+      : warningCodes.includes('COOKING_SAVED_MEAL_RECIPE_UNVERIFIED');
+    const reason = conflict && unverified
+      ? 'because of current safety-preference conflicts or incomplete recipe verification'
+      : conflict
+        ? 'because of current safety-preference conflicts'
+        : 'because recipe safety could not be verified against current preferences';
+    const shownMeals = `${opts.persistedMealCount} verified-safe planned ${opts.persistedMealCount === 1 ? 'meal' : 'meals'}`;
+    const withheldMeals = `${excludedMealCount} saved ${excludedMealCount === 1 ? 'meal' : 'meals'}`;
+    return {
+      status: 'degraded',
+      headline: opts.persistedMealCount > 0
+        ? `${shownMeals} shown; ${withheldMeals} withheld ${reason}.`
+        : `${withheldMeals} withheld ${reason}.`,
+      warningCodes,
+    };
+  }
+  const degraded = sourceEntries.some((source) => source.status !== 'ready')
+    || !isCookingCalendarAvailabilityVerified(opts.cooking.calendar?.status);
+  if (degraded) {
+    return {
+      status: 'degraded',
+      headline: safetyHealth.status === 'degraded'
+        ? opts.persistedMealCount > 0
+          ? `${opts.persistedMealCount} verified-safe planned ${opts.persistedMealCount === 1 ? 'meal' : 'meals'} shown; other Cooking safety content was withheld.`
+          : 'No saved meals were found for this day; other Cooking safety content was withheld.'
+        : opts.persistedMealCount > 0
+          ? `${opts.persistedMealCount} planned meal(s) shown; some Cooking context is unavailable.`
+          : 'No saved meals were found, but some Cooking context is unavailable.',
+      warningCodes,
+    };
+  }
+  if (opts.persistedMealCount === 0) {
+    return { status: 'empty', headline: 'No meals planned for this day.', warningCodes: [] };
+  }
+  return {
+    status: 'ready',
+    headline: opts.persistedMealCount === 1
+      ? '1 meal planned for this day.'
+      : `${opts.persistedMealCount} meals planned for this day.`,
+    warningCodes: [],
+  };
+}
+
+function isCookingCalendarAvailabilityVerified(status: CookingCalendarStatus | undefined): boolean {
+  return status === 'ready' || status === 'not_configured';
 }
 
 function buildTrainingItem(opts: {
@@ -1344,9 +1509,18 @@ function buildContentItem(
   };
 }
 
+function localDateForTimestamp(value: unknown, timezone: string): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = DateTime.fromISO(raw, { setZone: true, zone: timezone });
+  return parsed.isValid ? parsed.setZone(timezone).toISODate() : null;
+}
+
 function buildSecretaryItem(opts: {
   secretary: SecretaryMeshContext;
   date: string;
+  timezone: string;
   availabilityDirective?: MeshDirective;
   trainingFocusDirective?: MeshDirective;
   trainingProtectionDirective?: MeshDirective;
@@ -1359,6 +1533,7 @@ function buildSecretaryItem(opts: {
   const {
     secretary,
     date,
+    timezone,
     availabilityDirective,
     trainingFocusDirective,
     trainingProtectionDirective,
@@ -1375,9 +1550,9 @@ function buildSecretaryItem(opts: {
         note: secretary.focusBlock.reason,
       }
     : null;
-  const dateEvents = secretary.events.filter((event) => String(event.start ?? '').slice(0, 10) === date);
+  const dateEvents = secretary.events.filter((event) => localDateForTimestamp(event.start, timezone) === date);
   const criticalMeetingCount = dateEvents.filter((event) => /\b(client|cliente|interview|entrevista|doctor|m[eé]dico|meeting|reuni[aã]o|call|sponsor|patroc[ií]nio|filming|shoot|flight|voo|deadline)\b/i.test(String(event.summary ?? ''))).length;
-  const tasksDueOnDate = secretary.pending.filter((task) => String(task.dueDate ?? '').slice(0, 10) === date).length;
+  const tasksDueOnDate = secretary.pending.filter((task) => localDateForTimestamp(task.dueDate, timezone) === date).length;
   const fixedTaskCount = secretary.pending.filter((task) => Boolean(task.dueDate)).length;
   const movableTaskCount = Math.max(0, secretary.pending.length - fixedTaskCount);
   const portableTaskRatio = secretary.pending.length > 0
@@ -1678,6 +1853,9 @@ function readMealExecutionReadinessSignal(cooking: CookingMeshContext): {
   prepPressureDates: string[];
   constrainedMealDates: string[];
   highEffortMealCount: number;
+  totalPrepMinutes: number;
+  totalCookMinutes: number;
+  shoppingReady: boolean;
 } | null {
   const signal = cooking.derivedSignals.find((entry) => entry.signalType === 'meal_execution_readiness');
   const status = signal?.payload.status;
@@ -1693,6 +1871,13 @@ function readMealExecutionReadinessSignal(cooking: CookingMeshContext): {
     highEffortMealCount: typeof signal?.payload.highEffortMealCount === 'number'
       ? signal.payload.highEffortMealCount
       : 0,
+    totalPrepMinutes: typeof signal?.payload.totalPrepMinutes === 'number'
+      ? signal.payload.totalPrepMinutes
+      : 0,
+    totalCookMinutes: typeof signal?.payload.totalCookMinutes === 'number'
+      ? signal.payload.totalCookMinutes
+      : 0,
+    shoppingReady: signal?.payload.shoppingReady === true,
   };
 }
 
@@ -1895,34 +2080,29 @@ function inferTrainingLoadForBatchCook(session: TrainingSession): 'hard' | 'mode
 
 function chooseBatchCookDate(
   training: TrainingMeshContext,
-  secretary: SecretaryMeshContext,
+  cooking: CookingMeshContext,
   content: ContentMeshContext | null,
   weekStart: string,
-): string {
+): string | null {
   const trainingTimezone = resolveTrainingPlanTimezone(training.activePlan);
   const dates = weekIsoDates(DateTime.fromISO(weekStart, { zone: trainingTimezone }));
-  const trainingLoadByDate = new Map(
-    training.sessions.map((session) => {
-      const date = sessionDateForWeek(session, weekStart, trainingTimezone);
-      const load = inferTrainingLoadForBatchCook(session);
-      return [date, load] as const;
-    }),
-  );
-  const busyDates = new Set(
-    readDateList(
-      secretary.derivedSignals
-        .find((signal) => signal.signalType === 'calendar_busy_blocks')
-        ?.payload?.dates,
-    ),
-  );
-  const travelDates = new Set(
-    readDateList(
-      secretary.derivedSignals
-        .find((signal) => signal.signalType === 'travel_window')
-        ?.payload?.dates,
-    ),
-  );
-  const focusDate = secretary.focusBlock?.date ?? null;
+  const today = DateTime.now().setZone(resolveTrainingTimezone(cooking.timezone)).toISODate();
+  const eligibleDates = today ? dates.filter((date) => date >= today) : dates;
+  if (eligibleDates.length === 0) return null;
+  const trainingLoadRank = { light: 1, moderate: 2, hard: 3 } as const;
+  const trainingLoadByDate = new Map<string, 'hard' | 'moderate' | 'light'>();
+  for (const session of training.sessions) {
+    const date = sessionDateForWeek(session, weekStart, trainingTimezone);
+    const load = inferTrainingLoadForBatchCook(session);
+    const existing = trainingLoadByDate.get(date);
+    if (!existing || trainingLoadRank[load] > trainingLoadRank[existing]) {
+      trainingLoadByDate.set(date, load);
+    }
+  }
+  const busyDates = new Set(cooking.availability?.busyDates ?? []);
+  const fragmentedDates = new Set(cooking.availability?.fragmentedDates ?? []);
+  const travelDates = new Set(cooking.availability?.travelDates ?? []);
+  const focusDate = cooking.availability?.focusDate ?? null;
   const filmingDate = content?.filmingRecommendation?.date ?? null;
 
   const scoreLoad = (load: 'hard' | 'moderate' | 'light' | undefined): number => {
@@ -1938,33 +2118,35 @@ function chooseBatchCookDate(
     }
   };
 
-  return dates
+  return eligibleDates
     .slice()
     .sort((lhs, rhs) => {
       const lhsScore =
         scoreLoad(trainingLoadByDate.get(lhs))
         + (travelDates.has(lhs) ? 8 : 0)
         + (busyDates.has(lhs) ? 4 : 0)
+        + (fragmentedDates.has(lhs) ? 4 : 0)
         + (filmingDate === lhs ? 3 : 0)
         + (focusDate === lhs ? 2 : 0);
       const rhsScore =
         scoreLoad(trainingLoadByDate.get(rhs))
         + (travelDates.has(rhs) ? 8 : 0)
         + (busyDates.has(rhs) ? 4 : 0)
+        + (fragmentedDates.has(rhs) ? 4 : 0)
         + (filmingDate === rhs ? 3 : 0)
         + (focusDate === rhs ? 2 : 0);
 
       if (lhsScore !== rhsScore) return lhsScore - rhsScore;
       return lhs.localeCompare(rhs);
-    })[0] ?? dates[0];
+    })[0] ?? null;
 }
 
 function weekIsoDates(start: DateTime): string[] {
   return Array.from({ length: 7 }, (_, index) => start.plus({ days: index }).toISODate()!);
 }
 
-function resolveWeekWindow(weekStart?: string): { start: DateTime; weekStart: string; weekEnd: string } {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function resolveWeekWindow(weekStart?: string, timezone?: string): { start: DateTime; weekStart: string; weekEnd: string } {
+  const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
   const base = weekStart
     ? DateTime.fromISO(weekStart, { zone }).startOf('day')
     : DateTime.now().setZone(zone).startOf('week');
@@ -1974,6 +2156,15 @@ function resolveWeekWindow(weekStart?: string): { start: DateTime; weekStart: st
     weekStart: start.toISODate()!,
     weekEnd: start.plus({ days: 6 }).toISODate()!,
   };
+}
+
+function resolveWeeklyPlanTimezone(userId: number, requested?: string | null): string {
+  if (requested) return resolveTrainingTimezone(requested);
+  try {
+    return resolveTrainingTimezone(getUserTimezoneById(userId));
+  } catch {
+    return resolveTrainingTimezone(config.app.timezone);
+  }
 }
 
 function resolveGatedSkills(user: User | null): string[] {

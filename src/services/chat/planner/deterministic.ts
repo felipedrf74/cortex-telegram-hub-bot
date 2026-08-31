@@ -9,6 +9,7 @@ import {
   foldCalendarText,
 } from '../../calendar-natural-language-parser';
 import { parseContentActionStep } from '../../skills/content/parser';
+import { isCookingLegacyToolIntent } from '../../skills/cooking/parser';
 import { hasPastTenseSignal } from '../../skills/past-tense-detector';
 import { buildStepIdempotencyKey } from '../../skills/step-builder';
 import {
@@ -81,6 +82,8 @@ export function buildDeterministicChatActionPlan(input: ChatPlannerInput): ChatA
   // "refused", they just shouldn't be treated as action requests.
   if (hasPastTenseSignal(input.text)) return null;
   const foldedInput = foldCalendarText(input.text);
+  const explicitCrossSkillOwner = /\b(?:task|tarefa|notification|notificacao|reminder|lembrete|event|evento|meeting|reuniao|calendar|calendario|agenda)\b/.test(foldedInput);
+  if (isCookingLegacyToolIntent(input.text) && !explicitCrossSkillOwner) return null;
   const earlyContentAction = parseContentActionStep(input, foldedInput);
   if ((earlyContentAction?.action === 'content_schedule_work' || earlyContentAction?.action === 'content_publish_now')
     && !/\b(?:na\s+agenda|agenda\s+(?:do|da)\s+(?:google|gmail))\b/.test(foldedInput)

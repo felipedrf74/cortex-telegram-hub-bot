@@ -782,9 +782,9 @@ export const TOOLS: Anthropic.Tool[] = [
       title: { type: 'string' },
       ingredients: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, quantity: { type: 'string' }, unit: { type: 'string' } }, required: ['name', 'quantity', 'unit'] } },
       instructions: { type: 'string' },
-      prep_time_min: { type: 'number' },
-      cook_time_min: { type: 'number' },
-      servings: { type: 'number' },
+      prep_time_min: { type: 'number', minimum: 0, multipleOf: 1 },
+      cook_time_min: { type: 'number', minimum: 0, multipleOf: 1 },
+      servings: { type: 'number', minimum: 1, multipleOf: 1 },
       tags: { type: 'string', description: 'Comma-separated tags e.g. carnivore,quick,high-protein' },
     }, required: ['title', 'ingredients'] },
   },
@@ -793,13 +793,13 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: 'object' as const, properties: {
       tags: { type: 'string', description: 'Filter by tag' },
       search: { type: 'string', description: 'Search title or ingredients' },
-      limit: { type: 'number' },
+      limit: { type: 'number', minimum: 1, maximum: 100, multipleOf: 1 },
     } },
   },
   {
     name: 'cooking_delete_recipe', description: 'Delete a saved recipe',
     input_schema: { type: 'object' as const, properties: {
-      recipe_id: { type: 'number' },
+      recipe_id: { type: 'number', minimum: 1, multipleOf: 1 },
     }, required: ['recipe_id'] },
   },
   {
@@ -809,9 +809,10 @@ export const TOOLS: Anthropic.Tool[] = [
       quantity: { type: 'string' },
       unit: { type: 'string' },
       category: { type: 'string' },
-      expires_at: { type: 'string', description: 'Optional YYYY-MM-DD expiration/freshness date' },
+      expires_at: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Optional YYYY-MM-DD expiration/freshness date' },
       freshness_status: { type: 'string', enum: ['fresh', 'use_soon', 'expired', 'unknown'] },
       availability_status: { type: 'string', enum: ['available', 'low_stock', 'unavailable'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
       notes: { type: 'string' },
     }, required: ['name'] },
   },
@@ -821,13 +822,13 @@ export const TOOLS: Anthropic.Tool[] = [
       search: { type: 'string' },
       category: { type: 'string' },
       include_expired: { type: 'boolean' },
-      limit: { type: 'number' },
+      limit: { type: 'number', minimum: 1, maximum: 250, multipleOf: 1 },
     } },
   },
   {
     name: 'cooking_delete_pantry_item', description: 'Remove a pantry item',
     input_schema: { type: 'object' as const, properties: {
-      item_id: { type: 'number' },
+      item_id: { type: 'number', minimum: 1, multipleOf: 1 },
     }, required: ['item_id'] },
   },
   {
@@ -852,7 +853,7 @@ export const TOOLS: Anthropic.Tool[] = [
       },
       value: { type: 'string', description: 'Preference value; numbers/booleans may be sent as strings' },
       correction: { type: 'boolean', description: 'True when the user is correcting or replacing a previous preference' },
-      confidence: { type: 'number', description: '0-1 confidence from explicit user instruction' },
+      confidence: { type: 'number', minimum: 0, maximum: 1, description: '0-1 confidence from explicit user instruction' },
       source: { type: 'string', description: 'Short source label such as chat_correction' },
     }, required: ['kind', 'value'] },
   },
@@ -863,37 +864,37 @@ export const TOOLS: Anthropic.Tool[] = [
   {
     name: 'cooking_set_meal', description: 'Plan a meal for a specific date and meal type',
     input_schema: { type: 'object' as const, properties: {
-      date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'ISO date YYYY-MM-DD' },
       meal_type: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
       title: { type: 'string', description: 'Meal description' },
-      recipe_id: { type: 'number', description: 'Optional link to saved recipe' },
+      recipe_id: { type: 'number', minimum: 1, multipleOf: 1, description: 'Optional link to saved recipe' },
       notes: { type: 'string' },
     }, required: ['date', 'meal_type', 'title'] },
   },
   {
     name: 'cooking_get_meal_plan', description: 'Get meal plan for a date range',
     input_schema: { type: 'object' as const, properties: {
-      start_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
-      end_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      start_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'ISO date YYYY-MM-DD' },
+      end_date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'ISO date YYYY-MM-DD' },
     }, required: ['start_date', 'end_date'] },
   },
   {
     name: 'cooking_delete_meal', description: 'Remove a planned meal',
     input_schema: { type: 'object' as const, properties: {
-      date: { type: 'string' },
+      date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
       meal_type: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
     }, required: ['date', 'meal_type'] },
   },
   {
     name: 'cooking_generate_shopping_list', description: 'Generate shopping list from meal plan for a week',
     input_schema: { type: 'object' as const, properties: {
-      week_start: { type: 'string', description: 'ISO date YYYY-MM-DD (Monday of the week)' },
+      week_start: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'ISO date YYYY-MM-DD (Monday of the week)' },
     }, required: ['week_start'] },
   },
   {
     name: 'cooking_get_shopping_list', description: 'Get existing shopping list for a week',
     input_schema: { type: 'object' as const, properties: {
-      week_start: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      week_start: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Any ISO date YYYY-MM-DD in the requested week' },
     }, required: ['week_start'] },
   },
 ];

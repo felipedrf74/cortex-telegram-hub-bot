@@ -248,11 +248,32 @@ describe('typed slot adoption — cooking ingredient substitution', () => {
   });
 });
 
+describe('typed slot adoption — Cooking destructive targets', () => {
+  const context = { locale: 'en-US', timezone: 'Europe/Lisbon', nowIso: '2026-05-14T12:00:00+01:00' };
+
+  it.each([
+    ['cooking_delete_recipe', 'Delete recipe 4', { recipeId: 4 }],
+    ['cooking_delete_meal', 'Delete dinner tomorrow', { date: '2026-05-15', mealType: 'dinner' }],
+    ['cooking_delete_pantry_item', 'Delete pantry item 9', { itemId: 9 }],
+  ] as const)('extracts the exact target for %s', (action, text, expectedSlots) => {
+    const entry = findChatActionDefinition('cooking', action)!;
+    const result = getSlotExtractors(entry)[0].extract(text, context);
+    expect(result.slots).toEqual(expectedSlots);
+    expect(result.confidence).toBeGreaterThan(0.9);
+  });
+
+  it('shares the canonical meal-title boundary with deterministic planning', () => {
+    const entry = findChatActionDefinition('cooking', 'cooking_meal_plan')!;
+    const result = getSlotExtractors(entry)[0].extract('Plan dinner tomorrow: no fish', context);
+    expect(result.slots).toEqual({ date: '2026-05-15', mealType: 'dinner' });
+  });
+});
+
 describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () => {
-  it('imports the runtime registry and finds exactly 51 active actions', () => {
+  it('imports the runtime registry and finds exactly 54 active actions', () => {
     const entries = getChatActionRegistry();
-    expect(entries).toHaveLength(51);
-    expect(activeActions(entries)).toHaveLength(51);
+    expect(entries).toHaveLength(54);
+    expect(activeActions(entries)).toHaveLength(54);
   });
 
   it('excludes non-active action definitions from active-action counts', () => {
@@ -266,7 +287,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     expect(activeActions(synthetic).map((entry) => entry.status)).toEqual(['active']);
   });
 
-  it('all 51 active registry actions have typedSlotExtractors (full coverage)', () => {
+  it('all 54 active registry actions have typedSlotExtractors (full coverage)', () => {
     // Adoption history:
     //   Phase 12 batch 63 — 3 (calendar/task/training core)
     //   Phase 13 batch 67 — +5 (mail send/draft, delete_event, etc.)
@@ -275,7 +296,7 @@ describe('typed slot adoption inventory (Phase 15 batch 77: full coverage)', () 
     //     where extraction has no useful NL signal)
     const entries = activeActions(getChatActionRegistry());
     const adopted = entries.filter((e: { typedSlotExtractors?: unknown }) => Array.isArray(e.typedSlotExtractors) && e.typedSlotExtractors.length > 0);
-    expect(adopted.length).toBe(51);
+    expect(adopted.length).toBe(54);
     expect(adopted.length).toBe(entries.length);
   });
 

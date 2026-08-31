@@ -6,8 +6,10 @@ const mockGetRecipeById = vi.fn();
 const mockGetActivePlans = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
-const mockGetEvents = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockGetFocusBlockRecommendation = vi.fn();
+const mockGetUserTimezoneById = vi.fn(() => 'Europe/Lisbon');
+const mockBuildCookingPreferenceReadModel = vi.fn();
 
 vi.mock('../../src/config', () => ({
   config: {
@@ -53,13 +55,33 @@ vi.mock('../../src/services/training-plans', () => ({
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
-  getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
   hasWritableCalendarForUser: vi.fn(),
 }));
 
 vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
 }));
+
+vi.mock('../../src/services/cooking-preferences', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cooking-preferences')>(
+    '../../src/services/cooking-preferences',
+  );
+  return {
+    ...actual,
+    buildCookingPreferenceReadModel: (...args: unknown[]) => mockBuildCookingPreferenceReadModel(...args),
+  };
+});
+
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return {
+    ...actual,
+    getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+  };
+});
 
 import { readCookingMeshContext } from '../../src/services/cross-agent-learning';
 
@@ -71,8 +93,17 @@ describe('readCookingMeshContext', () => {
     mockGetActivePlans.mockReset();
     mockGetWeeksForPlan.mockReset();
     mockGetSessionsForWeek.mockReset();
-    mockGetEvents.mockReset();
+    mockGetEventsWithDiagnostics.mockReset();
     mockGetFocusBlockRecommendation.mockReset();
+    mockGetUserTimezoneById.mockReset();
+    mockBuildCookingPreferenceReadModel.mockReset();
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mockBuildCookingPreferenceReadModel.mockReturnValue({
+      profile: {},
+      memories: [],
+      summary: '',
+      skillMemorySummary: '',
+    });
 
     mockGetActivePlans.mockReturnValue([
       {
@@ -130,7 +161,13 @@ describe('readCookingMeshContext', () => {
       created_at: '2026-04-13T08:00:00.000Z',
       updated_at: '2026-04-13T08:00:00.000Z',
     }));
-    mockGetEvents.mockResolvedValue([]);
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
     mockGetFocusBlockRecommendation.mockResolvedValue(null);
   });
 
@@ -259,40 +296,41 @@ describe('readCookingMeshContext', () => {
       created_at: '2026-04-13T08:00:00.000Z',
       updated_at: '2026-04-13T08:00:00.000Z',
     }));
-    mockGetEvents.mockResolvedValue([
-      {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [{
         id: 'evt-1',
         title: 'Travel to Porto',
         summary: 'Travel to Porto',
         start: '2026-04-13T09:00:00Z',
         end: '2026-04-13T11:00:00Z',
         source: 'outlook',
-      },
-      {
+      }, {
         id: 'evt-2',
         title: 'Client review',
         summary: 'Client review',
         start: '2026-04-14T10:00:00Z',
         end: '2026-04-14T11:00:00Z',
         source: 'outlook',
-      },
-      {
+      }, {
         id: 'evt-3',
         title: 'Content block',
         summary: 'Content block',
         start: '2026-04-14T13:00:00Z',
         end: '2026-04-14T14:00:00Z',
         source: 'outlook',
-      },
-      {
+      }, {
         id: 'evt-4',
         title: 'Admin block',
         summary: 'Admin block',
         start: '2026-04-14T16:00:00Z',
         end: '2026-04-14T16:30:00Z',
         source: 'outlook',
-      },
-    ]);
+      }],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
 
     const context = await readCookingMeshContext({ userId: 42, weekStart: '2026-04-13' });
     const executionReadiness = context.derivedSignals.find((signal) => signal.signalType === 'meal_execution_readiness');
@@ -348,6 +386,239 @@ describe('readCookingMeshContext', () => {
       aisleCount: 3,
       estimatedSpendBrl: 37,
     });
+  });
+
+  it('marks calendar evidence unavailable when the scoped provider read rejects', async () => {
+    mockGetMealPlan.mockReturnValue([]);
+    mockGetShoppingList.mockReturnValue(null);
+    mockGetEventsWithDiagnostics.mockRejectedValueOnce(new Error('provider timeout'));
+
+    const context = await readCookingMeshContext({ userId: 42, tenantId: 42, weekStart: '2026-04-13' });
+
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledWith(
+      '2026-04-12T23:00:00.000Z',
+      '2026-04-19T22:59:59.999Z',
+      42,
+    );
+    expect(context.calendar).toEqual({
+      status: 'unavailable',
+      warningCodes: ['COOKING_CALENDAR_READ_FAILED'],
+    });
+  });
+
+  it('treats a missing optional calendar integration as verified empty availability', async () => {
+    mockGetMealPlan.mockReturnValue([meal(1, '2026-04-13')]);
+    mockGetShoppingList.mockReturnValue(null);
+    mockGetEventsWithDiagnostics.mockResolvedValueOnce({
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+      warnings: ['No calendar integration is connected.'],
+      sources: { configured: [], fulfilled: [], failed: [] },
+    });
+
+    const context = await readCookingMeshContext({ userId: 42, tenantId: 42, weekStart: '2026-04-13' });
+
+    expect(context.calendar).toEqual({
+      status: 'not_configured',
+      warningCodes: [],
+    });
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'meal_execution_readiness')).toBe(true);
+  });
+
+  it('uses the user timezone for the Cooking week and calendar-to-day grouping', async () => {
+    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+    mockGetMealPlan.mockReturnValue([meal(1, '2026-04-13')]);
+    mockGetShoppingList.mockReturnValue({
+      id: 1,
+      user_id: 42,
+      week_start: '2026-04-13',
+      status: 'draft',
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+      items: [{ name: 'Rice', quantity: '1', unit: 'kg', checked: false, aisle: 'Grains' }],
+    });
+    mockGetRecipeById.mockReturnValue({
+      id: 9,
+      user_id: 42,
+      title: 'Long prep bowl',
+      ingredients: [{ name: 'Rice', quantity: '1', unit: 'cup' }],
+      prep_time_min: 30,
+      cook_time_min: 30,
+    });
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        { id: '1', summary: 'Prep', start: '2026-04-14T05:00:00.000Z', end: '2026-04-14T05:30:00.000Z', source: 'outlook' },
+        { id: '2', summary: 'Call', start: '2026-04-14T06:00:00.000Z', end: '2026-04-14T06:30:00.000Z', source: 'outlook' },
+        { id: '3', summary: 'Admin', start: '2026-04-14T07:00:00.000Z', end: '2026-04-14T07:30:00.000Z', source: 'outlook' },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
+
+    const context = await readCookingMeshContext({ userId: 42, tenantId: 42, weekStart: '2026-04-13' });
+
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledWith(
+      '2026-04-13T10:00:00.000Z',
+      '2026-04-20T09:59:59.999Z',
+      42,
+    );
+    expect(context.timezone).toBe('Pacific/Honolulu');
+    expect(context.availability?.busyDates).toEqual(['2026-04-13']);
+    expect(context.derivedSignals.find((signal) => signal.signalType === 'meal_execution_readiness')?.payload)
+      .toMatchObject({ prepPressureDates: ['2026-04-13'] });
+  });
+
+  it('withholds persisted meals that conflict with current safety preferences from coverage and output', async () => {
+    mockBuildCookingPreferenceReadModel.mockReturnValue({
+      profile: { allergies: ['peanut'] },
+      memories: [],
+      summary: 'Allergy: peanut',
+      skillMemorySummary: '',
+    });
+    mockGetMealPlan.mockReturnValue([
+      meal(1, '2026-04-13'),
+      meal(2, '2026-04-15'),
+    ]);
+    mockGetShoppingList.mockReturnValue({
+      id: 1,
+      user_id: 42,
+      week_start: '2026-04-13',
+      status: 'draft',
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+      items: [
+        { name: 'Peanut oil', quantity: '1', unit: 'bottle', checked: false, aisle: 'Pantry' },
+        { name: 'Rice', quantity: '1', unit: 'kg', checked: false, aisle: 'Grains' },
+      ],
+    });
+    mockGetRecipeById.mockImplementation((_userId: number, recipeId: number) => ({
+      id: recipeId,
+      user_id: 42,
+      title: recipeId === 1 ? 'Peanut noodle bowl' : 'Lemon rice bowl',
+      ingredients: recipeId === 1
+        ? [{ name: 'Peanut butter', quantity: '2', unit: 'tbsp' }]
+        : [{ name: 'Rice', quantity: '1', unit: 'cup' }],
+      instructions: 'Combine and serve.',
+      prep_time_min: 10,
+      cook_time_min: 20,
+      servings: 2,
+      tags: null,
+      source: null,
+      protein: null,
+      fat: null,
+      carbs: null,
+      calories: null,
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+    }));
+
+    const context = await readCookingMeshContext({
+      userId: 42,
+      tenantId: 700,
+      weekStart: '2026-04-13',
+    });
+    const coverage = context.derivedSignals.find((signal) => signal.signalType === 'meal_plan_window');
+
+    expect(mockBuildCookingPreferenceReadModel).toHaveBeenCalledWith(42, 700);
+    expect(context.meals.map((entry) => entry.id)).toEqual([2]);
+    expect(context.shoppingList?.items.map((item) => item.name)).toEqual(['Rice']);
+    expect(context.sourceHealth?.safety).toEqual({
+      status: 'degraded',
+      warningCodes: [
+        'COOKING_SAVED_MEAL_ALLERGY_CONFLICT',
+        'COOKING_SAVED_MEAL_SAFETY_WITHHELD',
+        'COOKING_SHOPPING_LIST_ALLERGY_CONFLICT',
+      ],
+      excludedMealCount: 1,
+      excludedMealDates: ['2026-04-13'],
+      excludedMeals: [{ date: '2026-04-13', reason: 'preference_conflict' }],
+    });
+    expect(coverage?.payload).toMatchObject({
+      coveredDays: ['2026-04-15'],
+      totalMeals: 1,
+      missingDates: expect.arrayContaining(['2026-04-13']),
+    });
+  });
+
+  it('withholds all persisted meals and suppresses coverage when the current safety profile is unavailable', async () => {
+    mockGetMealPlan.mockReturnValue([meal(1, '2026-04-13')]);
+    mockGetShoppingList.mockReturnValue(null);
+    mockBuildCookingPreferenceReadModel.mockImplementation(() => {
+      throw new Error('preference store unavailable');
+    });
+
+    const context = await readCookingMeshContext({
+      userId: 42,
+      tenantId: 700,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context.meals).toEqual([]);
+    expect(context.sourceHealth?.safety).toEqual({
+      status: 'unavailable',
+      warningCodes: ['COOKING_SAFETY_PROFILE_UNAVAILABLE'],
+      excludedMealCount: 1,
+      excludedMealDates: ['2026-04-13'],
+    });
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'meal_plan_window')).toBe(false);
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'meal_execution_readiness')).toBe(false);
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'grocery_spend_forecast')).toBe(false);
+  });
+
+  it('records failed meal and shopping sources instead of publishing valid-empty signals', async () => {
+    mockGetMealPlan.mockImplementation(() => { throw new Error('meal db unavailable'); });
+    mockGetShoppingList.mockImplementation(() => { throw new Error('shopping db unavailable'); });
+
+    const context = await readCookingMeshContext({ userId: 42, tenantId: 42, weekStart: '2026-04-13' });
+
+    expect(context.sourceHealth).toMatchObject({
+      mealPlan: { status: 'unavailable', warningCodes: ['COOKING_MEAL_PLAN_READ_FAILED'] },
+      shoppingList: { status: 'unavailable', warningCodes: ['COOKING_SHOPPING_LIST_READ_FAILED'] },
+      recipes: { status: 'unavailable', warningCodes: ['COOKING_RECIPE_CONTEXT_BLOCKED_BY_MEAL_PLAN'] },
+      focus: { status: 'ready', warningCodes: [] },
+      safety: {
+        status: 'unavailable',
+        warningCodes: ['COOKING_SAFETY_CONTEXT_BLOCKED_BY_MEAL_PLAN'],
+        excludedMealCount: 0,
+        excludedMealDates: [],
+      },
+    });
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'meal_plan_window')).toBe(false);
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'meal_execution_readiness')).toBe(false);
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'grocery_spend_forecast')).toBe(false);
+  });
+
+  it('exposes linked-recipe and Secretary focus failures and suppresses prep readiness', async () => {
+    mockGetMealPlan.mockReturnValue([meal(1, '2026-04-13')]);
+    mockGetShoppingList.mockReturnValue(null);
+    mockGetRecipeById.mockImplementation(() => { throw new Error('recipe read failed'); });
+    mockGetFocusBlockRecommendation.mockRejectedValueOnce(new Error('focus read failed'));
+
+    const context = await readCookingMeshContext({ userId: 42, tenantId: 42, weekStart: '2026-04-13' });
+
+    expect(context.sourceHealth?.recipes).toEqual({
+      status: 'unavailable',
+      warningCodes: ['COOKING_RECIPE_READ_FAILED'],
+    });
+    expect(context.sourceHealth?.focus).toEqual({
+      status: 'unavailable',
+      warningCodes: ['COOKING_FOCUS_READ_FAILED'],
+    });
+    expect(context.meals).toEqual([]);
+    expect(context.sourceHealth?.safety).toEqual({
+      status: 'degraded',
+      warningCodes: [
+        'COOKING_SAVED_MEAL_RECIPE_UNVERIFIED',
+        'COOKING_SAVED_MEAL_SAFETY_WITHHELD',
+      ],
+      excludedMealCount: 1,
+      excludedMealDates: ['2026-04-13'],
+      excludedMeals: [{ date: '2026-04-13', reason: 'unverified_recipe' }],
+    });
+    expect(context.derivedSignals.some((signal) => signal.signalType === 'meal_execution_readiness')).toBe(false);
   });
 });
 

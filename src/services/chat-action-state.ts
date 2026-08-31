@@ -385,6 +385,104 @@ export function markPendingChatActionNeedsUserFollowup(input: {
   return Number(result.changes ?? 0);
 }
 
+/**
+ * Advance an exact durable draft to confirmation without claiming that its
+ * destructive mutation has executed. Completion remains verifier-owned.
+ */
+export function markPendingChatActionNeedsConfirmation(input: {
+  userId: number;
+  tenantId: number;
+  conversationId: string;
+  skill: ChatActionSkill;
+  action: ChatActionName;
+  pendingActionId: string;
+  collectedSlots: Record<string, unknown>;
+  nowIso?: string;
+}): number {
+  const now = input.nowIso ?? new Date().toISOString();
+  const result = getDb().prepare(`
+    UPDATE chat_pending_actions
+    SET status = 'needs_confirmation',
+        validation_state = 'valid',
+        confirmation_state = 'required',
+        collected_slots_json = ?,
+        missing_slots_json = '[]',
+        updated_at = ?
+    WHERE id = ?
+      AND user_id = ?
+      AND tenant_id = ?
+      AND conversation_id = ?
+      AND skill = ?
+      AND action = ?
+      AND status IN ('needs_input', 'needs_confirmation', 'executable')
+      AND cancellation_state = 'active'
+  `).run(
+    JSON.stringify(input.collectedSlots),
+    now,
+    input.pendingActionId,
+    input.userId,
+    input.tenantId,
+    input.conversationId,
+    input.skill,
+    input.action,
+  );
+  return Number(result.changes ?? 0);
+}
+
+/**
+ * Close a durable pending action only after its mutation has been verified.
+ * Keeping this scoped to the exact conversation/skill/action prevents a
+ * successful Cooking continuation from completing unrelated pending work.
+ */
+export function completePendingChatAction(input: {
+  userId: number;
+  tenantId: number;
+  conversationId: string;
+  skill: ChatActionSkill;
+  action: ChatActionName;
+  pendingActionId?: string;
+  collectedSlots?: Record<string, unknown>;
+  nowIso?: string;
+}): number {
+  const now = input.nowIso ?? new Date().toISOString();
+  const collectedSlots = input.collectedSlots ? JSON.stringify(input.collectedSlots) : null;
+  const exactPendingClause = input.pendingActionId ? 'AND id = ?' : '';
+  const eligibleStatuses = input.pendingActionId
+    ? "('needs_input', 'needs_confirmation', 'executable', 'needs_user_followup')"
+    : "('needs_input', 'needs_confirmation', 'executable')";
+  const params: Array<string | number | null> = [
+    collectedSlots,
+    now,
+    input.userId,
+    input.tenantId,
+    input.conversationId,
+    input.skill,
+    input.action,
+  ];
+  if (input.pendingActionId) params.push(input.pendingActionId);
+  const result = getDb().prepare(`
+    UPDATE chat_pending_actions
+    SET status = 'completed',
+        validation_state = 'valid',
+        confirmation_state = CASE
+          WHEN confirmation_state = 'required' THEN 'confirmed'
+          ELSE confirmation_state
+        END,
+        collected_slots_json = COALESCE(?, collected_slots_json),
+        missing_slots_json = '[]',
+        updated_at = ?
+    WHERE user_id = ?
+      AND tenant_id = ?
+      AND conversation_id = ?
+      AND skill = ?
+      AND action = ?
+      AND status IN ${eligibleStatuses}
+      ${exactPendingClause}
+      AND cancellation_state = 'active'
+  `).run(...params);
+  return Number(result.changes ?? 0);
+}
+
 export function expireStalePendingChatActionsForJob(nowIso = new Date().toISOString()): number {
   return expireStalePendingChatActions(nowIso);
 }
@@ -577,7 +675,7 @@ function expireStalePendingChatActions(nowIso?: string): number {
       WHERE id IN (
         SELECT id
         FROM chat_pending_actions
-        WHERE status IN ('needs_input', 'needs_confirmation', 'executable')
+        WHERE status IN ('needs_input', 'needs_confirmation', 'executable', 'needs_user_followup')
           AND expires_at <= ?
         ORDER BY expires_at ASC
         LIMIT 500

@@ -7,7 +7,7 @@ import { executeReminderSetStep } from '../../skills/reminders/executor';
 import { executeMailInboxSummaryStep, executeMailUnreadCountStep, executeMailWriteStep } from '../../skills/mail/executor';
 import { executeAddSubtasksToTaskStep, executeTaskCreateStep, executeTaskMutationStep, executeTaskWithSubtasksStep } from '../../skills/tasks/executor';
 import { executeContentAgencyStep, executeContentPipelineHandoffStep, executeContentPipelineStageTransitionStep, executeContentScheduleWorkStep } from '../../skills/content/executor';
-import { executeCookingGroceryListStep, executeCookingMealPlanStep, executeCookingSubstituteIngredientStep, executeCookingSupportStep } from '../../skills/cooking/executor';
+import { executeCookingDeleteStep, executeCookingGroceryListStep, executeCookingMealPlanStep, executeCookingSubstituteIngredientStep, executeCookingSupportStep } from '../../skills/cooking/executor';
 import { executeFinanceCategorizeReceiptStep, executeFinancePaymentActionStep, executeFinanceReminderStep, executeFinanceSummaryStep } from '../../skills/finance/executor';
 import { executeConnectionsReconnectGuidanceStep, executeConnectionsRetrySyncStep, executeConnectionsStatusStep } from '../../skills/connections/executor';
 import { executeTrainingCoachReportStep, executeTrainingExplainSessionStep, executeTrainingPlanCreateStep, executeTrainingReflowStep } from '../../skills/training/executor';
@@ -44,6 +44,9 @@ const CHAT_STEP_EXECUTORS: Partial<Record<ChatActionName, ChatStepExecutor>> = {
   content_pipeline_stage_transition: (step, context) => executeContentPipelineStageTransitionStep(step, context.plan, context.input, context.persistRuns),
   cooking_grocery_list: (step, context) => executeCookingGroceryListStep(step, context.plan, context.input, context.persistRuns),
   cooking_meal_plan: (step, context) => executeCookingMealPlanStep(step, context.plan, context.input, context.persistRuns),
+  cooking_delete_recipe: (step, context) => executeCookingDeleteStep(step, context.plan, context.input, context.persistRuns),
+  cooking_delete_meal: (step, context) => executeCookingDeleteStep(step, context.plan, context.input, context.persistRuns),
+  cooking_delete_pantry_item: (step, context) => executeCookingDeleteStep(step, context.plan, context.input, context.persistRuns),
   cooking_substitute_ingredient: (step, context) => executeCookingSubstituteIngredientStep(step, context.plan, context.input, context.persistRuns),
   cooking_meal_support: (step, context) => executeCookingSupportStep(step, context.input),
   cooking_fueling_support: (step, context) => executeCookingSupportStep(step, context.input),

@@ -7,21 +7,22 @@
  * All data is per-user via user_id.
  */
 
+import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import {
   cookingPrivateScopePredicate,
   cookingScopeForInsert,
   cookingScopeParams,
-  ensureCookingTenantScopeColumns,
   resolveCookingTenantId,
 } from './cooking-tenant-scope';
 import { buildCookingPreferenceReadModel } from './cooking-preferences';
-import { assertCookingSafetyText } from './cooking-safety-policy';
+import { assertCookingSafetyText, evaluateCookingSafetyTextForProfile } from './cooking-safety-policy';
 import {
   suggestCookingSubstitutionsForIngredient,
   type CookingSubstitutionSuggestion,
 } from './cooking-intelligence';
+import { getUserTimezoneById } from './user-service';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -103,6 +104,12 @@ export interface ShoppingList {
   status: string;
   created_at: string;
   updated_at: string;
+  safetyIssues?: ShoppingListSafetyIssue[];
+}
+
+export interface ShoppingListSafetyIssue {
+  code: 'ALLERGY_CONFLICT' | 'DIETARY_RESTRICTION_CONFLICT';
+  itemName: string;
 }
 
 export interface ShoppingItem {
@@ -202,12 +209,19 @@ export interface MealPlanSubstitutionResult {
   };
 }
 
+export class CookingRecipeDeleteConflictError extends Error {
+  readonly code = 'COOKING_RECIPE_IN_USE';
+
+  constructor(readonly recipeId: number) {
+    super('COOKING_RECIPE_IN_USE: recipe is referenced by an active meal plan');
+    this.name = 'CookingRecipeDeleteConflictError';
+  }
+}
+
 // ── Recipe CRUD ────────────────────────────────────────────────────
 
 function getCookingDb() {
-  const db = getDb();
-  ensureCookingTenantScopeColumns(db);
-  return db;
+  return getDb();
 }
 
 export function addRecipe(
@@ -229,10 +243,22 @@ export function addRecipe(
   },
 ): Recipe {
   const db = getCookingDb();
+  const normalizedTitle = normalizeRecipeTitle(title);
+  const normalizedIngredients = normalizeRecipeIngredients(ingredients);
+  validateRecipeOptionalText(opts?.instructions, 'instructions');
+  validateRecipeOptionalText(opts?.tags, 'tags');
+  validateRecipeOptionalText(opts?.source, 'source');
+  validateRecipeNonNegativeInteger(opts?.prepTime, 'prepTime');
+  validateRecipeNonNegativeInteger(opts?.cookTime, 'cookTime');
+  validateRecipeServings(opts?.servings);
+  validateRecipeNutrition(opts?.protein, 'protein');
+  validateRecipeNutrition(opts?.fat, 'fat');
+  validateRecipeNutrition(opts?.carbs, 'carbs');
+  validateRecipeNutrition(opts?.calories, 'calories');
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'active');
   assertCookingSafeRecipe(userId, scope.tenantId, {
-    title,
-    ingredients,
+    title: normalizedTitle,
+    ingredients: normalizedIngredients,
     instructions: opts?.instructions,
     tags: opts?.tags,
     source: opts?.source,
@@ -255,7 +281,7 @@ export function addRecipe(
     scope.createdBy,
     scope.updatedBy,
     scope.auditMetadataJson,
-    title, JSON.stringify(ingredients),
+    normalizedTitle, JSON.stringify(normalizedIngredients),
     opts?.instructions ?? null,
     opts?.prepTime ?? null,
     opts?.cookTime ?? null,
@@ -268,7 +294,7 @@ export function addRecipe(
     opts?.calories ?? null,
   );
   const row = db.prepare('SELECT * FROM recipes WHERE rowid = last_insert_rowid()').get() as any;
-  logger.info({ userId, title }, 'Recipe added');
+  logger.info({ userId, title: normalizedTitle }, 'Recipe added');
   return parseRecipe(row);
 }
 
@@ -289,7 +315,7 @@ export function getRecipes(
     params.push(`%${opts.search}%`, `%${opts.search}%`);
   }
 
-  const limit = opts?.limit ?? 20;
+  const limit = normalizeCookingReadLimit(opts?.limit, 20, 100, 'COOKING_RECIPE_INVALID_LIMIT');
   params.push(limit);
 
   const rows = db.prepare(
@@ -299,12 +325,46 @@ export function getRecipes(
   return rows.map(parseRecipe);
 }
 
+/**
+ * Returns false when the scoped recipe does not exist. A recipe that exists
+ * but is still referenced is a distinct conflict so HTTP/tool adapters can
+ * return an actionable response instead of misreporting it as missing.
+ */
 export function deleteRecipe(userId: number, recipeId: number, tenantId?: number | null): boolean {
   const db = getCookingDb();
-  const result = db.prepare(
-    `DELETE FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
-  ).run(recipeId, ...cookingScopeParams(userId, tenantId));
-  return result.changes > 0;
+  const scopeParams = cookingScopeParams(userId, tenantId);
+  const todayIso = cookingTodayIso(userId);
+  return db.transaction(() => {
+    const recipe = db.prepare(
+      `SELECT id FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+    ).get(recipeId, ...scopeParams) as { id: number } | undefined;
+    if (!recipe) return false;
+
+    const activeReference = db.prepare(
+      `SELECT id
+       FROM meal_plans
+       WHERE recipe_id = ?
+         AND date >= ?
+         AND ${cookingPrivateScopePredicate()}
+       LIMIT 1`,
+    ).get(recipeId, todayIso, ...scopeParams) as { id: number } | undefined;
+    if (activeReference) throw new CookingRecipeDeleteConflictError(recipeId);
+
+    // Historical meal records keep their title and notes, but no longer pin a
+    // deleted recipe forever or retain a dangling foreign-key reference.
+    db.prepare(
+      `UPDATE meal_plans
+       SET recipe_id = NULL, updated_by = ?
+       WHERE recipe_id = ?
+         AND date < ?
+         AND ${cookingPrivateScopePredicate()}`,
+    ).run(userId, recipeId, todayIso, ...scopeParams);
+
+    const result = db.prepare(
+      `DELETE FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+    ).run(recipeId, ...scopeParams);
+    return result.changes > 0;
+  })();
 }
 
 /**
@@ -350,9 +410,25 @@ export function updateRecipe(
   const db = getCookingDb();
   const current = getRecipeById(userId, recipeId, tenantId);
   if (!current) return null;
+  const normalizedTitle = updates.title === undefined
+    ? undefined
+    : normalizeRecipeTitle(updates.title);
+  const normalizedIngredients = updates.ingredients === undefined
+    ? undefined
+    : normalizeRecipeIngredients(updates.ingredients);
+  validateRecipeOptionalText(updates.instructions, 'instructions');
+  validateRecipeOptionalText(updates.tags, 'tags');
+  validateRecipeOptionalText(updates.source, 'source');
+  validateRecipeNonNegativeInteger(updates.prepTime, 'prepTime');
+  validateRecipeNonNegativeInteger(updates.cookTime, 'cookTime');
+  validateRecipeServings(updates.servings);
+  validateRecipeNutrition(updates.protein, 'protein');
+  validateRecipeNutrition(updates.fat, 'fat');
+  validateRecipeNutrition(updates.carbs, 'carbs');
+  validateRecipeNutrition(updates.calories, 'calories');
   assertCookingSafeRecipe(userId, resolveCookingTenantId(userId, tenantId), {
-    title: updates.title ?? current.title,
-    ingredients: updates.ingredients ?? current.ingredients,
+    title: normalizedTitle ?? current.title,
+    ingredients: normalizedIngredients ?? current.ingredients,
     instructions: updates.instructions === undefined ? current.instructions : updates.instructions,
     tags: updates.tags === undefined ? current.tags : updates.tags,
     source: updates.source === undefined ? current.source : updates.source,
@@ -365,11 +441,11 @@ export function updateRecipe(
 
   if (updates.title !== undefined) {
     setParts.push('title = ?');
-    params.push(updates.title);
+    params.push(normalizedTitle);
   }
   if (updates.ingredients !== undefined) {
     setParts.push('ingredients = ?');
-    params.push(JSON.stringify(updates.ingredients));
+    params.push(JSON.stringify(normalizedIngredients));
   }
   if (updates.instructions !== undefined) {
     setParts.push('instructions = ?');
@@ -436,13 +512,29 @@ export function setMealPlan(
   opts?: { recipeId?: number; notes?: string; tenantId?: number | null },
 ): MealPlanWriteResult {
   const db = getCookingDb();
+  const normalizedDate = normalizeIsoDate(date, 'COOKING_MEAL_PLAN_INVALID_DATE', 'date');
+  const normalizedMealType = normalizeMealType(mealType);
+  const normalizedTitle = normalizeMealPlanTitle(title);
+  if (opts?.notes !== undefined && typeof opts.notes !== 'string') {
+    throw new Error('COOKING_MEAL_PLAN_INVALID_NOTES: notes must be a string when provided');
+  }
   const scope = cookingScopeForInsert(userId, opts?.tenantId, 'user_private', 'planned');
-  const linkedRecipe = opts?.recipeId ? getRecipeById(userId, opts.recipeId, opts?.tenantId) : null;
+  const requestedRecipeId = opts?.recipeId;
+  if (requestedRecipeId !== undefined && requestedRecipeId !== null
+      && (!Number.isInteger(requestedRecipeId) || requestedRecipeId <= 0)) {
+    throw new Error('COOKING_MEAL_PLAN_INVALID_RECIPE_ID: recipeId must be a positive integer');
+  }
+  const linkedRecipe = requestedRecipeId === undefined || requestedRecipeId === null
+    ? null
+    : getRecipeById(userId, requestedRecipeId, opts?.tenantId);
+  if (requestedRecipeId !== undefined && requestedRecipeId !== null && !linkedRecipe) {
+    throw new Error('COOKING_MEAL_PLAN_RECIPE_NOT_FOUND: recipeId must reference an active recipe in the current scope');
+  }
   if (linkedRecipe) {
     assertCookingSafeRecipe(userId, scope.tenantId, linkedRecipe);
   }
   assertCookingSafetyText(userId, scope.tenantId, 'meal_plan', [
-    title,
+    normalizedTitle,
     opts?.notes,
   ]);
 
@@ -473,7 +565,7 @@ export function setMealPlan(
   }
   const existingScope = db.prepare(
     'SELECT tenant_id FROM meal_plans WHERE tenant_id = ? AND user_id = ? AND date = ? AND meal_type = ?',
-  ).get(scope.tenantId, userId, date, mealType) as { tenant_id: number | null } | undefined;
+  ).get(scope.tenantId, userId, normalizedDate, normalizedMealType) as { tenant_id: number | null } | undefined;
   if (existingScope && Number(existingScope.tenant_id) !== scope.tenantId) {
     throw new Error('COOKING_SCOPE_CONFLICT: meal plan slot belongs to a different tenant');
   }
@@ -505,32 +597,39 @@ export function setMealPlan(
     scope.createdBy,
     scope.updatedBy,
     scope.auditMetadataJson,
-    date,
-    mealType,
-    opts?.recipeId ?? null,
-    title,
+    normalizedDate,
+    normalizedMealType,
+    linkedRecipe?.id ?? null,
+    normalizedTitle,
     opts?.notes ?? null,
   );
 
   const persisted = db.prepare(
     `SELECT * FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
-  ).get(date, mealType, ...cookingScopeParams(userId, opts?.tenantId)) as MealPlan;
+  ).get(normalizedDate, normalizedMealType, ...cookingScopeParams(userId, opts?.tenantId)) as MealPlan;
 
   return issues.length > 0 ? { ...persisted, issues } : persisted;
 }
 
 export function getMealPlan(userId: number, startDate: string, endDate: string, tenantId?: number | null): MealPlan[] {
   const db = getCookingDb();
+  const normalizedStartDate = normalizeIsoDate(startDate, 'COOKING_MEAL_PLAN_INVALID_DATE', 'startDate');
+  const normalizedEndDate = normalizeIsoDate(endDate, 'COOKING_MEAL_PLAN_INVALID_DATE', 'endDate');
+  if (normalizedStartDate > normalizedEndDate) {
+    throw new Error('COOKING_MEAL_PLAN_INVALID_DATE_RANGE: startDate must not be after endDate');
+  }
   return db.prepare(
     `SELECT * FROM meal_plans WHERE ${cookingPrivateScopePredicate()} AND date >= ? AND date <= ? ORDER BY date, meal_type`,
-  ).all(...cookingScopeParams(userId, tenantId), startDate, endDate) as MealPlan[];
+  ).all(...cookingScopeParams(userId, tenantId), normalizedStartDate, normalizedEndDate) as MealPlan[];
 }
 
 export function deleteMealPlan(userId: number, date: string, mealType: string, tenantId?: number | null): boolean {
   const db = getCookingDb();
+  const normalizedDate = normalizeIsoDate(date, 'COOKING_MEAL_PLAN_INVALID_DATE', 'date');
+  const normalizedMealType = normalizeMealType(mealType);
   const result = db.prepare(
     `DELETE FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
-  ).run(date, mealType, ...cookingScopeParams(userId, tenantId));
+  ).run(normalizedDate, normalizedMealType, ...cookingScopeParams(userId, tenantId));
   return result.changes > 0;
 }
 
@@ -539,6 +638,8 @@ export function applyMealPlanSubstitution(
   input: MealPlanSubstitutionInput,
   tenantId?: number | null,
 ): MealPlanSubstitutionResult {
+  const normalizedDate = normalizeIsoDate(input.date, 'COOKING_SUBSTITUTION_INVALID_DATE', 'date');
+  const normalizedMealType = normalizeMealType(input.mealType, 'COOKING_SUBSTITUTION_INVALID_MEAL_TYPE');
   const originalIngredient = normalizeRequiredText(input.originalIngredient, 'originalIngredient');
   const suggestedIngredient = normalizeRequiredText(input.suggestedIngredient, 'suggestedIngredient');
   if (normalizePantryName(originalIngredient) === normalizePantryName(suggestedIngredient)) {
@@ -547,8 +648,8 @@ export function applyMealPlanSubstitution(
   const resolvedTenantId = resolveCookingTenantId(userId, tenantId);
   assertCookingSafetyText(userId, resolvedTenantId, 'meal_plan_substitution', [suggestedIngredient]);
 
-  const meals = getMealPlan(userId, input.date, input.date, tenantId);
-  const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
+  const meals = getMealPlan(userId, normalizedDate, normalizedDate, tenantId);
+  const meal = meals.find((candidate) => candidate.meal_type === normalizedMealType) ?? null;
   const baseSubstitution = {
     originalIngredient,
     suggestedIngredient,
@@ -611,43 +712,50 @@ export function applyMealPlanSubstitution(
     };
   }
 
-  const updatedRecipe = addRecipe(userId, replaceIngredientText(recipe.title, originalIngredient, suggestedIngredient), updatedIngredients, {
-    instructions: recipe.instructions == null
-      ? undefined
-      : replaceIngredientText(recipe.instructions, originalIngredient, suggestedIngredient),
-    prepTime: recipe.prep_time_min ?? undefined,
-    cookTime: recipe.cook_time_min ?? undefined,
-    servings: recipe.servings,
-    tags: recipe.tags ?? undefined,
-    source: recipe.source ?? undefined,
-    protein: recipe.protein,
-    fat: recipe.fat,
-    carbs: recipe.carbs,
-    calories: recipe.calories,
-    tenantId,
-  });
-  const updatedMeal = setMealPlan(userId, meal.date, meal.meal_type, replaceIngredientText(meal.title, originalIngredient, suggestedIngredient), {
-    recipeId: updatedRecipe.id,
-    notes: meal.notes == null ? undefined : replaceIngredientText(meal.notes, originalIngredient, suggestedIngredient),
-    tenantId,
-  });
-  const shoppingList = input.updateShoppingList === false
+  const shoppingWeekStart = input.updateShoppingList === false
     ? null
-    : generateShoppingList(userId, weekStartForDate(input.date), tenantId);
+    : weekStartForDate(normalizedDate);
+  const db = getCookingDb();
 
-  return {
-    applied: true,
-    meal: updatedMeal,
-    recipe: updatedRecipe,
-    shoppingList,
-    substitution: {
-      ...baseSubstitution,
-      affectedMealId: meal.id,
-      sourceRecipeId: recipe.id,
-      affectedRecipeId: updatedRecipe.id,
-      shoppingListUpdated: Boolean(shoppingList),
-    },
-  };
+  return db.transaction((): MealPlanSubstitutionResult => {
+    const updatedRecipe = addRecipe(userId, replaceIngredientText(recipe.title, originalIngredient, suggestedIngredient), updatedIngredients, {
+      instructions: recipe.instructions == null
+        ? undefined
+        : replaceIngredientText(recipe.instructions, originalIngredient, suggestedIngredient),
+      prepTime: recipe.prep_time_min ?? undefined,
+      cookTime: recipe.cook_time_min ?? undefined,
+      servings: recipe.servings,
+      tags: recipe.tags ?? undefined,
+      source: recipe.source ?? undefined,
+      protein: recipe.protein,
+      fat: recipe.fat,
+      carbs: recipe.carbs,
+      calories: recipe.calories,
+      tenantId,
+    });
+    const updatedMeal = setMealPlan(userId, meal.date, meal.meal_type, replaceIngredientText(meal.title, originalIngredient, suggestedIngredient), {
+      recipeId: updatedRecipe.id,
+      notes: meal.notes == null ? undefined : replaceIngredientText(meal.notes, originalIngredient, suggestedIngredient),
+      tenantId,
+    });
+    const shoppingList = shoppingWeekStart == null
+      ? null
+      : generateShoppingList(userId, shoppingWeekStart, tenantId);
+
+    return {
+      applied: true,
+      meal: updatedMeal,
+      recipe: updatedRecipe,
+      shoppingList,
+      substitution: {
+        ...baseSubstitution,
+        affectedMealId: meal.id,
+        sourceRecipeId: recipe.id,
+        affectedRecipeId: updatedRecipe.id,
+        shoppingListUpdated: Boolean(shoppingList),
+      },
+    };
+  })();
 }
 
 export function suggestMealPlanSubstitutions(
@@ -655,10 +763,12 @@ export function suggestMealPlanSubstitutions(
   input: MealPlanSubstitutionSuggestionInput,
   tenantId?: number | null,
 ): MealPlanSubstitutionSuggestionResult {
+  const normalizedDate = normalizeIsoDate(input.date, 'COOKING_SUBSTITUTION_INVALID_DATE', 'date');
+  const normalizedMealType = normalizeMealType(input.mealType, 'COOKING_SUBSTITUTION_INVALID_MEAL_TYPE');
   const originalIngredient = normalizeRequiredText(input.originalIngredient, 'originalIngredient');
   const reason = input.reason ?? 'disliked_ingredient';
-  const meals = getMealPlan(userId, input.date, input.date, tenantId);
-  const meal = meals.find((candidate) => candidate.meal_type === input.mealType) ?? null;
+  const meals = getMealPlan(userId, normalizedDate, normalizedDate, tenantId);
+  const meal = meals.find((candidate) => candidate.meal_type === normalizedMealType) ?? null;
   if (!meal) {
     return {
       found: false,
@@ -715,8 +825,11 @@ export function suggestMealPlanSubstitutions(
 
 export function upsertPantryItem(userId: number, input: PantryItemInput, tenantId?: number | null): PantryItem {
   const db = getCookingDb();
+  validatePantryWriteInput(input);
+  const todayIso = cookingTodayIso(userId);
   const name = normalizeRequiredText(input.name, 'name');
   const normalizedName = normalizePantryName(name);
+  const expiresAt = normalizePantryExpiry(input.expiresAt);
   const scope = cookingScopeForInsert(userId, tenantId, 'user_private', 'available');
   const existing = db.prepare(
     `SELECT id FROM cooking_pantry_items WHERE normalized_name = ? AND ${cookingPrivateScopePredicate()}`,
@@ -745,8 +858,8 @@ export function upsertPantryItem(userId: number, input: PantryItemInput, tenantI
       cleanNullableText(input.quantity),
       cleanNullableText(input.unit),
       cleanNullableText(input.category),
-      cleanNullableText(input.expiresAt),
-      normalizePantryFreshness(input.freshnessStatus, input.expiresAt),
+      expiresAt,
+      normalizePantryFreshness(input.freshnessStatus, expiresAt, todayIso),
       normalizePantryAvailability(input.availabilityStatus),
       cleanNullableText(input.source) ?? 'manual',
       normalizeConfidence(input.confidence),
@@ -782,8 +895,8 @@ export function upsertPantryItem(userId: number, input: PantryItemInput, tenantI
     cleanNullableText(input.quantity),
     cleanNullableText(input.unit),
     cleanNullableText(input.category),
-    cleanNullableText(input.expiresAt),
-    normalizePantryFreshness(input.freshnessStatus, input.expiresAt),
+    expiresAt,
+    normalizePantryFreshness(input.freshnessStatus, expiresAt, todayIso),
     normalizePantryAvailability(input.availabilityStatus),
     cleanNullableText(input.source) ?? 'manual',
     normalizeConfidence(input.confidence),
@@ -794,7 +907,7 @@ export function upsertPantryItem(userId: number, input: PantryItemInput, tenantI
     `SELECT * FROM cooking_pantry_items WHERE normalized_name = ? AND ${cookingPrivateScopePredicate()}`,
   ).get(normalizedName, ...cookingScopeParams(userId, tenantId)) as any;
   logger.info({ userId, tenantId: scope.tenantId, pantryItemId: row?.id }, 'Cooking pantry item upserted');
-  return parsePantryItem(row);
+  return parsePantryItem(row, todayIso);
 }
 
 export function getPantryItems(
@@ -808,6 +921,8 @@ export function getPantryItems(
   },
 ): PantryItem[] {
   const db = getCookingDb();
+  const todayIso = cookingTodayIso(userId);
+  const effectiveFreshness = effectivePantryFreshnessSql(todayIso);
   const conditions = [cookingPrivateScopePredicate(), "COALESCE(availability_status, 'available') != 'removed'"];
   const params: any[] = cookingScopeParams(userId, opts?.tenantId);
 
@@ -821,17 +936,18 @@ export function getPantryItems(
     params.push(opts.category.trim());
   }
   if (!opts?.includeExpired) {
-    conditions.push("COALESCE(freshness_status, 'unknown') != 'expired'");
+    conditions.push(`(${effectiveFreshness}) != 'expired'`);
   }
 
-  const limit = Math.min(Math.max(Number(opts?.limit ?? 100) || 100, 1), 250);
+  const limit = normalizeCookingReadLimit(opts?.limit, 100, 250, 'COOKING_PANTRY_INVALID_LIMIT');
   params.push(limit);
 
   const rows = db.prepare(`
-    SELECT * FROM cooking_pantry_items
+    SELECT *, (${effectiveFreshness}) AS effective_freshness_status
+    FROM cooking_pantry_items
     WHERE ${conditions.join(' AND ')}
     ORDER BY
-      CASE COALESCE(freshness_status, 'unknown')
+      CASE (${effectiveFreshness})
         WHEN 'use_soon' THEN 0
         WHEN 'unknown' THEN 1
         WHEN 'fresh' THEN 2
@@ -841,7 +957,7 @@ export function getPantryItems(
       name ASC
     LIMIT ?
   `).all(...params) as any[];
-  return rows.map(parsePantryItem);
+  return rows.map((row) => parsePantryItem(row, todayIso));
 }
 
 export function getPantryItemById(userId: number, itemId: number, tenantId?: number | null): PantryItem | null {
@@ -849,7 +965,7 @@ export function getPantryItemById(userId: number, itemId: number, tenantId?: num
   const row = db.prepare(
     `SELECT * FROM cooking_pantry_items WHERE id = ? AND ${cookingPrivateScopePredicate()} AND COALESCE(availability_status, 'available') != 'removed'`,
   ).get(itemId, ...cookingScopeParams(userId, tenantId)) as any;
-  return row ? parsePantryItem(row) : null;
+  return row ? parsePantryItem(row, cookingTodayIso(userId)) : null;
 }
 
 export function updatePantryItem(
@@ -859,8 +975,16 @@ export function updatePantryItem(
   tenantId?: number | null,
 ): PantryItem | null {
   const db = getCookingDb();
-  const existing = getPantryItemById(userId, itemId, tenantId);
-  if (!existing) return null;
+  validatePantryWriteInput(updates, true);
+  const todayIso = cookingTodayIso(userId);
+  const existingRow = db.prepare(
+    `SELECT * FROM cooking_pantry_items
+     WHERE id = ?
+       AND ${cookingPrivateScopePredicate()}
+       AND COALESCE(availability_status, 'available') != 'removed'`,
+  ).get(itemId, ...cookingScopeParams(userId, tenantId)) as any;
+  if (!existingRow) return null;
+  const existing = parsePantryItem(existingRow, todayIso);
 
   const name = updates.name !== undefined ? normalizeRequiredText(updates.name, 'name') : existing.name;
   const setParts = [
@@ -878,7 +1002,12 @@ export function updatePantryItem(
     "updated_at = datetime('now')",
     'updated_by = ?',
   ];
-  const expiresAt = updates.expiresAt !== undefined ? cleanNullableText(updates.expiresAt) : existing.expires_at;
+  const expiresAt = updates.expiresAt !== undefined
+    ? normalizePantryExpiry(updates.expiresAt)
+    : existing.expires_at;
+  const freshnessStatus = updates.freshnessStatus !== undefined || updates.expiresAt !== undefined
+    ? normalizePantryFreshness(updates.freshnessStatus, expiresAt, todayIso)
+    : existingRow.freshness_status;
   const availability = normalizePantryAvailability(updates.availabilityStatus ?? existing.availability_status);
   const params = [
     name,
@@ -887,7 +1016,7 @@ export function updatePantryItem(
     updates.unit !== undefined ? cleanNullableText(updates.unit) : existing.unit,
     updates.category !== undefined ? cleanNullableText(updates.category) : existing.category,
     expiresAt,
-    normalizePantryFreshness(updates.freshnessStatus ?? existing.freshness_status, expiresAt),
+    freshnessStatus,
     availability,
     updates.source !== undefined ? cleanNullableText(updates.source) ?? 'manual' : existing.source,
     updates.confidence !== undefined ? normalizeConfidence(updates.confidence) : existing.confidence,
@@ -924,20 +1053,29 @@ export function deletePantryItem(userId: number, itemId: number, tenantId?: numb
 
 export function generateShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList {
   const db = getCookingDb();
+  const normalizedWeekStart = normalizeWeekStart(weekStart);
   const scope = cookingScopeForInsert(userId, tenantId, 'user_private', 'active');
+  let safetyProfile: ReturnType<typeof buildCookingPreferenceReadModel>['profile'];
+  try {
+    safetyProfile = buildCookingPreferenceReadModel(userId, scope.tenantId).profile;
+  } catch {
+    throw new Error('COOKING_SAFETY_BLOCKED: shopping list safety profile unavailable');
+  }
 
   // Calculate week end (7 days)
-  const start = new Date(weekStart);
+  const start = new Date(`${normalizedWeekStart}T00:00:00.000Z`);
   const end = new Date(start.getTime() + 6 * 86400_000);
   const endDate = end.toISOString().slice(0, 10);
 
   // Get all meal plans for the week
-  const meals = getMealPlan(userId, weekStart, endDate, tenantId);
+  const meals = getMealPlan(userId, normalizedWeekStart, endDate, tenantId);
 
   // Aggregate ingredients from linked recipes
   const itemMap = new Map<string, ShoppingItem>();
   const quantityMap = new Map<string, NormalizedQuantity>();
-  const existing = getShoppingList(userId, weekStart, tenantId);
+  const safetyIssues: ShoppingListSafetyIssue[] = [];
+  const safetyIssueKeys = new Set<string>();
+  const existing = getShoppingList(userId, normalizedWeekStart, tenantId);
   const pantryByName = new Map(
     getPantryItems(userId, { tenantId, includeExpired: true, limit: 250 })
       .map((item) => [item.normalized_name, item]),
@@ -949,10 +1087,28 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
   for (const meal of meals) {
     if (meal.recipe_id) {
       const recipe = db.prepare(
-        `SELECT ingredients FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
+        `SELECT title, ingredients, instructions, tags, source FROM recipes WHERE id = ? AND ${cookingPrivateScopePredicate()}`,
       ).get(meal.recipe_id, ...cookingScopeParams(userId, tenantId)) as any;
       if (recipe) {
         const ingredients: Ingredient[] = JSON.parse(recipe.ingredients);
+        const safety = evaluateCookingSafetyTextForProfile(safetyProfile, 'shopping_list', [
+          meal.title,
+          recipe.title,
+          recipe.instructions,
+          recipe.tags,
+          recipe.source,
+          ...ingredients.flatMap((ingredient) => [ingredient.name, ingredient.quantity, ingredient.unit]),
+        ]);
+        if (safety.blocked) {
+          for (const issue of safety.issues) {
+            if (issue.code === 'SAFETY_PROFILE_UNAVAILABLE') continue;
+            const key = `${issue.code}:${recipe.title}`;
+            if (safetyIssueKeys.has(key)) continue;
+            safetyIssueKeys.add(key);
+            safetyIssues.push({ code: issue.code, itemName: recipe.title });
+          }
+          continue;
+        }
         for (const ing of ingredients) {
           const key = ing.name.toLowerCase();
           const existing = itemMap.get(key);
@@ -964,6 +1120,12 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
               existing.quantity = display.quantity;
               existing.unit = display.unit;
             } else {
+              // Once quantities from incompatible families (or unparseable
+              // units) are rendered as a compound expression, the normalized
+              // accumulator is no longer authoritative. Leaving it in the map
+              // lets a later compatible quantity overwrite and silently drop
+              // the compound amount.
+              quantityMap.delete(key);
               existing.quantity = appendQuantity(existing, ing);
               existing.unit = '';
             }
@@ -993,7 +1155,7 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
   // Upsert shopping list
   const existingScope = db.prepare(
     'SELECT tenant_id FROM shopping_lists WHERE tenant_id = ? AND user_id = ? AND week_start = ?',
-  ).get(scope.tenantId, userId, weekStart) as { tenant_id: number | null } | undefined;
+  ).get(scope.tenantId, userId, normalizedWeekStart) as { tenant_id: number | null } | undefined;
   if (existingScope && Number(existingScope.tenant_id) !== scope.tenantId) {
     throw new Error('COOKING_SCOPE_CONFLICT: shopping list belongs to a different tenant');
   }
@@ -1024,16 +1186,17 @@ export function generateShoppingList(userId: number, weekStart: string, tenantId
     scope.createdBy,
     scope.updatedBy,
     scope.auditMetadataJson,
-    weekStart,
+    normalizedWeekStart,
     JSON.stringify(items),
   );
 
   const row = db.prepare(
     `SELECT * FROM shopping_lists WHERE week_start = ? AND ${cookingPrivateScopePredicate()}`,
-  ).get(weekStart, ...cookingScopeParams(userId, tenantId)) as any;
+  ).get(normalizedWeekStart, ...cookingScopeParams(userId, tenantId)) as any;
 
-  logger.info({ userId, weekStart, itemCount: items.length }, 'Shopping list generated');
-  return parseShoppingList(row);
+  logger.info({ userId, weekStart: normalizedWeekStart, itemCount: items.length }, 'Shopping list generated');
+  const list = parseShoppingList(row);
+  return safetyIssues.length > 0 ? { ...list, safetyIssues } : list;
 }
 
 type QuantityFamily = 'mass' | 'volume' | 'count';
@@ -1119,12 +1282,57 @@ function appendQuantity(existing: ShoppingItem, ingredient: Ingredient): string 
   return `${left} + ${right}`;
 }
 
-export function getShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList | null {
+interface ShoppingListSafetyProjection {
+  rawList: ShoppingList;
+  visibleList: ShoppingList;
+  visibleRawIndexes: number[];
+}
+
+function readShoppingListSafetyProjection(
+  userId: number,
+  weekStart: string,
+  tenantId?: number | null,
+): ShoppingListSafetyProjection | null {
   const db = getCookingDb();
+  const normalizedWeekStart = normalizeShoppingLookupWeekStart(weekStart);
   const row = db.prepare(
     `SELECT * FROM shopping_lists WHERE week_start = ? AND ${cookingPrivateScopePredicate()}`,
-  ).get(weekStart, ...cookingScopeParams(userId, tenantId)) as any;
-  return row ? parseShoppingList(row) : null;
+  ).get(normalizedWeekStart, ...cookingScopeParams(userId, tenantId)) as any;
+  if (!row) return null;
+  const list = parseShoppingList(row);
+  let safetyProfile: ReturnType<typeof buildCookingPreferenceReadModel>['profile'];
+  try {
+    safetyProfile = buildCookingPreferenceReadModel(userId, resolveCookingTenantId(userId, tenantId)).profile;
+  } catch {
+    throw new Error('COOKING_SAFETY_BLOCKED: shopping list safety profile unavailable');
+  }
+  const safeItems: ShoppingItem[] = [];
+  const safetyIssues: ShoppingListSafetyIssue[] = [];
+  const visibleRawIndexes: number[] = [];
+  for (const [rawIndex, item] of list.items.entries()) {
+    const evaluation = evaluateCookingSafetyTextForProfile(
+      safetyProfile,
+      'shopping_list',
+      [item.name, item.quantity, item.unit],
+    );
+    if (!evaluation.blocked) {
+      safeItems.push(item);
+      visibleRawIndexes.push(rawIndex);
+      continue;
+    }
+    for (const issue of evaluation.issues) {
+      if (issue.code === 'SAFETY_PROFILE_UNAVAILABLE') continue;
+      safetyIssues.push({ code: issue.code, itemName: item.name });
+    }
+  }
+  const visibleList = safetyIssues.length > 0
+    ? { ...list, items: safeItems, safetyIssues }
+    : list;
+  return { rawList: list, visibleList, visibleRawIndexes };
+}
+
+export function getShoppingList(userId: number, weekStart: string, tenantId?: number | null): ShoppingList | null {
+  return readShoppingListSafetyProjection(userId, weekStart, tenantId)?.visibleList ?? null;
 }
 
 export function updateShoppingListItemChecked(
@@ -1135,26 +1343,31 @@ export function updateShoppingListItemChecked(
   tenantId?: number | null,
 ): ShoppingList | null {
   const db = getCookingDb();
-  const existing = getShoppingList(userId, weekStart, tenantId);
-  if (!existing) {
+  const normalizedWeekStart = normalizeShoppingLookupWeekStart(weekStart);
+  const projection = readShoppingListSafetyProjection(userId, normalizedWeekStart, tenantId);
+  if (!projection) {
     return null;
   }
-  if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= existing.items.length) {
+  if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= projection.visibleRawIndexes.length) {
     throw new Error('Shopping list item index is out of range');
   }
+  const rawItemIndex = projection.visibleRawIndexes[itemIndex]!;
 
-  const items = existing.items.map((item, index) => (
-    index === itemIndex ? { ...item, checked } : item
+  // The API index addresses the safety-filtered view. Update the corresponding
+  // raw item only; persisting the filtered projection would silently delete
+  // hidden conflict items during an unrelated checked-state toggle.
+  const items = projection.rawList.items.map((item, index) => (
+    index === rawItemIndex ? { ...item, checked } : item
   ));
 
   db.prepare(`
     UPDATE shopping_lists
     SET items = ?, updated_at = datetime('now'), updated_by = ?
     WHERE week_start = ? AND ${cookingPrivateScopePredicate()}
-  `).run(JSON.stringify(items), userId, weekStart, ...cookingScopeParams(userId, tenantId));
+  `).run(JSON.stringify(items), userId, normalizedWeekStart, ...cookingScopeParams(userId, tenantId));
 
-  const updated = getShoppingList(userId, weekStart, tenantId);
-  logger.info({ userId, weekStart, itemIndex, checked }, 'Shopping list item updated');
+  const updated = getShoppingList(userId, normalizedWeekStart, tenantId);
+  logger.info({ userId, weekStart: normalizedWeekStart, itemIndex, checked }, 'Shopping list item updated');
   return updated;
 }
 
@@ -1194,11 +1407,125 @@ function parseShoppingList(row: any): ShoppingList {
   };
 }
 
-function parsePantryItem(row: any): PantryItem {
+function parsePantryItem(row: any, todayIso: string): PantryItem {
+  const { effective_freshness_status, ...rest } = row;
   return {
-    ...row,
+    ...rest,
+    freshness_status: typeof effective_freshness_status === 'string'
+      ? effective_freshness_status
+      : normalizePantryFreshness(row.freshness_status, row.expires_at, todayIso),
     confidence: typeof row.confidence === 'number' ? row.confidence : Number(row.confidence ?? 1),
   };
+}
+
+function normalizeRecipeTitle(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('COOKING_RECIPE_INVALID: title must be a non-empty string');
+  }
+  return value.trim();
+}
+
+function normalizeRecipeIngredients(value: unknown): Ingredient[] {
+  if (!Array.isArray(value)) {
+    throw new Error('COOKING_RECIPE_INVALID: ingredients must be an array');
+  }
+  return value.map((ingredient, index) => {
+    if (ingredient === null || typeof ingredient !== 'object' || Array.isArray(ingredient)) {
+      throw new Error(`COOKING_RECIPE_INVALID: ingredients[${index}] must be an object`);
+    }
+    const row = ingredient as Record<string, unknown>;
+    if (typeof row.name !== 'string' || !row.name.trim()) {
+      throw new Error(`COOKING_RECIPE_INVALID: ingredients[${index}].name must be a non-empty string`);
+    }
+    if (typeof row.quantity !== 'string') {
+      throw new Error(`COOKING_RECIPE_INVALID: ingredients[${index}].quantity must be a string`);
+    }
+    if (typeof row.unit !== 'string') {
+      throw new Error(`COOKING_RECIPE_INVALID: ingredients[${index}].unit must be a string`);
+    }
+    return {
+      name: row.name.trim(),
+      quantity: row.quantity,
+      unit: row.unit,
+    };
+  });
+}
+
+function validateRecipeOptionalText(value: unknown, field: string): void {
+  if (value !== undefined && value !== null && typeof value !== 'string') {
+    throw new Error(`COOKING_RECIPE_INVALID: ${field} must be a string or null`);
+  }
+}
+
+function validateRecipeNonNegativeInteger(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`COOKING_RECIPE_INVALID: ${field} must be a non-negative integer or null`);
+  }
+}
+
+function validateRecipeServings(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error('COOKING_RECIPE_INVALID: servings must be a positive integer');
+  }
+}
+
+function validateRecipeNutrition(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`COOKING_RECIPE_INVALID: ${field} must be a non-negative finite number or null`);
+  }
+}
+
+function normalizeMealPlanTitle(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('COOKING_MEAL_PLAN_INVALID_TITLE: title must be a non-empty string');
+  }
+  return value.trim();
+}
+
+function normalizeMealType(value: unknown, errorCode = 'COOKING_MEAL_PLAN_INVALID_MEAL_TYPE'): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${errorCode}: mealType must be breakfast, lunch, dinner, or snack`);
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!['breakfast', 'lunch', 'dinner', 'snack'].includes(normalized)) {
+    throw new Error(`${errorCode}: mealType must be breakfast, lunch, dinner, or snack`);
+  }
+  return normalized;
+}
+
+function normalizeIsoDate(value: unknown, errorCode: string, field: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${errorCode}: ${field} must be a valid YYYY-MM-DD date`);
+  }
+  const normalized = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+  if (!match) {
+    throw new Error(`${errorCode}: ${field} must be a valid YYYY-MM-DD date`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    throw new Error(`${errorCode}: ${field} must be a valid YYYY-MM-DD date`);
+  }
+  return normalized;
+}
+
+function normalizeWeekStart(value: unknown): string {
+  const normalized = normalizeIsoDate(value, 'COOKING_SHOPPING_LIST_INVALID_WEEK_START', 'weekStart');
+  if (new Date(`${normalized}T00:00:00.000Z`).getUTCDay() !== 1) {
+    throw new Error('COOKING_SHOPPING_LIST_INVALID_WEEK_START: weekStart must be a Monday');
+  }
+  return normalized;
+}
+
+function normalizeShoppingLookupWeekStart(value: unknown): string {
+  const normalized = normalizeIsoDate(value, 'COOKING_SHOPPING_LIST_INVALID_WEEK_DATE', 'week');
+  return mondayForNormalizedDate(normalized);
 }
 
 function normalizeRequiredText(value: unknown, field: string): string {
@@ -1235,31 +1562,65 @@ function assertCookingSafeRecipe(
 function ingredientNameMatches(candidate: string, originalIngredient: string): boolean {
   const candidateName = normalizePantryName(candidate);
   const originalName = normalizePantryName(originalIngredient);
-  return candidateName === originalName || candidateName.includes(originalName);
+  return candidateName === originalName || containsIngredientTokenSequence(candidateName, originalName);
 }
 
 function replaceIngredientText(value: string, originalIngredient: string, suggestedIngredient: string): string {
-  let source = String(value ?? '');
-  for (const needle of replacementNeedles(originalIngredient)) {
-    const lowerSource = source.toLowerCase();
-    const lowerNeedle = needle.toLowerCase();
-    let cursor = 0;
-    let result = '';
-    let changed = false;
-    while (cursor < source.length) {
-      const index = lowerSource.indexOf(lowerNeedle, cursor);
-      if (index === -1) {
-        result += source.slice(cursor);
+  const source = String(value ?? '');
+  const needles = replacementNeedles(originalIngredient);
+  if (needles.length === 0) return source;
+
+  const lowerSource = source.toLowerCase();
+  const lowerNeedles = needles.map((needle) => needle.toLowerCase());
+  let cursor = 0;
+  let result = '';
+  while (cursor < source.length) {
+    const match = findNextIngredientBoundaryMatch(lowerSource, lowerNeedles, cursor);
+    if (!match) {
+      result += source.slice(cursor);
+      break;
+    }
+    result += source.slice(cursor, match.index);
+    result += suggestedIngredient;
+    cursor = match.index + match.length;
+  }
+  return result;
+}
+
+function containsIngredientTokenSequence(candidate: string, original: string): boolean {
+  if (!original) return false;
+  return findNextIngredientBoundaryMatch(candidate, [original], 0) !== null;
+}
+
+function findNextIngredientBoundaryMatch(
+  source: string,
+  needles: string[],
+  fromIndex: number,
+): { index: number; length: number } | null {
+  let best: { index: number; length: number } | null = null;
+  for (const needle of needles) {
+    if (!needle) continue;
+    let searchFrom = fromIndex;
+    while (searchFrom <= source.length - needle.length) {
+      const index = source.indexOf(needle, searchFrom);
+      if (index < 0) break;
+      const before = index > 0 ? source[index - 1] : undefined;
+      const afterIndex = index + needle.length;
+      const after = afterIndex < source.length ? source[afterIndex] : undefined;
+      if (!isIngredientWordCharacter(before) && !isIngredientWordCharacter(after)) {
+        if (!best || index < best.index || (index === best.index && needle.length > best.length)) {
+          best = { index, length: needle.length };
+        }
         break;
       }
-      result += source.slice(cursor, index);
-      result += suggestedIngredient;
-      cursor = index + needle.length;
-      changed = true;
+      searchFrom = index + 1;
     }
-    if (changed) source = result;
   }
-  return source;
+  return best;
+}
+
+function isIngredientWordCharacter(value: string | undefined): boolean {
+  return value !== undefined && /[\p{L}\p{N}]/u.test(value);
 }
 
 function replacementNeedles(originalIngredient: string): string[] {
@@ -1275,15 +1636,12 @@ function replacementNeedles(originalIngredient: string): string[] {
 }
 
 function weekStartForDate(date: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-  if (!match) throw new Error('COOKING_SUBSTITUTION_INVALID_DATE: date must be YYYY-MM-DD');
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const utc = new Date(Date.UTC(year, month - 1, day));
-  if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) {
-    throw new Error('COOKING_SUBSTITUTION_INVALID_DATE: date must be YYYY-MM-DD');
-  }
+  const normalizedDate = normalizeIsoDate(date, 'COOKING_SUBSTITUTION_INVALID_DATE', 'date');
+  return mondayForNormalizedDate(normalizedDate);
+}
+
+function mondayForNormalizedDate(normalizedDate: string): string {
+  const utc = new Date(`${normalizedDate}T00:00:00.000Z`);
   const dayOfWeek = utc.getUTCDay();
   const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
   utc.setUTCDate(utc.getUTCDate() + mondayOffset);
@@ -1300,19 +1658,148 @@ function normalizePantryName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function normalizePantryFreshness(value: unknown, expiresAt?: string | null): string {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  if (['fresh', 'use_soon', 'expired', 'unknown'].includes(normalized)) return normalized;
-  if (expiresAt && /^\d{4}-\d{2}-\d{2}/.test(expiresAt)) {
-    const expiryDate = new Date(`${expiresAt.slice(0, 10)}T00:00:00.000Z`).getTime();
-    const today = new Date();
-    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-    const daysUntilExpiry = Math.floor((expiryDate - todayUtc) / 86400_000);
-    if (daysUntilExpiry < 0) return 'expired';
-    if (daysUntilExpiry <= 3) return 'use_soon';
-    return 'fresh';
+function normalizePantryExpiry(value: unknown): string | null {
+  if (value !== undefined && value !== null && typeof value !== 'string') {
+    throw new Error('COOKING_PANTRY_INVALID_EXPIRY: expiresAt must be a valid YYYY-MM-DD date');
   }
-  return 'unknown';
+  const normalized = cleanNullableText(value);
+  if (normalized == null) return null;
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+  if (!match) {
+    throw new Error('COOKING_PANTRY_INVALID_EXPIRY: expiresAt must be a valid YYYY-MM-DD date');
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const expiry = new Date(Date.UTC(year, month - 1, day));
+  if (
+    expiry.getUTCFullYear() !== year
+    || expiry.getUTCMonth() !== month - 1
+    || expiry.getUTCDate() !== day
+  ) {
+    throw new Error('COOKING_PANTRY_INVALID_EXPIRY: expiresAt must be a valid YYYY-MM-DD date');
+  }
+
+  return normalized;
+}
+
+function validatePantryWriteInput(input: Partial<PantryItemInput>, requireSupportedField = false): void {
+  const supportedFields: Array<keyof PantryItemInput> = [
+    'name',
+    'quantity',
+    'unit',
+    'category',
+    'expiresAt',
+    'freshnessStatus',
+    'availabilityStatus',
+    'source',
+    'confidence',
+    'notes',
+  ];
+  if (requireSupportedField
+      && !supportedFields.some((field) => Object.prototype.hasOwnProperty.call(input, field))) {
+    throw new Error('COOKING_PANTRY_INVALID_UPDATE: at least one supported pantry field must be provided');
+  }
+  const hasName = Object.prototype.hasOwnProperty.call(input, 'name');
+  if ((!requireSupportedField || hasName)
+      && (typeof input.name !== 'string' || input.name.trim().length === 0)) {
+    throw new Error('COOKING_PANTRY_INVALID_NAME: name must be a non-empty string');
+  }
+  const optionalTextFields: Array<keyof Pick<PantryItemInput, 'quantity' | 'unit' | 'category' | 'source' | 'notes'>> = [
+    'quantity',
+    'unit',
+    'category',
+    'source',
+    'notes',
+  ];
+  for (const field of optionalTextFields) {
+    const value = input[field];
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      throw new Error(`COOKING_PANTRY_INVALID_TEXT: ${field} must be a string or null`);
+    }
+  }
+  if (input.confidence !== undefined && input.confidence !== null
+      && (typeof input.confidence !== 'number'
+        || !Number.isFinite(input.confidence)
+        || input.confidence < 0
+        || input.confidence > 1)) {
+    throw new Error('COOKING_PANTRY_INVALID_CONFIDENCE: confidence must be a number between 0 and 1');
+  }
+  const freshness = cleanNullableText(input.freshnessStatus);
+  if (freshness !== null && !['fresh', 'unknown', 'use_soon', 'expired'].includes(freshness.toLowerCase())) {
+    throw new Error('COOKING_PANTRY_INVALID_FRESHNESS: freshnessStatus must be fresh, unknown, use_soon, or expired');
+  }
+  const availability = cleanNullableText(input.availabilityStatus);
+  if (availability !== null && !['available', 'low_stock', 'unavailable'].includes(availability.toLowerCase())) {
+    throw new Error('COOKING_PANTRY_INVALID_AVAILABILITY: availabilityStatus must be available, low_stock, or unavailable');
+  }
+}
+
+function normalizeCookingReadLimit(
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+  errorCode: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new Error(`${errorCode}: limit must be an integer between 1 and ${maximum}`);
+  }
+  return value;
+}
+
+function effectivePantryFreshnessSql(todayIso: string): string {
+  const today = /^\d{4}-\d{2}-\d{2}$/.test(todayIso) ? todayIso : DateTime.utc().toISODate()!;
+  return `CASE
+    WHEN expires_at IS NOT NULL AND expires_at < date('${today}') THEN 'expired'
+    WHEN COALESCE(freshness_status, 'unknown') = 'expired' THEN 'expired'
+    WHEN expires_at IS NOT NULL AND expires_at <= date('${today}', '+3 days') THEN 'use_soon'
+    WHEN COALESCE(freshness_status, 'unknown') = 'use_soon' THEN 'use_soon'
+    WHEN COALESCE(freshness_status, 'unknown') = 'unknown' THEN 'unknown'
+    WHEN expires_at IS NOT NULL THEN 'fresh'
+    WHEN COALESCE(freshness_status, 'unknown') = 'fresh' THEN 'fresh'
+    ELSE 'unknown'
+  END`;
+}
+
+function normalizePantryFreshness(value: unknown, expiresAt?: string | null, todayIso = DateTime.utc().toISODate()!): string {
+  type PantryFreshness = 'fresh' | 'unknown' | 'use_soon' | 'expired';
+  const severity: Record<PantryFreshness, number> = {
+    fresh: 0,
+    unknown: 1,
+    use_soon: 2,
+    expired: 3,
+  };
+  let expiryFreshness: PantryFreshness | null = null;
+  if (expiresAt) {
+    const expiryDate = DateTime.fromISO(expiresAt, { zone: 'UTC' }).startOf('day');
+    const today = DateTime.fromISO(todayIso, { zone: 'UTC' }).startOf('day');
+    const daysUntilExpiry = Math.floor(expiryDate.diff(today, 'days').days);
+    expiryFreshness = daysUntilExpiry < 0
+      ? 'expired'
+      : daysUntilExpiry <= 3
+        ? 'use_soon'
+        : 'fresh';
+  }
+
+  const normalized = String(value ?? '').trim().toLowerCase();
+  const explicitFreshness = ['fresh', 'unknown', 'use_soon', 'expired'].includes(normalized)
+    ? normalized as PantryFreshness
+    : null;
+  if (expiryFreshness && explicitFreshness) {
+    return severity[expiryFreshness] >= severity[explicitFreshness]
+      ? expiryFreshness
+      : explicitFreshness;
+  }
+  return expiryFreshness ?? explicitFreshness ?? 'unknown';
+}
+
+function cookingTodayIso(userId: number): string {
+  const timezone = getUserTimezoneById(userId);
+  const localToday = DateTime.now().setZone(timezone).toISODate();
+  return localToday ?? DateTime.utc().toISODate()!;
 }
 
 function normalizePantryAvailability(value: unknown): string {

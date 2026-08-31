@@ -13,6 +13,7 @@ const mockIsUserOverDailyCap = vi.fn(() => ({ over: false }));
 const mockGetUserById = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetWeeklyAdherence = vi.fn();
+const mockGetUserTimezoneById = vi.fn(() => 'Europe/Lisbon');
 let mockEffectivePlan: 'free' | 'pro' | 'max' | 'owner' = 'max';
 
 let garminStatus = 'active';
@@ -93,6 +94,7 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
 }));
 
 vi.mock('../../src/services/entitlement', () => ({
@@ -293,6 +295,7 @@ function buildBaseContexts() {
     },
     cooking: {
       userId: 12,
+      timezone: 'Europe/Lisbon',
       weekStart: '2026-04-13',
       weekEnd: '2026-04-19',
       meals: [
@@ -308,6 +311,28 @@ function buildBaseContexts() {
         },
       ],
       shoppingList: null,
+      sourceHealth: {
+        mealPlan: { status: 'ready', warningCodes: [] },
+        shoppingList: { status: 'ready', warningCodes: [] },
+        recipes: { status: 'ready', warningCodes: [] },
+        focus: { status: 'ready', warningCodes: [] },
+        safety: {
+          status: 'ready',
+          warningCodes: [],
+          excludedMealCount: 0,
+          excludedMealDates: [],
+        },
+      },
+      availability: {
+        busyDates: [],
+        fragmentedDates: [],
+        travelDates: [],
+        focusDate: '2026-04-15',
+      },
+      calendar: {
+        status: 'ready',
+        warningCodes: [],
+      },
       derivedSignals: [],
     },
     content: {
@@ -415,6 +440,8 @@ describe('weekly-plan-orchestrator', () => {
     mockGetUserById.mockReset();
     mockGetWeeksForPlan.mockReset();
     mockGetWeeklyAdherence.mockReset();
+    mockGetUserTimezoneById.mockReset();
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
 
     const base = buildBaseContexts();
     mockReadTrainingMeshContext.mockResolvedValue(base.training);
@@ -602,6 +629,71 @@ describe('weekly-plan-orchestrator', () => {
       day.secretary.decisions.some((decision) => decision.signalType === 'travel_window'))).toBe(true);
   });
 
+  it('distinguishes ready Cooking days from verified empty Cooking days', async () => {
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.days.find((day) => day.date === '2026-04-15')?.cooking).toEqual({
+      status: 'ready',
+      headline: '1 meal planned for this day.',
+      warningCodes: [],
+    });
+    expect(result.days.find((day) => day.date === '2026-04-16')?.cooking).toEqual({
+      status: 'empty',
+      headline: 'No meals planned for this day.',
+      warningCodes: [],
+    });
+  });
+
+  it('marks a day degraded when current safety preferences withhold a saved meal', async () => {
+    const base = buildBaseContexts();
+    base.cooking.sourceHealth.safety = {
+      status: 'degraded',
+      warningCodes: [
+        'COOKING_SAVED_MEAL_SAFETY_WITHHELD',
+        'COOKING_SAVED_MEAL_ALLERGY_CONFLICT',
+      ],
+      excludedMealCount: 1,
+      excludedMealDates: ['2026-04-15'],
+    };
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days.find((day) => day.date === '2026-04-15')?.cooking).toEqual({
+      status: 'degraded',
+      headline: '1 verified-safe planned meal shown; 1 saved meal withheld because of current safety-preference conflicts.',
+      warningCodes: [
+        'COOKING_SAVED_MEAL_SAFETY_WITHHELD',
+        'COOKING_SAVED_MEAL_ALLERGY_CONFLICT',
+      ],
+    });
+  });
+
+  it('marks Cooking unavailable when persisted meals cannot be checked against current safety preferences', async () => {
+    const base = buildBaseContexts();
+    base.cooking.meals = [];
+    base.cooking.sourceHealth.safety = {
+      status: 'unavailable',
+      warningCodes: ['COOKING_SAFETY_PROFILE_UNAVAILABLE'],
+      excludedMealCount: 1,
+      excludedMealDates: ['2026-04-15'],
+    };
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days.find((day) => day.date === '2026-04-15')?.cooking).toEqual({
+      status: 'unavailable',
+      headline: 'Cooking safety preferences are unavailable for this day; saved meals are withheld rather than assumed safe.',
+      warningCodes: ['COOKING_SAFETY_PROFILE_UNAVAILABLE'],
+    });
+  });
+
   it('pins plan age and session dates to the persisted plan timezone', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
@@ -735,38 +827,41 @@ describe('weekly-plan-orchestrator', () => {
     expect(wednesday?.meals.find((meal) => meal.title === 'Fueling coverage missing')?.note).toContain('staple carb + protein option you already buy');
   });
 
-  it('places the batch-cook day around secretary and content pressure, not just around training sessions', async () => {
+  it('places batch cooking around verified calendar, focus, and content pressure', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-15T08:00:00.000Z'));
     const base = buildBaseContexts();
-    base.cooking.meals = [];
-    base.secretary.focusBlock = {
-      ...base.secretary.focusBlock,
-      date: '2026-04-17',
-      start: '2026-04-17T09:00:00.000Z',
-      end: '2026-04-17T10:30:00.000Z',
-    };
-    base.secretary.derivedSignals = [
-      {
-        sourceAgent: 'mesh.secretary-context',
-        signalType: 'travel_window',
-        meshPriority: 1,
-        priority: 'urgent',
-        payload: { dates: ['2026-04-13'] },
-      },
-      {
-        sourceAgent: 'mesh.secretary-context',
-        signalType: 'calendar_busy_blocks',
-        meshPriority: 1,
-        priority: 'urgent',
-        payload: { dates: ['2026-04-14'], totalEvents: 5 },
-      },
+    base.cooking.meals = [
+      ...base.cooking.meals,
+      { ...base.cooking.meals[0], id: 2, date: '2026-04-16', title: 'Second prep meal' },
+      { ...base.cooking.meals[0], id: 3, date: '2026-04-17', title: 'Third prep meal' },
     ];
+    base.cooking.availability = {
+      travelDates: ['2026-04-13'],
+      busyDates: ['2026-04-14'],
+      fragmentedDates: [],
+      focusDate: '2026-04-17',
+    };
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: {
+        status: 'partial',
+        prepPressureDates: ['2026-04-17'],
+        highEffortMealCount: 1,
+        totalPrepMinutes: 45,
+        totalCookMinutes: 90,
+        shoppingReady: false,
+      },
+    }];
     base.content.filmingRecommendation = {
       ...base.content.filmingRecommendation,
       date: '2026-04-18',
       blockStart: '2026-04-18T11:00:00.000Z',
       blockEnd: '2026-04-18T13:00:00.000Z',
     };
-    mockReadSecretaryMeshContext.mockResolvedValue(base.secretary);
     mockReadContentMeshContext.mockResolvedValue(base.content);
     mockReadCookingMeshContext.mockResolvedValue(base.cooking);
 
@@ -784,6 +879,249 @@ describe('weekly-plan-orchestrator', () => {
     expect(tuesday?.meals.some((meal) => meal.title === 'Batch-cook window')).toBe(false);
     expect(friday?.meals.some((meal) => meal.title === 'Batch-cook window')).toBe(false);
     expect(saturday?.meals.some((meal) => meal.title === 'Batch-cook window')).toBe(false);
+  });
+
+  it('uses the highest training load when multiple sessions share a batch-cook date', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T08:00:00.000Z'));
+    const base = buildBaseContexts();
+    base.training.sessions = [
+      {
+        ...base.training.sessions[0],
+        id: 102,
+        day_of_week: 'Monday',
+        title: 'Threshold intervals',
+        intensity_text: 'Hard',
+      },
+      {
+        ...base.training.sessions[0],
+        id: 103,
+        day_of_week: 'Monday',
+        title: 'Recovery jog',
+        intensity_text: 'Easy',
+      },
+    ];
+    base.cooking.meals = [
+      ...base.cooking.meals,
+      { ...base.cooking.meals[0], id: 2, date: '2026-04-16', title: 'Second prep meal' },
+      { ...base.cooking.meals[0], id: 3, date: '2026-04-17', title: 'Third prep meal' },
+    ];
+    base.cooking.availability = {
+      travelDates: ['2026-04-15', '2026-04-16', '2026-04-17', '2026-04-18', '2026-04-19'],
+      busyDates: ['2026-04-14'],
+      fragmentedDates: [],
+      focusDate: null,
+    };
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: {
+        status: 'partial',
+        prepPressureDates: ['2026-04-17'],
+        highEffortMealCount: 1,
+        totalPrepMinutes: 45,
+        totalCookMinutes: 90,
+        shoppingReady: false,
+      },
+    }];
+    base.content.filmingRecommendation = null;
+    mockReadTrainingMeshContext.mockResolvedValueOnce(base.training);
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+    mockReadContentMeshContext.mockResolvedValueOnce(base.content);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const batchDay = result.days.find((day) => day.meals.some((meal) => meal.title === 'Batch-cook window'));
+
+    expect(batchDay?.date).toBe('2026-04-14');
+  });
+
+  it('never places a current-week batch-cook window on a past local date', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-17T08:00:00.000Z'));
+    const base = buildBaseContexts();
+    base.cooking.meals = [
+      ...base.cooking.meals,
+      { ...base.cooking.meals[0], id: 2, date: '2026-04-16', title: 'Second prep meal' },
+      { ...base.cooking.meals[0], id: 3, date: '2026-04-17', title: 'Third prep meal' },
+    ];
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: {
+        status: 'partial',
+        prepPressureDates: ['2026-04-17'],
+        highEffortMealCount: 1,
+        totalPrepMinutes: 45,
+        totalCookMinutes: 90,
+        shoppingReady: false,
+      },
+    }];
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const batchDay = result.days.find((day) => day.meals.some((meal) => meal.title === 'Batch-cook window'));
+
+    expect(batchDay?.date).toBeDefined();
+    expect(batchDay!.date >= '2026-04-17').toBe(true);
+  });
+
+  it('degrades the week and suppresses batch-cook guidance when Cooking calendar evidence is unavailable', async () => {
+    const base = buildBaseContexts();
+    base.cooking.meals = [];
+    base.cooking.calendar = {
+      status: 'unavailable',
+      warningCodes: ['COOKING_CALENDAR_READ_FAILED'],
+    };
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: { status: 'at_risk', prepPressureDates: [] },
+    }];
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days[0]?.cooking).toMatchObject({ status: 'degraded' });
+    expect(result.days.flatMap((day) => day.meals).some((meal) => meal.title === 'Batch-cook window')).toBe(false);
+  });
+
+  it('keeps an unconfigured optional calendar healthy and still emits verified batch-cook guidance', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-14T08:00:00.000Z'));
+    const base = buildBaseContexts();
+    base.cooking.calendar = {
+      status: 'not_configured',
+      warningCodes: [],
+    };
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: {
+        status: 'partial',
+        prepPressureDates: [],
+        highEffortMealCount: 1,
+        totalPrepMinutes: 45,
+        totalCookMinutes: 60,
+        shoppingReady: false,
+      },
+    }];
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(false);
+    expect(result.days.find((day) => day.date === '2026-04-15')?.cooking).toMatchObject({ status: 'ready' });
+    expect(result.days.flatMap((day) => day.meals).some((meal) => meal.title === 'Batch-cook window')).toBe(true);
+  });
+
+  it('marks Cooking unavailable instead of presenting a failed meal-plan read as empty', async () => {
+    const base = buildBaseContexts();
+    base.cooking.meals = [];
+    base.cooking.sourceHealth.mealPlan = {
+      status: 'unavailable',
+      warningCodes: ['COOKING_MEAL_PLAN_READ_FAILED'],
+    };
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days[0]?.meals).toEqual([]);
+    expect(result.days[0]?.cooking).toEqual({
+      status: 'unavailable',
+      headline: 'Meal-plan data is unavailable for this day; an empty result is not assumed.',
+      warningCodes: ['COOKING_MEAL_PLAN_READ_FAILED'],
+    });
+  });
+
+  it('does not create a batch-cook window without real prep work', async () => {
+    const base = buildBaseContexts();
+    base.cooking.meals = [];
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: {
+        status: 'at_risk',
+        prepPressureDates: [],
+        highEffortMealCount: 0,
+        totalPrepMinutes: 0,
+        totalCookMinutes: 0,
+        shoppingReady: false,
+      },
+    }];
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.days.flatMap((day) => day.meals).some((meal) => meal.title === 'Batch-cook window')).toBe(false);
+  });
+
+  it('does not treat failed Secretary focus availability as a free batch-cook week', async () => {
+    const base = buildBaseContexts();
+    base.cooking.sourceHealth.focus = {
+      status: 'unavailable',
+      warningCodes: ['COOKING_FOCUS_READ_FAILED'],
+    };
+    base.cooking.meals = [
+      ...base.cooking.meals,
+      { ...base.cooking.meals[0], id: 2, date: '2026-04-16' },
+      { ...base.cooking.meals[0], id: 3, date: '2026-04-17' },
+    ];
+    base.cooking.derivedSignals = [{
+      sourceAgent: 'mesh.cooking-context',
+      signalType: 'meal_execution_readiness',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: {
+        status: 'at_risk',
+        prepPressureDates: ['2026-04-17'],
+        highEffortMealCount: 1,
+        totalPrepMinutes: 45,
+        totalCookMinutes: 90,
+        shoppingReady: false,
+      },
+    }];
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days.flatMap((day) => day.meals).some((meal) => meal.title === 'Batch-cook window')).toBe(false);
+  });
+
+  it('resolves the implicit planning week in the user timezone and propagates it to Cooking', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
+    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, forceRefresh: true });
+
+    expect(result.weekStart).toBe('2026-04-06');
+    expect(mockReadCookingMeshContext).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-06',
+      timezone: 'Pacific/Honolulu',
+    });
   });
 
   it('gives secretary explicit sequencing guidance when training, meals, and content compete on the same day', async () => {

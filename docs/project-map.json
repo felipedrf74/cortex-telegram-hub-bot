@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "b63f3082d7518d6d3e5a8dd2c0253d3bfa8d3f677485b2941fc198e2e884ac91",
-    "baseCommit": "51f17efb15a2479b38e1bdd2afe232daa0bc2e0b",
-    "baseCommitTimestamp": "2026-08-30T17:39:08+01:00",
-    "trackedFiles": 3463,
-    "sourceFiles": 1207
+    "sourceDigest": "4c520370d96e17465f31e166e626ba781a45d18a5121238d79041557aa39804a",
+    "baseCommit": "70bc7d8bcea9eaea214de4cbe3a361faf776f284",
+    "baseCommitTimestamp": "2026-08-31T17:03:13+01:00",
+    "trackedFiles": 3467,
+    "sourceFiles": 1209
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 881
+      "files": 883
     },
     {
       "path": "src/skills",
@@ -5246,7 +5246,7 @@
     }
   ],
   "tests": {
-    "files": 1276,
+    "files": 1278,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5268,8 +5268,8 @@
       "scripts": 112,
       "sdk": 1,
       "security": 24,
-      "services": 791,
-      "skills": 11,
+      "services": 792,
+      "skills": 12,
       "state": 17,
       "storage": 1,
       "testing": 1,
@@ -6034,7 +6034,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 642137,
+      "bytes": 648955,
       "generated": false
     },
     {

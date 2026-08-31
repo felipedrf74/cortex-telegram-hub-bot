@@ -34,8 +34,9 @@ describe('lean required CI contracts', () => {
     )?.groups?.body ?? '';
 
     // A conservative multi-area change can select every group. The old
-    // 25-minute job limit killed that valid run before Vitest emitted a result.
-    expect(focusedJob).toContain('timeout-minutes: 45');
+    // 45-minute job limit killed that valid run before Vitest emitted a result
+    // and finalized its coverage artifacts.
+    expect(focusedJob).toContain('timeout-minutes: 75');
     expect(focusedJob).toContain('--coverage');
     expect(focusedJob).toContain('scripts/risk-gate.sh \\');
     expect(focusedJob).not.toContain('--skip-tests');

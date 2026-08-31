@@ -4101,7 +4101,7 @@ describe('Sonar decommissioning is complete', () => {
 });
 
 describe('release manifest publication fails closed on the pinned key', () => {
-  const repositoryBase = spawnSync('git', ['rev-parse', 'HEAD'], {
+  const repositoryBaseHint = spawnSync('git', ['rev-parse', 'HEAD'], {
     cwd: root,
     encoding: 'utf8',
   }).stdout.trim();
@@ -4126,7 +4126,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
 
   function repositoryVerdict() {
     if (!cachedRepositoryVerdict) {
-      const result = runMigrationSafety(root, repositoryBase);
+      const result = runMigrationSafety(root, repositoryBaseHint);
       if (result.status !== 0) {
         throw new Error(`repository migration fixture failed: ${result.stdout}${result.stderr}`);
       }
@@ -4138,11 +4138,17 @@ describe('release manifest publication fails closed on the pinned key', () => {
   function runBuilder(
     extraArgs: string[],
     env: Record<string, string> = {},
-    comparisonBase = repositoryBase,
+    comparisonBase?: string,
   ) {
+    // During an in-progress feature/main merge, migration-safety-check
+    // deliberately compares the resulting index with the main parent instead
+    // of the pre-merge feature HEAD. Bind the manifest fixture to the verdict's
+    // resolved base so the test exercises the same immutable identity that CI
+    // will sign, while explicit fixture bases remain authoritative below.
+    const resolvedComparisonBase = comparisonBase ?? repositoryVerdict().comparisonBase;
     return spawnSync(process.execPath, [
       'scripts/release-manifest-build.mjs',
-      '--migration-base', comparisonBase,
+      '--migration-base', resolvedComparisonBase,
       ...extraArgs,
     ], {
       cwd: root,
@@ -4185,7 +4191,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
   function verifyMigrationFixture(
     fixture: ReturnType<typeof migrationResultFixture>,
     env: Record<string, string> = {},
-    comparisonBase = repositoryBase,
+    comparisonBase?: string,
   ) {
     return runBuilder([
       '--migration-result', fixture.resultPath,
@@ -4198,7 +4204,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
     digest: string,
     extraArgs: string[] = [],
     env: Record<string, string> = {},
-    comparisonBase = repositoryBase,
+    comparisonBase?: string,
   ) {
     return runBuilder([
       '--backend-digest', `sha256:${'1'.repeat(64)}`,

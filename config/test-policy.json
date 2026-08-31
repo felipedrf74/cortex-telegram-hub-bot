@@ -258,7 +258,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/api/routes/cooking.ts:1540-1549",
+            "pattern": "src/api/routes/cooking.ts:1654-1663",
             "anchor": "if (!durableSync)",
             "behavior": "Cooking reports a pending calendar sync instead of inventing success when Secretary cannot prove one durable provider mapping.",
             "replacementTest": "__tests__/api/cooking-routes.test.ts",
@@ -889,7 +889,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/tool-executor.ts:834-838",
+            "pattern": "src/services/tool-executor.ts:854-860",
             "anchor": "Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row",
             "behavior": "The raw model tool cannot create an active plan projection and returns a reviewed Training Plan Builder handoff instead.",
             "replacementTest": "__tests__/services/training-plans-tools.test.ts",

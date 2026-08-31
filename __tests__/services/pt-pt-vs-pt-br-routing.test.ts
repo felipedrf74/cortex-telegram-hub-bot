@@ -116,8 +116,8 @@ const PAIRED: PairedPhrasing[] = [
     pt_pt: 'Cria um plano de refeições para a próxima semana',
     pt_br: 'Faz um cardápio pra semana que vem',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_meal_plan',
-    notes: 'PT-PT "plano de refeições" vs PT-BR "cardápio"',
+    expectedAction: 'cooking_meal_support',
+    notes: 'PT-PT "plano de refeições" vs PT-BR "cardápio" stay advisory for bulk weekly generation',
   },
   {
     pt_pt: 'Desativa as notificações de treino aos fins de semana',

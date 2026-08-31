@@ -45,10 +45,11 @@ export function weekIsoDates(start: DateTime): string[] {
   return Array.from({ length: 7 }, (_, index) => start.plus({ days: index }).toISODate()!);
 }
 
-export function summarizeBusyDates(events: UnifiedCalendarEvent[]): string[] {
+export function summarizeBusyDates(events: UnifiedCalendarEvent[], timezone?: string | null): string[] {
   const counts = new Map<string, number>();
   for (const event of events) {
-    const date = String(event.start).slice(0, 10);
+    const date = eventDateInTimezone(event.start, timezone);
+    if (!date) continue;
     counts.set(date, (counts.get(date) ?? 0) + 1);
   }
   return [...counts.entries()]
@@ -57,20 +58,22 @@ export function summarizeBusyDates(events: UnifiedCalendarEvent[]): string[] {
     .sort();
 }
 
-export function extractTravelDates(events: UnifiedCalendarEvent[]): string[] {
+export function extractTravelDates(events: UnifiedCalendarEvent[], timezone?: string | null): string[] {
   const regex = /\b(flight|airport|hotel|travel|trip|voo|aeroporto|hotel|viagem)\b/i;
   return uniqueStrings(events
     .filter((event) => regex.test(String(event.summary ?? '')))
-    .map((event) => String(event.start).slice(0, 10)));
+    .map((event) => eventDateInTimezone(event.start, timezone))
+    .filter((date): date is string => Boolean(date)));
 }
 
-export function summarizeCalendarFragmentation(events: UnifiedCalendarEvent[]): {
+export function summarizeCalendarFragmentation(events: UnifiedCalendarEvent[], timezone?: string | null): {
   fragmentedDates: string[];
   maxEventsInDay: number;
 } {
   const counts = new Map<string, number>();
   for (const event of events) {
-    const date = String(event.start).slice(0, 10);
+    const date = eventDateInTimezone(event.start, timezone);
+    if (!date) continue;
     counts.set(date, (counts.get(date) ?? 0) + 1);
   }
   const entries = [...counts.entries()];
@@ -81,6 +84,21 @@ export function summarizeCalendarFragmentation(events: UnifiedCalendarEvent[]): 
       .sort(),
     maxEventsInDay: entries.reduce((max, [, count]) => Math.max(max, count), 0),
   };
+}
+
+function eventDateInTimezone(value: string, timezone?: string | null): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  // Provider all-day values are already local calendar dates and must not be
+  // shifted through UTC. Timed values are projected into the user's zone.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const parsed = DateTime.fromISO(
+    raw,
+    hasExplicitZone ? { setZone: true } : { zone: resolveTrainingTimezone() },
+  );
+  if (!parsed.isValid) return null;
+  return parsed.setZone(resolveTrainingTimezone(timezone)).toISODate();
 }
 
 export function uniqueStrings(values: string[]): string[] {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: vi.fn(),
@@ -10,9 +10,6 @@ vi.mock('../../src/services/focus-planner', () => ({
 }));
 
 vi.mock('../../src/services/task-store/unified-task-store', () => ({
-  getTasksDueToday: vi.fn(),
-  getTasksDueThisWeek: vi.fn(),
-  getOverdueTasks: vi.fn(),
   getPendingTasks: vi.fn(),
 }));
 
@@ -33,6 +30,8 @@ import * as mailPressure from '../../src/services/unified-mail-pressure';
 
 describe('readSecretaryMeshContext', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-14T12:00:00.000Z'));
     vi.clearAllMocks();
     vi.mocked(calendar.hasWritableCalendarForUser).mockReturnValue(true);
     vi.mocked(calendar.getEvents).mockResolvedValue([
@@ -47,18 +46,6 @@ describe('readSecretaryMeshContext', () => {
       blockStart: '2026-04-15T08:00:00.000Z',
       blockEnd: '2026-04-15T09:30:00.000Z',
     } as any);
-    vi.mocked(unifiedTasks.getTasksDueToday).mockReturnValue([
-      { id: 't1', title: 'Send proposal', dueDate: '2026-04-14T17:00:00.000Z' },
-      { id: 't2', title: 'Review invoice', dueDate: '2026-04-14T18:00:00.000Z' },
-    ] as any);
-    vi.mocked(unifiedTasks.getTasksDueThisWeek).mockReturnValue([
-      { id: 't1', title: 'Send proposal', dueDate: '2026-04-14T17:00:00.000Z' },
-      { id: 't2', title: 'Review invoice', dueDate: '2026-04-14T18:00:00.000Z' },
-      { id: 't3', title: 'Prepare travel bag', dueDate: '2026-04-16T06:00:00.000Z' },
-    ] as any);
-    vi.mocked(unifiedTasks.getOverdueTasks).mockReturnValue([
-      { id: 't0', title: 'Submit report', dueDate: '2026-04-13T10:00:00.000Z' },
-    ] as any);
     vi.mocked(unifiedTasks.getPendingTasks).mockReturnValue([
       { id: 't0', title: 'Submit report', dueDate: '2026-04-13T10:00:00.000Z' },
       { id: 't1', title: 'Send proposal', dueDate: '2026-04-14T17:00:00.000Z' },
@@ -72,6 +59,10 @@ describe('readSecretaryMeshContext', () => {
       outlookUnread: null,
       gmailUnread: 12,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('publishes richer secretary signals including Gmail pressure and fragmentation', async () => {
@@ -97,5 +88,39 @@ describe('readSecretaryMeshContext', () => {
     const portability = context.derivedSignals.find((signal) => signal.signalType === 'task_portability');
     expect(portability?.payload.portableCount).toBe(2);
     expect(portability?.payload.fixedCount).toBe(3);
+    expect(context.dueThisWeek.map((task) => task.id)).toEqual(['t1', 't2']);
+    expect(context.overdue.map((task) => task.id)).toEqual(['t0']);
+    expect(context.derivedSignals.find((signal) => signal.signalType === 'deadline_pressure')?.payload)
+      .toMatchObject({ dueThisWeekCount: 2, overdueCount: 1 });
+  });
+
+  it('keeps tenant task scope and projects task and meeting dates in the user timezone', async () => {
+    vi.setSystemTime(new Date('2026-04-14T20:30:00.000Z')); // 2026-04-14 10:30 in Honolulu
+    vi.mocked(calendar.getEvents).mockResolvedValueOnce([
+      { summary: 'Client meeting', start: '2026-04-14T01:00:00', end: '2026-04-14T02:00:00' },
+      { summary: 'Doctor call', start: '2026-04-14T01:00:00.000Z', end: '2026-04-14T02:00:00.000Z' },
+    ] as any);
+    vi.mocked(unifiedTasks.getPendingTasks).mockReturnValueOnce([
+      { id: 'tenant-local-task', title: 'Tenant local deadline', dueDate: '2026-04-14T01:30:00' },
+      { id: 'tenant-offset-task', title: 'Tenant offset deadline', dueDate: '2026-04-14T01:30:00.000Z' },
+    ] as any);
+
+    const context = await readSecretaryMeshContext({
+      userId: 42,
+      tenantId: 900,
+      weekStart: '2026-04-13',
+      timezone: 'Pacific/Honolulu',
+    });
+
+    expect(unifiedTasks.getPendingTasks).toHaveBeenCalledWith(42, 900);
+    expect(context.dueToday.map((task) => task.id)).toEqual(['tenant-local-task']);
+    expect(context.overdue.map((task) => task.id)).toEqual(['tenant-offset-task']);
+    expect(context.derivedSignals.find((signal) => signal.signalType === 'meeting_criticality')?.payload.dates)
+      .toEqual(expect.arrayContaining(['2026-04-13', '2026-04-14']));
+    expect(calendar.getEvents).toHaveBeenCalledWith(
+      '2026-04-13T10:00:00.000Z',
+      '2026-04-20T09:59:59.999Z',
+      42,
+    );
   });
 });

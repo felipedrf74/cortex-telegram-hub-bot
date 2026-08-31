@@ -132,10 +132,10 @@ const FIXTURES: PtConfusionFixture[] = [
     text: 'Faz um cardápio pra semana que vem',
     locale: 'pt-BR',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_meal_plan',
+    expectedAction: 'cooking_meal_support',
     runnerUp: 'content.content_brief_create',
     reason:
-      'Cooking gate matches "cardápio" (PT-BR variant); meal-plan branch claims via "faz" verb.',
+      'Cooking matches "cardápio" (PT-BR variant) and keeps bulk weekly generation on the advisory support path.',
   },
   {
     text: 'Resume a caixa de entrada do Outlook',

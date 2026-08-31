@@ -37,6 +37,12 @@ import {
 import {
   parseCookingSubstitution,
 } from './skills/cooking/substitution';
+import {
+  extractCookingDeleteTarget,
+  extractCookingGroceryWeekStart,
+  extractCookingMealSlot,
+  type CookingDeleteAction,
+} from './skills/cooking/parser';
 import type {
   SlotContext,
   SlotExtractor,
@@ -300,6 +306,17 @@ export const topicSlotExtractor: SlotExtractor = {
   },
 };
 
+export const cookingMealContextSlotExtractor: SlotExtractor = {
+  name: 'cooking_meal_context',
+  label: 'preserves the complete Cooking support request as local advisory context',
+  extract(text) {
+    const mealContext = text.replace(/\s+/g, ' ').trim();
+    return mealContext
+      ? { slots: { mealContext }, confidence: 0.95 }
+      : { slots: {} };
+  },
+};
+
 export const dateRangeSlotExtractor: SlotExtractor = {
   name: 'date_range',
   label: 'extracts a date range phrase ("this week", "next month", "el mes")',
@@ -379,16 +396,56 @@ export const contentPipelineStageSlotExtractor: SlotExtractor = {
 
 export const cookingMealPlanSlotExtractor: SlotExtractor = {
   name: 'cooking_meal_plan',
-  label: 'extracts dateRange for meal-plan generation',
-  extract(text) {
-    const range = text.match(DATE_RANGE);
-    if (range) {
-      const dateRange = /next/i.test(range[0]) || /pr[oó]xim/i.test(range[0]) ? 'next_week' : 'this_week';
-      return { slots: { dateRange }, confidence: 0.8 };
-    }
-    return { slots: { dateRange: 'this_week' }, confidence: 0.5 };
+  label: 'extracts one concrete date, meal type, and title for a Cooking meal-slot write',
+  extract(text, ctx) {
+    const parsedNow = DateTime.fromISO(ctx.nowIso ?? new Date().toISOString(), { setZone: true });
+    const now = (parsedNow.isValid ? parsedNow : DateTime.utc()).setZone(ctx.timezone ?? 'UTC');
+    const slots = extractCookingMealSlot(text, now);
+    return {
+      slots: { ...slots },
+      confidence: slots.date && slots.mealType && slots.title ? 0.92 : Object.keys(slots).length > 0 ? 0.68 : 0,
+    };
   },
 };
+
+function cookingDeleteSlotExtractor(
+  action: CookingDeleteAction,
+  name: string,
+  label: string,
+): SlotExtractor {
+  return {
+    name,
+    label,
+    extract(text, ctx) {
+      const parsedNow = DateTime.fromISO(ctx.nowIso ?? new Date().toISOString(), { setZone: true });
+      const now = (parsedNow.isValid ? parsedNow : DateTime.utc()).setZone(ctx.timezone ?? 'UTC');
+      const target = extractCookingDeleteTarget(text, now);
+      if (!target || target.action !== action) return { slots: {}, confidence: 0 };
+      return {
+        slots: { ...target.args },
+        confidence: target.requiredArgsPresent ? 0.98 : 0.7,
+      };
+    },
+  };
+}
+
+export const cookingDeleteRecipeSlotExtractor = cookingDeleteSlotExtractor(
+  'cooking_delete_recipe',
+  'cooking_delete_recipe',
+  'extracts the positive recipe id from a direct Cooking recipe-delete command',
+);
+
+export const cookingDeleteMealSlotExtractor = cookingDeleteSlotExtractor(
+  'cooking_delete_meal',
+  'cooking_delete_meal',
+  'extracts the date and meal type from a direct Cooking meal-delete command',
+);
+
+export const cookingDeletePantryItemSlotExtractor = cookingDeleteSlotExtractor(
+  'cooking_delete_pantry_item',
+  'cooking_delete_pantry_item',
+  'extracts the positive item id from a direct Cooking pantry-delete command',
+);
 
 export const connectionsSlotExtractor: SlotExtractor = {
   name: 'connections_provider',
@@ -512,6 +569,20 @@ export const mealDateRangeSlotExtractor: SlotExtractor = {
     return {
       slots: { dateRange: isNextWeek ? 'next_week' : 'this_week', datePhrase: phrase },
       confidence: 0.85,
+    };
+  },
+};
+
+export const cookingGroceryWeekStartSlotExtractor: SlotExtractor = {
+  name: 'cooking_grocery_week_start',
+  label: 'resolves the requested Cooking shopping week to its Monday in the user timezone',
+  extract(text, ctx) {
+    const parsedNow = DateTime.fromISO(ctx.nowIso ?? new Date().toISOString(), { setZone: true });
+    const now = (parsedNow.isValid ? parsedNow : DateTime.utc()).setZone(ctx.timezone ?? 'UTC');
+    const weekStart = extractCookingGroceryWeekStart(text, now);
+    return {
+      slots: weekStart ? { weekStart } : {},
+      confidence: weekStart ? 0.95 : 0,
     };
   },
 };

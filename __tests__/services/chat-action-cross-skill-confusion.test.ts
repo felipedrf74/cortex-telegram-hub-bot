@@ -80,10 +80,10 @@ const FIXTURES: ConfusionFixture[] = [
   {
     text: 'Plan my meals for next week',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_meal_plan',
+    expectedAction: 'cooking_meal_support',
     runnerUp: 'secretary_calendar.schedule_event, training.training_plan_create',
     reason:
-      '"meals" anchors to cooking. "Plan" is a generic create-verb but the meal-object disambiguates. Calendar parser fails because no event-noun is named.',
+      '"meals" anchors to Cooking, while a bulk weekly request remains advisory because the executable write contract persists one dated meal slot at a time.',
   },
   {
     text: 'Plan my training for the next 12 weeks',
@@ -252,10 +252,10 @@ const FIXTURES: ConfusionFixture[] = [
     text: 'Mostra a lista de compras desta semana',
     locale: 'pt-PT',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_grocery_list',
+    expectedAction: 'cooking_meal_support',
     runnerUp: 'tasks.create_checklist (because "lista")',
     reason:
-      'Cooking gate matches "compras|lista de compras". The grocery-list branch runs before checklist creation because cooking parser is checked before the simple-task parser in the broad-skill chain. "lista" alone would NOT match — it requires the "de compras" qualifier.',
+      'Cooking claims the qualified shopping-list read before task checklist parsing, and "mostra" keeps it read-only instead of regenerating persisted list state.',
   },
 ];
 

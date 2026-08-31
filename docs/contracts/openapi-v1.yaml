@@ -9686,13 +9686,13 @@ paths:
         - "cooking"
       summary: "List meal plan entries for a date range with rule-based adaptations, assessment, and planning context"
       description: |-
-        Source: src/api/routes/cooking.ts:941
+        Source: src/api/routes/cooking.ts:1026
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: Deterministic: adaptation/assessment come from rule-based cooking-intelligence and training/wearable/finance/secretary reads; no model calls found in delegated services.
+        Notes: Deterministic: adaptation and assessment come from rule-based Cooking intelligence plus tenant-scoped meal, pantry, preference, Finance, Secretary, active Training-plan, and persisted Training-signal reads. from/to must be real YYYY-MM-DD dates and from must not be after to. This GET does not call a live wearable provider or refresh wearable OAuth state.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:941"
+      x-source: "src/api/routes/cooking.ts:1026"
       x-entitlement: "cooking"
       parameters:
         - name: "from"
@@ -9700,13 +9700,13 @@ paths:
           required: true
           schema:
             type: "string"
-          description: "YYYY-MM-DD"
+          description: "Real calendar date in exact YYYY-MM-DD form"
         - name: "to"
           in: "query"
           required: true
           schema:
             type: "string"
-          description: "YYYY-MM-DD"
+          description: "Real calendar date in exact YYYY-MM-DD form; must not be earlier than from"
       responses:
         "200":
           description: "{ meals: (MealPlan & {adaptation})[], count, from, to, assessment, preferences: {summary}, planningContext: {financeBudget, secretaryAvailability} } (Standard success envelope unless noted.)"
@@ -9728,15 +9728,15 @@ paths:
         - "cooking"
       summary: "Upsert one meal plan slot (unique on user+date+mealType)"
       description: |-
-        Source: src/api/routes/cooking.ts:1028
+        Source: src/api/routes/cooking.ts:1122
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): date (required), mealType (required), title (required); recipeId?, notes?
+        Request body (evidenced fields): date (required real YYYY-MM-DD date), mealType (required enum: breakfast | lunch | dinner | snack), title (required non-empty string); recipeId? (positive integer), notes? (string). When recipeId is supplied, it must reference an active user-private recipe owned by the same user in the current tenant scope.
 
-        Notes: 403 FORBIDDEN on COOKING_SCOPE_CONFLICT; 400 on COOKING_SAFETY_BLOCKED. Success uses default 200 (not 201).
+        Notes: 403 FORBIDDEN on COOKING_SCOPE_CONFLICT; 400 BAD_REQUEST on COOKING_SAFETY_BLOCKED or when recipeId is missing, inactive, or outside the current tenant/user scope. Success uses default 200 (not 201).
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1028"
+      x-source: "src/api/routes/cooking.ts:1122"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -9744,7 +9744,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: date (required), mealType (required), title (required); recipeId?, notes?. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: date (required real YYYY-MM-DD date), mealType (required enum: breakfast | lunch | dinner | snack), title (required non-empty string); recipeId? (positive integer), notes? (string). A supplied recipeId must reference an active user-private recipe owned by the same user in the current tenant scope. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ meal } (Standard success envelope unless noted.)"
@@ -9766,13 +9766,13 @@ paths:
         - "cooking"
       summary: "Clear one meal plan slot by date and mealType"
       description: |-
-        Source: src/api/routes/cooking.ts:1182
+        Source: src/api/routes/cooking.ts:1279
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: Returns 200 with deleted:false semantics possible (deleteMealPlan boolean passed through); no 404 branch.
+        Notes: date must be a real YYYY-MM-DD date and mealType must be breakfast, lunch, dinner, or snack. Returns 200 with deleted:false semantics possible (deleteMealPlan boolean passed through); no 404 branch.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1182"
+      x-source: "src/api/routes/cooking.ts:1279"
       x-entitlement: "cooking"
       parameters:
         - name: "date"
@@ -9807,15 +9807,15 @@ paths:
         - "cooking"
       summary: "Create ONE meal-prep calendar event for the week via Secretary scheduling + unified-calendar provider sync"
       description: |-
-        Source: src/api/routes/cooking.ts:1342
+        Source: src/api/routes/cooking.ts:1446
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): week (required, /^\d{4}-\d{2}-\d{2}$/ Monday of target week); dayOfWeek? (0-6, default 0=Sunday), startHour? (0-23, default 14), durationMinutes? (1-480, default 120) — out-of-range optional values silently fall back to defaults
+        Request body (evidenced fields): week (required real YYYY-MM-DD Monday of target week); dayOfWeek? (integer 0-6, default 0=Sunday), startHour? (integer 0-23, default 14), durationMinutes? (integer 1-480, default 120). Invalid or fractional optional schedule values return 400 and are never replaced with defaults. Week validation and the future-local-time guard occur before calendar/provider reads.
 
         Notes: Deterministic: writes to Google/Outlook calendar via provider adapter, no model completion. Uses assertTenantScope (throws TenantScopeError 'UNAUTHORIZED' outside the try block; handled by asyncHandler/global error middleware). When calendar write preference is unresolvable, the 400 error code is calendarPreference.warningCode (dynamic) falling back to CALENDAR_NOT_CONFIGURED. 503 responses include warningCodes/reasonCode details; 409 responses include reasonCodes/agendaItemId.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1342"
+      x-source: "src/api/routes/cooking.ts:1446"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -9823,12 +9823,12 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: week (required, /^\\d{4}-\\d{2}-\\d{2}$/ Monday of target week); dayOfWeek? (0-6, default 0=Sunday), startHour? (0-23, default 14), durationMinutes? (1-480, default 120) — out-of-range optional values silently fall back to defaults. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: week (required real YYYY-MM-DD Monday of target week); dayOfWeek? (integer 0-6, default 0=Sunday), startHour? (integer 0-23, default 14), durationMinutes? (integer 1-480, default 120). Invalid or fractional optional values return 400 and are never replaced with defaults. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ event: {id, title, start, end, source, htmlLink: null}, agendaItemId, mealCount } (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): BAD_REQUEST, CALENDAR_NOT_CONFIGURED, NO_MEALS_PLANNED."
+          description: "Error envelope. Stable code(s): BAD_REQUEST, CALENDAR_NOT_CONFIGURED, NO_MEALS_PLANNED, COOKING_PREP_PAST_WINDOW."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "403":
@@ -9850,15 +9850,15 @@ paths:
         - "cooking"
       summary: "Apply one accepted substitution candidate to the scoped meal's linked recipe, optionally refreshing the shopping list"
       description: |-
-        Source: src/api/routes/cooking.ts:1117
+        Source: src/api/routes/cooking.ts:1213
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): date, mealType, originalIngredient, suggestedIngredient (all required strings), reason (required enum: allergy | dietary_restriction | disliked_ingredient | expired_pantry), updateShoppingList? (boolean)
+        Request body (evidenced fields): date (required real YYYY-MM-DD date), mealType (required enum: breakfast | lunch | dinner | snack), originalIngredient and suggestedIngredient (required non-empty strings), reason (required enum: allergy | dietary_restriction | disliked_ingredient | expired_pantry), updateShoppingList? (boolean)
 
         Notes: 404 for meal_not_found/recipe_not_found; COOKING_SUBSTITUTION* service errors -> 400 with message as error text; 403 FORBIDDEN on scope conflict; 400 on COOKING_SAFETY_BLOCKED.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1117"
+      x-source: "src/api/routes/cooking.ts:1213"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -9866,7 +9866,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: date, mealType, originalIngredient, suggestedIngredient (all required strings), reason (required enum: allergy | dietary_restriction | disliked_ingredient | expired_pantry), updateShoppingList? (boolean). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: date (required real YYYY-MM-DD date), mealType (required enum: breakfast | lunch | dinner | snack), originalIngredient and suggestedIngredient (required non-empty strings), reason (required enum: allergy | dietary_restriction | disliked_ingredient | expired_pantry), updateShoppingList? (boolean). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "apply result object (result.applied etc.) (Standard success envelope unless noted.)"
@@ -9891,15 +9891,15 @@ paths:
         - "cooking"
       summary: "Suggest deterministic, preference-safe substitution candidates for one scoped meal ingredient (read-only)"
       description: |-
-        Source: src/api/routes/cooking.ts:1061
+        Source: src/api/routes/cooking.ts:1156
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): date (required string), mealType (required string), originalIngredient (required string), reason? (allergy | dietary_restriction | disliked_ingredient | expired_pantry)
+        Request body (evidenced fields): date (required real YYYY-MM-DD date), mealType (required enum: breakfast | lunch | dinner | snack), originalIngredient (required non-empty string), reason? (allergy | dietary_restriction | disliked_ingredient | expired_pantry)
 
         Notes: 404 when service reports meal_not_found/recipe_not_found; other not-found reasons map to 400. Route comment explicitly states deterministic.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1061"
+      x-source: "src/api/routes/cooking.ts:1156"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -9907,7 +9907,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: date (required string), mealType (required string), originalIngredient (required string), reason? (allergy | dietary_restriction | disliked_ingredient | expired_pantry). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: date (required real YYYY-MM-DD date), mealType (required enum: breakfast | lunch | dinner | snack), originalIngredient (required non-empty string), reason? (allergy | dietary_restriction | disliked_ingredient | expired_pantry). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ ...suggestResult, count } incl. suggestions[] (Standard success envelope unless noted.)"
@@ -9932,11 +9932,11 @@ paths:
         - "cooking"
       summary: "List tenant/user-scoped pantry items (expired hidden by default)"
       description: |-
-        Source: src/api/routes/cooking.ts:707
+        Source: src/api/routes/cooking.ts:792
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:707"
+      x-source: "src/api/routes/cooking.ts:792"
       x-entitlement: "cooking"
       parameters:
         - name: "search"
@@ -9981,15 +9981,15 @@ paths:
         - "cooking"
       summary: "Create/update (upsert) one pantry item"
       description: |-
-        Source: src/api/routes/cooking.ts:734
+        Source: src/api/routes/cooking.ts:817
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): name (string, required); confidence? (number 0-1); other PantryItemInput fields per doc comment: quantity?, unit?, category?, expiresAt?, freshnessStatus?, availabilityStatus?, source?, notes? (only name/confidence handler-validated)
+        Request body (evidenced fields): name (non-empty string, required); confidence? (finite number 0-1); quantity?, unit?, category?, source?, notes? (string or null); freshnessStatus? (fresh | unknown | use_soon | expired); availabilityStatus? (available | low_stock | unavailable); expiresAt? must be blank/null or a real calendar date in exact YYYY-MM-DD form. Invalid explicit statuses are rejected rather than silently normalized, and `removed` is reserved for the DELETE endpoint.
 
-        Notes: Invalidates cooking derived caches on success.
+        Notes: The service derives the most conservative freshness from expiresAt and any supplied freshnessStatus. An invalid expiresAt returns 400 BAD_REQUEST without persistence. Invalidates Cooking derived caches on success.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:734"
+      x-source: "src/api/routes/cooking.ts:817"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -9997,7 +9997,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: name (string, required); confidence? (number 0-1); other PantryItemInput fields per doc comment: quantity?, unit?, category?, expiresAt?, freshnessStatus?, availabilityStatus?, source?, notes? (only name/confidence handler-validated). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: name (non-empty string, required); confidence? (finite number 0-1); quantity?, unit?, category?, source?, notes? (string or null); freshnessStatus? (fresh | unknown | use_soon | expired); availabilityStatus? (available | low_stock | unavailable); expiresAt? must be blank/null or a real calendar date in exact YYYY-MM-DD form. Invalid explicit statuses are rejected rather than silently normalized, and removed is reserved for DELETE. Route validation code is authoritative for exact shapes."
       responses:
         "201":
           description: "{ item } (Standard success envelope unless noted.)"
@@ -10020,13 +10020,13 @@ paths:
         - "cooking"
       summary: "Fetch one pantry item by id"
       description: |-
-        Source: src/api/routes/cooking.ts:766
+        Source: src/api/routes/cooking.ts:850
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
         Notes: Not listed in the file-header endpoint comment but registered; include it.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:766"
+      x-source: "src/api/routes/cooking.ts:850"
       x-entitlement: "cooking"
       parameters:
         - name: "id"
@@ -10057,13 +10057,15 @@ paths:
         - "cooking"
       summary: "Update one pantry item"
       description: |-
-        Source: src/api/routes/cooking.ts:796
+        Source: src/api/routes/cooking.ts:880
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): Partial PantryItemInput; at least one field required; name must be non-empty string when provided; confidence number 0-1 when provided
+        Request body (evidenced fields): Partial PantryItemInput with at least one supported field; unknown-only bodies are rejected. name must be a non-empty string when provided; confidence must be a finite number from 0 to 1; quantity, unit, category, source, and notes must be strings or null; freshnessStatus must be fresh, unknown, use_soon, or expired; availabilityStatus must be available, low_stock, or unavailable; expiresAt must be blank/null or a real calendar date in exact YYYY-MM-DD form.
+
+        Notes: An invalid expiresAt returns 400 BAD_REQUEST without changing the pantry row. An expiry-only update recomputes freshness from the new date.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:796"
+      x-source: "src/api/routes/cooking.ts:880"
       x-entitlement: "cooking"
       parameters:
         - name: "id"
@@ -10077,7 +10079,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: Partial PantryItemInput; at least one field required; name must be non-empty string when provided; confidence number 0-1 when provided. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: Partial PantryItemInput with at least one supported field; unknown-only bodies are rejected. name must be a non-empty string when provided; confidence must be a finite number from 0 to 1; quantity, unit, category, source, and notes must be strings or null; freshnessStatus must be fresh, unknown, use_soon, or expired; availabilityStatus must be available, low_stock, or unavailable; expiresAt must be blank/null or a real calendar date in exact YYYY-MM-DD form. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ item } (Standard success envelope unless noted.)"
@@ -10101,11 +10103,11 @@ paths:
         - "cooking"
       summary: "Delete one pantry item"
       description: |-
-        Source: src/api/routes/cooking.ts:842
+        Source: src/api/routes/cooking.ts:927
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:842"
+      x-source: "src/api/routes/cooking.ts:927"
       x-entitlement: "cooking"
       parameters:
         - name: "id"
@@ -10137,13 +10139,13 @@ paths:
         - "cooking"
       summary: "Read active user-private Cooking preference memory for the active tenant"
       description: |-
-        Source: src/api/routes/cooking.ts:876
+        Source: src/api/routes/cooking.ts:961
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: COOKING_PREFERENCE*/SKILL_MEMORY* service errors map to 403 FORBIDDEN when message contains SCOPE, else 400 BAD_REQUEST (cooking.ts:198-204).
+        Notes: COOKING_PREFERENCE*/SKILL_MEMORY* service errors map to 403 FORBIDDEN when message contains SCOPE, else 400 BAD_REQUEST (cooking.ts:204-210).
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:876"
+      x-source: "src/api/routes/cooking.ts:961"
       x-entitlement: "cooking"
       responses:
         "200":
@@ -10166,7 +10168,7 @@ paths:
         - "cooking"
       summary: "Write/correct Cooking preference memory"
       description: |-
-        Source: src/api/routes/cooking.ts:900
+        Source: src/api/routes/cooking.ts:985
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
@@ -10174,7 +10176,7 @@ paths:
 
         Notes: Same COOKING_PREFERENCE/SKILL_MEMORY error mapping as GET /preferences.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:900"
+      x-source: "src/api/routes/cooking.ts:985"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -10205,13 +10207,13 @@ paths:
         - "cooking"
       summary: "List the user's recipes, newest first, with optional filters"
       description: |-
-        Source: src/api/routes/cooking.ts:462
+        Source: src/api/routes/cooking.ts:540
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: 403 FORBIDDEN on COOKING_SCOPE_CONFLICT (cross-tenant); 400 BAD_REQUEST on COOKING_SAFETY_BLOCKED. All routes in this module pass an inline middleware (cooking.ts:447) returning 401 UNAUTHORIZED on invalid tenant scope.
+        Notes: 403 FORBIDDEN on COOKING_SCOPE_CONFLICT (cross-tenant); 400 BAD_REQUEST on COOKING_SAFETY_BLOCKED. All routes in this module pass an inline middleware (cooking.ts:521) returning 401 UNAUTHORIZED on invalid tenant scope.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:462"
+      x-source: "src/api/routes/cooking.ts:540"
       x-entitlement: "cooking"
       parameters:
         - name: "search"
@@ -10253,15 +10255,15 @@ paths:
         - "cooking"
       summary: "Create a new recipe (emits cooking.meal_plan.updated outbox event)"
       description: |-
-        Source: src/api/routes/cooking.ts:494
+        Source: src/api/routes/cooking.ts:570
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): title (string, required), ingredients (array, required), instructions? (string|null), prepTime?, cookTime?, servings?, tags?, source?, protein?/fat?/carbs?/calories? (non-negative number or null)
+        Request body (evidenced fields): title (non-empty string, required); ingredients (array, required), where every element is an object with its own non-empty string name plus string quantity and unit; instructions?, tags?, source? (string|null); prepTime?, cookTime? (non-negative integer|null); servings? (positive integer); protein?/fat?/carbs?/calories? (non-negative finite number|null).
 
-        Notes: Extra per-tenant write budget (consumeResourceBudget key cooking_recipe_create, 60/60s) -> 429 RATE_LIMITED with Retry-After header (cooking.ts:1594-1609). 403 FORBIDDEN on COOKING_SCOPE_CONFLICT; 400 on COOKING_SAFETY_BLOCKED.
+        Notes: Malformed ingredient elements or invalid numeric/text fields return 400 BAD_REQUEST before persistence. Extra per-tenant write budget (consumeResourceBudget key cooking_recipe_create, 60/60s) -> 429 RATE_LIMITED with Retry-After header (cooking.ts:1702-1721). 403 FORBIDDEN on COOKING_SCOPE_CONFLICT; 400 on COOKING_SAFETY_BLOCKED.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:494"
+      x-source: "src/api/routes/cooking.ts:570"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -10269,7 +10271,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: title (string, required), ingredients (array, required), instructions? (string|null), prepTime?, cookTime?, servings?, tags?, source?, protein?/fat?/carbs?/calories? (non-negative number or null). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: title (non-empty string, required); ingredients (array, required), where every element is an object with its own non-empty string name plus string quantity and unit; instructions?, tags?, source? (string|null); prepTime?, cookTime? (non-negative integer|null); servings? (positive integer); protein?/fat?/carbs?/calories? (non-negative finite number|null). Route validation code is authoritative for exact shapes."
       responses:
         "201":
           description: "{ recipe } (Standard success envelope unless noted.)"
@@ -10294,13 +10296,13 @@ paths:
         - "cooking"
       summary: "Fetch a single recipe by id"
       description: |-
-        Source: src/api/routes/cooking.ts:568
+        Source: src/api/routes/cooking.ts:646
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: id must parse as a number; 404 when missing or cross-user; 400 BAD_REQUEST also on COOKING_SAFETY_BLOCKED.
+        Notes: id must be a positive safe integer; 404 when missing or cross-user; 400 BAD_REQUEST also on COOKING_SAFETY_BLOCKED.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:568"
+      x-source: "src/api/routes/cooking.ts:646"
       x-entitlement: "cooking"
       parameters:
         - name: "id"
@@ -10331,15 +10333,15 @@ paths:
         - "cooking"
       summary: "Partial update of a recipe; only supplied fields are written"
       description: |-
-        Source: src/api/routes/cooking.ts:601
+        Source: src/api/routes/cooking.ts:679
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): At least one of: title (non-empty string), ingredients (array), instructions (string|null), prepTime, cookTime, servings, tags, source, protein/fat/carbs/calories (non-negative number or null)
+        Request body (evidenced fields): At least one of: title (non-empty string); ingredients (array), where every element is an object with its own non-empty string name plus string quantity and unit; instructions, tags, source (string|null); prepTime and cookTime (non-negative integer|null); servings (positive integer); protein/fat/carbs/calories (non-negative finite number|null).
 
-        Notes: Empty body rejected with 400.
+        Notes: An empty body or malformed ingredient element is rejected with 400 BAD_REQUEST before the stored recipe changes.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:601"
+      x-source: "src/api/routes/cooking.ts:679"
       x-entitlement: "cooking"
       parameters:
         - name: "id"
@@ -10353,7 +10355,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: At least one of: title (non-empty string), ingredients (array), instructions (string|null), prepTime, cookTime, servings, tags, source, protein/fat/carbs/calories (non-negative number or null). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: At least one of: title (non-empty string); ingredients (array), where every element is an object with its own non-empty string name plus string quantity and unit; instructions, tags, source (string|null); prepTime and cookTime (non-negative integer|null); servings (positive integer); protein/fat/carbs/calories (non-negative finite number|null). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ recipe } (Standard success envelope unless noted.)"
@@ -10375,13 +10377,15 @@ paths:
       operationId: "deleteCookingRecipesById"
       tags:
         - "cooking"
-      summary: "Delete a recipe"
+      summary: "Delete a recipe unless it is referenced by a today-or-future meal"
       description: |-
-        Source: src/api/routes/cooking.ts:673
+        Source: src/api/routes/cooking.ts:753
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
+
+        Notes: 404 NOT_FOUND when the recipe is missing or outside the current tenant/user scope. A today-or-future scoped meal-plan reference protects the recipe and returns HTTP 409 COOKING_RECIPE_IN_USE; remove or relink that active meal slot before retrying deletion. Historical meal rows preserve their title and notes while their recipe link is detached transactionally before deletion.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:673"
+      x-source: "src/api/routes/cooking.ts:753"
       x-entitlement: "cooking"
       parameters:
         - name: "id"
@@ -10400,6 +10404,8 @@ paths:
           description: "Error envelope. Stable code(s): TIER_REQUIRED."
         "404":
           description: "Error envelope. Stable code(s): NOT_FOUND."
+        "409":
+          description: "Error envelope. Stable code: COOKING_RECIPE_IN_USE. A today-or-future tenant/user meal plan still references this recipe."
         "500":
           description: "Error envelope. Stable code(s): INTERNAL."
         "4XX":
@@ -10411,13 +10417,15 @@ paths:
       operationId: "getCookingShoppingList"
       tags:
         - "cooking"
-      summary: "Fetch the stored shopping list for a week (or null)"
+      summary: "Fetch the safety-filtered stored shopping list containing the supplied date (or null)"
       description: |-
-        Source: src/api/routes/cooking.ts:1212
+        Source: src/api/routes/cooking.ts:1310
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
+
+        Notes: week accepts any real date in exact YYYY-MM-DD form and resolves it to the containing Monday for backward compatibility. Unsafe items are omitted from list.items and reported through optional list.safetyIssues[]; an unavailable safety profile fails closed with 400 BAD_REQUEST.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1212"
+      x-source: "src/api/routes/cooking.ts:1310"
       x-entitlement: "cooking"
       parameters:
         - name: "week"
@@ -10425,10 +10433,10 @@ paths:
           required: true
           schema:
             type: "string"
-          description: "YYYY-MM-DD"
+          description: "Any real date in exact YYYY-MM-DD form within the requested week"
       responses:
         "200":
-          description: "{ list: ShoppingList | null } (Standard success envelope unless noted.)"
+          description: "{ list: (ShoppingList with safety-filtered items and optional safetyIssues[]) | null } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_REQUEST."
         "401":
@@ -10446,17 +10454,17 @@ paths:
       operationId: "postCookingShoppingListGenerate"
       tags:
         - "cooking"
-      summary: "(Re)generate the week's shopping list by aggregating ingredients from meal plan entries; overwrites existing list"
+      summary: "Safely (re)generate a Monday-anchored shopping list from saved meal-plan recipes"
       description: |-
-        Source: src/api/routes/cooking.ts:1240
+        Source: src/api/routes/cooking.ts:1340
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): week (required string, YYYY-MM-DD)
+        Request body (evidenced fields): week (required real Monday in exact YYYY-MM-DD form)
 
-        Notes: 403 FORBIDDEN on COOKING_SCOPE_CONFLICT.
+        Notes: Ingredients are aggregated with compatible-unit normalization while incompatible units remain explicit compound quantities. Current Cooking safety preferences are checked before persistence. Conflicting meals are omitted while safe meals still generate, and the response reports skipped recipes through optional list.safetyIssues[]. An unavailable safety profile returns 400 BAD_REQUEST and leaves any prior stored list untouched. 403 FORBIDDEN on COOKING_SCOPE_CONFLICT.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1240"
+      x-source: "src/api/routes/cooking.ts:1340"
       x-entitlement: "cooking"
       requestBody:
         required: true
@@ -10464,7 +10472,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: week (required string, YYYY-MM-DD). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: week (required real Monday in exact YYYY-MM-DD form). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ list } (Standard success envelope unless noted.)"
@@ -10487,15 +10495,15 @@ paths:
         - "cooking"
       summary: "Persist the checked state for one item in the week's shopping list"
       description: |-
-        Source: src/api/routes/cooking.ts:1271
+        Source: src/api/routes/cooking.ts:1373
 
         Entitlement: requires the `cooking` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): week (required string, YYYY-MM-DD), checked (required boolean)
+        Request body (evidenced fields): week (required real date in exact YYYY-MM-DD form; normalized to its containing Monday), checked (required boolean)
 
-        Notes: index path param must be a non-negative integer; service 'out of range' errors -> 400 with message. Not in the file-header endpoint comment but registered.
+        Notes: index path param must be a non-negative integer addressing the current safety-filtered visible item array. The service maps that index back to the stored raw row, updates only that checked value, preserves hidden unsafe rows, and returns a freshly safety-filtered list. Service 'out of range' errors -> 400 with message.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/cooking.ts:1271"
+      x-source: "src/api/routes/cooking.ts:1373"
       x-entitlement: "cooking"
       parameters:
         - name: "index"
@@ -10509,7 +10517,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: week (required string, YYYY-MM-DD), checked (required boolean). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: week (required real date in exact YYYY-MM-DD form; normalized to its containing Monday), checked (required boolean). The index addresses the safety-filtered visible item list. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ list } (Standard success envelope unless noted.)"
@@ -11591,23 +11599,23 @@ paths:
         - "plan"
       summary: "Invalidate planning caches and force-recompute both the weekly plan and today's brief"
       description: |-
-        Source: src/api/routes/plan.ts:83 (mounted src/api/router.ts:404)
+        Source: src/api/routes/plan.ts:85 (mounted src/api/router.ts:405)
 
-        Request body (evidenced fields): { weekStart?: string, date?: string } — both optional ISO date strings
+        Request body (evidenced fields): { weekStart?: string, date?: string } — both optional ISO dates; omitted or invalid values resolve in the authenticated user's timezone, with the app timezone used only as a fallback
 
         Notes: Calls invalidatePlanningCaches then composeWeeklyPlan/composeDailyBrief with forceRefresh:true (syncSignals:true for the week). No AI budget gate — recompute is token-zero.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:83 (mounted src/api/router.ts:404)"
+      x-source: "src/api/routes/plan.ts:85 (mounted src/api/router.ts:405)"
       requestBody:
         required: true
         content:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: { weekStart?: string, date?: string } — both optional ISO date strings. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: { weekStart?: string, date?: string } — both optional ISO dates; omitted or invalid values resolve in the authenticated user's timezone, with app timezone as fallback. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "apiSuccess { week: WeeklyPlanResponse, today: DailyBrief } (Standard success envelope unless noted.)"
+          description: "apiSuccess { week: WeeklyPlanResponse including weekStart/weekEnd/summary and per-day cooking source state, today: DailyBrief including day.cooking {status, headline, warningCodes} } (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11623,21 +11631,21 @@ paths:
         - "plan"
       summary: "Daily brief/plan for a given date, derived from the weekly mesh plan plus decision-center overview"
       description: |-
-        Source: src/api/routes/plan.ts:55 (mounted src/api/router.ts:404)
+        Source: src/api/routes/plan.ts:56 (mounted src/api/router.ts:405)
 
-        Notes: SWR cache TTL 60s/stale 300s; language from x-language header else stored preference. Unconditionally registered.
+        Notes: SWR cache TTL 60s/stale 300s; language from x-language header else stored preference. Implicit date selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. day.cooking distinguishes ready, empty, degraded, unavailable, and gated state through status/headline/warningCodes so missing or unsafe Cooking context is never rendered as an ordinary empty plan. Unconditionally registered.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:55 (mounted src/api/router.ts:404)"
+      x-source: "src/api/routes/plan.ts:56 (mounted src/api/router.ts:405)"
       parameters:
         - name: "date"
           in: "query"
           required: false
           schema:
             type: "string"
-          description: "ISO date; defaults to today in app timezone"
+          description: "ISO date; defaults to today in the authenticated user's timezone (app timezone is fallback only)"
       responses:
         "200":
-          description: "apiSuccess with composeDailyBrief result. ETag/304 supported. (Standard success envelope unless noted.)"
+          description: "apiSuccess with DailyBriefResponse: date, generatedAt, degraded, gated, garmin_stale, conflicts, creativeCopy, day, coordination. day.cooking exposes {status: ready|empty|degraded|unavailable|gated, headline, warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11653,21 +11661,21 @@ paths:
         - "plan"
       summary: "Multiskill-mesh weekly plan (training/secretary/cooking/content/finance) composed from cross-agent signals"
       description: |-
-        Source: src/api/routes/plan.ts:27 (mounted src/api/router.ts:404)
+        Source: src/api/routes/plan.ts:27 (mounted src/api/router.ts:405)
 
-        Notes: Mount is unconditional (no env flag at registration despite the router index text 'feature-flagged', router.ts:135). Skills the user is not entitled to appear as gated sections in the payload rather than a route-level 403. Token-zero: creativeCopy is template strings (weekly-plan-orchestrator.ts:1789); degraded=true suppresses copy when user is over the daily AI cap but no model call happens either way. SWR cache TTL 120s/stale 600s; x-language header respected.
+        Notes: Mount is unconditional (router.ts:135). Skills the user is not entitled to appear as gated sections in the payload rather than a route-level 403. Token-zero: creativeCopy is template strings (weekly-plan-orchestrator.ts:1969); degraded=true suppresses copy when the user is over the daily AI cap or when required source health is degraded, but no model call happens either way. Implicit week selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. Every day carries a Cooking status/headline/warningCodes projection; unsafe or unverifiable meals are withheld rather than treated as safe. SWR cache TTL 120s/stale 600s; x-language header respected.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:27 (mounted src/api/router.ts:404)"
+      x-source: "src/api/routes/plan.ts:27 (mounted src/api/router.ts:405)"
       parameters:
         - name: "weekStart"
           in: "query"
           required: false
           schema:
             type: "string"
-          description: "ISO date; defaults to current week start in app timezone"
+          description: "ISO date; normalized to its week start in the authenticated user's timezone (app timezone is fallback only)"
       responses:
         "200":
-          description: "apiSuccess with WeeklyPlanResponse: generatedAt, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], days[], creativeCopy. ETag/304 supported. (Standard success envelope unless noted.)"
+          description: "apiSuccess with WeeklyPlanResponse: weekStart, weekEnd, generatedAt, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], creativeCopy, summary:{sessionCount,mealCount,activeConflictCount}, days[]. Each day includes cooking:{status:ready|empty|degraded|unavailable|gated,headline,warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11683,13 +11691,13 @@ paths:
         - "plan"
       summary: "Plain-text explanation of the weekly plan decisions (Max-tier debugging/insight view)"
       description: |-
-        Source: src/api/routes/plan.ts:104 (mounted src/api/router.ts:404)
+        Source: src/api/routes/plan.ts:107 (mounted src/api/router.ts:405)
 
         Entitlement: requires the `max-or-owner skill tier (in-route check via entitlementPlanToSkillTier)` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
         Notes: 403 FORBIDDEN 'Max tier required for explanation view' with details {plan} unless effective tier is max or owner (plan.ts:111-116). Registered after GET /week so path literal /week/explain wins (distinct path, no conflict). Explanation text is built deterministically from plan decisions.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:104 (mounted src/api/router.ts:404)"
+      x-source: "src/api/routes/plan.ts:107 (mounted src/api/router.ts:405)"
       x-entitlement: "max-or-owner skill tier (in-route check via entitlementPlanToSkillTier)"
       parameters:
         - name: "weekStart"

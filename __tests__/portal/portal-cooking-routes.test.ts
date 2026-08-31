@@ -305,6 +305,54 @@ describe('portal cooking routes', () => {
     expect(JSON.stringify(payload.body)).not.toContain('"memoryValue"');
   });
 
+  it('rejects invalid preference confidence before writing memory', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/preferences')?.at(-1)!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '42' },
+      body: { tenantId: 42, kind: 'allergy', value: 'peanut', confidence: 1.1 },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_COOKING_PREFERENCE_CONFIDENCE',
+        message: 'confidence must be a number between 0 and 1',
+      },
+    });
+    expect(hoisted.setCookingPreferenceMemory).not.toHaveBeenCalled();
+  });
+
+  it('maps service-level preference validation failures to a stable client error', () => {
+    hoisted.setCookingPreferenceMemory.mockImplementationOnce(() => {
+      throw new Error('COOKING_PREFERENCE_INVALID: weekday_max_prep_minutes must be 1-480');
+    });
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/preferences')?.at(-1)!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '42' },
+      body: { tenantId: 42, kind: 'weekday_max_prep_minutes', value: 481 },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_COOKING_PREFERENCE',
+        message: 'COOKING_PREFERENCE_INVALID: weekday_max_prep_minutes must be 1-480',
+      },
+    });
+    expect(hoisted.invalidateCookingDerivedCaches).not.toHaveBeenCalled();
+    expect(hoisted.sendPortalInternalError).not.toHaveBeenCalled();
+  });
+
   it('reads pantry through scoped Cooking services and audits access', () => {
     const { app, routes } = makeApp();
     registerPortalCookingRoutes(app as any);
@@ -358,6 +406,126 @@ describe('portal cooking routes', () => {
     }));
     expect(upsertResponse.payload.statusCode).toBe(201);
     expect(deleteResponse.payload.body).toEqual({ ok: true, tenantId: 42, deleted: true, itemId: 7 });
+  });
+
+  it('returns a client error when pantry expiry validation fails', () => {
+    hoisted.upsertPantryItem.mockImplementationOnce(() => {
+      throw new Error('COOKING_PANTRY_INVALID_EXPIRY: expiresAt must be a valid YYYY-MM-DD date');
+    });
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.at(-1)!;
+    const { payload, res } = makeResponse();
+
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: 'Milk', expiresAt: '2026-02-30' },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_PANTRY_EXPIRY',
+        message: 'expiresAt must be a valid YYYY-MM-DD date',
+      },
+    });
+    expect(hoisted.sendPortalInternalError).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-string pantry expiry input before calling the Cooking service', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.at(-1)!;
+    const { payload, res } = makeResponse();
+
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: 'Milk', expiresAt: [] },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_PANTRY_EXPIRY',
+        message: 'expiresAt must be a valid YYYY-MM-DD date',
+      },
+    });
+    expect(hoisted.upsertPantryItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-string pantry names and optional text before calling the Cooking service', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.at(-1)!;
+    const nameResponse = makeResponse();
+    const quantityResponse = makeResponse();
+
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: ['Rice'] },
+    }, nameResponse.res);
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: 'Rice', quantity: 2 },
+    }, quantityResponse.res);
+
+    expect(nameResponse.payload.statusCode).toBe(400);
+    expect(nameResponse.payload.body).toMatchObject({ error: { code: 'INVALID_PANTRY_ITEM' } });
+    expect(quantityResponse.payload.statusCode).toBe(400);
+    expect(quantityResponse.payload.body).toMatchObject({ error: { code: 'INVALID_PANTRY_TEXT' } });
+    expect(hoisted.upsertPantryItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed route identifiers and pantry confidence before mutation', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const remove = routes.get('DELETE /api/users/:userId/cooking/pantry/:itemId')?.at(-1)!;
+    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.at(-1)!;
+    const malformedIdResponse = makeResponse();
+    const confidenceResponse = makeResponse();
+
+    remove({
+      params: { userId: '42', itemId: '7junk' },
+      body: { tenantId: 42 },
+    }, malformedIdResponse.res);
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: 'Rice', confidence: 'certain' },
+    }, confidenceResponse.res);
+
+    expect(malformedIdResponse.payload.statusCode).toBe(400);
+    expect(malformedIdResponse.payload.body).toMatchObject({
+      error: { code: 'INVALID_PANTRY_ITEM' },
+    });
+    expect(confidenceResponse.payload.statusCode).toBe(400);
+    expect(confidenceResponse.payload.body).toMatchObject({
+      error: { code: 'INVALID_PANTRY_CONFIDENCE' },
+    });
+    expect(hoisted.deletePantryItem).not.toHaveBeenCalled();
+    expect(hoisted.upsertPantryItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid pantry freshness and availability values before mutation', () => {
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const upsert = routes.get('POST /api/users/:userId/cooking/pantry')?.at(-1)!;
+    const freshnessResponse = makeResponse();
+    const availabilityResponse = makeResponse();
+
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: 'Rice', freshnessStatus: 'recent' },
+    }, freshnessResponse.res);
+    upsert({
+      params: { userId: '42' },
+      body: { tenantId: 42, name: 'Rice', availabilityStatus: 'removed' },
+    }, availabilityResponse.res);
+
+    expect(freshnessResponse.payload.body).toMatchObject({ error: { code: 'INVALID_PANTRY_FRESHNESS' } });
+    expect(availabilityResponse.payload.body).toMatchObject({ error: { code: 'INVALID_PANTRY_AVAILABILITY' } });
+    expect(hoisted.upsertPantryItem).not.toHaveBeenCalled();
   });
 
   it('applies reviewed substitutions through the tenant-scoped Cooking service', () => {
@@ -484,6 +652,40 @@ describe('portal cooking routes', () => {
         message: 'COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient',
       },
     });
+    expect(hoisted.invalidateCookingDerivedCaches).not.toHaveBeenCalled();
+    expect(hoisted.sendPortalInternalError).not.toHaveBeenCalled();
+  });
+
+  it('maps substitution safety blocks to a sanitized stable client error', () => {
+    hoisted.applyMealPlanSubstitution.mockImplementationOnce(() => {
+      throw new Error('COOKING_SAFETY_BLOCKED: meal_plan_substitution contains allergy "peanuts"');
+    });
+    const { app, routes } = makeApp();
+    registerPortalCookingRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/cooking/meal-plan/substitutions/apply')?.at(-1)!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '42' },
+      body: {
+        tenantId: 42,
+        date: '2026-05-04',
+        mealType: 'dinner',
+        originalIngredient: 'tofu',
+        suggestedIngredient: 'peanuts',
+        reason: 'disliked_ingredient',
+      },
+    }, res);
+
+    expect(payload.statusCode).toBe(400);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: {
+        code: 'COOKING_SAFETY_BLOCKED',
+        message: 'Cooking item conflicts with a saved cooking safety preference',
+      },
+    });
+    expect(JSON.stringify(payload.body)).not.toContain('peanuts');
     expect(hoisted.invalidateCookingDerivedCaches).not.toHaveBeenCalled();
     expect(hoisted.sendPortalInternalError).not.toHaveBeenCalled();
   });

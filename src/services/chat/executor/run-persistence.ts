@@ -7,6 +7,7 @@ import {
   type ChatActionRunStatus,
 } from '../../chat-action-run-store';
 import {
+  markPendingChatActionNeedsConfirmation,
   markPendingChatActionNeedsUserFollowup,
   upsertPendingChatAction,
 } from '../../chat-action-state';
@@ -103,6 +104,69 @@ export function persistStepStatus(
       originatingSurface: input.channel,
       nowIso: plan.createdAt,
     });
+  }
+  if (status === 'needs_clarification' && step.action === 'cooking_meal_plan') {
+    const args = step.args as Record<string, unknown>;
+    const definition = getChatActionRegistry().find((entry) => entry.action === step.action);
+    const missingSlots = (definition?.requiredFields ?? ['date', 'mealType', 'title'])
+      .filter((field) => args[field] == null || args[field] === '');
+    upsertPendingChatAction({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      skill: 'cooking',
+      action: 'cooking_meal_plan',
+      collectedSlots: args,
+      missingSlots,
+      riskClass: 'R1',
+      locale: input.locale || plan.locale,
+      timezone: input.timezone,
+      originatingSurface: input.channel,
+      nowIso: plan.createdAt,
+    });
+  }
+  if (status === 'needs_clarification'
+    && (step.action === 'cooking_delete_recipe'
+      || step.action === 'cooking_delete_meal'
+      || step.action === 'cooking_delete_pantry_item')) {
+    const args = step.args as Record<string, unknown>;
+    const definition = getChatActionRegistry().find((entry) => entry.action === step.action);
+    const missingSlots = (definition?.requiredFields ?? [])
+      .filter((field) => args[field] == null || args[field] === '');
+    upsertPendingChatAction({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      skill: 'cooking',
+      action: step.action,
+      collectedSlots: args,
+      missingSlots,
+      riskClass: riskClassForRisk(step.risk),
+      locale: input.locale || plan.locale,
+      timezone: input.timezone,
+      originatingSurface: input.channel,
+      nowIso: plan.createdAt,
+    });
+  }
+  if (status === 'needs_confirmation'
+    && (step.action === 'cooking_delete_recipe'
+      || step.action === 'cooking_delete_meal'
+      || step.action === 'cooking_delete_pantry_item')
+    && typeof step.args.pendingActionId === 'string') {
+    const pendingActionId = step.args.pendingActionId;
+    const collectedSlots = { ...step.args };
+    delete collectedSlots.pendingActionId;
+    const advanced = markPendingChatActionNeedsConfirmation({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      skill: 'cooking',
+      action: step.action,
+      pendingActionId,
+      collectedSlots,
+      nowIso: plan.createdAt,
+    });
+    if (advanced !== 1) throw new Error('cooking_pending_action_confirmation_mismatch');
   }
   const claim = claimChatActionRun({
     userId: input.userId,

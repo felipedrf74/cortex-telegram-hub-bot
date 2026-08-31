@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { buildPendingContentSpecContinuation } from '../../skills/content/pending';
-import { buildPendingCookingMealPlanContinuation } from '../../skills/cooking/pending';
+import { buildPendingCookingContinuation } from '../../skills/cooking/pending';
 import { buildPendingDecisionChooseContinuation } from '../../skills/decision_center/pending';
 import { buildPendingFinanceCategorizeContinuation } from '../../skills/finance/pending';
 import { buildPendingMailDraftContinuation } from '../../skills/mail/pending';
@@ -48,11 +48,10 @@ export async function buildChatActionPlan(input: ChatPlannerInput): Promise<Chat
   const pendingContinuation = buildPendingSlotContinuationPlan(input, PENDING_CONTINUATION_HELPERS);
   if (pendingContinuation) return pendingContinuation;
   // Phase 7 close-out (2026-05-15): cooking pending-meal-plan continuation.
-  // Mirrors the training-plan continuation: when the user has a pending
-  // cooking_meal_plan and the new turn supplies dietary constraints
-  // ("high-protein, vegetarian", "low-carb, no fish"), apply them as
-  // additional args and re-emit the plan step.
-  const cookingPendingContinuation = buildPendingCookingMealPlanContinuation(input, PENDING_CONTINUATION_HELPERS);
+  // Keep pending Cooking meal-plan turns in their typed continuation flow.
+  // Named dishes can complete the title slot; constraint-only replies remain
+  // clarification input and must not be misclassified as meal titles.
+  const cookingPendingContinuation = buildPendingCookingContinuation(input, PENDING_CONTINUATION_HELPERS);
   if (cookingPendingContinuation) return cookingPendingContinuation;
   // Phase 8 batch 38 (2026-05-15): mail draft refinement continuation.
   const mailPendingContinuation = buildPendingMailDraftContinuation(input, PENDING_CONTINUATION_HELPERS);
