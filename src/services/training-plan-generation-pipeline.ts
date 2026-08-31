@@ -1554,7 +1554,7 @@ async function buildTrainingPlanGenerationCandidate(
   });
 }
 
-function buildTrainingPlanCreatedMessage(input: {
+export function buildTrainingPlanCreatedMessage(input: {
   totalSessions: number;
   durationWeeks: number;
   calendarSyncPending: boolean;
@@ -1585,7 +1585,7 @@ function countSchedulablePlanSessions(planData: any): number {
   }, 0);
 }
 
-function buildScheduledWeeklyTargetsFromPlan(
+export function buildScheduledWeeklyTargetsFromPlan(
   planData: any,
   fallback: TrainingPlanWeeklyTargets,
 ): TrainingPlanWeeklyTargets {
@@ -1687,7 +1687,7 @@ function scheduledWeeklyTargetModality(
   return null;
 }
 
-function buildKernelCapacityWindows(input: {
+export function buildKernelCapacityWindows(input: {
   startDate: string;
   busyWindows: BusyWindow[];
   schedulingTimezone?: string | null;
@@ -1917,7 +1917,7 @@ function logEquipmentAuthorityShadowDiff(input: {
   );
 }
 
-function summarizeEquipmentPlanForShadow(planData: any): {
+export function summarizeEquipmentPlanForShadow(planData: any): {
   gymSessionCount: number;
   exerciseCount: number;
   duplicateSessionCount: number;
@@ -1954,7 +1954,7 @@ function stableShadowFingerprint(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-function applyTrainingSafetyOutputToGeneratedPlan(
+export function applyTrainingSafetyOutputToGeneratedPlan(
   planData: any,
   safetyOutput: WireHealthSignalOutput,
   affectedDate: string,
@@ -2026,7 +2026,7 @@ function applyTrainingSafetyOutputToGeneratedPlan(
   };
 }
 
-function generatedPlanContainsSafetyPause(planData: any): boolean {
+export function generatedPlanContainsSafetyPause(planData: any): boolean {
   return Array.isArray(planData?.weeks)
     && planData.weeks.some((week: any) =>
       Array.isArray(week?.sessions)
@@ -2069,7 +2069,7 @@ function normalizeSafetyDecisionReasons(
   }];
 }
 
-function buildTrainingSafetyGenerationSummary(
+export function buildTrainingSafetyGenerationSummary(
   safetyOutput: WireHealthSignalOutput | undefined,
 ): TrainingSafetyGenerationSummary | null {
   if (!safetyOutput || safetyOutput.effectiveSeverity === 'pass') {
@@ -2100,7 +2100,7 @@ function safeDecisionReasons(value: unknown): TrainingDecisionReason[] {
     : [];
 }
 
-function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecisionReason[] {
+export function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecisionReason[] {
   const seen = new Set<string>();
   const output: TrainingDecisionReason[] = [];
   for (const reason of reasons) {
