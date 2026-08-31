@@ -8,7 +8,7 @@ import { config } from '../../config';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
 import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
-import { getUserLanguageById } from '../../services/user-service';
+import { getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { timedAsync, type RouteTiming } from '../route-timing';
@@ -30,7 +30,8 @@ export function planRoutes(): Router {
     const tenantId = routeTenantId(req, userId);
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
     const language = resolvePlanLanguage(req, userId);
-    const cacheKey = planWeekRouteCacheKey(userId, tenantId, weekStart, language);
+    const timezone = resolvePlanTimezone(userId);
+    const cacheKey = planWeekRouteCacheKey(userId, tenantId, weekStart, language, timezone);
 
     try {
       const timings: RouteTiming[] = [];
@@ -39,7 +40,7 @@ export function planRoutes(): Router {
         ttlSeconds: PLAN_WEEK_TTL_SECONDS,
         staleSeconds: PLAN_WEEK_SWR_STALE_SECONDS,
         refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
-        fetchFresh: () => timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, tenantId, weekStart })),
+        fetchFresh: () => timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, tenantId, weekStart, timezone })),
         send: (data, meta) => {
           sendConditionalApiSuccess(res, req, data, {
             cached: meta.cached,
@@ -58,7 +59,8 @@ export function planRoutes(): Router {
     const tenantId = routeTenantId(req, userId);
     const date = typeof req.query.date === 'string' ? req.query.date : undefined;
     const language = resolvePlanLanguage(req, userId);
-    const cacheKey = planTodayRouteCacheKey(userId, tenantId, date, language);
+    const timezone = resolvePlanTimezone(userId);
+    const cacheKey = planTodayRouteCacheKey(userId, tenantId, date, language, timezone);
 
     try {
       const timings: RouteTiming[] = [];
@@ -67,7 +69,7 @@ export function planRoutes(): Router {
         ttlSeconds: PLAN_TODAY_TTL_SECONDS,
         staleSeconds: PLAN_TODAY_SWR_STALE_SECONDS,
         refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
-        fetchFresh: () => timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, tenantId, date, language })),
+        fetchFresh: () => timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, tenantId, date, language, timezone })),
         send: (data, meta) => {
           sendConditionalApiSuccess(res, req, data, {
             cached: meta.cached,
@@ -89,12 +91,13 @@ export function planRoutes(): Router {
     const tenantId = routeTenantId(req, userId);
     const weekStart = typeof req.body?.weekStart === 'string' ? req.body.weekStart : undefined;
     const date = typeof req.body?.date === 'string' ? req.body.date : undefined;
+    const timezone = resolvePlanTimezone(userId);
 
     invalidatePlanningCaches(userId);
 
     try {
-      const week = await composeWeeklyPlan({ userId, tenantId, weekStart, forceRefresh: true, syncSignals: true });
-      const today = await composeDailyBrief({ userId, tenantId, date, forceRefresh: true });
+      const week = await composeWeeklyPlan({ userId, tenantId, weekStart, timezone, forceRefresh: true, syncSignals: true });
+      const today = await composeDailyBrief({ userId, tenantId, date, timezone, forceRefresh: true });
       res.json(apiSuccess({ week, today }));
     } catch (err: any) {
       sendInternalError(res, 'Unable to recompute the plan right now.');
@@ -106,6 +109,7 @@ export function planRoutes(): Router {
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
     const tenantId = routeTenantId(req, userId);
     const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
+    const timezone = resolvePlanTimezone(userId);
     const effectiveTier = entitlementPlanToSkillTier(getEffectiveEntitlement(userId).plan);
 
     if (!['max', 'owner'].includes(effectiveTier)) {
@@ -116,7 +120,7 @@ export function planRoutes(): Router {
     }
 
     try {
-      const data = await composeWeeklyPlan({ userId, tenantId, weekStart });
+      const data = await composeWeeklyPlan({ userId, tenantId, weekStart, timezone });
       res.json(apiSuccess({
         explanation: buildWeeklyExplanation(data),
         degraded: data.degraded,
@@ -143,31 +147,53 @@ function routeTenantId(req: Request, userId: number): number {
   return isValidTenantUserId(candidate) ? candidate : userId;
 }
 
-function planTodayRouteCacheKey(userId: number, tenantId: number, date: string | undefined, language: string): string {
-  const targetDate = resolveDateKey(date);
-  return routeCacheKey('plan', 'today', 'u', userId, 'tenant', tenantId, targetDate, 'route', languageBucket(language));
+function planTodayRouteCacheKey(
+  userId: number,
+  tenantId: number,
+  date: string | undefined,
+  language: string,
+  timezone: string,
+): string {
+  const targetDate = resolveDateKey(date, timezone);
+  return routeCacheKey('plan', 'today', 'u', userId, 'tenant', tenantId, targetDate, 'tz', timezone, 'route', languageBucket(language));
 }
 
-function planWeekRouteCacheKey(userId: number, tenantId: number, weekStart: string | undefined, language: string): string {
-  const targetWeek = resolveWeekKey(weekStart);
-  return routeCacheKey('plan', 'week', 'u', userId, 'tenant', tenantId, targetWeek, 'route', languageBucket(language));
+function planWeekRouteCacheKey(
+  userId: number,
+  tenantId: number,
+  weekStart: string | undefined,
+  language: string,
+  timezone: string,
+): string {
+  const targetWeek = resolveWeekKey(weekStart, timezone);
+  return routeCacheKey('plan', 'week', 'u', userId, 'tenant', tenantId, targetWeek, 'tz', timezone, 'route', languageBucket(language));
 }
 
-function resolveDateKey(date: string | undefined): string {
+function resolveDateKey(date: string | undefined, zone: string): string {
   if (date) {
-    const parsed = DateTime.fromISO(date, { zone: config.app.timezone || 'Europe/Lisbon' });
+    const parsed = DateTime.fromISO(date, { zone });
     if (parsed.isValid) return parsed.toISODate()!;
   }
-  return DateTime.now().setZone(config.app.timezone || 'Europe/Lisbon').toISODate()!;
+  return DateTime.now().setZone(zone).toISODate()!;
 }
 
-function resolveWeekKey(weekStart: string | undefined): string {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function resolveWeekKey(weekStart: string | undefined, zone: string): string {
   const parsed = weekStart
     ? DateTime.fromISO(weekStart, { zone })
     : DateTime.now().setZone(zone);
   const base = parsed.isValid ? parsed : DateTime.now().setZone(zone);
   return base.startOf('week').toISODate()!;
+}
+
+function resolvePlanTimezone(userId: number): string {
+  try {
+    const timezone = getUserTimezoneById(userId);
+    return DateTime.local().setZone(timezone).isValid
+      ? timezone
+      : config.app.timezone || 'Europe/Lisbon';
+  } catch {
+    return config.app.timezone || 'Europe/Lisbon';
+  }
 }
 
 function languageBucket(language: string): string {
@@ -181,7 +207,7 @@ function buildWeeklyExplanation(data: Awaited<ReturnType<typeof composeWeeklyPla
   const lines: string[] = [];
   lines.push(`Variant: ${data.variant}.`);
   if (data.degraded) {
-    lines.push('Creative copy was suppressed because the user is over the daily AI cap.');
+    lines.push('The plan is degraded because one or more planning sources or generation gates were unavailable.');
   }
   if (data.garmin_stale) {
     lines.push('Garmin data is stale, so the plan leans on the latest coach briefing snapshot and active signals.');

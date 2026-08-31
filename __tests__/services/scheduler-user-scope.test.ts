@@ -20,6 +20,9 @@ const mockIsOutlookMailConfiguredForUser = vi.fn();
 const mockGetRemindersForToday = vi.fn();
 const mockRunWithContext = vi.fn((_ctx, fn: () => unknown) => fn());
 const mockStoreAndPushReport = vi.fn();
+const mockComposeDailyBrief = vi.hoisted(() => vi.fn());
+const mockComposeWeeklyPlan = vi.hoisted(() => vi.fn());
+const mockGetUserTimezoneById = vi.hoisted(() => vi.fn(() => 'Europe/Lisbon'));
 const mockGetDb = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
 const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
@@ -278,7 +281,7 @@ vi.mock('../../src/services/user-service', () => ({
   getPreferredDisplayName: vi.fn(() => 'Test User'),
   getPreferredDisplayNameById: vi.fn(() => 'Test User'),
   getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
-  getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
   isOwnerUserRef: vi.fn(() => false),
 }));
@@ -301,6 +304,12 @@ vi.mock('../../src/services/database', () => ({
 }));
 vi.mock('../../src/services/report-document-store', () => ({
   storeAndPushReport: (...args: unknown[]) => mockStoreAndPushReport(...args),
+}));
+vi.mock('../../src/services/daily-brief-orchestrator', () => ({
+  composeDailyBrief: (...args: unknown[]) => mockComposeDailyBrief(...args),
+}));
+vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+  composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 // The four report crons now run on */5 dispatch ticks (same expression as
 // shared_list), so expression-driven callback invocation reaches them in
@@ -392,6 +401,9 @@ import {
   sendCoachBriefingForTarget,
   runScheduledCoachBriefingForTarget,
   sendDailyBriefing,
+  sendDailyBriefingForTarget,
+  runEndOfDaySummaryForTarget,
+  sendWeeklyReviewForTarget,
   refreshConnectedGarminUsers,
   refreshConnectedGarminUsersWithLease,
 } from '../../src/services/scheduler';
@@ -435,6 +447,61 @@ describe('scheduler tenant scoping', () => {
     mockGetCompletedTasksInRange.mockResolvedValue({ success: true, data: [] });
     mockGetSharedListPendingTasks.mockResolvedValue({ success: true, data: [] });
     mockIsSelfCreatedTask.mockReturnValue(false);
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mockComposeDailyBrief.mockImplementation(async ({ userId, date }: { userId: number; date: string }) => ({
+      date,
+      generatedAt: '2026-04-17T07:00:00.000Z',
+      degraded: false,
+      gated: { skills: [] },
+      garmin_stale: false,
+      conflicts: [],
+      creativeCopy: { headline: '', note: '' },
+      day: {
+        date,
+        weekday: 'Friday',
+        headline: `Focus day for ${userId}`,
+        training: {
+          title: 'Rest', type: 'rest', status: 'rest', durationMinutes: null,
+          intensity: null, reason: 'Rest day.', decisions: [],
+        },
+        meals: [{
+          mealType: 'dinner',
+          title: `Canonical meal for ${userId}`,
+          note: 'Canonical Cooking guidance.',
+          decisions: [],
+        }],
+        cooking: {
+          status: 'ready',
+          headline: `Dinner: Canonical meal for ${userId}`,
+          warningCodes: [],
+        },
+        content: null,
+        secretary: {
+          focusBlock: null, pendingTasks: 0, overdueTasks: 0,
+          travel: false, busy: false, priorityNote: null,
+          sequence: [], tradeoffNote: null, decisions: [],
+        },
+        finance: null,
+      },
+      coordination: {},
+    }));
+    mockComposeWeeklyPlan.mockImplementation(async ({ userId, weekStart }: { userId: number; weekStart: string }) => ({
+      weekStart,
+      weekEnd: '2026-04-19',
+      generatedAt: '2026-04-17T07:00:00.000Z',
+      variant: 'steady',
+      degraded: false,
+      gated: { skills: [] },
+      garmin_stale: false,
+      conflicts: [],
+      creativeCopy: { headline: '', note: '' },
+      summary: { sessionCount: 0, mealCount: 1, activeConflictCount: 0 },
+      days: [{
+        date: weekStart,
+        meals: [{ mealType: 'dinner', title: `Weekly meal for ${userId}`, note: '', decisions: [] }],
+        cooking: { status: 'ready', headline: `Dinner: Weekly meal for ${userId}`, warningCodes: [] },
+      }],
+    }));
     mockGetDb.mockReturnValue({
       prepare: vi.fn(() => ({
         all: vi.fn(() => [
@@ -719,6 +786,11 @@ describe('scheduler tenant scoping', () => {
     expect(mockGetRemindersForToday).toHaveBeenCalledWith(42, 42, 'Europe/Lisbon');
     expect(mockIsOutlookMailConfiguredForUser).toHaveBeenCalledWith(42);
     expect(mockGetUnreadCountForUser).toHaveBeenCalledWith(42);
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 42,
+      date: '2026-04-17',
+    });
     expect(vi.mocked(globalTodo.getAllPendingTasks)).not.toHaveBeenCalled();
     expect(vi.mocked(globalMail.getUnreadCount)).not.toHaveBeenCalled();
 
@@ -729,6 +801,123 @@ describe('scheduler tenant scoping', () => {
     expect(result.unreadEmails).toBe(5);
     expect(result.training).toContain('Strength workout');
     expect(result.reminders).toHaveLength(1);
+    expect(result.planToday).toMatchObject({
+      date: '2026-04-17',
+      degraded: false,
+      cookingGated: false,
+      dayHeadline: 'Focus day for 42',
+      cooking: {
+        headline: 'Dinner: Canonical meal for 42',
+        status: 'ready',
+        warningCodes: [],
+        meals: [{ title: 'Canonical meal for 42' }],
+      },
+    });
+  });
+
+  it('preserves source-aware Cooking degradation and warnings in the scheduled report document', async () => {
+    mockComposeDailyBrief.mockImplementationOnce(async ({ date }: { userId: number; date: string }) => ({
+      date,
+      generatedAt: '2026-04-17T07:00:00.000Z',
+      degraded: true,
+      gated: { skills: [] },
+      garmin_stale: false,
+      conflicts: [],
+      creativeCopy: { headline: '', note: '' },
+      day: {
+        date,
+        weekday: 'Friday',
+        headline: 'Cooking safety check required',
+        training: {
+          title: 'Rest', type: 'rest', status: 'rest', durationMinutes: null,
+          intensity: null, reason: 'Rest day.', decisions: [],
+        },
+        meals: [],
+        cooking: {
+          status: 'unavailable',
+          headline: 'Cooking safety preferences are unavailable for this day; saved meals are withheld rather than assumed safe.',
+          warningCodes: ['COOKING_SAFETY_PROFILE_UNAVAILABLE'],
+        },
+        content: null,
+        secretary: {
+          focusBlock: null, pendingTasks: 0, overdueTasks: 0,
+          travel: false, busy: false, priorityNote: null,
+          sequence: [], tradeoffNote: null, decisions: [],
+        },
+        finance: null,
+      },
+      coordination: {},
+    }));
+
+    const result = await buildDailyBriefingDataForUser(42, 700);
+
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 700,
+      date: '2026-04-17',
+    });
+    expect(result.planToday?.cooking).toEqual({
+      status: 'unavailable',
+      headline: 'Cooking safety preferences are unavailable for this day; saved meals are withheld rather than assumed safe.',
+      warningCodes: ['COOKING_SAFETY_PROFILE_UNAVAILABLE'],
+      meals: [],
+    });
+  });
+
+  it('builds the scheduled Cooking day and all daily windows in the user timezone', async () => {
+    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+    mockGetEvents.mockResolvedValue([
+      { summary: 'Evening run', start: '2026-04-17T06:30:00.000Z', end: '2026-04-17T07:30:00.000Z' },
+    ]);
+    mockGetAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'local-today', title: 'Local Thursday task', listName: 'Inbox', importance: 'normal', dueDateTime: '2026-04-17T00:00:00.000Z' },
+      ],
+    });
+
+    const result = await buildDailyBriefingDataForUser(42);
+
+    expect(result.date).toBe('Thursday, April 16');
+    expect(result.dueTodayTasks.map((task) => task.title)).toEqual(['Local Thursday task']);
+    expect(result.training).toBe('Evening run at 20:30');
+    expect(mockGetEvents).toHaveBeenCalledWith(
+      '2026-04-16T00:00:00.000-10:00',
+      '2026-04-16T23:59:59.999-10:00',
+      42,
+    );
+    expect(mockGetRemindersForToday).toHaveBeenCalledWith(42, 42, 'Pacific/Honolulu');
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 42,
+      date: '2026-04-16',
+    });
+    expect(result.planToday?.date).toBe('2026-04-16');
+  });
+
+  it('keeps scheduled Cooking reads on the user while preserving the tenant scope', async () => {
+    await sendDailyBriefingForTarget({
+      userId: 42,
+      tenantId: 700,
+      telegramId: null,
+    });
+
+    expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(42);
+    expect(mockGetRemindersForToday).toHaveBeenCalledWith(42, 700, 'Europe/Lisbon');
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 700,
+      date: '2026-04-17',
+    });
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      documentJson: expect.objectContaining({
+        planToday: expect.objectContaining({
+          dayHeadline: 'Focus day for 42',
+          cooking: expect.objectContaining({ headline: 'Dinner: Canonical meal for 42' }),
+        }),
+      }),
+    }));
   });
 
   it('buildWeeklyReviewPayloadForUser uses scoped provider and calendar reads', async () => {
@@ -747,19 +936,30 @@ describe('scheduler tenant scoping', () => {
       ],
     });
 
-    const payload = await buildWeeklyReviewPayloadForUser(42);
+    const payload = await buildWeeklyReviewPayloadForUser(42, 700);
 
     expect(mockRunWithContext).toHaveBeenCalledWith(
       expect.objectContaining({ source: 'cron:weekly_review', userId: 42 }),
       expect.any(Function),
     );
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({
+      userId: 42,
+      tenantId: 700,
+      weekStart: '2026-04-13',
+    });
     expect(payload.message).toContain('Completed: 3 tasks');
     expect(payload.message).toContain('Still pending: 2 tasks');
     expect(payload.documentJson.meetingsCount).toBe(1);
     expect(payload.documentJson.completedCount).toBe(3);
     expect(payload.documentJson.pendingCount).toBe(2);
     expect(payload.documentJson.overdueCount).toBe(1);
+    expect(payload.documentJson.cooking).toMatchObject({
+      degraded: false,
+      gated: false,
+      mealCount: 1,
+      days: [expect.objectContaining({ headline: 'Dinner: Weekly meal for 42' })],
+    });
     expect(vi.mocked(globalTodo.getAllPendingTasks)).not.toHaveBeenCalled();
   });
 
@@ -783,6 +983,39 @@ describe('scheduler tenant scoping', () => {
     expect(payload?.documentJson.dueToday).toHaveLength(1);
     expect(payload?.documentJson.overdue).toHaveLength(1);
     expect(vi.mocked(globalTodo.getAllPendingTasks)).not.toHaveBeenCalled();
+  });
+
+  it('stores end-of-day and weekly scheduler reports under the user, not the tenant id', async () => {
+    mockGetAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'due',
+        title: 'User-scoped task',
+        listName: 'Inbox',
+        importance: 'normal',
+        dueDateTime: '2026-04-17T16:00:00.000Z',
+      }],
+    });
+
+    await runEndOfDaySummaryForTarget({ userId: 42, tenantId: 700, telegramId: null });
+    expect(mockGetTaskProviderForUser).toHaveBeenLastCalledWith(42);
+    expect(mockStoreAndPushReport).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 42,
+      type: 'evening_summary',
+    }));
+
+    await sendWeeklyReviewForTarget({ userId: 42, tenantId: 700, telegramId: null });
+    expect(mockComposeWeeklyPlan).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 700,
+    }));
+    expect(mockStoreAndPushReport).toHaveBeenLastCalledWith(expect.objectContaining({
+      userId: 42,
+      type: 'weekly_review',
+      documentJson: expect.objectContaining({
+        cooking: expect.objectContaining({ mealCount: 1 }),
+      }),
+    }));
   });
 
   it('buildSharedListNotificationForUser seeds per-user state and then only reports new shared tasks for that tenant', async () => {
@@ -1408,6 +1641,21 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).toHaveBeenNthCalledWith(1, expect.objectContaining({ userId: 11 }));
     expect(mockStoreAndPushReport).toHaveBeenNthCalledWith(2, expect.objectContaining({ userId: 22 }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
+    expect(mockStoreAndPushReport).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      type: 'morning_briefing',
+      title: '☀️ Friday, April 17',
+      summary: '0 events, 0 tasks',
+      sourceJob: 'daily_briefing',
+      pushCategory: 'morning_briefing',
+      documentJson: expect.objectContaining({
+        planToday: expect.objectContaining({
+          date: '2026-04-17',
+          cooking: expect.objectContaining({
+            meals: [expect.objectContaining({ title: 'Canonical meal for 11' })],
+          }),
+        }),
+      }),
+    }));
   });
 
   it('sendDailyBriefing falls back to the owner bootstrap target when active users cannot be queried', async () => {

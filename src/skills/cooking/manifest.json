@@ -1,65 +1,58 @@
 {
   "name": "cooking",
   "version": "1.1.0",
-  "description": "Adaptive cooking orchestration for tenant-safe meal planning, recipes, shopping, fueling, and schedule-aware prep",
+  "description": "Tenant-safe recipes, dated meal-plan slots, saved-plan shopping lists, pantry and preference memory, and context-aware cooking guidance",
   "author": "Felipe Dominguez",
   "domain": "cooking",
   "manifestVersion": 2,
   "subSkills": [
     {
       "module_name": "recipes",
-      "description": "Recipe library and save-from-chat workflow",
+      "description": "Structured recipe library: create, search, and delete saved recipes",
       "enabled_by_default": true,
       "tools": ["cooking_add_recipe", "cooking_get_recipes", "cooking_delete_recipe"],
       "cronJobs": []
     },
     {
       "module_name": "meal-planning",
-      "description": "Weekly meal planning and slot editing",
+      "description": "Read and edit dated meal-plan slots",
       "enabled_by_default": true,
       "tools": ["cooking_set_meal", "cooking_get_meal_plan", "cooking_delete_meal"],
       "cronJobs": []
     },
     {
-      "module_name": "shopping-list",
-      "description": "Shopping list generation from the active menu",
+      "module_name": "shopping",
+      "description": "Generate and read shopping lists from saved meal-plan slots",
       "enabled_by_default": true,
       "tools": ["cooking_generate_shopping_list", "cooking_get_shopping_list"],
       "cronJobs": []
     },
     {
       "module_name": "pantry",
-      "description": "Tenant-scoped pantry inventory, freshness, and availability",
+      "description": "Tenant-scoped pantry item management with freshness metadata",
       "enabled_by_default": true,
       "tools": ["cooking_upsert_pantry_item", "cooking_get_pantry", "cooking_delete_pantry_item"],
       "cronJobs": []
     },
     {
       "module_name": "preferences",
-      "description": "User-private Cooking memory and correction handling",
+      "description": "User-private allergies, restrictions, prep, budget, and correction memory",
       "enabled_by_default": true,
       "tools": ["cooking_set_preference", "cooking_get_preferences"],
       "cronJobs": []
     },
     {
-      "module_name": "batch-cook",
-      "description": "Prep-day grouping and kitchen batching heuristics",
+      "module_name": "notes",
+      "description": "Explicit Cooking note capture and private note search",
       "enabled_by_default": true,
-      "tools": [],
+      "tools": ["save_note", "search_notes"],
       "cronJobs": []
     },
     {
-      "module_name": "electrolytes",
-      "description": "Hydration and electrolyte reminders for training weeks",
+      "module_name": "shared-memory",
+      "description": "Explicitly approved shared dietary facts and cooking constraints",
       "enabled_by_default": true,
-      "tools": [],
-      "cronJobs": []
-    },
-    {
-      "module_name": "fueling-advisor",
-      "description": "Training-aware meal adaptation and macro direction",
-      "enabled_by_default": true,
-      "tools": [],
+      "tools": ["shared_memory_set", "shared_memory_remove"],
       "cronJobs": []
     }
   ],

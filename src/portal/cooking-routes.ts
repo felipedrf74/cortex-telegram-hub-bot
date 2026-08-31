@@ -25,20 +25,38 @@ import { buildPortalAdminAuditDetails, logPortalAdminMutation } from './admin-au
 import { sendPortalInternalError } from './http';
 
 function parsePositiveInteger(value: unknown): number | null {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const normalized = String(value).trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function parseLimit(value: unknown): number {
-  const parsed = Number.parseInt(String(value ?? '100'), 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) return 100;
-  return Math.min(parsed, 250);
+  if (value === undefined || value === null || value === '') return 100;
+  const parsed = parsePositiveInteger(value);
+  return parsed === null ? 100 : Math.min(parsed, 250);
+}
+
+function hasInvalidOptionalConfidence(value: unknown): boolean {
+  return value !== undefined
+    && value !== null
+    && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1);
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
+}
+
+function hasInvalidOptionalText(value: unknown): boolean {
+  return value !== undefined && value !== null && typeof value !== 'string';
+}
+
+function hasInvalidPantryStatus(value: unknown, allowed: readonly string[]): boolean {
+  if (value === undefined || value === null || value === '') return false;
+  return typeof value !== 'string' || !allowed.includes(value.trim().toLowerCase());
 }
 
 function isCookingSubstitutionReason(value: unknown): value is CookingSubstitutionReason {
@@ -194,13 +212,17 @@ export function registerPortalCookingRoutes(app: Express): void {
           sendBadRequest(res, 'INVALID_COOKING_PREFERENCE_VALUE', 'value must be string, number, or boolean');
           return;
         }
+        if (hasInvalidOptionalConfidence(req.body?.confidence)) {
+          sendBadRequest(res, 'INVALID_COOKING_PREFERENCE_CONFIDENCE', 'confidence must be a number between 0 and 1');
+          return;
+        }
 
         const memory = setCookingPreferenceMemory(userId, {
           kind: req.body.kind,
           value,
           source: normalizeOptionalString(req.body?.source) ?? 'portal',
           correction: req.body?.correction === true,
-          confidence: typeof req.body?.confidence === 'number' ? req.body.confidence : undefined,
+          confidence: req.body?.confidence ?? undefined,
           expiresAt: normalizeOptionalString(req.body?.expiresAt),
         }, tenantId);
         invalidateCookingDerivedCaches(userId);
@@ -217,6 +239,11 @@ export function registerPortalCookingRoutes(app: Express): void {
           preferences: buildCookingPreferenceReadModel(userId, tenantId).summary,
         });
       } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.startsWith('COOKING_PREFERENCE_INVALID')) {
+          sendBadRequest(res, 'INVALID_COOKING_PREFERENCE', message);
+          return;
+        }
         sendPortalInternalError(res, err, 'Failed to write Cooking preference', 'Portal: cooking preference write failed');
       }
     },
@@ -275,9 +302,33 @@ export function registerPortalCookingRoutes(app: Express): void {
           sendForbiddenTenant(res);
           return;
         }
-        const name = normalizeOptionalString(req.body?.name);
-        if (!name) {
-          sendBadRequest(res, 'INVALID_PANTRY_ITEM', 'name is required');
+        const rawName = req.body?.name;
+        const name = normalizeOptionalString(rawName);
+        if (typeof rawName !== 'string' || !name) {
+          sendBadRequest(res, 'INVALID_PANTRY_ITEM', 'name must be a non-empty string');
+          return;
+        }
+        for (const field of ['quantity', 'unit', 'category', 'notes'] as const) {
+          if (hasInvalidOptionalText(req.body?.[field])) {
+            sendBadRequest(res, 'INVALID_PANTRY_TEXT', `${field} must be a string or null`);
+            return;
+          }
+        }
+        const rawExpiresAt = req.body?.expiresAt;
+        if (rawExpiresAt !== undefined && rawExpiresAt !== null && typeof rawExpiresAt !== 'string') {
+          sendBadRequest(res, 'INVALID_PANTRY_EXPIRY', 'expiresAt must be a valid YYYY-MM-DD date');
+          return;
+        }
+        if (hasInvalidOptionalConfidence(req.body?.confidence)) {
+          sendBadRequest(res, 'INVALID_PANTRY_CONFIDENCE', 'confidence must be a number between 0 and 1');
+          return;
+        }
+        if (hasInvalidPantryStatus(req.body?.freshnessStatus, ['fresh', 'unknown', 'use_soon', 'expired'])) {
+          sendBadRequest(res, 'INVALID_PANTRY_FRESHNESS', 'freshnessStatus must be fresh, unknown, use_soon, or expired');
+          return;
+        }
+        if (hasInvalidPantryStatus(req.body?.availabilityStatus, ['available', 'low_stock', 'unavailable'])) {
+          sendBadRequest(res, 'INVALID_PANTRY_AVAILABILITY', 'availabilityStatus must be available, low_stock, or unavailable');
           return;
         }
 
@@ -286,11 +337,11 @@ export function registerPortalCookingRoutes(app: Express): void {
           quantity: normalizeOptionalString(req.body?.quantity) ?? null,
           unit: normalizeOptionalString(req.body?.unit) ?? null,
           category: normalizeOptionalString(req.body?.category) ?? null,
-          expiresAt: normalizeOptionalString(req.body?.expiresAt) ?? null,
+          expiresAt: rawExpiresAt ?? null,
           freshnessStatus: normalizeOptionalString(req.body?.freshnessStatus) ?? null,
           availabilityStatus: normalizeOptionalString(req.body?.availabilityStatus) ?? null,
           source: 'portal',
-          confidence: typeof req.body?.confidence === 'number' ? req.body.confidence : undefined,
+          confidence: req.body?.confidence ?? undefined,
           notes: normalizeOptionalString(req.body?.notes) ?? null,
         }, tenantId);
         invalidateCookingDerivedCaches(userId);
@@ -302,6 +353,31 @@ export function registerPortalCookingRoutes(app: Express): void {
         });
         res.status(201).json({ ok: true, tenantId, item: sanitizePantryItem(item) });
       } catch (err) {
+        const message = err instanceof Error ? err.message : '';
+        if (message.startsWith('COOKING_PANTRY_INVALID_EXPIRY')) {
+          sendBadRequest(res, 'INVALID_PANTRY_EXPIRY', 'expiresAt must be a valid YYYY-MM-DD date');
+          return;
+        }
+        if (message.startsWith('COOKING_PANTRY_INVALID_FRESHNESS')) {
+          sendBadRequest(res, 'INVALID_PANTRY_FRESHNESS', 'freshnessStatus must be fresh, unknown, use_soon, or expired');
+          return;
+        }
+        if (message.startsWith('COOKING_PANTRY_INVALID_AVAILABILITY')) {
+          sendBadRequest(res, 'INVALID_PANTRY_AVAILABILITY', 'availabilityStatus must be available, low_stock, or unavailable');
+          return;
+        }
+        if (message.startsWith('COOKING_PANTRY_INVALID_NAME')) {
+          sendBadRequest(res, 'INVALID_PANTRY_ITEM', 'name must be a non-empty string');
+          return;
+        }
+        if (message.startsWith('COOKING_PANTRY_INVALID_TEXT')) {
+          sendBadRequest(res, 'INVALID_PANTRY_TEXT', message.split(':').slice(1).join(':').trim() || 'pantry text fields must be strings or null');
+          return;
+        }
+        if (message.startsWith('COOKING_PANTRY_INVALID_CONFIDENCE')) {
+          sendBadRequest(res, 'INVALID_PANTRY_CONFIDENCE', 'confidence must be a number between 0 and 1');
+          return;
+        }
         sendPortalInternalError(res, err, 'Failed to write Cooking pantry item', 'Portal: cooking pantry write failed');
       }
     },
@@ -418,6 +494,10 @@ export function registerPortalCookingRoutes(app: Express): void {
         res.status(201).json({ ok: true, tenantId, result });
       } catch (err) {
         const message = err instanceof Error ? err.message : '';
+        if (message.startsWith('COOKING_SAFETY_BLOCKED')) {
+          sendBadRequest(res, 'COOKING_SAFETY_BLOCKED', 'Cooking item conflicts with a saved cooking safety preference');
+          return;
+        }
         if (message.startsWith('COOKING_SUBSTITUTION')) {
           sendBadRequest(res, 'INVALID_COOKING_SUBSTITUTION', message);
           return;

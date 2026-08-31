@@ -36,13 +36,13 @@ vi.mock('../../src/utils/logger', () => ({
 import {
   addRecipe, getRecipeById, getRecipes, deleteRecipe, updateRecipe,
   setMealPlan, getMealPlan, deleteMealPlan,
-  generateShoppingList, getShoppingList,
+  generateShoppingList, getShoppingList, updateShoppingListItemChecked,
   upsertPantryItem, getPantryItems, getPantryItemById, updatePantryItem, deletePantryItem,
   applyMealPlanSubstitution,
 } from '../../src/services/cooking-chef';
 import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 import { cookingPrivateScopePredicate } from '../../src/services/cooking-tenant-scope';
-import type { Ingredient } from '../../src/services/cooking-chef';
+import type { Ingredient, PantryItemInput } from '../../src/services/cooking-chef';
 import { addToConversation, getConversationHistory } from '../../src/state/conversation';
 import { TOOLS } from '../../src/services/anthropic';
 
@@ -55,6 +55,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   testDb.exec('ROLLBACK TO cooking_test_case');
   testDb.exec('RELEASE cooking_test_case');
 });
@@ -64,6 +65,12 @@ afterAll(() => {
 });
 
 describe('Recipe CRUD', () => {
+  it('fails closed on malformed explicit Cooking scope identifiers', () => {
+    expect(() => getRecipes(0)).toThrow(/COOKING_SCOPE_INVALID_USER/);
+    expect(() => getRecipes(1, { tenantId: 0 })).toThrow(/COOKING_SCOPE_INVALID_TENANT/);
+    expect(() => getRecipes(1, { tenantId: 1.5 })).toThrow(/COOKING_SCOPE_INVALID_TENANT/);
+  });
+
   it('adds a recipe with structured ingredients', () => {
     const recipe = addRecipe(1, 'Grilled Ribeye', [
       { name: 'Ribeye steak', quantity: '400', unit: 'g' },
@@ -140,12 +147,82 @@ describe('Recipe CRUD', () => {
     expect(getRecipes(1)).toHaveLength(0);
   });
 
+  it('does not delete a recipe linked by an active scoped meal', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-06-10T12:00:00.000Z'));
+    const recipe = addRecipe(1, 'Planned dinner', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(1, '2024-06-15', 'dinner', 'Planned dinner', {
+      recipeId: recipe.id,
+      tenantId: 101,
+    });
+
+    expect(() => deleteRecipe(1, recipe.id, 101)).toThrow(/COOKING_RECIPE_IN_USE/);
+    expect(getRecipeById(1, recipe.id, 101)?.title).toBe('Planned dinner');
+
+    expect(deleteMealPlan(1, '2024-06-15', 'dinner', 101)).toBe(true);
+    expect(deleteRecipe(1, recipe.id, 101)).toBe(true);
+  });
+
+  it('detaches historical meal references so an old plan does not pin a recipe forever', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-06-20T12:00:00.000Z'));
+    const recipe = addRecipe(1, 'Historical dinner', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(1, '2024-06-15', 'dinner', 'Historical dinner', {
+      recipeId: recipe.id,
+      tenantId: 101,
+    });
+
+    expect(deleteRecipe(1, recipe.id, 101)).toBe(true);
+    expect(getRecipeById(1, recipe.id, 101)).toBeNull();
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 101)).toEqual([
+      expect.objectContaining({ title: 'Historical dinner', recipe_id: null }),
+    ]);
+  });
+
   it('isolates recipes between users', () => {
     addRecipe(1, 'User 1 Recipe', [{ name: 'A', quantity: '1', unit: 'g' }]);
     addRecipe(2, 'User 2 Recipe', [{ name: 'B', quantity: '1', unit: 'g' }]);
 
     expect(getRecipes(1)).toHaveLength(1);
     expect(getRecipes(2)).toHaveLength(1);
+  });
+
+  it('enforces recipe invariants at the service boundary before persistence', () => {
+    const validIngredients = [{ name: 'Rice', quantity: '100', unit: 'g' }];
+    const invalidWrites: Array<() => unknown> = [
+      () => addRecipe(1, '   ', validIngredients),
+      () => addRecipe(1, 'Bad ingredient', [null] as unknown as Ingredient[]),
+      () => addRecipe(1, 'Bad ingredient', [{ name: 'Rice', quantity: 100, unit: 'g' }] as unknown as Ingredient[]),
+      () => addRecipe(1, 'Bad prep', validIngredients, { prepTime: -1 }),
+      () => addRecipe(1, 'Bad cook', validIngredients, { cookTime: 1.5 }),
+      () => addRecipe(1, 'Bad servings', validIngredients, { servings: 0 }),
+      () => addRecipe(1, 'Bad nutrition', validIngredients, { protein: Number.NaN }),
+    ];
+
+    for (const write of invalidWrites) {
+      expect(write).toThrow(/COOKING_RECIPE_INVALID/);
+    }
+    expect(getRecipes(1)).toEqual([]);
+  });
+
+  it('rejects invalid recipe updates without changing the stored row', () => {
+    const recipe = addRecipe(1, 'Valid recipe', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { prepTime: 10, servings: 2 });
+
+    expect(() => updateRecipe(1, recipe.id, { prepTime: -1 })).toThrow(/COOKING_RECIPE_INVALID/);
+    expect(() => updateRecipe(1, recipe.id, {
+      ingredients: [{ name: '', quantity: '100', unit: 'g' }],
+    })).toThrow(/COOKING_RECIPE_INVALID/);
+    expect(getRecipeById(1, recipe.id)).toEqual(expect.objectContaining({
+      title: 'Valid recipe',
+      prep_time_min: 10,
+      servings: 2,
+    }));
   });
 
   it('isolates recipes between active tenants for the same user', () => {
@@ -273,6 +350,34 @@ describe('Meal Planning', () => {
     expect(getMealPlan(1, '2024-06-15', '2024-06-15', 202)[0].title).toBe('Tenant B dinner');
     expect(deleteMealPlan(1, '2024-06-15', 'dinner', 202)).toBe(true);
     expect(getMealPlan(1, '2024-06-15', '2024-06-15', 101)[0].title).toBe('Tenant A dinner');
+  });
+
+  it('rejects missing and cross-tenant recipe links without writing a meal slot', () => {
+    const tenantARecipe = addRecipe(1, 'Tenant A recipe', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+
+    expect(() => setMealPlan(1, '2024-06-15', 'dinner', 'Missing recipe', {
+      recipeId: 999_999,
+      tenantId: 101,
+    })).toThrow(/COOKING_MEAL_PLAN_RECIPE_NOT_FOUND/);
+    expect(() => setMealPlan(1, '2024-06-15', 'dinner', 'Cross-tenant recipe', {
+      recipeId: tenantARecipe.id,
+      tenantId: 202,
+    })).toThrow(/COOKING_MEAL_PLAN_RECIPE_NOT_FOUND/);
+
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 101)).toEqual([]);
+    expect(getMealPlan(1, '2024-06-15', '2024-06-15', 202)).toEqual([]);
+  });
+
+  it('rejects impossible dates, unsupported meal types, malformed titles, and reversed ranges', () => {
+    expect(() => setMealPlan(1, '2026-02-30', 'dinner', 'Impossible')).toThrow(/COOKING_MEAL_PLAN_INVALID_DATE/);
+    expect(() => setMealPlan(1, '2026-02-28', 'brunch', 'Unsupported')).toThrow(/COOKING_MEAL_PLAN_INVALID_MEAL_TYPE/);
+    expect(() => setMealPlan(1, '2026-02-28', 'dinner', '   ')).toThrow(/COOKING_MEAL_PLAN_INVALID_TITLE/);
+    expect(() => setMealPlan(1, '2026-02-28', 'dinner', 'Bad recipe id', { recipeId: 0 })).toThrow(/COOKING_MEAL_PLAN_INVALID_RECIPE_ID/);
+    expect(() => getMealPlan(1, '2026-03-02', '2026-03-01')).toThrow(/COOKING_MEAL_PLAN_INVALID_DATE_RANGE/);
+    expect(() => deleteMealPlan(1, 'not-a-date', 'dinner')).toThrow(/COOKING_MEAL_PLAN_INVALID_DATE/);
+    expect(getMealPlan(1, '2026-02-28', '2026-02-28')).toEqual([]);
   });
 
   it('blocks meal plan text when stored allergy memory matches the planned title', () => {
@@ -497,6 +602,113 @@ describe('Cooking safety enforcement', () => {
     expect(result.recipe?.ingredients.map((ingredient) => ingredient.name)).toEqual(['sunflower seed butter', 'Noodles']);
     expect(result.meal?.title).toBe('sunflower seed butter noodles');
   });
+
+  it('commits a safe substitution while another conflicting meal is withheld from regeneration', () => {
+    const noodles = addRecipe(1, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 });
+    const curry = addRecipe(1, 'Peanut curry', [
+      { name: 'Peanuts', quantity: '20', unit: 'g' },
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-17', 'dinner', 'Peanut noodles', { recipeId: noodles.id, tenantId: 70 });
+    setMealPlan(1, '2024-06-18', 'dinner', 'Peanut curry', { recipeId: curry.id, tenantId: 70 });
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    const result = applyMealPlanSubstitution(1, {
+      date: '2024-06-17',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+      suggestedIngredient: 'sunflower seed butter',
+      reason: 'allergy',
+    }, 70);
+
+    expect(result.applied).toBe(true);
+    expect(result.shoppingList?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Noodles' }),
+      expect.objectContaining({ name: 'sunflower seed butter' }),
+    ]));
+    expect(result.shoppingList?.safetyIssues).toEqual([
+      { code: 'ALLERGY_CONFLICT', itemName: 'Peanut curry' },
+    ]);
+    expect(getMealPlan(1, '2024-06-17', '2024-06-17', 70)[0]).toMatchObject({
+      title: 'sunflower seed butter noodles',
+      recipe_id: result.recipe?.id,
+    });
+  });
+
+  it('matches ingredient tokens without rewriting unrelated substrings', () => {
+    const hamburger = addRecipe(1, 'Hamburger plate', [
+      { name: 'Hamburger patty', quantity: '1', unit: 'pcs' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-17', 'dinner', 'Hamburger plate', {
+      recipeId: hamburger.id,
+      tenantId: 70,
+    });
+
+    const unrelated = applyMealPlanSubstitution(1, {
+      date: '2024-06-17',
+      mealType: 'dinner',
+      originalIngredient: 'ham',
+      suggestedIngredient: 'tofu',
+      reason: 'disliked_ingredient',
+      updateShoppingList: false,
+    }, 70);
+    expect(unrelated).toEqual(expect.objectContaining({ applied: false, reason: 'ingredient_not_found' }));
+    expect(getMealPlan(1, '2024-06-17', '2024-06-17', 70)[0].title).toBe('Hamburger plate');
+
+    const chicken = addRecipe(1, 'Chicken breast bowl', [
+      { name: 'Chicken breast', quantity: '180', unit: 'g' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-18', 'dinner', 'Chicken breast bowl', {
+      recipeId: chicken.id,
+      tenantId: 70,
+    });
+    const tokenMatch = applyMealPlanSubstitution(1, {
+      date: '2024-06-18',
+      mealType: 'dinner',
+      originalIngredient: 'chicken',
+      suggestedIngredient: 'tofu',
+      reason: 'disliked_ingredient',
+      updateShoppingList: false,
+    }, 70);
+    expect(tokenMatch.applied).toBe(true);
+    expect(tokenMatch.recipe?.ingredients[0].name).toBe('tofu');
+    expect(tokenMatch.meal?.title).toBe('tofu breast bowl');
+  });
+
+  it('rolls back the cloned recipe and meal rewrite when shopping refresh fails', () => {
+    const recipe = addRecipe(1, 'Tomato pasta', [
+      { name: 'Tomato', quantity: '2', unit: 'pcs' },
+      { name: 'Pasta', quantity: '200', unit: 'g' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-17', 'dinner', 'Tomato pasta', {
+      recipeId: recipe.id,
+      tenantId: 70,
+    });
+    testDb.exec(`
+      CREATE TRIGGER cooking_test_fail_shopping_refresh
+      BEFORE INSERT ON shopping_lists
+      BEGIN
+        SELECT RAISE(ABORT, 'forced shopping refresh failure');
+      END
+    `);
+
+    expect(() => applyMealPlanSubstitution(1, {
+      date: '2024-06-17',
+      mealType: 'dinner',
+      originalIngredient: 'Tomato',
+      suggestedIngredient: 'Courgette',
+      reason: 'disliked_ingredient',
+    }, 70)).toThrow(/forced shopping refresh failure/);
+
+    expect(getRecipes(1, { tenantId: 70, limit: 10 }).map((item) => item.id)).toEqual([recipe.id]);
+    expect(getMealPlan(1, '2024-06-17', '2024-06-17', 70)).toEqual([
+      expect.objectContaining({ recipe_id: recipe.id, title: 'Tomato pasta' }),
+    ]);
+    expect(getShoppingList(1, '2024-06-17', 70)).toBeNull();
+  });
 });
 
 describe('Shopping List', () => {
@@ -537,6 +749,45 @@ describe('Shopping List', () => {
     expect(butter[0].unit).toBe('g');
   });
 
+  it('does not drop compound quantities after encountering incompatible unit families', () => {
+    const volume = addRecipe(1, 'Volume flour', [
+      { name: 'Flour', quantity: '1', unit: 'cup' },
+    ]);
+    const mass = addRecipe(1, 'Mass flour', [
+      { name: 'Flour', quantity: '100', unit: 'g' },
+    ]);
+    const moreVolume = addRecipe(1, 'More volume flour', [
+      { name: 'Flour', quantity: '1', unit: 'cup' },
+    ]);
+    setMealPlan(1, '2024-06-17', 'breakfast', 'Volume flour', { recipeId: volume.id });
+    setMealPlan(1, '2024-06-18', 'lunch', 'Mass flour', { recipeId: mass.id });
+    setMealPlan(1, '2024-06-19', 'dinner', 'More volume flour', { recipeId: moreVolume.id });
+
+    expect(generateShoppingList(1, '2024-06-17').items).toEqual([
+      expect.objectContaining({
+        name: 'Flour',
+        quantity: '1 cup + 100 g + 1 cup',
+        unit: '',
+      }),
+    ]);
+  });
+
+  it('requires a real Monday for generation but normalizes read and patch dates to their week', () => {
+    expect(() => generateShoppingList(1, '2026-02-30')).toThrow(/COOKING_SHOPPING_LIST_INVALID_WEEK_START/);
+    expect(() => generateShoppingList(1, '2024-06-18')).toThrow(/COOKING_SHOPPING_LIST_INVALID_WEEK_START/);
+    expect(() => getShoppingList(1, '2026-02-30')).toThrow(/COOKING_SHOPPING_LIST_INVALID_WEEK_DATE/);
+
+    const recipe = addRecipe(1, 'Tuesday list', [{ name: 'Rice', quantity: '100', unit: 'g' }]);
+    setMealPlan(1, '2024-06-18', 'dinner', 'Tuesday list', { recipeId: recipe.id });
+    generateShoppingList(1, '2024-06-17');
+
+    expect(getShoppingList(1, '2024-06-18')).toMatchObject({ week_start: '2024-06-17' });
+    expect(updateShoppingListItemChecked(1, '2024-06-23', 0, true)).toMatchObject({
+      week_start: '2024-06-17',
+      items: [expect.objectContaining({ name: 'Rice', checked: true })],
+    });
+  });
+
   it('returns empty list for week with no meals', () => {
     const list = generateShoppingList(1, '2024-06-17');
     expect(list.items).toHaveLength(0);
@@ -564,8 +815,79 @@ describe('Shopping List', () => {
     expect(generateShoppingList(1, '2024-06-24', 202).items).toEqual([]);
   });
 
+  it('regenerates safe meals and discloses conflicting meals without blocking the week', () => {
+    const safeRecipe = addRecipe(1, 'Rice bowl', [
+      { name: 'Rice', quantity: '200', unit: 'g' },
+    ], { tenantId: 70 });
+    const unsafeRecipe = addRecipe(1, 'Peanut bowl', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-17', 'lunch', 'Rice bowl', { recipeId: safeRecipe.id, tenantId: 70 });
+    generateShoppingList(1, '2024-06-17', 70);
+    updateShoppingListItemChecked(1, '2024-06-17', 0, true, 70);
+    setMealPlan(1, '2024-06-18', 'dinner', 'Peanut bowl', { recipeId: unsafeRecipe.id, tenantId: 70 });
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    expect(generateShoppingList(1, '2024-06-17', 70)).toMatchObject({
+      items: [expect.objectContaining({ name: 'Rice', checked: true })],
+      safetyIssues: [{ code: 'ALLERGY_CONFLICT', itemName: 'Peanut bowl' }],
+    });
+
+    const stored = testDb.prepare(
+      'SELECT items FROM shopping_lists WHERE tenant_id = ? AND user_id = ? AND week_start = ?',
+    ).get(70, 1, '2024-06-17') as { items: string };
+    expect(JSON.parse(stored.items)).toEqual([
+      expect.objectContaining({ name: 'Rice', checked: true }),
+    ]);
+  });
+
+  it("does not apply another tenant's safety preferences to a shopping-list read", () => {
+    const recipe = addRecipe(1, 'Peanut snack', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(1, '2024-06-17', 'snack', 'Peanut snack', { recipeId: recipe.id, tenantId: 101 });
+    generateShoppingList(1, '2024-06-17', 101);
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 202);
+
+    expect(getShoppingList(1, '2024-06-17', 101)?.items).toEqual([
+      expect.objectContaining({ name: 'Peanuts' }),
+    ]);
+    expect(getShoppingList(1, '2024-06-17', 202)).toBeNull();
+  });
+
+  it('filters unsafe legacy items without deleting them when a visible item is checked', () => {
+    const recipe = addRecipe(1, 'Apple and peanuts', [
+      { name: 'Apple', quantity: '2', unit: 'pcs' },
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+    ], { tenantId: 70 });
+    setMealPlan(1, '2024-06-17', 'snack', 'Apple and peanuts', { recipeId: recipe.id, tenantId: 70 });
+    generateShoppingList(1, '2024-06-17', 70);
+    setCookingPreferenceMemory(1, { kind: 'allergy', value: 'peanuts' }, 70);
+
+    expect(getShoppingList(1, '2024-06-17', 70)).toMatchObject({
+      items: [expect.objectContaining({ name: 'Apple', checked: false })],
+      safetyIssues: [{ code: 'ALLERGY_CONFLICT', itemName: 'Peanuts' }],
+    });
+
+    const updated = updateShoppingListItemChecked(1, '2024-06-17', 0, true, 70);
+    expect(updated).toMatchObject({
+      items: [expect.objectContaining({ name: 'Apple', checked: true })],
+      safetyIssues: [{ code: 'ALLERGY_CONFLICT', itemName: 'Peanuts' }],
+    });
+
+    const stored = testDb.prepare(
+      'SELECT items FROM shopping_lists WHERE tenant_id = ? AND user_id = ? AND week_start = ?',
+    ).get(70, 1, '2024-06-17') as { items: string };
+    const storedItems = JSON.parse(stored.items);
+    expect(storedItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Apple', checked: true }),
+      expect.objectContaining({ name: 'Peanuts', checked: false }),
+    ]));
+    expect(storedItems).toHaveLength(2);
+  });
+
   it('returns null for non-existent shopping list', () => {
-    expect(getShoppingList(1, '2099-01-01')).toBeNull();
+    expect(getShoppingList(1, '2024-06-24')).toBeNull();
   });
 
   it('marks shopping list items that are already available in tenant pantry', () => {
@@ -640,6 +962,164 @@ describe('Pantry', () => {
     expect(getPantryItems(1, { tenantId: 101 })).toHaveLength(1);
   });
 
+  it('forces past-dated pantry items to expired even when marked fresh', () => {
+    const item = upsertPantryItem(1, {
+      name: 'Unsafe milk',
+      expiresAt: '2000-01-01',
+      freshnessStatus: 'fresh',
+    }, 101);
+
+    expect(item.freshness_status).toBe('expired');
+  });
+
+  it('keeps the most conservative freshness between expiry and supplied status', () => {
+    const useSoonDate = new Date(Date.now() + (2 * 86400_000)).toISOString().slice(0, 10);
+    const useSoon = upsertPantryItem(1, {
+      name: 'Use-soon yogurt',
+      expiresAt: useSoonDate,
+      freshnessStatus: 'fresh',
+    }, 101);
+    const explicitlyExpired = upsertPantryItem(1, {
+      name: 'Questionable rice',
+      expiresAt: '2999-01-01',
+      freshnessStatus: 'expired',
+    }, 101);
+
+    expect(useSoon.freshness_status).toBe('use_soon');
+    expect(explicitlyExpired.freshness_status).toBe('expired');
+  });
+
+  it('recomputes freshness when only the expiry date changes', () => {
+    const item = upsertPantryItem(1, {
+      name: 'Spinach',
+      freshnessStatus: 'expired',
+    }, 101);
+
+    const futureDated = updatePantryItem(1, item.id, { expiresAt: '2999-01-01' }, 101);
+    expect(futureDated?.freshness_status).toBe('fresh');
+
+    const pastDated = updatePantryItem(1, item.id, { expiresAt: '2000-01-01' }, 101);
+    expect(pastDated?.freshness_status).toBe('expired');
+  });
+
+  it('does not persist derived expiry freshness during an unrelated edit', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-06-01T12:00:00.000Z'));
+    const item = upsertPantryItem(1, {
+      name: 'Archived oats',
+      expiresAt: '2024-06-10',
+      freshnessStatus: 'fresh',
+    }, 101);
+    expect(item.freshness_status).toBe('fresh');
+
+    vi.setSystemTime(new Date('2024-06-11T12:00:00.000Z'));
+    expect(getPantryItemById(1, item.id, 101)?.freshness_status).toBe('expired');
+
+    const updated = updatePantryItem(1, item.id, { notes: 'Check before replacing' }, 101);
+    const stored = testDb.prepare(
+      'SELECT freshness_status, notes FROM cooking_pantry_items WHERE id = ?',
+    ).get(item.id) as { freshness_status: string; notes: string | null };
+
+    expect(updated?.freshness_status).toBe('expired');
+    expect(stored).toEqual({ freshness_status: 'fresh', notes: 'Check before replacing' });
+  });
+
+  it('rejects invalid expiry dates before create or update persistence', () => {
+    expect(() => upsertPantryItem(1, {
+      name: 'Invalid milk',
+      expiresAt: '2026-02-30',
+    }, 101)).toThrow(/COOKING_PANTRY_INVALID_EXPIRY/);
+    expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([]);
+
+    const item = upsertPantryItem(1, { name: 'Valid milk' }, 101);
+    expect(() => updatePantryItem(1, item.id, {
+      expiresAt: 'not-a-date',
+    }, 101)).toThrow(/COOKING_PANTRY_INVALID_EXPIRY/);
+    expect(getPantryItemById(1, item.id, 101)?.expires_at).toBeNull();
+  });
+
+  it('rejects non-string pantry expiry values instead of coercing them to clear-expiry writes', () => {
+    expect(() => upsertPantryItem(1, {
+      name: 'Array expiry milk',
+      expiresAt: [] as unknown as string,
+    }, 101)).toThrow(/COOKING_PANTRY_INVALID_EXPIRY/);
+    expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([]);
+
+    const item = upsertPantryItem(1, { name: 'Valid expiry milk', expiresAt: '2999-01-01' }, 101);
+    expect(() => updatePantryItem(1, item.id, {
+      expiresAt: { date: '2000-01-01' } as unknown as string,
+    }, 101)).toThrow(/COOKING_PANTRY_INVALID_EXPIRY/);
+    expect(getPantryItemById(1, item.id, 101)?.expires_at).toBe('2999-01-01');
+  });
+
+  it('rejects invalid pantry statuses, confidence, and optional text before persistence', () => {
+    const invalidWrites: PantryItemInput[] = [
+      { name: { label: 'Object name' } as unknown as string },
+      { name: 'Bad freshness', freshnessStatus: 'recent' },
+      { name: 'Delete bypass', availabilityStatus: 'removed' },
+      { name: 'Bad confidence', confidence: 1.5 },
+      { name: 'Bad quantity', quantity: 3 as unknown as string },
+    ];
+    for (const input of invalidWrites) {
+      expect(() => upsertPantryItem(1, input, 101)).toThrow(/COOKING_PANTRY_INVALID/);
+    }
+    expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([]);
+
+    const item = upsertPantryItem(1, { name: 'Valid pantry item', freshnessStatus: 'fresh' }, 101);
+    expect(() => updatePantryItem(1, item.id, { name: null as unknown as string }, 101))
+      .toThrow(/COOKING_PANTRY_INVALID_NAME/);
+    expect(() => updatePantryItem(1, item.id, { availabilityStatus: 'deleted' }, 101))
+      .toThrow(/COOKING_PANTRY_INVALID_AVAILABILITY/);
+    expect(() => updatePantryItem(1, item.id, { unexpected: true } as Partial<PantryItemInput>, 101))
+      .toThrow(/COOKING_PANTRY_INVALID_UPDATE/);
+    expect(getPantryItemById(1, item.id, 101)).toMatchObject({
+      availability_status: 'available',
+      freshness_status: 'fresh',
+    });
+    expect(() => getPantryItems(1, { tenantId: 101, limit: 2.5 }))
+      .toThrow(/COOKING_PANTRY_INVALID_LIMIT/);
+    expect(() => getPantryItems(1, { tenantId: 101, limit: 251 }))
+      .toThrow(/COOKING_PANTRY_INVALID_LIMIT/);
+  });
+
+  it('derives effective freshness on reads when time has advanced since the last write', () => {
+    const item = upsertPantryItem(1, {
+      name: 'Stored-fresh milk',
+      expiresAt: '2999-01-01',
+      freshnessStatus: 'fresh',
+    }, 101);
+    testDb.prepare(`
+      UPDATE cooking_pantry_items
+      SET expires_at = '2000-01-01', freshness_status = 'fresh'
+      WHERE id = ?
+    `).run(item.id);
+
+    expect(getPantryItemById(1, item.id, 101)?.freshness_status).toBe('expired');
+    expect(getPantryItems(1, { tenantId: 101 })).toEqual([]);
+    expect(getPantryItems(1, { tenantId: 101, includeExpired: true })).toEqual([
+      expect.objectContaining({ id: item.id, freshness_status: 'expired' }),
+    ]);
+  });
+
+  it('evaluates pantry expiry against the user local calendar date', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-02T05:00:00.000Z'));
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, timezone, username)
+      VALUES (?, ?, ?, ?)
+    `).run(88, 880088, 'Pacific/Honolulu', 'honolulu-cook');
+
+    const item = upsertPantryItem(88, {
+      name: 'Local-date avocado',
+      expiresAt: '2026-05-01',
+      freshnessStatus: 'fresh',
+    }, 88);
+
+    expect(item.freshness_status).toBe('use_soon');
+    expect(getPantryItemById(88, item.id, 88)?.freshness_status).toBe('use_soon');
+    expect(getPantryItems(88, { tenantId: 88 }).map((entry) => entry.id)).toContain(item.id);
+  });
+
   it('isolates pantry items between active tenants for the same user', () => {
     const tenantA = upsertPantryItem(1, { name: 'Rice', quantity: '1', unit: 'kg' }, 101);
     upsertPantryItem(1, { name: 'Beans', quantity: '2', unit: 'cans' }, 202);
@@ -671,6 +1151,15 @@ describe('Pantry', () => {
 });
 
 describe('Cooking schema and contract boundaries', () => {
+  it('keeps runtime reads free of schema mutation and backfill helpers', () => {
+    const source = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/services/cooking-chef.ts'),
+      'utf8',
+    );
+
+    expect(source).not.toContain('ensureCookingTenantScopeColumns');
+  });
+
   it('keeps the recipe, meal-plan, and shopping-list schema complete', () => {
     const tables = testDb.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('recipes','meal_plans','shopping_lists') ORDER BY name",
@@ -749,6 +1238,8 @@ describe('Cooking CRUD edge matrices', () => {
     }
     expect(getRecipes(1, { limit: 3 })).toHaveLength(3);
     expect(getRecipes(1)).toHaveLength(20);
+    expect(() => getRecipes(1, { limit: 1.5 })).toThrow(/COOKING_RECIPE_INVALID_LIMIT/);
+    expect(() => getRecipes(1, { limit: 101 })).toThrow(/COOKING_RECIPE_INVALID_LIMIT/);
   });
 
   it('prevents cross-user recipe deletion', () => {

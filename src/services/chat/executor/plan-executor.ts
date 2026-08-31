@@ -2,6 +2,7 @@
 
 import {
   authorizeChatToolCall,
+  buildConfirmedDestructiveTargetId,
   CONFIRMED_TARGET_FIELDS,
   getCurrentChatToolAuthorizationContext,
   runWithChatToolAuthorization,
@@ -63,6 +64,25 @@ function normalizeConfirmationTargetId(value: unknown): string | null {
   return null;
 }
 
+function confirmationToolInputForStep(step: ChatPlanStep): { toolName: string; input: Record<string, unknown> } | null {
+  const targetContract = findChatActionDefinition(step.skill, step.action)?.confirmationTarget;
+  if (!targetContract) return null;
+  if (targetContract.argumentFields) {
+    return {
+      toolName: targetContract.tool,
+      input: Object.fromEntries(
+        Object.entries(targetContract.argumentFields).map(([toolField, stepField]) => [toolField, step.args?.[stepField]]),
+      ),
+    };
+  }
+  const [toolField] = CONFIRMED_TARGET_FIELDS[targetContract.tool] ?? [];
+  if (!toolField) return null;
+  return {
+    toolName: targetContract.tool,
+    input: { [toolField]: step.args?.[targetContract.argumentField] },
+  };
+}
+
 /**
  * Builds the exact grants staged by the confirmation hold. The registry owns
  * the action -> authorization-tool/argument mapping so newly reachable risky
@@ -77,7 +97,10 @@ export function buildConfirmedDestructiveTargetsForPlanSteps(
     const definition = findChatActionDefinition(step.skill, step.action);
     const targetContract = definition?.confirmationTarget;
     if (!targetContract) continue;
-    const targetId = normalizeConfirmationTargetId(step.args?.[targetContract.argumentField]);
+    const authorizationCall = confirmationToolInputForStep(step);
+    const targetId = authorizationCall
+      ? buildConfirmedDestructiveTargetId(authorizationCall.toolName, authorizationCall.input)
+      : normalizeConfirmationTargetId(step.args?.[targetContract.argumentField]);
     if (!targetId) continue;
     targets.push({ tool: targetContract.tool, targetId });
   }
@@ -88,14 +111,7 @@ function authorizationCallForRiskyStep(step: ChatPlanStep): {
   toolName: string;
   input: Record<string, unknown>;
 } | null {
-  const [target] = buildConfirmedDestructiveTargetsForPlanSteps([step]);
-  if (!target?.tool || !target.targetId) return null;
-  const [toolTargetField] = CONFIRMED_TARGET_FIELDS[target.tool] ?? [];
-  if (!toolTargetField) return null;
-  return {
-    toolName: target.tool,
-    input: { [toolTargetField]: target.targetId },
-  };
+  return confirmationToolInputForStep(step);
 }
 
 export async function executeChatActionPlan(

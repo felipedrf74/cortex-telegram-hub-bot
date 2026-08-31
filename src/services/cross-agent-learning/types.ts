@@ -30,8 +30,11 @@ import type {
   TrainingWeek,
   WeeklyAdherenceStats,
 } from '../training-plans';
-import type { UnifiedCalendarEvent } from '../unified-calendar';
+import type { UnifiedCalendarEvent, UnifiedCalendarFetchStatus } from '../unified-calendar';
 import type { UserMailPressureSummary } from '../unified-mail-pressure';
+
+/** Cooking distinguishes an optional, unconfigured calendar from a failed read. */
+export type CookingCalendarStatus = UnifiedCalendarFetchStatus | 'not_configured';
 
 export interface AgentContext {
   /** Voice patterns from Voice Evolution Agent (phrases, style notes). */
@@ -147,11 +150,60 @@ export interface CoachPhaseMemoryForContext {
 
 export interface CookingMeshContext {
   userId: number;
+  /** IANA zone used for every date window and event-to-day projection. */
+  timezone?: string;
   weekStart: string;
   weekEnd: string;
   meals: MealPlan[];
   shoppingList: ShoppingList | null;
+  /**
+   * Health of each source needed to interpret an empty Cooking result.
+   * Live contexts always populate this; absence on older fixtures is treated
+   * as unverified by orchestration consumers.
+   */
+  sourceHealth?: {
+    mealPlan: CookingSourceHealth;
+    shoppingList: CookingSourceHealth;
+    recipes: CookingSourceHealth;
+    focus: CookingSourceHealth;
+    /** Current-preference projection for persisted meals and shopping data. */
+    safety?: CookingSafetySourceHealth;
+  };
+  /** Verified local-day availability evidence used for prep placement. */
+  availability?: {
+    busyDates: string[];
+    fragmentedDates: string[];
+    travelDates: string[];
+    focusDate: string | null;
+  };
+  /**
+   * Calendar evidence used to classify constrained meal-prep dates.
+   * The live adapter always sets this. It remains optional for older persisted
+   * fixtures; consumers treat `not_configured` as verified empty availability,
+   * while absence, unavailable, or degraded remains unverified.
+   */
+  calendar?: {
+    status: CookingCalendarStatus;
+    warningCodes: string[];
+  };
   derivedSignals: MeshSignalDraft[];
+}
+
+export interface CookingSourceHealth {
+  status: UnifiedCalendarFetchStatus;
+  warningCodes: string[];
+}
+
+export interface CookingSafetySourceHealth extends CookingSourceHealth {
+  /** Number of persisted meals withheld from every downstream projection. */
+  excludedMealCount: number;
+  /** One entry per withheld meal so daily consumers can count by local date. */
+  excludedMealDates: string[];
+  /** Optional per-meal reason metadata used by newer daily projections. */
+  excludedMeals?: Array<{
+    date: string;
+    reason: 'preference_conflict' | 'unverified_recipe' | 'preference_conflict_and_unverified_recipe';
+  }>;
 }
 
 export interface ContentMeshContext {

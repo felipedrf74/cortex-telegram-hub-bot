@@ -55,6 +55,30 @@ describe('chat tool authorization AsyncLocalStorage scoping', () => {
     ]);
   });
 
+  it('stages Cooking meal deletion against the date and meal type composite target', () => {
+    const targets = buildConfirmedDestructiveTargetsForPlanSteps([
+      {
+        stepId: 'delete-cooking-dinner',
+        skill: 'cooking',
+        action: 'cooking_delete_meal',
+        type: 'cooking_delete_meal',
+        risk: 'destructive',
+        args: {
+          date: '2026-09-07',
+          mealType: 'dinner',
+        },
+        requiredArgsPresent: true,
+        idempotencyKey: 'delete-cooking-dinner',
+        verification: { required: true, method: 'local_read_back' },
+      },
+    ] as ChatActionPlan['steps']);
+
+    expect(targets).toEqual([{
+      tool: 'cooking_delete_meal',
+      targetId: 'date=2026-09-07&meal_type=dinner',
+    }]);
+  });
+
   it('fails closed when a risky planner step lacks its exact target argument', () => {
     const targets = buildConfirmedDestructiveTargetsForPlanSteps([
       {

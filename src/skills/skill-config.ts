@@ -426,7 +426,7 @@ const FINANCE_SKILL: SkillDefinition = {
 
 const COOKING_SKILL: SkillDefinition = {
   ...CAPABILITY_SKILL_METADATA.cooking,
-  description: 'Adaptive cooking intelligence — meal planning, recipes, shopping, fueling, and schedule-aware prep',
+  description: 'Tenant-safe recipes, dated meal-plan slots, saved-plan shopping lists, pantry and preference memory, and context-aware cooking guidance',
   routing: {
     patternRoutes: [
       /^\/(cook|recipe|meal|mealplan|shopping|ingredients?)\b/i,
@@ -441,43 +441,43 @@ const COOKING_SKILL: SkillDefinition = {
   subSkills: [
     {
       name: 'recipes',
-      description: 'Recipe search and management',
+      description: 'Structured recipe library: create, search, and delete saved recipes',
       enabledByDefault: true,
       tools: ['cooking_add_recipe', 'cooking_get_recipes', 'cooking_delete_recipe'],
     },
     {
       name: 'meal-planning',
-      description: 'Weekly meal planning',
+      description: 'Read and edit dated meal-plan slots',
       enabledByDefault: true,
       tools: ['cooking_set_meal', 'cooking_get_meal_plan', 'cooking_delete_meal'],
     },
     {
       name: 'shopping',
-      description: 'Shopping list generation',
+      description: 'Generate and read shopping lists from saved meal-plan slots',
       enabledByDefault: true,
       tools: ['cooking_generate_shopping_list', 'cooking_get_shopping_list'],
     },
     {
       name: 'pantry',
-      description: 'Tenant-scoped pantry inventory and freshness',
+      description: 'Tenant-scoped pantry item management with freshness metadata',
       enabledByDefault: true,
       tools: ['cooking_upsert_pantry_item', 'cooking_get_pantry', 'cooking_delete_pantry_item'],
     },
     {
       name: 'preferences',
-      description: 'User-private Cooking memory and corrections',
+      description: 'User-private allergies, restrictions, prep, budget, and correction memory',
       enabledByDefault: true,
       tools: ['cooking_set_preference', 'cooking_get_preferences'],
     },
     {
       name: 'notes',
-      description: 'Cooking notes and tips',
+      description: 'Explicit Cooking note capture and private note search',
       enabledByDefault: true,
       tools: ['save_note', 'search_notes'],
     },
     {
       name: 'shared-memory',
-      description: 'Cross-domain shared facts (dietary prefs, allergies)',
+      description: 'Explicitly approved shared dietary facts and cooking constraints',
       enabledByDefault: true,
       tools: ['shared_memory_set', 'shared_memory_remove'],
     },

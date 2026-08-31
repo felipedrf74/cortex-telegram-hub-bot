@@ -114,6 +114,17 @@ describe('chat-action-registry completeness', () => {
         CONFIRMED_TARGET_FIELDS[entry.confirmationTarget?.tool ?? ''],
         `${entry.skill}.${entry.action}: confirmation tool must have an authorization target mapping`,
       ).toBeDefined();
+      if (entry.confirmationTarget?.argumentFields) {
+        expect(
+          Object.values(entry.confirmationTarget.argumentFields).every((field) => (
+            [...entry.requiredFields, ...entry.optionalFields].includes(field)
+          )),
+          `${entry.skill}.${entry.action}: every composite target value must name a declared argument`,
+        ).toBe(true);
+        expect(Object.keys(entry.confirmationTarget.argumentFields).sort()).toEqual(
+          [...(CONFIRMED_TARGET_FIELDS[entry.confirmationTarget.tool] ?? [])].sort(),
+        );
+      }
     }
   });
 

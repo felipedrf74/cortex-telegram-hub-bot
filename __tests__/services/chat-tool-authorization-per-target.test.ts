@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   authorizeChatToolCall,
+  buildConfirmedDestructiveTargetId,
   CONFIRMED_TARGET_FIELDS,
   getChatToolRisk,
   runWithChatToolAuthorization,
@@ -213,6 +214,31 @@ describe('per-target destructive confirmation (ADV-3)', () => {
       async () => {
         expect(authorize('ms_todo_delete_task', { task_id: 'task-11' }).allowed).toBe(true);
         expect(authorize('shared_memory_remove', { key: 'pref.timezone' }).allowed).toBe(true);
+      },
+    );
+  });
+
+  it('binds Cooking meal deletion grants to the date and meal type together', async () => {
+    const targetId = buildConfirmedDestructiveTargetId('cooking_delete_meal', {
+      date: '2026-09-07',
+      meal_type: 'dinner',
+    });
+    expect(targetId).toBe('date=2026-09-07&meal_type=dinner');
+
+    await runWithChatToolAuthorization(
+      {
+        ...baseContext,
+        confirmedDestructiveTargets: [{ tool: 'cooking_delete_meal', targetId: targetId! }],
+      },
+      async () => {
+        expect(authorize('cooking_delete_meal', {
+          date: '2026-09-07',
+          meal_type: 'lunch',
+        })).toMatchObject({ allowed: false, code: 'CONFIRMATION_REQUIRED' });
+        expect(authorize('cooking_delete_meal', {
+          date: '2026-09-07',
+          meal_type: 'dinner',
+        }).allowed).toBe(true);
       },
     );
   });

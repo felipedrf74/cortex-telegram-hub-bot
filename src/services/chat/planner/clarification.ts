@@ -199,6 +199,8 @@ function fieldLabel(field: string, pt?: boolean): string {
     category: ['categoria', 'category'],
     packageId: ['pacote de conteúdo', 'content package'],
     platform: ['plataforma de conteúdo', 'content platform'],
+    recipeId: ['ID da receita', 'recipe ID'],
+    itemId: ['ID do item da despensa', 'pantry item ID'],
     date: ['data', 'date'],
     mealType: ['refeição', 'meal'],
     weekStart: ['semana', 'week'],

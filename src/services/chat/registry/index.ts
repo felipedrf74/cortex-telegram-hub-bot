@@ -174,7 +174,7 @@ export function selectRegistrySubsetForMessage(text: string): ChatActionDefiniti
   if (/\b(task|todo|tarefa|subtarefa|checklist|lembrete|reminder)\b/.test(folded)) selected.add('tasks');
   if (/\b(treino|training|plan[o]? de treino|corrida|gym|ginasio)\b/.test(folded)) selected.add('training');
   if (/\b(content|conteudo|contenido|script|roteiro|guion|guión|reel|post|video|publication|publicacao|publicaci[oó]n|publish|publicar|upload|queue|tiktok|youtube|brief)\b/.test(folded)) selected.add('content');
-  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras|fueling|recipe|receita|receitas|dinner|lunch|breakfast|snack|ingredient|ingredients)\b/.test(folded)) selected.add('cooking');
+  if (/\b(cozinha|meal|refeicao|jantar|almoco|ceia|lanche|comida|grocery|compras?|fueling|recipe|receita|receitas|receta|recetas|dinner|lunch|breakfast|snack|cena|cenas|almuerzo|almuerzos|desayuno|desayunos|menu|ingredient|ingredients|ingrediente|ingredientes|pantry|despensa)\b/.test(folded)) selected.add('cooking');
   if (/\b(finance|financas|financeiro|financeira|pagamento|stripe|invoice|fatura|recibo|receipt)\b/.test(folded)) selected.add('finance');
   if (/\b(connection|conexao|ligacao|google|outlook|garmin|health)\b/.test(folded)) selected.add('connections');
   if (/\b(notification|notificacao|notificacoes|alerta|push)\b/.test(folded)) selected.add('notifications');
@@ -195,7 +195,7 @@ export function messageHasActionCandidate(text: string): boolean {
   const subset = selectRegistrySubsetForMessage(text);
   if (subset.length === 0) return false;
   const folded = foldCalendarText(text);
-  return /\b(cria|criar|gera|gerar|marca|marcar|agenda|agendar|adiciona|adicionar|coloca|mete|poe|faz|apaga|apagar|remove|delete|move|mover|send|enviar|draft|create|add|generate|schedule|complete|concluir|reflow|ajusta|ajustar|atualiza|atualizar|adjust|update|post|postar|postea|upload|subir|queue|publish|publicar|paga|pay|refund|categorize|rotate|revoke|revoga|revogar|mostra|mostrar|show|list|listar|resume|summary|relatorio|relatório|explain|explica|help|ajuda|check|retry|reconnect|snooze|dismiss|follow|remind|lembra|lembre|avisa|alerta|recordatorio|recuerdame|recu[eé]rdame)\b/.test(folded);
+  return /\b(cria|criar|crea|crear|gera|gerar|genera|generar|planea|planear|marca|marcar|agenda|agendar|adiciona|adicionar|coloca|mete|poe|faz|apaga|apagar|remove|delete|elimina|eliminar|move|mover|send|enviar|draft|create|add|generate|schedule|complete|concluir|reflow|ajusta|ajustar|atualiza|atualizar|actualiza|actualizar|adjust|update|post|postar|postea|upload|subir|queue|publish|publicar|paga|pay|refund|categorize|rotate|revoke|revoga|revogar|mostra|mostrar|muestra|show|list|lista|listar|resume|summary|relatorio|relatório|explain|explica|help|ajuda|check|retry|reconnect|snooze|dismiss|follow|remind|lembra|lembre|avisa|alerta|recordatorio|recuerdame|recu[eé]rdame)\b/.test(folded);
 }
 
 // Phase 11 batch 59 (2026-05-16): typed slot accessors.

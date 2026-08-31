@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "9a5ba35ef43db8e70e1fe60e322320676888031f83013f40bb5b4a590770534e",
-    "baseCommit": "02da8e27a31c39d24887f6fa40f816ecad694e38",
-    "baseCommitTimestamp": "2026-08-30T16:58:15+01:00",
-    "trackedFiles": 3431,
+    "sourceDigest": "f81fcbcb2c6c0b62ca4d2b1fae8c4a7ca538b509739f12f322208241053e840b",
+    "baseCommit": "51f17efb15a2479b38e1bdd2afe232daa0bc2e0b",
+    "baseCommitTimestamp": "2026-08-30T17:39:08+01:00",
+    "trackedFiles": 3432,
     "sourceFiles": 1194
   },
   "navigation": {
@@ -5091,7 +5091,7 @@
     }
   ],
   "tests": {
-    "files": 1263,
+    "files": 1264,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5114,7 +5114,7 @@
       "sdk": 1,
       "security": 24,
       "services": 781,
-      "skills": 11,
+      "skills": 12,
       "state": 17,
       "storage": 1,
       "testing": 1,
@@ -5879,7 +5879,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 614922,
+      "bytes": 621740,
       "generated": false
     },
     {

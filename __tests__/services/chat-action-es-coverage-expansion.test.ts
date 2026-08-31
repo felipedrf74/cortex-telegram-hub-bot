@@ -68,20 +68,20 @@ const FIXTURES: EsFixture[] = [
   {
     text: 'Planea las comidas de la próxima semana',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_meal_plan',
-    reason: 'Spanish "planea" + "comidas" + "próxima semana" — meal plan with next-week date range.',
+    expectedAction: 'cooking_meal_support',
+    reason: 'Spanish "planea" + "comidas" + "próxima semana" stays advisory because bulk weekly generation is not a single-slot write.',
   },
   {
     text: 'Crea un menú para esta semana',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_meal_plan',
-    reason: 'Spanish "crea" + "menú" — alternate Spanish form for meal plan.',
+    expectedAction: 'cooking_meal_support',
+    reason: 'Spanish "crea" + "menú" reaches Cooking support without manufacturing an unexecutable weekly write.',
   },
   {
     text: 'Necesito una lista de la compra',
     expectedSkill: 'cooking',
-    expectedAction: 'cooking_grocery_list',
-    reason: 'Spanish "lista de la compra" maps to grocery list (PT uses "lista de compras", ES uses "de la compra").',
+    expectedAction: 'cooking_meal_support',
+    reason: 'Spanish "lista de la compra" without an explicit generation verb is a read request, not a persisted list regeneration.',
   },
 
   // --- Content ---

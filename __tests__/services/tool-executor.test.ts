@@ -1958,6 +1958,32 @@ describe('executeToolCall — Cooking', () => {
     setMealSpy.mockRestore();
   });
 
+  it('returns persisted meal safety issues to tool callers', async () => {
+    const setMealSpy = vi.spyOn(cookingChef, 'setMealPlan');
+    setMealSpy.mockReturnValue({
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Pantry-aware bowl',
+      issues: [{
+        code: 'pantry_expired',
+        ingredientName: 'Spinach',
+        message: 'Pantry item "Spinach" is expired — verify before cooking or replace from shopping list.',
+      }],
+    } as any);
+
+    const result = await execAsUser('cooking_set_meal', {
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Pantry-aware bowl',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      issues: [{ code: 'pantry_expired', ingredientName: 'Spinach' }],
+    });
+    setMealSpy.mockRestore();
+  });
+
   it('passes authenticated tenant scope into cooking pantry writes', async () => {
     const upsertSpy = vi.spyOn(cookingChef, 'upsertPantryItem');
     upsertSpy.mockReturnValue({
@@ -2004,6 +2030,41 @@ describe('executeToolCall — Cooking', () => {
       includeExpired: true,
     }));
     listSpy.mockRestore();
+  });
+
+  it('rejects invalid Cooking numeric tool inputs before reads or mutations', async () => {
+    const recipeListSpy = vi.spyOn(cookingChef, 'getRecipes');
+    const pantryDeleteSpy = vi.spyOn(cookingChef, 'deletePantryItem');
+    const pantryUpsertSpy = vi.spyOn(cookingChef, 'upsertPantryItem');
+
+    const invalidLimit = await execAsTenantUser('cooking_get_recipes', { limit: -1 }, 1001);
+    const invalidId = await execAsTenantUser('cooking_delete_pantry_item', { item_id: 4.5 }, 1001);
+    const invalidConfidence = await execAsTenantUser('cooking_upsert_pantry_item', {
+      name: 'Rice',
+      confidence: 1.5,
+    }, 1001);
+
+    expect(invalidLimit).toEqual({
+      success: false,
+      code: 'COOKING_RECIPE_INVALID_LIMIT',
+      error: 'limit must be an integer between 1 and 100',
+    });
+    expect(invalidId).toEqual({
+      success: false,
+      code: 'COOKING_PANTRY_INVALID_ID',
+      error: 'item_id must be a positive integer',
+    });
+    expect(invalidConfidence).toEqual({
+      success: false,
+      code: 'COOKING_PANTRY_INVALID_CONFIDENCE',
+      error: 'confidence must be a number between 0 and 1',
+    });
+    expect(recipeListSpy).not.toHaveBeenCalled();
+    expect(pantryDeleteSpy).not.toHaveBeenCalled();
+    expect(pantryUpsertSpy).not.toHaveBeenCalled();
+    recipeListSpy.mockRestore();
+    pantryDeleteSpy.mockRestore();
+    pantryUpsertSpy.mockRestore();
   });
 
   it('fails closed on string-typed tenant ids for cooking tool execution', async () => {
@@ -2055,6 +2116,26 @@ describe('executeToolCall — Cooking', () => {
     setPreferenceSpy.mockRestore();
   });
 
+  it('preserves stable Cooking preference validation codes', async () => {
+    const setPreferenceSpy = vi.spyOn(cookingPreferences, 'setCookingPreferenceMemory');
+    setPreferenceSpy.mockImplementation(() => {
+      throw new Error('COOKING_PREFERENCE_INVALID: weekday_max_prep_minutes must be 1-480');
+    });
+
+    const result = await execAsTenantUser('cooking_set_preference', {
+      kind: 'weekday_max_prep_minutes',
+      value: '481',
+    }, 1001);
+
+    expect(result).toEqual({
+      success: false,
+      error: 'COOKING_PREFERENCE_INVALID: weekday_max_prep_minutes must be 1-480',
+      code: 'COOKING_PREFERENCE_INVALID',
+    });
+    expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
+    setPreferenceSpy.mockRestore();
+  });
+
   it('passes authenticated tenant scope into cooking preference reads', async () => {
     const readPreferenceSpy = vi.spyOn(cookingPreferences, 'buildCookingPreferenceReadModel');
     readPreferenceSpy.mockReturnValue({
@@ -2088,6 +2169,26 @@ describe('executeToolCall — Cooking', () => {
     deleteMealSpy.mockRestore();
   });
 
+  it('invalidates cooking-derived surfaces after recipe create and delete', async () => {
+    const addRecipeSpy = vi.spyOn(cookingChef, 'addRecipe');
+    const deleteRecipeSpy = vi.spyOn(cookingChef, 'deleteRecipe');
+    addRecipeSpy.mockReturnValue({ id: 77, title: 'Cache-aware recipe' } as any);
+    deleteRecipeSpy.mockReturnValue(true);
+
+    const created = await execAsUser('cooking_add_recipe', {
+      title: 'Cache-aware recipe',
+      ingredients: [{ name: 'Rice', quantity: '1', unit: 'cup' }],
+    });
+    const deleted = await execAsUser('cooking_delete_recipe', { recipe_id: 77 });
+
+    expect(created).toEqual({ success: true, id: 77, title: 'Cache-aware recipe' });
+    expect(deleted).toEqual({ success: true });
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenNthCalledWith(1, AUTH_USER_ID);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenNthCalledWith(2, AUTH_USER_ID);
+    addRecipeSpy.mockRestore();
+    deleteRecipeSpy.mockRestore();
+  });
+
   it('invalidates cooking-derived surfaces after regenerating the shopping list', async () => {
     const generateSpy = vi.spyOn(cookingChef, 'generateShoppingList');
     generateSpy.mockReturnValue({ items: [{ name: 'Eggs' }] } as any);
@@ -2098,6 +2199,78 @@ describe('executeToolCall — Cooking', () => {
 
     expect(result).toEqual({ items: [{ name: 'Eggs' }] });
     expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+    generateSpy.mockRestore();
+  });
+
+  it('returns a stable conflict when a recipe is still used by an active meal plan', async () => {
+    const deleteRecipeSpy = vi.spyOn(cookingChef, 'deleteRecipe');
+    deleteRecipeSpy.mockImplementation(() => {
+      throw new cookingChef.CookingRecipeDeleteConflictError(77);
+    });
+
+    const result = await execAsUser('cooking_delete_recipe', { recipe_id: 77 });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Recipe is used by an active meal plan',
+      code: 'COOKING_RECIPE_IN_USE',
+    });
+    deleteRecipeSpy.mockRestore();
+  });
+
+  it('returns safe Cooking input errors instead of a generic internal failure', async () => {
+    const setMealSpy = vi.spyOn(cookingChef, 'setMealPlan');
+    setMealSpy.mockImplementation(() => {
+      throw new Error('COOKING_MEAL_PLAN_INVALID_DATE: date must be a real YYYY-MM-DD date');
+    });
+
+    const result = await execAsUser('cooking_set_meal', {
+      date: '2026-02-30',
+      meal_type: 'dinner',
+      title: 'Impossible meal',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'COOKING_MEAL_PLAN_INVALID_DATE: date must be a real YYYY-MM-DD date',
+      code: 'COOKING_MEAL_PLAN_INVALID_DATE',
+    });
+    setMealSpy.mockRestore();
+  });
+
+  it('returns a stable sanitized Cooking safety error for shopping tools', async () => {
+    const generateSpy = vi.spyOn(cookingChef, 'generateShoppingList');
+    generateSpy.mockImplementation(() => {
+      throw new Error('COOKING_SAFETY_BLOCKED: shopping list safety profile unavailable');
+    });
+
+    const result = await execAsUser('cooking_generate_shopping_list', {
+      week_start: '2026-04-13',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Cooking item conflicts with a saved cooking safety preference',
+      code: 'COOKING_SAFETY_BLOCKED',
+    });
+    generateSpy.mockRestore();
+  });
+
+  it('preserves the stable substitution no-op code in Cooking tool failures', async () => {
+    const generateSpy = vi.spyOn(cookingChef, 'generateShoppingList');
+    generateSpy.mockImplementation(() => {
+      throw new Error('COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient');
+    });
+
+    const result = await execAsUser('cooking_generate_shopping_list', {
+      week_start: '2026-04-13',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'COOKING_SUBSTITUTION_NOOP: suggestedIngredient must differ from originalIngredient',
+      code: 'COOKING_SUBSTITUTION_NOOP',
+    });
     generateSpy.mockRestore();
   });
 });

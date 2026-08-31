@@ -85,7 +85,7 @@ describe('Nexus security baseline source pins', () => {
     }
     for (const blockedItem of [
       'Cloudflare firewall/origin lock-down',
-      'VPS UFW/fail2ban/SSH/systemd/PM2 permission changes',
+      'VPS UFW/fail2ban/SSH permission changes',
       'Off-host backup durability',
       'Secret rotation for JWT/provider/Stripe/Cloudflare/Resend/Telegram/model keys',
       'Route-by-route mass-assignment allowlist migration',

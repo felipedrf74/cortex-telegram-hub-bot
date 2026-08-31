@@ -2,13 +2,9 @@
 
 /** Deterministic Secretary mesh adapter. */
 
+import { DateTime } from 'luxon';
 import { getFocusBlockRecommendation } from '../focus-planner';
-import {
-  getOverdueTasks,
-  getPendingTasks,
-  getTasksDueThisWeek,
-  getTasksDueToday,
-} from '../task-store/unified-task-store';
+import { getPendingTasks } from '../task-store/unified-task-store';
 import type { NormalizedTask } from '../task-store/types';
 import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from '../unified-calendar';
 import { getUnreadMailSummaryForUser } from '../unified-mail-pressure';
@@ -26,8 +22,8 @@ import {
   uniqueStrings,
 } from './mesh-common';
 
-export function createEmptySecretaryMeshContext(opts: { userId: number; weekStart?: string }): SecretaryMeshContext {
-  const window = resolveWeekWindow(opts.weekStart);
+export function createEmptySecretaryMeshContext(opts: { userId: number; weekStart?: string; timezone?: string }): SecretaryMeshContext {
+  const window = resolveWeekWindow(opts.weekStart, opts.timezone);
   return {
     userId: opts.userId,
     weekStart: window.weekStart,
@@ -46,13 +42,16 @@ export async function readSecretaryMeshContext(opts: {
   userId: number;
   tenantId?: number;
   weekStart?: string;
+  timezone?: string;
 }): Promise<SecretaryMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_secretary_mesh_context', opts.userId, opts.weekStart);
     return createEmptySecretaryMeshContext(opts);
   }
 
-  const window = resolveWeekWindow(opts.weekStart);
+  const window = resolveWeekWindow(opts.weekStart, opts.timezone);
+  const tenantId = opts.tenantId ?? opts.userId;
+  const timezone = window.start.zoneName ?? opts.timezone ?? 'UTC';
   const [eventsResult, focusResult, mailPressureResult] = await Promise.allSettled([
     getEvents(window.start.toUTC().toISO()!, window.end.endOf('day').toUTC().toISO()!, opts.userId),
     opts.tenantId == null
@@ -64,16 +63,24 @@ export async function readSecretaryMeshContext(opts: {
   const events = eventsResult.status === 'fulfilled' ? eventsResult.value : [];
   const focusBlock = focusResult.status === 'fulfilled' ? focusResult.value : null;
   const mailPressure = mailPressureResult.status === 'fulfilled' ? mailPressureResult.value : null;
-  const dueToday = safely(() => getTasksDueToday(opts.userId), []);
-  const dueThisWeek = safely(() => getTasksDueThisWeek(opts.userId), []);
-  const overdue = safely(() => getOverdueTasks(opts.userId), []);
-  const pending = safely(() => getPendingTasks(opts.userId), []);
+  const pending = safely(() => getPendingTasks(opts.userId, tenantId), []);
+  const today = DateTime.now().setZone(timezone).toISODate()!;
+  const dueToday = pending.filter((task) => taskDueDateInZone(task.dueDate, timezone) === today);
+  const dueThisWeekStart = today > window.weekStart ? today : window.weekStart;
+  const dueThisWeek = pending.filter((task) => {
+    const dueDate = taskDueDateInZone(task.dueDate, timezone);
+    return dueDate != null && dueDate >= dueThisWeekStart && dueDate <= window.weekEnd;
+  });
+  const overdue = pending.filter((task) => {
+    const dueDate = taskDueDateInZone(task.dueDate, timezone);
+    return dueDate != null && dueDate < today;
+  });
   const writableCalendar = safely(() => hasWritableCalendarForUser(opts.userId), false);
 
-  const busyDates = summarizeBusyDates(events);
-  const travelDates = extractTravelDates(events);
-  const fragmentation = summarizeCalendarFragmentation(events);
-  const criticalMeetings = summarizeMeetingCriticality(events);
+  const busyDates = summarizeBusyDates(events, timezone);
+  const travelDates = extractTravelDates(events, timezone);
+  const fragmentation = summarizeCalendarFragmentation(events, timezone);
+  const criticalMeetings = summarizeMeetingCriticality(events, timezone);
   const portability = summarizeTaskPortability(pending);
   const deadlinePressure = summarizeDeadlinePressure({
     overdueCount: overdue.length,
@@ -197,7 +204,16 @@ export async function readSecretaryMeshContext(opts: {
   };
 }
 
-function summarizeMeetingCriticality(events: UnifiedCalendarEvent[]): {
+function taskDueDateInZone(value: string | null | undefined, timezone?: string): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = DateTime.fromISO(raw, { setZone: true, zone: timezone ?? 'UTC' });
+  if (!parsed.isValid) return null;
+  return parsed.setZone(timezone ?? 'UTC').toISODate();
+}
+
+function summarizeMeetingCriticality(events: UnifiedCalendarEvent[], timezone: string): {
   criticalEventCount: number;
   dates: string[];
   examples: string[];
@@ -206,7 +222,9 @@ function summarizeMeetingCriticality(events: UnifiedCalendarEvent[]): {
   const critical = events.filter((event) => regex.test(String(event.summary ?? '')));
   return {
     criticalEventCount: critical.length,
-    dates: uniqueStrings(critical.map((event) => String(event.start).slice(0, 10))),
+    dates: uniqueStrings(critical
+      .map((event) => taskDueDateInZone(event.start, timezone))
+      .filter((date): date is string => Boolean(date))),
     examples: critical
       .slice(0, 3)
       .map((event) => String(event.summary ?? '').trim())
