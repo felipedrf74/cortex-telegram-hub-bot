@@ -155,8 +155,9 @@ function createSchema(): void {
       reset_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE report_documents (
+    CREATE TABLE report_documents_scoped (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
       user_id INTEGER NOT NULL,
       type TEXT NOT NULL,
       source_job TEXT,
@@ -725,8 +726,8 @@ describe('paid AI budget enforcement', () => {
         ('2026-07-02T09:00:00.000Z', 'scheduled_content', 66, 0.3469, 'automation', 'scheduled_content', 'scheduled_content')
     `).run();
     db.prepare(`
-      INSERT INTO report_documents (user_id, type, source_job, document_json, created_at)
-      VALUES (66, 'coach_briefing', 'garmin_coach', '{"status":"delivered"}', '2026-07-09T08:00:01.000Z')
+      INSERT INTO report_documents_scoped (tenant_id, user_id, type, source_job, document_json, created_at)
+      VALUES (66, 66, 'coach_briefing', 'garmin_coach', '{"status":"delivered"}', '2026-07-09T08:00:01.000Z')
     `).run();
 
     expect(checkAiBudget({
@@ -748,8 +749,8 @@ describe('paid AI budget enforcement', () => {
       VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 67, 0.347, 'automation', 'scheduled_content')
     `).run();
     db.prepare(`
-      INSERT INTO report_documents (user_id, type, source_job, document_json, created_at)
-      VALUES (67, 'coach_briefing', 'garmin_coach', '{"status":"delivered"}', '2026-07-12T08:00:01.000Z')
+      INSERT INTO report_documents_scoped (tenant_id, user_id, type, source_job, document_json, created_at)
+      VALUES (67, 67, 'coach_briefing', 'garmin_coach', '{"status":"delivered"}', '2026-07-12T08:00:01.000Z')
     `).run();
 
     const channelRequest = {
@@ -791,8 +792,8 @@ describe('paid AI budget enforcement', () => {
       VALUES ('2026-07-02T09:00:00.000Z', 'scheduled_content', 68, 0.344, 'automation', 'scheduled_content')
     `).run();
     db.prepare(`
-      INSERT INTO report_documents (user_id, type, source_job, document_json, created_at)
-      VALUES (68, 'coach_briefing', 'garmin_coach', '{"status":"delivered"}', '2026-07-12T08:00:01.000Z')
+      INSERT INTO report_documents_scoped (tenant_id, user_id, type, source_job, document_json, created_at)
+      VALUES (68, 68, 'coach_briefing', 'garmin_coach', '{"status":"delivered"}', '2026-07-12T08:00:01.000Z')
     `).run();
     const insertOldInventory = db.prepare(`
       INSERT INTO content_topic_feedback (

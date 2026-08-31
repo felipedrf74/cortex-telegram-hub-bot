@@ -121,6 +121,37 @@ function secretaryFeedback(overrides: Partial<SecretarySourceSkillFeedback>): Se
   };
 }
 
+function insertAuthoritativeAgendaPlacement(input: {
+  agendaItemId: string;
+  sourceIntentId: string;
+  agendaVersion: number;
+  status: 'scheduled' | 'reflowed' | 'unscheduled';
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+}): void {
+  testDb.prepare(`
+    INSERT INTO secretary_agenda_items (
+      agenda_item_id, source_intent_id, source_skill, owner_user_id, tenant_id,
+      lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+      duration_minutes, decision_action, decision_reason_codes_json,
+      source_shape_hash, created_at, updated_at
+    ) VALUES (?, ?, 'training', ?, ?, ?, 'not_synced', ?, 'Training session', ?, ?, 60, ?, '[]', ?, ?, ?)
+  `).run(
+    input.agendaItemId,
+    input.sourceIntentId,
+    OWNER_USER_ID,
+    TENANT_ID,
+    input.status,
+    input.agendaVersion,
+    input.scheduledStart,
+    input.scheduledEnd,
+    input.status,
+    'authoritative-shape',
+    '2026-05-20T07:00:00.000Z',
+    '2026-05-20T07:00:00.000Z',
+  );
+}
+
 function emitTrainingFeedbackEvent(
   decision: SecretarySchedulingDecision,
   agendaTenantId: string = TENANT_ID,
@@ -466,6 +497,65 @@ describe('Training Secretary feedback consumer', () => {
         agendaItemId: 'sec_agenda_replay_v3',
         agendaVersion: 3,
         status: 'reflowed',
+      })]);
+  });
+
+  it('accepts a same-row same-version provider-readback placement refresh', () => {
+    recordTrainingSecretaryFeedback(secretaryFeedback({
+      agendaItemId: 'sec_agenda_provider_readback_v3',
+      sourceIntentId: 'provider-readback-refresh',
+      agendaVersion: 3,
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      scheduledStart: '2026-05-20T08:00:00.000Z',
+      scheduledEnd: '2026-05-20T09:00:00.000Z',
+    }));
+    insertAuthoritativeAgendaPlacement({
+      agendaItemId: 'sec_agenda_provider_readback_v3',
+      sourceIntentId: 'provider-readback-refresh',
+      agendaVersion: 3,
+      status: 'reflowed',
+      scheduledStart: '2026-05-20T10:00:00.000Z',
+      scheduledEnd: '2026-05-20T11:00:00.000Z',
+    });
+    recordTrainingSecretaryFeedback(secretaryFeedback({
+      agendaItemId: 'sec_agenda_provider_readback_v3',
+      sourceIntentId: 'provider-readback-refresh',
+      agendaVersion: 3,
+      status: 'reflowed',
+      reasonCodes: ['reflowed_to_available_window'],
+      shouldRefreshSource: true,
+      scheduledStart: '2026-05-20T10:00:00.000Z',
+      scheduledEnd: '2026-05-20T11:00:00.000Z',
+    }));
+
+    expect(listTrainingSecretaryFeedbackDecisions({ userId: OWNER_USER_ID, tenantId: TENANT_ID }))
+      .toEqual([expect.objectContaining({
+        agendaItemId: 'sec_agenda_provider_readback_v3',
+        sourceIntentId: 'provider-readback-refresh',
+        agendaVersion: 3,
+        status: 'reflowed',
+        scheduledStart: '2026-05-20T10:00:00.000Z',
+        scheduledEnd: '2026-05-20T11:00:00.000Z',
+        shouldRefreshSource: true,
+      })]);
+
+    recordTrainingSecretaryFeedback(secretaryFeedback({
+      agendaItemId: 'sec_agenda_provider_readback_v3',
+      sourceIntentId: 'provider-readback-refresh',
+      agendaVersion: 3,
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      scheduledStart: '2026-05-20T08:00:00.000Z',
+      scheduledEnd: '2026-05-20T09:00:00.000Z',
+    }));
+    expect(listTrainingSecretaryFeedbackDecisions({ userId: OWNER_USER_ID, tenantId: TENANT_ID }))
+      .toEqual([expect.objectContaining({
+        agendaItemId: 'sec_agenda_provider_readback_v3',
+        agendaVersion: 3,
+        status: 'reflowed',
+        scheduledStart: '2026-05-20T10:00:00.000Z',
+        scheduledEnd: '2026-05-20T11:00:00.000Z',
       })]);
   });
 

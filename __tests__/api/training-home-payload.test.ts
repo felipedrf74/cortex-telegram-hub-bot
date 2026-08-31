@@ -312,6 +312,11 @@ describe('training home payload builder', () => {
       getCoachBriefingSnapshot: () => null,
     });
 
+    expect(mockGetStoredPlanCoveringDate).toHaveBeenCalledWith(
+      12,
+      12,
+      expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    );
     expect(mockAdjustForFatigue).not.toHaveBeenCalled();
   });
 });

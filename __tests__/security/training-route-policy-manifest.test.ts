@@ -74,18 +74,38 @@ describe('Training route policy manifest', () => {
     expect(stale).toEqual([]);
   });
 
-  it('covers the six Coach V2 routes that docs/project-map.json omits', () => {
+  it('covers the complete Coach V2 route family that docs/project-map.json omits', () => {
     // Regression pin for the receiver allow-list bug. If project-map is ever
     // fixed and these are folded in elsewhere, this test still holds.
     const coachV2 = TRAINING_ROUTE_POLICY.filter((entry) => entry.capability === 'coach-periodization-v2');
-    expect(coachV2).toHaveLength(6);
-    expect(coachV2.map((entry) => entry.path)).toEqual(expect.arrayContaining([
-      '/week/travel',
-      '/health-intake/red-flag',
-      '/week/:weekId/reflow',
-      '/plans/:planId/coach-policy',
-      '/plans/:planId/coach-analysis',
-    ]));
+    expect(coachV2.map((entry) => trainingRoutePolicyKey(entry.method, entry.path)).sort()).toEqual([
+      'DELETE /week/travel/:id',
+      'GET /coach-policy',
+      'GET /coach/analysis',
+      'GET /plans/:planId/coach-analysis',
+      'GET /plans/:planId/coach-policy',
+      'GET /week/travel',
+      'PATCH /coach-policy',
+      'PATCH /plans/:planId/coach-policy',
+      'PATCH /week/travel/:id',
+      'POST /health-intake/red-flag',
+      'POST /week/:weekId/reflow',
+      'POST /week/reflow/preview',
+      'POST /week/reflow/proposals',
+      'POST /week/travel',
+    ]);
+  });
+
+  it('governs calendar-cleanup retry as an authenticated Training mutation', () => {
+    expect(TRAINING_ROUTE_POLICY.find((entry) => (
+      entry.method === 'POST' && entry.path === '/calendar-cleanup/retry'
+    ))).toMatchObject({
+      auth: 'jwt',
+      entitlement: 'skill:training',
+      capability: 'none',
+      mode: 'both',
+      mutates: true,
+    });
   });
 
   it('keeps exercise-media self-scoped rather than relying on the shared mount', () => {

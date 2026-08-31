@@ -729,12 +729,17 @@ describe('secretary-fastpath / decision and report handlers', () => {
   });
 
   it('answers latest report without AI', async () => {
-    const result = await tryFastpath(UID, 'latest report', 'en-US');
+    const result = await tryFastpath(UID, 'latest report', 'en-US', 99);
 
     expect(result.matched).toBe(true);
     expect(result.patternId).toBe('latest_report');
     expect(result.response?.text).toContain('Latest report');
     expect(result.response?.text).toContain('Morning Briefing');
+    const reportStore = await import('../../src/services/report-document-store');
+    expect(vi.mocked(reportStore.getRecentReports)).toHaveBeenCalledWith(UID, {
+      limit: 1,
+      tenantId: 99,
+    });
   });
 });
 

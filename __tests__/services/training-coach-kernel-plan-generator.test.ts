@@ -110,6 +110,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     // silently.
     const plan = buildCoachKernelTrainingPlan({
       userId: 99,
+      tenantId: 700,
       objective: 'Run a marathon under 3:30',
       durationWeeks: 3,
       startDate: '2026-04-13', // Monday
@@ -128,13 +129,14 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(plan.weeks).toHaveLength(3);
 
     // Each week-start must now be retrievable from the registry.
-    const weekOne = getWeeklyPlanForWeek(99, '2026-04-13');
-    const weekTwo = getWeeklyPlanForWeek(99, '2026-04-20');
-    const weekThree = getWeeklyPlanForWeek(99, '2026-04-27');
+    const weekOne = getWeeklyPlanForWeek(99, 700, '2026-04-13');
+    const weekTwo = getWeeklyPlanForWeek(99, 700, '2026-04-20');
+    const weekThree = getWeeklyPlanForWeek(99, 700, '2026-04-27');
 
     expect(weekOne).not.toBeNull();
     expect(weekTwo).not.toBeNull();
     expect(weekThree).not.toBeNull();
+    expect(getWeeklyPlanForWeek(99, 99, '2026-04-13')).toBeNull();
 
     // Guardrail results must be non-empty (the deterministic planner
     // always emits at least one — even a `pass` on readiness).
@@ -779,7 +781,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     const rawWeeks = ['2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31']
-      .map((weekStart) => getWeeklyPlanForWeek(userId, weekStart));
+      .map((weekStart) => getWeeklyPlanForWeek(userId, userId, weekStart));
     expect(rawWeeks.every(Boolean)).toBe(true);
     expect(rawWeeks.every((week) => week!.notes.some((note) =>
       /provider data is stale.*manual check-in/i.test(note)
@@ -854,7 +856,7 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     const rawWeeks = ['2026-08-10', '2026-08-17', '2026-08-24', '2026-08-31']
-      .map((weekStart) => getWeeklyPlanForWeek(userId, weekStart));
+      .map((weekStart) => getWeeklyPlanForWeek(userId, userId, weekStart));
     expect(rawWeeks.every(Boolean)).toBe(true);
 
     const runs = rawWeeks.flatMap((week) => week!.sessions)
@@ -997,11 +999,11 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     // Wednesday of week 1 — should resolve to the Monday 2026-04-13 plan.
-    const midWeek = getWeeklyPlanCoveringDate(101, '2026-04-15');
+    const midWeek = getWeeklyPlanCoveringDate(101, 101, '2026-04-15');
     expect(midWeek?.weekStart).toBe('2026-04-13');
 
     // Wednesday of week 2 — should resolve to 2026-04-20.
-    const midWeek2 = getWeeklyPlanCoveringDate(101, '2026-04-22');
+    const midWeek2 = getWeeklyPlanCoveringDate(101, 101, '2026-04-22');
     expect(midWeek2?.weekStart).toBe('2026-04-20');
   });
 

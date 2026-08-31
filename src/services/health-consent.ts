@@ -47,6 +47,7 @@
  */
 
 import { logger } from '../utils/logger';
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import {
   deleteHealthHistoryForUser,
@@ -142,9 +143,9 @@ export interface HealthDataDeletionResult {
 export function deleteAllHealthDataForUser(
   userId: number,
   tenantId: number,
+  db: Database.Database = getDb(),
 ): HealthDataDeletionResult {
   const start = Date.now();
-  const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'deleteAllHealthDataForUser');
 
   let readinessEventsDeleted = 0;
@@ -153,11 +154,18 @@ export function deleteAllHealthDataForUser(
 
   const txn = db.transaction((): void => {
     // 1. Redact ledger payloads FIRST (Codex P2 — safer order).
-    ledgerRowsRedacted = purgeSensitivePayloadsForUser(userId, scopedTenantId);
-    // 2. Delete health signals next.
-    healthSignalsDeleted = deleteHealthHistoryForUser(userId, scopedTenantId);
-    // 3. Delete readiness events last.
-    readinessEventsDeleted = deleteReadinessHistoryForUser(userId, scopedTenantId);
+    ledgerRowsRedacted = purgeSensitivePayloadsForUser(userId, scopedTenantId, db);
+    // 2. Delete append-only corrections before their source signals. The
+    // expand-only Coach V2 migration intentionally avoids a foreign key to a
+    // predecessor-owned table so ordinary CD remains rollback-compatible.
+    db.prepare(`
+      DELETE FROM athlete_health_signal_corrections
+      WHERE tenant_id = ? AND user_id = ?
+    `).run(scopedTenantId, userId);
+    // 3. Delete health signals next.
+    healthSignalsDeleted = deleteHealthHistoryForUser(userId, scopedTenantId, db);
+    // 4. Delete readiness events last.
+    readinessEventsDeleted = deleteReadinessHistoryForUser(userId, scopedTenantId, db);
   });
   txn();
 

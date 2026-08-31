@@ -19,7 +19,7 @@ import { invalidateNotificationInboxCaches } from '../../services/notification-c
  * Report Documents — iOS API routes.
  *
  * Reports (morning briefing, evening summary, weekly review, coach briefing)
- * are durable structured documents stored in the `report_documents` table.
+ * are durable structured documents stored through the tenant-scoped report store.
  * iOS fetches them on launch to catch up on missed reports, and reads them
  * in a native report detail view.
  */
@@ -29,16 +29,17 @@ export function reportRoutes(): Router {
   function ensureValidReportsRouteScope(
     res: Response,
     userId: number | undefined,
+    tenantId: number | undefined,
     operation: string,
     details?: Record<string, unknown>,
-  ): userId is number {
-    if (isValidTenantUserId(userId)) return true;
+  ): boolean {
+    if (isValidTenantUserId(userId) && isValidTenantUserId(tenantId)) return true;
     recordTenantScopeAnomaly({
       layer: 'delivery',
       operation,
-      reason: 'invalid_user_scope',
+      reason: isValidTenantUserId(userId) ? 'missing_tenant_scope' : 'invalid_user_scope',
       userId: typeof userId === 'number' ? userId : null,
-      details,
+      details: { ...details, tenantId: tenantId ?? null },
     });
     sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
     return false;
@@ -79,15 +80,15 @@ export function reportRoutes(): Router {
    * Query: ?type=morning_briefing&limit=20
    */
   router.get('/', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_list')) return;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidReportsRouteScope(res, userId, tenantId, 'reports_route_list')) return;
     const type = normalizedReportType(res, req.query.type);
     if (type === null) return;
     const limit = normalizedLimit(res, req.query.limit, 20);
     if (limit === null) return;
 
-    const reports = getRecentReports(userId, { type, limit });
-    const unreadCount = getUnreadReportCount(userId);
+    const reports = getRecentReports(userId, { type, limit, tenantId });
+    const unreadCount = getUnreadReportCount(userId, tenantId);
 
     sendSuccess(res, {
       unreadCount,
@@ -110,12 +111,12 @@ export function reportRoutes(): Router {
    * Query: ?type=morning_briefing (required)
    */
   router.get('/latest', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_latest', { type: req.query.type ?? null })) return;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidReportsRouteScope(res, userId, tenantId, 'reports_route_latest', { type: req.query.type ?? null })) return;
     const type = normalizedReportType(res, req.query.type, true);
     if (!type) return;
 
-    const report = getLatestByType(userId, type);
+    const report = getLatestByType(userId, type, tenantId);
 
     if (!report) {
       sendSuccess(res, { report: null });
@@ -141,11 +142,11 @@ export function reportRoutes(): Router {
    * Get a single report with full structured data.
    */
   router.get('/:id', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_detail', { reportId: req.params.id })) return;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidReportsRouteScope(res, userId, tenantId, 'reports_route_detail', { reportId: req.params.id })) return;
     const { id } = req.params;
 
-    const report = getReportById(parseInt(id, 10), userId);
+    const report = getReportById(parseInt(id, 10), userId, tenantId);
 
     if (!report) {
       sendError(res, 'NOT_FOUND', 'Report not found', 404);
@@ -174,11 +175,11 @@ export function reportRoutes(): Router {
    */
   router.post('/:id/read', asyncHandler(async (req, res: Response) => {
     const authReq = req as unknown as AuthenticatedRequest;
-    const { userId } = authReq;
-    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_mark_read', { reportId: req.params.id })) return;
+    const { userId, tenantId } = authReq;
+    if (!ensureValidReportsRouteScope(res, userId, tenantId, 'reports_route_mark_read', { reportId: req.params.id })) return;
     const { id } = req.params;
 
-    const success = markReportRead(parseInt(id, 10), userId);
+    const success = markReportRead(parseInt(id, 10), userId, tenantId);
 
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Report not found', 404);

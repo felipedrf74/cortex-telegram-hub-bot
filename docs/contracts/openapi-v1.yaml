@@ -40,7 +40,7 @@ info:
     - { ok: true, data: [...], pagination: { page, perPage, total, hasMore }, timestamp } — paginated success (schema ApiPaginated)
     - { ok: false, error: { code, message, details? }, timestamp } — error (schema ApiError)
 
-    Exceptions are noted per route (GET /api/v1/ info payload, health-data module-local envelope, raw file streams, legal 302 redirects). Soft failures set degraded: true plus a warnings array inside the payload rather than a non-2xx status. Several GET routes support conditional requests (If-None-Match → 304 Not Modified).
+    Exceptions are noted per route (GET /api/v1/ info payload, legacy HealthKit sync/read envelopes, raw file streams, legal 302 redirects). Soft failures set degraded: true plus a warnings array inside the payload rather than a non-2xx status. Several GET routes support conditional requests (If-None-Match → 304 Not Modified).
 
     ## Deterministic vs model-backed
 
@@ -84,7 +84,7 @@ tags:
   - name: "wearable"
     description: "Wearable summaries (src/api/routes/wearable.ts)."
   - name: "health-data"
-    description: "Health data ingestion and reads (src/api/routes/health-data.ts). Success responses use a module-local envelope ({ ok: true, ...data }) rather than the shared data wrapper."
+    description: "HealthKit ingestion plus entitlement-independent structured health, correction, consent, deletion, and export lifecycle (src/api/routes/health-data.ts). Legacy /sync and /latest retain their module-local envelope; lifecycle routes use the standard envelope."
   - name: "garmin"
     description: "Garmin interactive auth (src/api/routes/garmin-auth.ts)."
   - name: "usage"
@@ -2794,6 +2794,129 @@ paths:
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
           "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/training/calendar-cleanup/retry":
+    post:
+      operationId: "postTrainingCalendarCleanupRetry"
+      tags:
+        - "training"
+      summary: "Provider-aware, bounded retry of eligible Training calendar cleanup dead letters"
+      description: |-
+        Source: src/api/routes/training-calendar-cleanup-routes.ts
+
+        Authenticated and tenant-scoped. Re-arms at most 50 eligible Secretary agenda rows while holding the calendar_cleanup operation lock. Secretary remains the only executor of Google or Outlook provider effects. The response exposes aggregate counts only and clients cannot mark cleanup resolved.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-calendar-cleanup-routes.ts"
+      x-entitlement: "training"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required:
+                - "provider"
+              properties:
+                provider:
+                  type: "string"
+                  enum:
+                    - "google"
+                    - "outlook"
+              additionalProperties: false
+      responses:
+        "200":
+          description: "Standard success envelope with schemaVersion, provider, state action_required|resolved|unavailable, acceptedCount, deadLetteredCount, retryingCount, and nullable nextCheckAfterSeconds."
+        "202":
+          description: "Standard success envelope with state=retrying and the bounded accepted/count summary."
+        "400":
+          description: "Error envelope. Stable code(s): TENANT_SCOPE_REQUIRED, TRAINING_CALENDAR_CLEANUP_PROVIDER_INVALID."
+        "503":
+          description: "Error envelope. Stable code(s): TRAINING_CALENDAR_CLEANUP_UNAVAILABLE."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/training/coach-policy":
+    get:
+      operationId: "getActiveTrainingCoachPolicy"
+      tags:
+        - "training"
+      summary: "Read the active plan's Coach V2 adaptation policy"
+      description: "Source: src/api/routes/training-coach-v2.ts. Convenience alias for the canonical plan-scoped coach-policy read; ownership, capability gating, and response envelope are identical."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      responses:
+        "200":
+          description: "Standard success envelope with schemaVersion, planId, version, policy; ETag carries the current CAS version."
+        "404":
+          description: "Error envelope. Stable code(s): PLAN_NOT_FOUND, COACH_V2_DISABLED."
+        "429":
+          description: "Error envelope. Stable code(s): RATE_LIMITED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+    patch:
+      operationId: "patchActiveTrainingCoachPolicy"
+      tags:
+        - "training"
+      summary: "Create a proposal to patch the active plan's Coach V2 policy"
+      description: "Source: src/api/routes/training-coach-v2.ts. Proposal-first convenience alias. Omitted policy fields remain unchanged; this route never activates policy directly. Requires the current ETag/expectedVersion and Idempotency-Key. Decision Center approval performs the adapt-locked CAS activation."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "A partial coach policy patch. expectedVersion and idempotencyKey may be supplied in the body when the equivalent headers are unavailable."
+      responses:
+        "200":
+          description: "Idempotent replay: standard success envelope with outcome=replayed, proposal, and decisionId."
+        "202":
+          description: "Standard success envelope with outcome=proposal_created, proposal, decisionId, currentPolicy, and proposedPolicy."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "412":
+          description: "Error envelope. Stable code(s): VERSION_CONFLICT."
+        "428":
+          description: "Error envelope. Stable code(s): PRECONDITION_REQUIRED, IDEMPOTENCY_REQUIRED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/training/coach/analysis":
+    get:
+      operationId: "getSelectedWeekTrainingCoachAnalysis"
+      tags:
+        - "training"
+      summary: "Read the active plan's deterministic Coach V2 outlook for a selected week"
+      description: "Source: src/api/routes/training-coach-v2.ts. Requires tenant-owned weekId. Aliases the canonical plan-scoped analysis and returns schemaVersion, stable weekId, one-based weekNumber, generatedAt, and privacy-safe explanations without raw symptom details."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      parameters:
+        - name: "weekId"
+          in: "query"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 1
+      responses:
+        "200":
+          description: "Standard success envelope with the selected-week Coach V2 analysis contract."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_WEEK_ID, WEEK_OUT_OF_RANGE."
+        "404":
+          description: "Error envelope. Stable code(s): WEEK_NOT_FOUND, PLAN_NOT_FOUND, COACH_V2_DISABLED."
+        "429":
+          description: "Error envelope. Stable code(s): RATE_LIMITED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
   "/api/v1/training/complete":
     post:
       operationId: "postTrainingComplete"
@@ -2909,9 +3032,9 @@ paths:
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): date (required YYYY-MM-DD), consentScope (required non-empty array of pain|illness|injury|menstrual|red_s_screening), painScore?, painLocation?, illnessSymptoms? (string[]), injuryStatus?, energyAvailabilityRisk?
+        Request body (evidenced fields): date (required, nonfuture, retained at most 365 days), consentScope (required non-empty array of pain|illness|injury|red_s_screening), painScore? (integer 0..10), painLocation?, closed-code illnessSymptoms?, injuryStatus?, energyAvailabilityRisk?, expiresAt?, and Idempotency-Key.
 
-        Notes: Feature-flag gated behind config.coaching.periodizationV2Enabled (404 COACH_V2_DISABLED when off); per-route rate limiter.
+        Notes: Feature-flag gated behind config.coaching.periodizationV2Enabled (404 COACH_V2_DISABLED when off); per-route rate limiter. Uses the same lifecycle service and server-derived safety disposition as the entitlement-independent /health-data routes. New menstrual collection is rejected.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/training-coach-v2.ts:508"
       x-entitlement: "training"
@@ -2921,14 +3044,24 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: date (required YYYY-MM-DD), consentScope (required non-empty array of pain|illness|injury|menstrual|red_s_screening), painScore?, painLocation?, illnessSymptoms? (string[]), injuryStatus?, energyAvailabilityRisk?. Route validation code is authoritative for exact shapes."
+              description: "Structured health intake plus Idempotency-Key header. Route validation is authoritative for the closed symptom, injury, risk, and consent vocabularies."
       responses:
+        "200":
+          description: "Idempotent replay with state=replayed and the original intake readback."
         "201":
-          description: "{ id, droppedFields } (Standard success envelope unless noted.)"
+          description: "Standard success envelope with state=created, intakeId, and the complete intake readback."
         "400":
           description: "Error envelope. Stable code(s): BAD_INPUT."
         "404":
           description: "Error envelope. Stable code(s): COACH_V2_DISABLED."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "410":
+          description: "Error envelope. Stable code(s): EXPIRED_HEALTH_INPUT."
+        "422":
+          description: "Error envelope. Stable code(s): MENSTRUAL_COLLECTION_UNAVAILABLE."
+        "428":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_REQUIRED, CONSENT_REQUIRED."
         "429":
           description: "Error envelope. Stable code(s): RATE_LIMITED."
         "500":
@@ -2997,7 +3130,7 @@ paths:
       x-entitlement: "training"
       responses:
         "200":
-          description: "composed home payload (+revisionCapabilities when revision rollout active); cached 5 min (Standard success envelope unless noted.)"
+          description: "Composed home payload, cached 5 min. May include independent revisionCapabilities and coachV2Capabilities. coachV2Capabilities advertises contractVersion, active|off mode, lifecycle support, and per-operation availability; clients must fail closed when it is absent or contains unknown values. calendarCleanup, when present, contains only aggregate dead-letter/retrying counts and provider buckets—never provider object IDs. (Standard success envelope unless noted.)"
         "500":
           description: "Error envelope. Stable code(s): INTERNAL."
         "4XX":
@@ -3430,7 +3563,7 @@ paths:
       x-entitlement: "training"
       responses:
         "200":
-          description: "array of plan weeks (Standard success envelope unless noted.)"
+          description: "Active plan plus weeks[]. Every week carries a stable, tenant-owned weekId in addition to one-based weekNumber; calendarCleanup is an optional provider-bucketed aggregate. (Standard success envelope unless noted.)"
         "500":
           description: "Error envelope. Stable code(s): INTERNAL."
         "4XX":
@@ -3442,13 +3575,13 @@ paths:
       operationId: "getTrainingPlansByPlanIdCoachAnalysis"
       tags:
         - "training"
-      summary: "Read-only end-to-end coach analysis: mesocycle, week intent, intensity profiles, load model, deload, taper, scenario"
+      summary: "Read-only selected-week Coach V2 analysis with privacy-safe reasoning"
       description: |-
         Source: src/api/routes/training-coach-v2.ts:1157
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Notes: Feature-flag gated (COACH_V2_DISABLED 404). Pure coach-kernel composition, no model call.
+        Notes: Feature-flag gated (COACH_V2_DISABLED 404). Pure coach-kernel composition, no model call. weekNumber is one-based; weekId is the stable persisted week identity (nullable only for legacy plans whose week row is absent); generatedAt is server-owned. explanations never disclose raw symptom details.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/training-coach-v2.ts:1157"
       x-entitlement: "training"
@@ -3466,7 +3599,7 @@ paths:
           description: "non-negative integer, default 0; out of range -> 400 WEEK_OUT_OF_RANGE"
       responses:
         "200":
-          description: "planId, weekIndex, sciencePolicyVersion, athleteLevel, raceCalendar(+drops), mesocycle, weekIntent, intensityProfiles, loadModel(+byDimension), deloadRecommendation, taperDecision, weekConditions, scenario (Standard success envelope unless noted.)"
+          description: "schemaVersion, planId, weekId, zero-based weekIndex, one-based weekNumber, generatedAt, sciencePolicyVersion, athleteLevel, raceCalendar(+drops), mesocycle, weekIntent, intensityProfiles, loadModel(+byDimension), deloadRecommendation, taperDecision, weekConditions, scenario, and privacy-safe explanations. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_PLAN_ID, BAD_WEEK_INDEX, WEEK_OUT_OF_RANGE."
         "404":
@@ -3502,7 +3635,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ planId, policy } (Standard success envelope unless noted.)"
+          description: "{ schemaVersion, planId, version, policy }; ETag identifies the current CAS version. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_PLAN_ID."
         "404":
@@ -3517,15 +3650,15 @@ paths:
       operationId: "patchTrainingPlansByPlanIdCoachPolicy"
       tags:
         - "training"
-      summary: "Update the per-plan coach adaptation policy (A5 write)"
+      summary: "Create a Decision Center proposal for a partial per-plan coach policy patch"
       description: |-
         Source: src/api/routes/training-coach-v2.ts:1111
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): policy fields (validated by setCoachPlanPolicy; invalid values -> 400 BAD_INPUT)
+        Request body (evidenced fields): partial policy fields plus expectedVersion? and idempotencyKey? header fallbacks. Omitted fields retain their current values.
 
-        Notes: Feature-flag gated; also surfaces TrainingPlanRevisionError legacy-guard codes (assertLegacyPlanMutationAllowed).
+        Notes: Feature-flag gated. Requires If-Match (or expectedVersion) and Idempotency-Key. This request never mutates the active policy: it creates an evidence-bound proposal; Decision Center approval performs activation while holding an explicit adapt lock and enforcing CAS.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/training-coach-v2.ts:1111"
       x-entitlement: "training"
@@ -3541,14 +3674,22 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: policy fields (validated by setCoachPlanPolicy; invalid values -> 400 BAD_INPUT). Route validation code is authoritative for exact shapes."
+              description: "A partial policy patch. Omitted fields remain unchanged. Route validation code is authoritative for exact policy shapes."
       responses:
         "200":
-          description: "{ planId, policy } (Standard success envelope unless noted.)"
+          description: "Idempotent replay: { schemaVersion, outcome: replayed, proposal, decisionId }. (Standard success envelope unless noted.)"
+        "202":
+          description: "{ schemaVersion, outcome: proposal_created, proposal, decisionId, currentPolicy, proposedPolicy }. No active-plan mutation has occurred. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_PLAN_ID, BAD_INPUT."
         "404":
           description: "Error envelope. Stable code(s): PLAN_NOT_FOUND, COACH_V2_DISABLED."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "412":
+          description: "Error envelope. Stable code(s): VERSION_CONFLICT."
+        "428":
+          description: "Error envelope. Stable code(s): PRECONDITION_REQUIRED, IDEMPOTENCY_REQUIRED."
         "429":
           description: "Error envelope. Stable code(s): RATE_LIMITED."
         "500":
@@ -3874,18 +4015,134 @@ paths:
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
           "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/training/week/reflow/preview":
+    post:
+      operationId: "postTrainingWeekReflowPreview"
+      tags:
+        - "training"
+      summary: "Preview an evidence-bound Coach V2 reflow for one stable weekId"
+      description: "Source: src/api/routes/training-coach-v2.ts. Convenience alias for mode=preview on the canonical week-scoped route. Deterministic computation only: it never creates a proposal or mutates a plan."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required:
+                - "weekId"
+              description: "{ weekId, planId?, trigger?, sessionsToPreserve? }."
+      responses:
+        "200":
+          description: "Standard success envelope with outcome preview|rate_limited|no_changes. Preview carries previewId, previewExpiresAt, expectedVersion, actions, scenario, and nullable proposalId/adaptationId."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_WEEK_ID, PLAN_WEEK_MISMATCH."
+        "404":
+          description: "Error envelope. Stable code(s): WEEK_NOT_FOUND, COACH_V2_DISABLED."
+        "429":
+          description: "Error envelope. Stable code(s): RATE_LIMITED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/training/week/reflow/proposals":
+    post:
+      operationId: "postTrainingWeekReflowProposal"
+      tags:
+        - "training"
+      summary: "Create a Decision Center proposal from a reviewed Coach V2 reflow preview"
+      description: "Source: src/api/routes/training-coach-v2.ts. Requires stable weekId, a durable unexpired previewId bound to the same scope/week/version, and Idempotency-Key. Proposal creation stores evidence but does not mutate the plan; approval activates under an adapt lock."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required:
+                - "weekId"
+                - "previewId"
+              description: "{ weekId, previewId, idempotencyKey? }. Idempotency-Key header is canonical."
+      responses:
+        "200":
+          description: "Idempotent replay with outcome=replayed and the original proposal/Decision Center binding."
+        "202":
+          description: "Standard success envelope with outcome=proposal_created, nullable adaptationId, proposalId, decisionId, proposal, scenario, and sciencePolicyVersion."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_WEEK_ID, PLAN_WEEK_MISMATCH, IDEMPOTENCY_REQUIRED."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "410":
+          description: "Error envelope. Stable code(s): REFLOW_PREVIEW_UNAVAILABLE, REFLOW_PREVIEW_EXPIRED."
+        "412":
+          description: "Error envelope. Stable code(s): PREVIEW_VERSION_CHANGED."
+        "428":
+          description: "Error envelope. Stable code(s): PREVIEW_REQUIRED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
   "/api/v1/training/week/travel":
+    get:
+      operationId: "getTrainingWeekTravel"
+      tags:
+        - "training"
+      summary: "List tenant-scoped Travel & Availability windows"
+      description: |-
+        Source: src/api/routes/training-coach-v2.ts
+
+        Feature-flag gated. Results are ordered by startDate then id and bounded to 100. Optional fromDate/toDate select overlapping windows.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      parameters:
+        - name: "fromDate"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+            format: "date"
+        - name: "toDate"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+            format: "date"
+        - name: "limit"
+          in: "query"
+          required: false
+          schema:
+            type: "integer"
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: "Standard success envelope with schemaVersion and ordered windows[]."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_INPUT."
+        "404":
+          description: "Error envelope. Stable code(s): COACH_V2_DISABLED."
+        "429":
+          description: "Error envelope. Stable code(s): RATE_LIMITED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
     post:
       operationId: "postTrainingWeekTravel"
       tags:
         - "training"
-      summary: "Record a travel window for coach periodization v2 (C2)"
+      summary: "Idempotently create a tenant-scoped Travel & Availability window"
       description: |-
         Source: src/api/routes/training-coach-v2.ts:435
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): startDate (required YYYY-MM-DD), endDate (required YYYY-MM-DD >= startDate), equipmentProfile?, timeZoneShiftHours?, flightDurationHours?, sleepDisruptionExpected?, walkingLoadExpected?, heatStress?, availableSessionDurationMinutes?, notes?
+        Request body (evidenced fields): startDate (required YYYY-MM-DD), endDate (required YYYY-MM-DD >= startDate), equipmentProfile?, timeZoneShiftHours?, flightDurationHours?, sleepDisruptionExpected?, walkingLoadExpected?, heatStress?, availableSessionDurationMinutes?, notes?, idempotencyKey?. Idempotency-Key header is canonical.
 
         Notes: Feature-flag gated: config.coaching.periodizationV2Enabled=false returns 404 COACH_V2_DISABLED. Per-route express-rate-limit (per-user key, read/write limits) returns 429 RATE_LIMITED with Retry-After.
       x-nexus-kind: "deterministic"
@@ -3899,16 +4156,94 @@ paths:
               type: "object"
               description: "Evidenced fields: startDate (required YYYY-MM-DD), endDate (required YYYY-MM-DD >= startDate), equipmentProfile?, timeZoneShiftHours?, flightDurationHours?, sleepDisruptionExpected?, walkingLoadExpected?, heatStress?, availableSessionDurationMinutes?, notes?. Route validation code is authoritative for exact shapes."
       responses:
+        "200":
+          description: "Honest duplicate replay: { schemaVersion, state: replayed, alreadyExisted: true, window }."
         "201":
-          description: "{ id, alreadyExisted } (Standard success envelope unless noted.)"
+          description: "{ schemaVersion, state: created, alreadyExisted: false, window }. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_INPUT."
         "404":
           description: "Error envelope. Stable code(s): COACH_V2_DISABLED."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "428":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_REQUIRED."
         "429":
           description: "Error envelope. Stable code(s): RATE_LIMITED."
         "500":
           description: "Error envelope. Stable code(s): INTERNAL."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/training/week/travel/{id}":
+    patch:
+      operationId: "patchTrainingWeekTravelById"
+      tags:
+        - "training"
+      summary: "Idempotently update a tenant-scoped Travel & Availability window"
+      description: "Source: src/api/routes/training-coach-v2.ts. Requires If-Match travel version (or expectedVersion) plus Idempotency-Key. Missing and foreign windows use the same not-found contract; all inputs remain bounded."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "Partial travel-window fields; expectedVersion and idempotencyKey are body fallbacks for If-Match and Idempotency-Key."
+      responses:
+        "200":
+          description: "Standard success envelope with schemaVersion, state updated|replayed, and full window readback; ETag carries the new version."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_TRAVEL_ID, BAD_INPUT."
+        "404":
+          description: "Error envelope. Stable code(s): TRAVEL_WINDOW_NOT_FOUND, COACH_V2_DISABLED."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "412":
+          description: "Error envelope. Stable code(s): VERSION_CONFLICT."
+        "428":
+          description: "Error envelope. Stable code(s): PRECONDITION_REQUIRED, IDEMPOTENCY_REQUIRED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+    delete:
+      operationId: "deleteTrainingWeekTravelById"
+      tags:
+        - "training"
+      summary: "Idempotently delete one tenant-scoped Travel & Availability window"
+      description: "Source: src/api/routes/training-coach-v2.ts. Requires If-Match/expectedVersion and Idempotency-Key. A repeated valid request returns replayed; an absent owned resource returns already_absent without disclosing foreign scope."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/training-coach-v2.ts"
+      x-entitlement: "training"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 1
+      responses:
+        "200":
+          description: "Standard success envelope with schemaVersion, state deleted|replayed|already_absent, and deleted boolean."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_TRAVEL_ID."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "412":
+          description: "Error envelope. Stable code(s): VERSION_CONFLICT."
+        "428":
+          description: "Error envelope. Stable code(s): PRECONDITION_REQUIRED, IDEMPOTENCY_REQUIRED."
         "4XX":
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
@@ -3918,15 +4253,15 @@ paths:
       operationId: "postTrainingWeekByWeekIdReflow"
       tags:
         - "training"
-      summary: "Preview or apply a coach-kernel week reflow with idempotency + adaptation ledger (C6)"
+      summary: "Preview a Coach V2 week reflow or create its Decision Center proposal"
       description: |-
         Source: src/api/routes/training-coach-v2.ts:574
 
         Entitlement: requires the `training` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
-        Request body (evidenced fields): mode (required 'preview'|'apply'), planId? (must match week's parent plan), trigger? (default 'manual_reflow'), idempotencyKey (required for apply; body or Idempotency-Key header), sessionsToPreserve? (number[])
+        Request body (evidenced fields): mode (required 'preview'|'apply'), planId? (must match week's parent plan), previewId (required for apply), trigger? (default 'manual_reflow'), idempotencyKey (required for apply; body or Idempotency-Key header), sessionsToPreserve? (number[])
 
-        Notes: Coach-kernel classifier only — no model call (deterministic). Feature-flag gated (COACH_V2_DISABLED 404). Ownership check returns uniform 404 for missing and foreign weeks. Also surfaces training operation-lock public errors (code/status from trainingOperationLockPublicError, with Retry-After) and TrainingPlanRevisionError legacy-guard codes.
+        Notes: Coach-kernel classifier only—no model call. Feature-flag gated and ownership-scoped. Historical mode=apply is compatibility naming: it creates an evidence-bound proposal and never mutates the plan. Decision Center approval performs activation under an adapt lock. Preview and proposal identities are durable, tenant-scoped, version-bound, and idempotent.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/training-coach-v2.ts:574"
       x-entitlement: "training"
@@ -3942,16 +4277,24 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: mode (required 'preview'|'apply'), planId? (must match week's parent plan), trigger? (default 'manual_reflow'), idempotencyKey (required for apply; body or Idempotency-Key header), sessionsToPreserve? (number[]). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: mode ('preview'|'apply'), planId?, previewId (apply), trigger?, idempotencyKey (apply), sessionsToPreserve?. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "serialized reflow result: mode, adaptationId, adaptationRevision, alreadyExisted, mutated, mutatedRows, affectedSessionIds, scenario, perActionResults, sciencePolicyVersion (Standard success envelope unless noted.)"
+          description: "Standard success envelope with schemaVersion and outcome preview|replayed|rate_limited|no_changes. preview returns durable preview metadata/actions; replayed returns the original proposal binding; rate_limited/no_changes carry null proposalId and adaptationId."
+        "202":
+          description: "Standard success envelope with outcome=proposal_created, planId, weekId, previewId, proposalId, null adaptationId, decisionId, proposal, scenario, and sciencePolicyVersion. No plan mutation has occurred."
         "400":
           description: "Error envelope. Stable code(s): BAD_WEEK_ID, BAD_MODE, PLAN_WEEK_MISMATCH, IDEMPOTENCY_REQUIRED."
         "404":
           description: "Error envelope. Stable code(s): WEEK_NOT_FOUND, PLAN_NOT_FOUND, COACH_V2_DISABLED."
         "409":
-          description: "Error envelope. Stable code(s): IDEMPOTENCY_KEY_REUSED_DIFFERENT_WEEK, IDEMPOTENCY_CONFLICT."
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "410":
+          description: "Error envelope. Stable code(s): REFLOW_PREVIEW_UNAVAILABLE, REFLOW_PREVIEW_EXPIRED."
+        "412":
+          description: "Error envelope. Stable code(s): PREVIEW_VERSION_CHANGED."
+        "428":
+          description: "Error envelope. Stable code(s): PREVIEW_REQUIRED."
         "429":
           description: "Error envelope. Stable code(s): RATE_LIMITED."
         "500":
@@ -4655,6 +4998,219 @@ paths:
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
           description: "Error envelope. Stable code(s): WEARABLE_FETCH_FAILED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/health-data/structured-intakes":
+    get:
+      operationId: "getStructuredHealthIntakes"
+      tags:
+        - "health-data"
+      summary: "List retained structured Training health intakes with effective corrections and server-derived safety disposition"
+      description: |-
+        Source: src/api/routes/health-data.ts
+
+        Authenticated and tenant-scoped, but deliberately not gated by the Training entitlement or Coach V2 capability. Results are bounded to 100, exclude expired rows, and never collect new menstrual data.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      parameters:
+        - name: "limit"
+          in: "query"
+          required: false
+          schema:
+            type: "integer"
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: "Standard success envelope containing schemaVersion, retentionDays=365, and intakes[]."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_INPUT."
+        "401":
+          description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+    post:
+      operationId: "postStructuredHealthIntake"
+      tags:
+        - "health-data"
+      summary: "Append an idempotent structured pain, illness, injury, or RED-S safety intake"
+      description: |-
+        Source: src/api/routes/health-data.ts
+
+        Requires Idempotency-Key. Body: date (nonfuture and within 365 days), consentScope[], and at least one of painScore (integer 0..10), painLocation, closed-code illnessSymptoms[], injuryStatus, or energyAvailabilityRisk. menstrualStatus is rejected. The server atomically revises consent, records the intake, derives safety, and updates the scoped safety state.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "Structured health intake. Route validation is authoritative for the closed symptom and consent vocabularies."
+      responses:
+        "201":
+          description: "Standard success envelope with state=created, intakeId, and the complete intake resource."
+        "200":
+          description: "Idempotent replay with state=replayed and the original intake resource."
+        "400":
+          description: "Error envelope for invalid date, pain, symptom, injury, or bounded text."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "410":
+          description: "Error envelope. Stable code(s): EXPIRED_HEALTH_INPUT."
+        "422":
+          description: "Error envelope. Stable code(s): MENSTRUAL_COLLECTION_UNAVAILABLE."
+        "428":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_REQUIRED, CONSENT_REQUIRED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+    delete:
+      operationId: "deleteAllStructuredHealthData"
+      tags:
+        - "health-data"
+      summary: "Delete all scoped health data and clear derived Training safety state"
+      description: "Source: src/api/routes/health-data.ts. Available without a Training entitlement or active plan; the privacy ledger is redacted according to the canonical deletion service."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      responses:
+        "200":
+          description: "Standard success envelope with state=deleted, deletedCount, and ledgerRowsRedacted."
+        "401":
+          description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/health-data/structured-intakes/{id}":
+    delete:
+      operationId: "deleteStructuredHealthIntake"
+      tags:
+        - "health-data"
+      summary: "Delete one scoped structured health intake and recompute server safety"
+      description: "Source: src/api/routes/health-data.ts. Missing and already-deleted resources return an honest already_absent state; foreign scope is never disclosed."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 1
+      responses:
+        "200":
+          description: "Standard success envelope with state deleted|already_absent and deleted boolean."
+        "400":
+          description: "Error envelope. Stable code(s): BAD_INTAKE_ID."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/health-data/structured-intakes/{id}/corrections":
+    post:
+      operationId: "postStructuredHealthCorrection"
+      tags:
+        - "health-data"
+      summary: "Append an idempotent correction without rewriting the original health intake"
+      description: |-
+        Source: src/api/routes/health-data.ts
+
+        Requires Idempotency-Key and a bounded reason. patch may replace or explicitly clear supported fields; effective input is revalidated and safety is recomputed atomically. The source intake remains append-only.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "{ patch: structured health field patch, reason, idempotencyKey? }."
+      responses:
+        "201":
+          description: "Standard success envelope with state=corrected, intakeId, correctionId, and effective intake."
+        "200":
+          description: "Idempotent replay of the correction."
+        "404":
+          description: "Error envelope. Stable code(s): HEALTH_INTAKE_NOT_FOUND."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "410":
+          description: "Error envelope. Stable code(s): HEALTH_INTAKE_EXPIRED."
+        "428":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_REQUIRED, CONSENT_REQUIRED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/health-data/consent":
+    get:
+      operationId: "getStructuredHealthConsent"
+      tags:
+        - "health-data"
+      summary: "Read typed structured-health consent state"
+      description: "Source: src/api/routes/health-data.ts. No prior revision returns 200 with state=not_granted, revision=0, an empty scope list, and ETag health-consent-0."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      responses:
+        "200":
+          description: "Standard success envelope with state not_granted|active|withdrawn, revision, activeScopes, explanations, and ETag."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+    patch:
+      operationId: "patchStructuredHealthConsent"
+      tags:
+        - "health-data"
+      summary: "Append a CAS-protected consent revision or withdrawal"
+      description: "Source: src/api/routes/health-data.ts. Requires If-Match (or expectedRevision) plus Idempotency-Key. Withdrawal clears effective safety authority without deleting exportable history."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "{ activeScopes: string[], withdraw?: boolean, expectedRevision?: integer, reason?: string, idempotencyKey?: string }."
+      responses:
+        "200":
+          description: "Standard success envelope with revised, withdrawn, or replayed state and the new ETag."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_CONFLICT."
+        "412":
+          description: "Error envelope. Stable code(s): CONSENT_VERSION_CONFLICT."
+        "428":
+          description: "Error envelope. Stable code(s): PRECONDITION_REQUIRED, IDEMPOTENCY_REQUIRED."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/health-data/export":
+    get:
+      operationId: "getStructuredHealthExport"
+      tags:
+        - "health-data"
+      summary: "Export scoped health signals, corrections, consent revisions, and derived safety state"
+      description: "Source: src/api/routes/health-data.ts. Available after Training downgrade or Coach V2 disablement; includes legacy retained data so it remains erasable/exportable while new menstrual collection stays disabled."
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/health-data.ts"
+      responses:
+        "200":
+          description: "Standard success envelope with schemaVersion, generatedAt, retentionDays, signals, corrections, consentRevisions, and safetyState."
         "4XX":
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":

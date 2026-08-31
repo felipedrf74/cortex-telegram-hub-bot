@@ -10,6 +10,8 @@ const mockGetQualityByAgent = vi.fn();
 const mockGetTaskExecutionSummary = vi.fn();
 const mockGetRecentExecutions = vi.fn();
 const mockGetTrainingGenerationObservabilitySnapshot = vi.fn();
+const mockGetTrainingCoachV2SoakSnapshot = vi.fn();
+const mockRecordTrainingCoachV2RuleReview = vi.fn();
 const mockGetContentWorkspaceObservabilitySnapshot = vi.fn();
 const mockListOperatorAlerts = vi.fn();
 const mockGetOperatorAlertDeliverySummary = vi.fn();
@@ -49,6 +51,15 @@ vi.mock('../../src/services/training-generation-observability', () => ({
   getTrainingGenerationObservabilitySnapshot: (...args: unknown[]) =>
     mockGetTrainingGenerationObservabilitySnapshot(...args),
 }));
+
+vi.mock('../../src/services/training-coach-v2-soak-metrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/training-coach-v2-soak-metrics')>();
+  return {
+    ...actual,
+    getTrainingCoachV2SoakSnapshot: (...args: unknown[]) => mockGetTrainingCoachV2SoakSnapshot(...args),
+    recordTrainingCoachV2RuleReview: (...args: unknown[]) => mockRecordTrainingCoachV2RuleReview(...args),
+  };
+});
 
 vi.mock('../../src/services/content-workspace-observability', () => ({
   getContentWorkspaceObservabilitySnapshot: (...args: unknown[]) =>
@@ -155,6 +166,8 @@ describe('portal operations routes', () => {
     mockGetTaskExecutionSummary.mockReset();
     mockGetRecentExecutions.mockReset();
     mockGetTrainingGenerationObservabilitySnapshot.mockReset();
+    mockGetTrainingCoachV2SoakSnapshot.mockReset();
+    mockRecordTrainingCoachV2RuleReview.mockReset();
     mockGetContentWorkspaceObservabilitySnapshot.mockReset();
     mockListOperatorAlerts.mockReset();
     mockGetOperatorAlertDeliverySummary.mockReset();
@@ -180,12 +193,51 @@ describe('portal operations routes', () => {
       'GET /api/quality-scores',
       'GET /api/task-metrics',
       'GET /api/training-generation-metrics',
+      'GET /api/training-coach-v2-soak',
+      'POST /api/training-coach-v2-soak/reviews',
       'GET /api/content-workspace-metrics',
       'GET /api/operator-alerts',
       'POST /api/operator-alerts/:id/ack',
       'POST /api/operator-alerts/:id/resolve',
       'POST /api/operator-alerts/:id/retry-delivery',
     ]);
+  });
+
+  it('returns aggregate Coach V2 soak gates and records scoped reviewed firings', () => {
+    const snapshot = {
+      schemaVersion: 'training-coach-v2-soak.1',
+      generatedAt: '2026-08-31T12:00:00.000Z',
+      window: { from: '2026-08-17T12:00:00.000Z', to: '2026-08-31T12:00:00.000Z' },
+      rules: [{ ruleId: 'deload_applied', reviewedFirings: 100, incorrectReviewedFirings: 4, falsePositiveRate: 0.04, verdict: 'GO' }],
+      churn: { adaptedPlanWeeks: 100, churnedPlanWeeks: 20, churnRate: 0.2, verdict: 'GO' },
+      verdict: 'GO',
+    };
+    mockGetTrainingCoachV2SoakSnapshot.mockReturnValue(snapshot);
+    expect(invoke('/api/training-coach-v2-soak', {
+      req: { query: { from: '2026-08-17T12:00:00.000Z', to: '2026-08-31T12:00:00.000Z' } },
+    }).body).toEqual({ ok: true, coachV2Soak: snapshot });
+
+    mockRecordTrainingCoachV2RuleReview.mockReturnValue({ replayed: false });
+    const req = {
+      body: {
+        tenantId: 44,
+        userId: 44,
+        proposalId: 'tcv2_reviewed',
+        ruleId: 'deload_applied',
+        outcome: 'incorrect',
+        idempotencyKey: 'review-1',
+      },
+    };
+    const response = invoke('/api/training-coach-v2-soak/reviews', { method: 'POST', req });
+    expect(response.statusCode).toBe(201);
+    expect(response.body).toEqual({ ok: true, replayed: false });
+    expect(mockRecordTrainingCoachV2RuleReview).toHaveBeenCalledWith(req.body);
+    expect(mockLogPortalAdminMutation).toHaveBeenCalledWith(
+      req,
+      44,
+      'training_coach_v2.rule_review',
+      expect.objectContaining({ ruleId: 'deload_applied', outcome: 'incorrect' }),
+    );
   });
 
   it('returns error trends with the legacy ok wrapper', () => {

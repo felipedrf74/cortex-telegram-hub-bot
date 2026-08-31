@@ -464,12 +464,17 @@ function formatHandledByNexusFastpath(userId: number, tenantId: number, lang: La
   return { text: lines.join('\n').trim(), domain: SECRETARY };
 }
 
-function formatLatestReportFastpath(userId: number, message: string, lang: Lang): DomainResponse {
+function formatLatestReportFastpath(
+  userId: number,
+  tenantId: number,
+  message: string,
+  lang: Lang,
+): DomainResponse {
   const pt = lang.startsWith('pt');
   const requestedType = reportTypeFromMessage(message);
   const report = requestedType
-    ? getLatestByType(userId, requestedType)
-    : getRecentReports(userId, { limit: 1 })[0] ?? null;
+    ? getLatestByType(userId, requestedType, tenantId)
+    : getRecentReports(userId, { limit: 1, tenantId })[0] ?? null;
   if (!report) {
     return {
       text: pt ? 'Não encontrei nenhum relatório recente.' : 'I could not find a recent report.',
@@ -683,7 +688,9 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   {
     id: 'latest_report',
     pattern: /^(?:latest report|show (?:my )?(?:latest )?report|(?:morning|evening|weekly|coach) briefing|today'?s briefing|ultimo relatorio|último relatório|relatorio mais recente|relatório mais recente|briefing da manh(?:a|ã)|resumo do dia|revis(?:a|ã)o semanal)[\s?!.]*$/i,
-    handler: async (userId, match, lang) => formatLatestReportFastpath(userId, match.input ?? match[0], lang),
+    handler: async (userId, match, lang, tenantId) => (
+      formatLatestReportFastpath(userId, tenantId, match.input ?? match[0], lang)
+    ),
   },
 
   {

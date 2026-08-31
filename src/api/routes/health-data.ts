@@ -27,10 +27,26 @@ import { config } from '../../config';
 import { getDb } from '../../services/database';
 import { invalidateTrainingDerivedCaches } from '../../services/cache-coherence-registry';
 import { sendInternalError as sendApiInternalError } from '../response-helpers';
+import {
+  sendSuccess as sendStandardSuccess,
+  sendError as sendStandardError,
+} from '../response-helpers';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import type Database from 'better-sqlite3';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { encodeAppleHealthPayload } from '../../services/apple-health-encryption';
+import {
+  HealthDataLifecycleError,
+  HEALTH_DATA_LIFECYCLE_SCHEMA,
+  appendStructuredHealthCorrection,
+  deleteAllStructuredHealthData,
+  deleteStructuredHealthIntake,
+  exportHealthData,
+  getHealthConsent,
+  listStructuredHealthIntakes,
+  recordStructuredHealthIntake,
+  reviseHealthConsent,
+} from '../../services/health-data-lifecycle';
 
 /** POST /api/v1/health-data/sync request body shape.
  *  Matches the iOS HealthDaySnapshot struct. */
@@ -288,12 +304,196 @@ export function healthDataRoutes(): Router {
   });
 
   router.use((req, res, next) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidTenantRouteScope(res as Response, userId, 'health_data_route', {
       method: req.method,
       path: req.path,
     })) return;
+    if (!Number.isSafeInteger(tenantId) || tenantId <= 0) {
+      sendStandardError(res as Response, 'UNAUTHORIZED', 'Invalid authenticated tenant scope.', 401);
+      return;
+    }
     next();
+  });
+
+  /** Health lifecycle remains available after Training downgrade/Coach V2 off. */
+  router.get('/structured-intakes', latestReadRateLimitMiddleware, (req, res: Response) => {
+    const auth = req as unknown as AuthenticatedRequest;
+    try {
+      const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) {
+        sendStandardError(res, 'BAD_INPUT', 'limit must be an integer from 1 through 100.', 400);
+        return;
+      }
+      sendStandardSuccess(res, {
+        schemaVersion: HEALTH_DATA_LIFECYCLE_SCHEMA,
+        retentionDays: 365,
+        intakes: listStructuredHealthIntakes({
+          userId: auth.userId,
+          tenantId: auth.tenantId,
+          limit,
+        }),
+      });
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to list structured health intakes.');
+    }
+  });
+
+  router.post('/structured-intakes', (req, res: Response) => {
+    const auth = req as unknown as AuthenticatedRequest;
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = recordStructuredHealthIntake({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        payload: body,
+        expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : undefined,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+      });
+      sendStandardSuccess(res, {
+        schemaVersion: HEALTH_DATA_LIFECYCLE_SCHEMA,
+        state: result.replayed ? 'replayed' : 'created',
+        intakeId: result.intake.id,
+        intake: result.intake,
+      }, { status: result.replayed ? 200 : 201 });
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to record structured health intake.');
+    }
+  });
+
+  router.post('/structured-intakes/:id/corrections', (req, res: Response) => {
+    const auth = req as unknown as AuthenticatedRequest;
+    const signalId = parsePositiveId(req.params.id);
+    if (signalId === null) {
+      sendStandardError(res, 'BAD_INTAKE_ID', 'Health intake id must be a positive integer.', 400);
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedVersion = parseHealthIntakeIfMatch(req.header('If-Match'), signalId)
+        ?? (typeof body.expectedVersion === 'number' ? body.expectedVersion : NaN);
+      const result = appendStructuredHealthCorrection({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        signalId,
+        patch: body.patch && typeof body.patch === 'object' && !Array.isArray(body.patch)
+          ? body.patch as Record<string, unknown>
+          : body,
+        reason: typeof body.reason === 'string' ? body.reason : '',
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+        expectedVersion,
+      });
+      res.setHeader('ETag', `"health-intake-${result.intake.id}-${result.intake.version}"`);
+      sendStandardSuccess(res, {
+        schemaVersion: HEALTH_DATA_LIFECYCLE_SCHEMA,
+        state: result.replayed ? 'replayed' : 'corrected',
+        intakeId: result.intake.id,
+        correctionId: result.correctionId,
+        intake: result.intake,
+      }, { status: result.replayed ? 200 : 201 });
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to append health correction.');
+    }
+  });
+
+  router.delete('/structured-intakes/:id', (req, res: Response) => {
+    const auth = req as unknown as AuthenticatedRequest;
+    const signalId = parsePositiveId(req.params.id);
+    if (signalId === null) {
+      sendStandardError(res, 'BAD_INTAKE_ID', 'Health intake id must be a positive integer.', 400);
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedVersion = parseHealthIntakeIfMatch(req.header('If-Match'), signalId)
+        ?? (typeof body.expectedVersion === 'number' ? body.expectedVersion : NaN);
+      const result = deleteStructuredHealthIntake({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        signalId,
+        expectedVersion,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+      });
+      sendStandardSuccess(res, {
+        schemaVersion: HEALTH_DATA_LIFECYCLE_SCHEMA,
+        state: result.replayed ? 'replayed' : 'deleted',
+        ...result,
+      });
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to delete structured health intake.');
+    }
+  });
+
+  router.delete('/structured-intakes', (req, res: Response) => {
+    const auth = req as AuthenticatedRequest;
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = deleteAllStructuredHealthData({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+      });
+      sendStandardSuccess(res, {
+        schemaVersion: HEALTH_DATA_LIFECYCLE_SCHEMA,
+        state: result.replayed ? 'replayed' : 'deleted',
+        replayed: result.replayed,
+        deletedCount: result.healthSignalsDeleted,
+        ledgerRowsRedacted: result.ledgerRowsRedacted,
+      });
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to delete structured health data.');
+    }
+  });
+
+  router.get('/consent', latestReadRateLimitMiddleware, (req, res: Response) => {
+    const auth = req as AuthenticatedRequest;
+    try {
+      const consent = getHealthConsent({ userId: auth.userId, tenantId: auth.tenantId });
+      res.setHeader('ETag', consent.etag);
+      sendStandardSuccess(res, consent);
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to read health consent.');
+    }
+  });
+
+  router.patch('/consent', (req, res: Response) => {
+    const auth = req as AuthenticatedRequest;
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = parseHealthConsentIfMatch(req.header('If-Match'))
+        ?? (typeof body.expectedRevision === 'number' ? body.expectedRevision : NaN);
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        sendStandardError(res, 'PRECONDITION_REQUIRED', 'If-Match health consent revision is required.', 428);
+        return;
+      }
+      const result = reviseHealthConsent({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        activeScopes: Array.isArray(body.activeScopes)
+          ? body.activeScopes.filter((scope): scope is string => typeof scope === 'string')
+          : [],
+        withdraw: body.withdraw === true,
+        expectedRevision,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+        reason: typeof body.reason === 'string' ? body.reason : undefined,
+      });
+      res.setHeader('ETag', result.consent.etag);
+      sendStandardSuccess(res, {
+        ...result.consent,
+        state: result.replayed ? 'replayed' : result.consent.withdrawn ? 'withdrawn' : 'revised',
+      });
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to revise health consent.');
+    }
+  });
+
+  router.get('/export', latestReadRateLimitMiddleware, (req, res: Response) => {
+    const auth = req as AuthenticatedRequest;
+    try {
+      sendStandardSuccess(res, exportHealthData({ userId: auth.userId, tenantId: auth.tenantId }));
+    } catch (err) {
+      sendLifecycleError(res, err, 'Failed to export health data.');
+    }
   });
 
   /** POST /api/v1/health-data/sync — receive a daily health snapshot from iOS */
@@ -482,6 +682,36 @@ export function healthDataRoutes(): Router {
   });
 
   return router;
+}
+
+function sendLifecycleError(res: Response, err: unknown, fallback: string): void {
+  if (err instanceof HealthDataLifecycleError) {
+    sendStandardError(res, err.code, err.message, err.statusCode);
+    return;
+  }
+  logger.error({ err }, 'health_data_lifecycle.failed');
+  sendStandardError(res, 'INTERNAL', fallback, 500);
+}
+
+function parsePositiveId(value: unknown): number | null {
+  const raw = typeof value === 'string' ? value : Array.isArray(value) ? value[0] : '';
+  const parsed = Number.parseInt(String(raw), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseHealthConsentIfMatch(value: string | undefined): number | null {
+  if (!value) return null;
+  const match = /^"?health-consent-(\d+)"?$/.exec(value.trim());
+  return match ? Number.parseInt(match[1]!, 10) : null;
+}
+
+function parseHealthIntakeIfMatch(value: string | undefined, signalId: number): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const versioned = new RegExp(`^"?health-intake-${signalId}-(\\d+)"?$`).exec(trimmed);
+  if (versioned) return Number.parseInt(versioned[1]!, 10);
+  const numeric = /^"?(\d+)"?$/.exec(trimmed);
+  return numeric ? Number.parseInt(numeric[1]!, 10) : null;
 }
 
 function normalizeSleepIntervals(payloadIntervals: HealthSyncPayload['sleepIntervals']): Array<{

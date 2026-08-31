@@ -123,8 +123,12 @@ describe('Reports routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.unreadCount).toBe(3);
     expect(res.body.data.count).toBe(1);
-    expect(mockGetRecentReports).toHaveBeenCalledWith(7, { type: 'morning_briefing', limit: 5 });
-    expect(mockGetUnreadReportCount).toHaveBeenCalledWith(7);
+    expect(mockGetRecentReports).toHaveBeenCalledWith(7, {
+      type: 'morning_briefing',
+      limit: 5,
+      tenantId: 7,
+    });
+    expect(mockGetUnreadReportCount).toHaveBeenCalledWith(7, 7);
   });
 
   it('rejects invalid report type before calling the store', async () => {
@@ -150,7 +154,11 @@ describe('Reports routes', () => {
 
     const clamped = await dispatch('GET', '/', { limit: '500' });
     expect(clamped.statusCode).toBe(200);
-    expect(mockGetRecentReports).toHaveBeenCalledWith(7, { type: undefined, limit: 100 });
+    expect(mockGetRecentReports).toHaveBeenCalledWith(7, {
+      type: undefined,
+      limit: 100,
+      tenantId: 7,
+    });
   });
 
   it('validates latest report type', async () => {
@@ -164,7 +172,7 @@ describe('Reports routes', () => {
 
     const valid = await dispatch('GET', '/latest', { type: 'decision_briefing' });
     expect(valid.statusCode).toBe(200);
-    expect(mockGetLatestByType).toHaveBeenCalledWith(7, 'decision_briefing');
+    expect(mockGetLatestByType).toHaveBeenCalledWith(7, 'decision_briefing', 7);
   });
 
   it('fails closed on invalid tenant scope before listing reports', async () => {
@@ -194,7 +202,7 @@ describe('Reports routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.data.marked).toBe(true);
-    expect(mockMarkReportRead).toHaveBeenCalledWith(123, 7);
+    expect(mockMarkReportRead).toHaveBeenCalledWith(123, 7, 17);
     expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledWith(7, 17);
   });
 });

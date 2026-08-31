@@ -117,6 +117,73 @@ function createLegacyDatabase(
       idempotency_key TEXT,
       status TEXT NOT NULL DEFAULT 'pending'
     );
+    -- Minimal predecessor-owned Training/report shapes required by additive
+    -- migrations after the governed 283 convergence boundary. The fixture
+    -- records the pre-283 prefix without replaying hundreds of historical
+    -- migrations, so these tables model the already-deployed schema.
+    CREATE TABLE travel_windows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      equipment_profile TEXT,
+      time_zone_shift_hours INTEGER,
+      flight_duration_hours INTEGER,
+      sleep_disruption_expected INTEGER NOT NULL DEFAULT 0,
+      walking_load_expected INTEGER NOT NULL DEFAULT 0,
+      heat_stress INTEGER NOT NULL DEFAULT 0,
+      available_session_duration_minutes INTEGER,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE fitness_training_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT
+    );
+    CREATE TABLE training_weeks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_id INTEGER NOT NULL
+    );
+    CREATE TABLE athlete_health_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER,
+      date TEXT NOT NULL,
+      source TEXT,
+      consent_scope TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE report_documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT,
+      document_json TEXT NOT NULL,
+      source_job TEXT,
+      status TEXT NOT NULL DEFAULT 'unread',
+      read_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE coach_states (
+      user_id INTEGER PRIMARY KEY,
+      recommendations_json TEXT NOT NULL,
+      briefing_summary TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      expires_at_ms INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE report_schedule_ledger (
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      job_type TEXT NOT NULL,
+      fired_for_local_date TEXT NOT NULL,
+      fired_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, job_type, fired_for_local_date)
+    );
   `);
   if (environment === 'production') {
     database.exec(`
@@ -341,6 +408,9 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '300_webhook_owner_encryption_boundary.sql' }),
         expect.objectContaining({ file: '301_local_inference_activation_release_binding.sql' }),
         expect.objectContaining({ file: '302_content_script_batch_validation_diagnostics.sql' }),
+        expect.objectContaining({ file: '303_training_coach_v2_contracts.sql' }),
+        expect.objectContaining({ file: '304_training_coach_tenant_scope.sql' }),
+        expect.objectContaining({ file: '305_training_coach_v2_soak_metrics.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

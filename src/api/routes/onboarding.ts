@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, Response, Request } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
@@ -14,10 +14,13 @@ import {
   getMissingProfileFields,
   startOrResume,
   getActiveSession,
+  isSyntheticSkippedOnboardingAnswer,
   OnboardingStepMismatchError,
 } from '../../services/onboarding';
 import { invalidateOnboardingDerivedCaches } from '../../services/cache-coherence-registry';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { localizeOnboardingQuestionnaire } from '../../services/onboarding-localization';
+import { normalizeSupportedLang, type Lang } from '../../utils/i18n';
 
 // ─── Phase 3 Slice C — Profile detail helpers ────────────────────
 //
@@ -68,20 +71,40 @@ function normalizeProfileFieldOptions(options: unknown): string[] | null {
  * value (or null if unanswered) and its schema metadata so the iOS
  * edit sheet can render a type-appropriate input.
  */
-function buildAthleteProfileDetail(userId: number) {
+function requestLanguage(req: Pick<Request, 'header'>): Lang {
+  return normalizeSupportedLang(req.header?.('x-language'), 'en-US');
+}
+
+function questionnaireStepPayload(step: any, index: number) {
+  return {
+    index,
+    field: step.key,
+    question: step.prompt,
+    type: step.type,
+    options: step.options || null,
+    optionLabels: step.optionLabels || null,
+    min: step.min ?? null,
+    max: step.max ?? null,
+  };
+}
+
+function buildAthleteProfileDetail(userId: number, language: Lang) {
   const profiles = ATHLETE_PROFILE_TYPES.map((profileType) => {
-    const questionnaire = getQuestionnaire(profileType);
-    if (!questionnaire) return null;
+    const definition = getQuestionnaire(profileType);
+    if (!definition) return null;
+    const questionnaire = localizeOnboardingQuestionnaire(definition, language);
     const profile = getProfile(userId, profileType);
     const data = profile?.data ?? {};
 
     const fields = questionnaire.steps.map((step) => {
-      const answered = Object.prototype.hasOwnProperty.call(data, step.key);
+      const answered = Object.prototype.hasOwnProperty.call(data, step.key)
+        && !isSyntheticSkippedOnboardingAnswer(data[step.key]);
       return {
         key: step.key,
         prompt: step.prompt,
         type: step.type,
         options: normalizeProfileFieldOptions(step.options),
+        optionLabels: normalizeProfileFieldOptions(step.optionLabels),
         value: answered ? normalizeProfileFieldValue(data[step.key]) : null,
         answered,
       };
@@ -137,10 +160,11 @@ export function onboardingRoutes(): Router {
       const questionnaires = pendingIds.map((qId: string) => {
         const def = getQuestionnaire(qId);
         if (!def) return null;
+        const localized = localizeOnboardingQuestionnaire(def, requestLanguage(req));
         return {
           id: qId,
-          title: def.title || qId,
-          description: def.description || null,
+          title: localized.title || qId,
+          description: localized.description || null,
           stepCount: def.steps?.length || 0,
           currentStep: 0,
           status: 'pending',
@@ -199,9 +223,9 @@ export function onboardingRoutes(): Router {
     const { questionnaireId } = req.params;
 
     try {
-      const questionnaire = getQuestionnaire(questionnaireId);
+      const definition = getQuestionnaire(questionnaireId);
 
-      if (!questionnaire) {
+      if (!definition) {
         sendError(res, 'NOT_FOUND', 'Questionnaire not found', 404);
         return;
       }
@@ -210,19 +234,12 @@ export function onboardingRoutes(): Router {
       // starts sending answers. Starting/resuming here keeps that flow
       // responsive without requiring a client-side `/start` call first.
       const session = startOrResume(userId, questionnaireId);
+      const questionnaire = localizeOnboardingQuestionnaire(definition, requestLanguage(req));
 
       sendSuccess(res, {
         id: questionnaireId,
         title: questionnaire.title,
-        steps: questionnaire.steps.map((s: any, i: number) => ({
-          index: i,
-          field: s.key,          // questionnaire uses 'key' not 'field'
-          question: s.prompt,    // questionnaire uses 'prompt' not 'question'
-          type: s.type,
-          options: s.options || null,
-          min: s.min ?? null,
-          max: s.max ?? null,
-        })),
+        steps: questionnaire.steps.map(questionnaireStepPayload),
         currentStep: session?.current_step || 0,
       });
     } catch (err: any) {
@@ -237,8 +254,8 @@ export function onboardingRoutes(): Router {
     const { questionnaireId } = req.params;
 
     try {
-      const questionnaire = getQuestionnaire(questionnaireId);
-      if (!questionnaire) {
+      const definition = getQuestionnaire(questionnaireId);
+      if (!definition) {
         sendError(res, 'NOT_FOUND', 'Questionnaire not found', 404);
         return;
       }
@@ -249,18 +266,11 @@ export function onboardingRoutes(): Router {
       );
 
       const session = startOrResume(userId, questionnaireId);
+      const questionnaire = localizeOnboardingQuestionnaire(definition, requestLanguage(req));
       const payload = {
         id: questionnaireId,
         title: questionnaire.title,
-        steps: questionnaire.steps.map((s: any, i: number) => ({
-          index: i,
-          field: s.key,
-          question: s.prompt,
-          type: s.type,
-          options: s.options || null,
-          min: s.min ?? null,
-          max: s.max ?? null,
-        })),
+        steps: questionnaire.steps.map(questionnaireStepPayload),
         currentStep: session.current_step,
       };
 
@@ -288,10 +298,14 @@ export function onboardingRoutes(): Router {
   router.post('/:questionnaireId/answer', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     const { questionnaireId } = req.params;
-    const { stepIndex, answer } = req.body;
+    const { stepIndex, answer, skip } = req.body;
 
-    if (stepIndex === undefined || answer === undefined) {
-      sendError(res, 'BAD_REQUEST', 'stepIndex and answer are required');
+    if (stepIndex === undefined || (skip !== true && answer === undefined)) {
+      sendError(res, 'BAD_REQUEST', 'stepIndex and answer are required unless skip is true');
+      return;
+    }
+    if (skip !== undefined && typeof skip !== 'boolean') {
+      sendError(res, 'BAD_REQUEST', 'skip must be a boolean');
       return;
     }
 
@@ -309,29 +323,27 @@ export function onboardingRoutes(): Router {
     try {
       const result = answerStep(userId, questionnaireId, answer, {
         expectedStepIndex: Number.isFinite(expectedStepIndex) ? expectedStepIndex : undefined,
+        skip: skip === true,
       });
       if (!result.idempotentReplay) {
         invalidateOnboardingDerivedCaches(userId, questionnaireId);
       }
 
-      const questionnaire = getQuestionnaire(questionnaireId);
+      const definition = getQuestionnaire(questionnaireId);
+      const questionnaire = definition
+        ? localizeOnboardingQuestionnaire(definition, requestLanguage(req))
+        : null;
       const totalSteps = questionnaire?.steps?.length || 1;
       const advancedStep = result.session.current_step;
+      const nextStep = questionnaire?.steps[advancedStep] ?? null;
 
       sendSuccess(res, {
-        nextStep: result.nextStep ? {
-          index: advancedStep,
-          field: result.nextStep.key,       // questionnaire uses 'key' not 'field'
-          question: result.nextStep.prompt,  // questionnaire uses 'prompt' not 'question'
-          type: result.nextStep.type,
-          options: result.nextStep.options || null,
-          min: null,
-          max: null,
-        } : null,
-        isComplete: !result.nextStep,
+        nextStep: nextStep ? questionnaireStepPayload(nextStep, advancedStep) : null,
+        isComplete: !nextStep,
         progress: Math.min(1, advancedStep / totalSteps),
         currentStep: advancedStep,
         idempotentReplay: result.idempotentReplay === true,
+        skipped: result.skipped === true,
       });
     } catch (err: any) {
       if (err instanceof OnboardingStepMismatchError) {
@@ -448,7 +460,7 @@ export function onboardingRoutes(): Router {
   router.get('/profile/detail', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     try {
-      const payload = buildAthleteProfileDetail(userId);
+      const payload = buildAthleteProfileDetail(userId, requestLanguage(req));
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS onboarding/profile/detail failed');

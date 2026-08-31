@@ -352,7 +352,10 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
     }
 
     case 'training.changed':
-      clearCache(`coach-briefing:${event.userId}`);
+      // Coach briefing keys are tenant-first (`tenantId:userId`). The event
+      // currently carries only userId, so clear the bounded family instead of
+      // guessing a tenant or leaving another tenant's snapshot stale.
+      clearCacheByPrefix('coach-briefing:');
       // Readiness rows and the scorer memo are tenant-first. A Training
       // mutation often only has the authenticated user id, so invalidate the
       // bounded family plus every memo entry whose terminal user segment

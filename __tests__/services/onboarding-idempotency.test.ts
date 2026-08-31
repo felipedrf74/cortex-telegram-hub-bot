@@ -98,6 +98,31 @@ describe('onboarding idempotent answer (stepIndex concurrency)', () => {
     expect(result.idempotentReplay).toBeUndefined();
     expect(result.nextStep?.key).toBe('weekly_frequency');
   });
+
+  it('advances an explicit skip without storing an answered field', () => {
+    startOrResume(USER, 'fitness');
+
+    const result = answerStep(USER, 'fitness', undefined, {
+      expectedStepIndex: 0,
+      skip: true,
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(getActiveSession(USER, 'fitness')?.current_step).toBe(1);
+    expect(getActiveSession(USER, 'fitness')?.answers).not.toHaveProperty('experience_level');
+  });
+
+  it.each(['none', 'nenhum', 'nenhuma'])('stores %s as a real answered no-injury safety fact', (answer) => {
+    startOrResume(USER, 'fitness');
+    for (let stepIndex = 0; stepIndex < 5; stepIndex += 1) {
+      answerStep(USER, 'fitness', undefined, { expectedStepIndex: stepIndex, skip: true });
+    }
+
+    const result = answerStep(USER, 'fitness', answer, { expectedStepIndex: 5 });
+
+    expect(result.skipped).toBe(false);
+    expect(getActiveSession(USER, 'fitness')?.answers.injuries).toBe(answer);
+  });
 });
 
 describe('onboarding completion is transactional', () => {
@@ -122,6 +147,19 @@ describe('onboarding completion is transactional', () => {
       "SELECT status FROM onboarding_sessions WHERE user_id = ? AND questionnaire = 'fitness'",
     ).get(USER) as { status: string };
     expect(row.status).toBe('completed');
+  });
+
+  it('completes an all-skipped questionnaire with zero answered fields', () => {
+    startOrResume(USER, 'fitness');
+    const steps = QUESTIONNAIRES.fitness.steps;
+    for (let index = 0; index < steps.length; index += 1) {
+      answerStep(USER, 'fitness', undefined, {
+        expectedStepIndex: index,
+        skip: true,
+      });
+    }
+
+    expect(getProfile(USER, 'fitness')?.data).toEqual({});
   });
 
   it('rolls back the session update when the profile write fails', () => {

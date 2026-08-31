@@ -108,6 +108,22 @@ export async function activateApprovedTrainingPlanRevision(input: {
   }
 }
 
+/** Internal seam for an executor that already owns the same scoped Training lock. */
+export function activateApprovedTrainingPlanRevisionUnderExistingLock(input: {
+  scope: TrainingPlanRevisionScope;
+  revisionId: string;
+  approval: TrainingPlanRevisionApprovalEvidence;
+  activationDate?: string;
+  env?: NodeJS.ProcessEnv;
+  referenceTime?: Date;
+}, lease: TrainingOperationLockLease): TrainingPlanRevisionActivationResult {
+  requireActivationFlags(input.scope, input.env);
+  return activateUnderLock({
+    ...input,
+    referenceTime: input.referenceTime ?? new Date(),
+  }, lease);
+}
+
 function activateUnderLock(input: {
   scope: TrainingPlanRevisionScope;
   revisionId: string;
@@ -1202,6 +1218,7 @@ function validateDecisionApprovalBinding(db: Database.Database, input: {
            intents.related_entity_id AS related_entity_id,
            intents.related_entity_type AS related_entity_type,
            executions.status AS execution_status,
+           executions.action_id AS execution_action_id,
            executions.expected_record_version AS expected_record_version,
            executions.context_version AS execution_context_version,
            intents.normalized_action_json AS normalized_action_json
@@ -1213,7 +1230,6 @@ function validateDecisionApprovalBinding(db: Database.Database, input: {
        AND executions.tenant_id = items.tenant_id
      WHERE items.item_id = ? AND items.user_id = ? AND items.tenant_id = ?
        AND executions.action_execution_id = ?
-       AND executions.action_id = 'activate_training_plan_revision'
      LIMIT 1
   `).get(
     input.approval.decisionId,
@@ -1226,6 +1242,7 @@ function validateDecisionApprovalBinding(db: Database.Database, input: {
     related_entity_id: string | null;
     related_entity_type: string | null;
     execution_status: string;
+    execution_action_id: string;
     expected_record_version: number | null;
     execution_context_version: string | null;
     normalized_action_json: string | null;
@@ -1234,10 +1251,35 @@ function validateDecisionApprovalBinding(db: Database.Database, input: {
   const target = normalized?.targetEntities?.find((entry) =>
     entry.type === 'training_plan_revision' && entry.id === input.revisionId);
   const requiredScopes = new Set(normalized?.authorizationScope ?? []);
+  const coachProposal = row?.execution_action_id === 'activate_training_coach_v2_proposal'
+    ? db.prepare(`
+        SELECT proposal_id AS proposalId, request_hash AS requestHash, state
+          FROM training_coach_v2_proposals
+         WHERE proposed_revision_id = ? AND decision_id = ?
+           AND tenant_id = ? AND user_id = ?
+         LIMIT 1
+      `).get(
+        input.revisionId,
+        input.approval.decisionId,
+        input.scope.tenantId,
+        input.scope.userId,
+      ) as { proposalId: string; requestHash: string; state: string } | undefined
+    : undefined;
+  const coachProposalTarget = coachProposal
+    ? normalized?.targetEntities?.find((entry) =>
+        entry.type === 'training_coach_v2_proposal' && entry.id === coachProposal.proposalId)
+    : undefined;
+  const revisionDecision = row?.execution_action_id === 'activate_training_plan_revision'
+    && row.related_entity_type === 'training_plan_revision'
+    && row.related_entity_id === input.revisionId;
+  const coachV2Decision = row?.execution_action_id === 'activate_training_coach_v2_proposal'
+    && row.related_entity_type === 'training_coach_v2_proposal'
+    && row.related_entity_id === coachProposal?.proposalId
+    && coachProposal?.state === 'approved'
+    && coachProposalTarget?.version === coachProposal?.requestHash;
   if (!row
       || row.decision_state !== 'approved'
-      || row.related_entity_type !== 'training_plan_revision'
-      || row.related_entity_id !== input.revisionId
+      || (!revisionDecision && !coachV2Decision)
       || row.execution_status !== 'started'
       || Number(row.decision_record_version) !== input.approval.decisionRecordVersion + 1
       || Number(row.expected_record_version) !== input.approval.decisionRecordVersion

@@ -1564,6 +1564,7 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'chat_action_telemetry', column: 'user_id' },
   { table: 'user_legal_consents', column: 'user_id' },
   { table: 'report_documents', column: 'user_id' },
+  { table: 'report_documents_scoped', column: 'user_id' },
   { table: 'push_preferences', column: 'user_id' },
   { table: 'content_notifications', column: 'user_id' },
   { table: 'content_scripts', column: 'user_id' },
@@ -1810,6 +1811,9 @@ function accountOwnedApiCachePatterns(userId: number): string[] {
     `u:${id}:%`,
     `%:u:${id}:%`,
     `%:scope:${id}:%`,
+    // Current tenant-first key plus the retired user-only key, which may
+    // remain in api_cache until TTL/account erasure.
+    `coach-briefing:%:${id}`,
     `coach-briefing:${id}`,
     `dashboard-readiness:${id}`,
     `training:keep-original:${id}:%`,

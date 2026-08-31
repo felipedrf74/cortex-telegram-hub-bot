@@ -19,9 +19,8 @@ const mockFetchDailyCoachData = vi.fn();
 const mockIsGarminConfigured = vi.fn();
 const mockGetEvents = vi.fn();
 const mockHasConnectedCalendarForUser = vi.fn();
-const mockTryComplete = vi.fn();
+const mockCallDomain = vi.fn();
 const mockGetLastCoachState = vi.fn();
-const mockTrackedCreate = vi.fn();
 const mockIsOwnerUserRef = vi.fn();
 // Garmin-backed coaching is now gated on THIS user's own connection rather
 // than on owner identity plus the global credential pair, so a connected
@@ -89,12 +88,15 @@ vi.mock('../../src/services/anthropic', () => ({
   getDomainSystemPrompt: vi.fn(() => 'system'),
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
-  trackedCreate: (...args: unknown[]) => mockTrackedCreate(...args),
-}));
-
-vi.mock('../../src/services/gemini-provider', () => ({
-  completeOneShotWithFallback: (...args: unknown[]) => mockTryComplete(...args),
+vi.mock('../../src/services/provider-registry', () => ({
+  getActiveProvider: () => ({
+    name: 'routing(gemini,openai)',
+    callDomain: (...args: unknown[]) => mockCallDomain(...args),
+  }),
+  ensureActiveProvider: () => ({
+    name: 'routing(gemini,openai)',
+    callDomain: (...args: unknown[]) => mockCallDomain(...args),
+  }),
 }));
 
 vi.mock('../../src/domains/domain-handler', () => ({
@@ -222,13 +224,11 @@ describe('garmin-coach user scoping', () => {
         ]),
       })),
     });
-    mockTryComplete.mockResolvedValue({
+    mockCallDomain.mockResolvedValue({
       text: '🏋️ <b>NEXUS HUB — DAILY COACH BRIEFING</b>\n<!-- COACH_RECS_START -->[]<!-- COACH_RECS_END -->',
-      provider: 'gemini',
-    });
-    mockTrackedCreate.mockResolvedValue({
-      content: [{ type: 'text', text: 'fallback' }],
-      usage: {},
+      toolCalls: [],
+      stopReason: 'STOP',
+      routedProviderName: 'gemini',
     });
     mockGetLastCoachState.mockReturnValue(null);
     coachApplyMocks.getSessionByCalendarEvent.mockReturnValue({
@@ -303,56 +303,48 @@ describe('garmin-coach user scoping', () => {
       userId: 42,
       tenantId: 42,
     });
-    expect(mockTryComplete).toHaveBeenCalledTimes(1);
-    const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
-    expect(category).toBe('coach_analysis');
-    expect(options).toMatchObject({ maxTokens: 1400, userId: 42, tenantId: 42 });
-
-    await fallback();
-    const primarySystemPrompt = mockTryComplete.mock.calls[0][0];
-    expect(mockTrackedCreate).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ system: primarySystemPrompt }),
-      'coach_analysis',
-      expect.objectContaining({
-        userId: 42,
-        tenantId: 42,
-        abortSignal: expect.objectContaining({ aborted: false }),
-      }),
-    );
+    expect(mockCallDomain).toHaveBeenCalledTimes(1);
+    const [domain, history, userPrompt, systemContext, options] = mockCallDomain.mock.calls[0];
+    expect(domain).toBe('triathlon');
+    expect(history).toEqual([]);
+    expect(userPrompt).toContain('DAILY COACHING ANALYSIS');
+    expect(systemContext).toContain('Respond ONLY with the structured coach briefing');
+    expect(options).toMatchObject({
+      filteredTools: [],
+      maxTokensOverride: 1400,
+      userId: 42,
+      tenantId: 42,
+      containsPrivateData: true,
+      allowCloudEscalation: true,
+      ownerSkill: 'training',
+      executeIntent: false,
+      abortSignal: expect.objectContaining({ aborted: false }),
+    });
   });
 
   it('preserves active tenant scope for coach explanation metering', async () => {
-    await generateCoachBriefing(77, { tenantId: 77, meteringUserId: 42 });
+    await generateCoachBriefing(42, { tenantId: 77, meteringUserId: 99 });
 
-    expect(resolveCoachAnalysisMeteringScope(42, 77)).toEqual({
+    expect(resolveCoachAnalysisMeteringScope(99, 77)).toEqual({
       actor: 'user',
-      userId: 42,
+      userId: 99,
       tenantId: 77,
     });
-    const [, , category, fallback, options] = mockTryComplete.mock.calls[0];
-    expect(category).toBe('coach_analysis');
-    expect(options).toMatchObject({ maxTokens: 1400, userId: 42, tenantId: 77 });
-
-    await fallback();
-    expect(mockTrackedCreate).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      'coach_analysis',
-      expect.objectContaining({
-        userId: 42,
-        tenantId: 77,
-        abortSignal: expect.objectContaining({ aborted: false }),
-      }),
-    );
+    const [, , , , options] = mockCallDomain.mock.calls[0];
+    expect(options).toMatchObject({
+      maxTokensOverride: 1400,
+      userId: 99,
+      tenantId: 77,
+      abortSignal: expect.objectContaining({ aborted: false }),
+    });
     expect(mockRunWithSkillInferenceAccountAdmission).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ userId: 77 }),
+      expect.objectContaining({ userId: 42 }),
       expect.any(Function),
     );
     expect(mockRunWithSkillInferenceAccountAdmission).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ userId: 42 }),
+      expect.objectContaining({ userId: 99 }),
       expect.any(Function),
     );
     expect(options).toMatchObject({
@@ -360,13 +352,35 @@ describe('garmin-coach user scoping', () => {
     });
   });
 
-  it('rejects a positional data owner that differs from the validated tenant', async () => {
-    await expect(generateCoachBriefing(42, { tenantId: 77, meteringUserId: 42 }))
-      .rejects.toMatchObject({ code: 'COACH_DATA_OWNER_SCOPE_MISMATCH' });
+  it('keeps a distinct data user and tenant on every coach read boundary', async () => {
+    let observedContext: ReturnType<typeof getCurrentContext> | undefined;
+    mockHasActiveGarminConnection.mockReturnValue(true);
+    mockFetchDailyCoachData.mockImplementationOnce(async () => {
+      observedContext = getCurrentContext();
+      return {
+        sleepHours: 7,
+        sleepQuality: 'Good',
+        restingHeartRate: 50,
+        hrv: 70,
+        bodyBatterySummary: { current: 80, charged: 95, lowest: 30 },
+        stressAverage: 25,
+        readiness: 85,
+        bodyBattery: null,
+        activities: [],
+        errors: [],
+      };
+    });
 
-    expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
-    expect(mockGetEvents).not.toHaveBeenCalled();
-    expect(mockTryComplete).not.toHaveBeenCalled();
+    await runWithContext(
+      { source: 'http', userId: 999, tenantId: 999 },
+      () => generateCoachBriefing(42, { tenantId: 77, meteringUserId: 42 }),
+    );
+
+    expect(observedContext).toMatchObject({ userId: 42, tenantId: 77 });
+    expect(mockHasActiveGarminConnection).toHaveBeenCalledWith(42);
+    expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
+    const [, , , , options] = mockCallDomain.mock.calls[0];
+    expect(options).toMatchObject({ userId: 42, tenantId: 77 });
   });
 
   it('binds health and calendar reads to the validated data owner instead of ambient context', async () => {
@@ -442,14 +456,14 @@ describe('garmin-coach user scoping', () => {
 
     expect(mockFetchDailyCoachData).not.toHaveBeenCalled();
     expect(mockGetEvents).not.toHaveBeenCalled();
-    expect(mockTryComplete).not.toHaveBeenCalled();
+    expect(mockCallDomain).not.toHaveBeenCalled();
   });
 
   it('propagates account erasure from the provider boundary instead of returning a coach fallback', async () => {
     const deletion = Object.assign(new Error('account deletion in progress'), {
       code: 'ACCOUNT_DELETION_IN_PROGRESS',
     });
-    mockTryComplete.mockRejectedValueOnce(deletion);
+    mockCallDomain.mockRejectedValueOnce(deletion);
 
     await expect(generateCoachBriefing(42, { tenantId: 42 }))
       .rejects.toBe(deletion);
@@ -466,6 +480,26 @@ describe('garmin-coach user scoping', () => {
     expect(prompt).toContain('<!-- COACH_RECS_START -->');
     expect(prompt).toContain('<!-- COACH_RECS_END -->');
     expect(prompt).toContain('Respond ONLY with the structured coach briefing');
+  });
+
+  it('keeps Coach analysis behind the shared provider-routing abstraction', () => {
+    const source = fs.readFileSync('src/services/garmin-coach.ts', 'utf8');
+
+    expect(source).toContain("from './provider-registry'");
+    expect(source).toContain('routingProvider.callDomain(');
+    expect(source).not.toContain("from '@anthropic-ai/sdk'");
+    expect(source).not.toContain('completeOneShotWithFallback(');
+    expect(source).not.toContain('trackedCreate(');
+    expect(source).not.toMatch(/new\s+Anthropic\s*\(/);
+  });
+
+  it('keeps scheduled/default Coach analysis local unless sensitive cloud routing is explicitly authorized', async () => {
+    const result = await generateCoachBriefingImpl(42, { tenantId: 42 });
+
+    expect(result.message).toContain('LOCAL COACH BRIEFING');
+    expect(result.message).toContain('stayed on this server');
+    expect(mockCallDomain).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
   });
 
   it('classifies owner-bootstrap coach analysis as a system metering actor', () => {
@@ -541,7 +575,7 @@ describe('garmin-coach user scoping', () => {
 
     await generateCoachBriefing(7, { tenantId: 7 });
 
-    const [, userPrompt] = mockTryComplete.mock.calls[0];
+    const [, , userPrompt] = mockCallDomain.mock.calls[0];
     expect(userPrompt).toContain('## COMPACT COACH INPUT');
     expect(userPrompt).not.toContain('## RAW GARMIN DATA');
     expect(userPrompt).toContain('"recovery":{"available":false');
@@ -560,7 +594,7 @@ describe('garmin-coach user scoping', () => {
   it('preserves Apple Health fallback recovery signals in the compact coach input', async () => {
     await generateCoachBriefing(42, { tenantId: 42 });
 
-    const [, userPrompt] = mockTryComplete.mock.calls[0];
+    const [, , userPrompt] = mockCallDomain.mock.calls[0];
     expect(userPrompt).toContain('"recovery":{"available":true');
     expect(userPrompt).toContain('"sleep"');
     expect(userPrompt).toContain('"restingHeartRate":48');
@@ -568,7 +602,7 @@ describe('garmin-coach user scoping', () => {
   });
 
   it('strips malformed COACH_RECS artifacts from the user-visible message', async () => {
-    mockTryComplete.mockResolvedValueOnce({
+    mockCallDomain.mockResolvedValueOnce({
       text: [
         '🏋️ NEXUS HUB — DAILY COACH BRIEFING',
         'Coach-visible summary.',
@@ -576,7 +610,9 @@ describe('garmin-coach user scoping', () => {
         '[',
         '  { "eventId": "evt-1", "source": "outlook", "action": "KEEP" }',
       ].join('\n'),
-      provider: 'gemini',
+      toolCalls: [],
+      stopReason: 'STOP',
+      routedProviderName: 'gemini',
     });
 
     const result = await generateCoachBriefing(42, { tenantId: 42 });
@@ -587,7 +623,7 @@ describe('garmin-coach user scoping', () => {
   });
 
   it('strips an orphaned recommendation tail and normalizes visible ISO timestamps', async () => {
-    mockTryComplete.mockResolvedValueOnce({
+    mockCallDomain.mockResolvedValueOnce({
       text: [
         '🏋️ NEXUS HUB — DAILY COACH BRIEFING',
         '⏰ 2026-07-10T11:00:00.0000000+01:00 – 2026-07-10T11:42:00.0000000+01:00',
@@ -596,7 +632,9 @@ describe('garmin-coach user scoping', () => {
         ']',
         '<!-- COACH_RECS_END -->',
       ].join('\n'),
-      provider: 'gemini',
+      toolCalls: [],
+      stopReason: 'STOP',
+      routedProviderName: 'gemini',
     });
 
     const result = await generateCoachBriefing(42, { tenantId: 42 });
@@ -607,7 +645,7 @@ describe('garmin-coach user scoping', () => {
   });
 
   it.each(['google', 'outlook'] as const)(
-    'applies %s recommendations against the delegated data owner with a fenced provider write',
+    'applies %s recommendations for the data user inside the active tenant with a fenced provider write',
     async (source) => {
       const recommendation = {
         eventId: 'event-1',
@@ -620,8 +658,8 @@ describe('garmin-coach user scoping', () => {
         summary: 'Reduce intensity',
         reason: 'Recovery is low',
       };
-      mockGetLastCoachState.mockImplementation((dataUserId: number) => (
-        dataUserId === 77
+      mockGetLastCoachState.mockImplementation((dataUserId: number, tenantId: number) => (
+        dataUserId === 42 && tenantId === 77
           ? { recommendations: [recommendation], briefingSummary: 'brief', timestamp: Date.now() }
           : null
       ));
@@ -629,18 +667,17 @@ describe('garmin-coach user scoping', () => {
       const result = await applyCoachRecommendations(42, 77, ['event-1']);
 
       expect(result).toMatchObject({ count: 1, appliedRecommendations: [recommendation] });
-      // Stronger delegated-scope guarantee: the authenticated actor (42) may
-      // meter/authorize the request, but state, provider credentials, and
-      // Training rows all belong to the active data owner (77).
-      expect(mockGetLastCoachState).toHaveBeenCalledWith(77);
+      // State, provider credentials, and Training rows keep the authenticated
+      // data user and active tenant as separate scope dimensions.
+      expect(mockGetLastCoachState).toHaveBeenCalledWith(42, 77);
       expect(coachApplyMocks.withTrainingCalendarOperationLock).toHaveBeenCalledWith(
-        { userId: 77, tenantId: 77, operation: 'coach_apply' },
+        { userId: 42, tenantId: 77, operation: 'coach_apply' },
         expect.any(Function),
       );
       expect(coachApplyMocks.getSessionByCalendarEvent).toHaveBeenCalledWith(
         'event-1',
         source,
-        { userId: 77, tenantId: 77 },
+        { userId: 42, tenantId: 77 },
       );
       expect(coachApplyMocks.getSessionByCalendarEvent.mock.invocationCallOrder[0]).toBeLessThan(
         coachApplyMocks.updateEvent.mock.invocationCallOrder[0],
@@ -648,14 +685,14 @@ describe('garmin-coach user scoping', () => {
       expect(coachApplyMocks.updateEvent).toHaveBeenCalledWith(
         expect.objectContaining({ event_id: 'event-1', new_title: 'Easy Run' }),
         source,
-        77,
+        42,
         { signal: expect.objectContaining({ aborted: false }) },
       );
       expect(coachApplyMocks.syncSessionWithCoachRecommendation).toHaveBeenCalledWith(
         expect.objectContaining({
           eventId: 'event-1',
           source,
-          userId: 77,
+          userId: 42,
           tenantId: 77,
           timezone: 'Europe/Lisbon',
         }),
@@ -836,7 +873,7 @@ describe('garmin-coach user scoping', () => {
       const result = await generateCoachBriefing(42, { tenantId: 42 });
 
       expect(fs.existsSync(path.join(scratchDir, '.local', 'coach-payloads'))).toBe(false);
-      expect(mockTryComplete).toHaveBeenCalledTimes(1);
+      expect(mockCallDomain).toHaveBeenCalledTimes(1);
       expect(result.message).toContain('NEXUS HUB');
     } finally {
       vi.unstubAllEnvs();
@@ -851,8 +888,7 @@ describe('garmin-coach user scoping', () => {
     expect(result.message).toContain('LOCAL COACH BRIEFING');
     expect(result.message).toContain('stayed on this server');
     expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
-    expect(mockTryComplete).not.toHaveBeenCalled();
-    expect(mockTrackedCreate).not.toHaveBeenCalled();
+    expect(mockCallDomain).not.toHaveBeenCalled();
   });
 
 });

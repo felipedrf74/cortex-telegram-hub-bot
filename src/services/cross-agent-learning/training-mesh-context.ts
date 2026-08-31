@@ -250,7 +250,7 @@ export async function readTrainingMeshContext(opts: {
   const timezone = activePlanMatch?.timezone ?? resolveTrainingTimezone();
   const window = resolveWeekWindow(opts.weekStart, timezone);
   const trainingContext = readTrainingContextAll({ userId: opts.userId, tenantId });
-  const coachBriefing = getLatestByType(opts.userId, 'coach_briefing');
+  const coachBriefing = getLatestByType(opts.userId, 'coach_briefing', tenantId);
   const latestCompletion = activePlanMatch
     ? safely(() => getLatestCompletionForPlan(activePlanMatch.plan.id), null)
     : null;
@@ -446,7 +446,7 @@ export async function readTrainingMeshContext(opts: {
   // taper / recovery + adherence trend + recent deloads) so consumers
   // can interpret this week's signals in the context of the athlete's
   // arc rather than each week as an isolated snapshot.
-  const coachPhase = safely(() => getCurrentCoachPhase(opts.userId), null);
+  const coachPhase = safely(() => getCurrentCoachPhase(opts.userId, tenantId), null);
   const coachPhaseMemory = coachPhase
     ? {
         phase: coachPhase.phase,

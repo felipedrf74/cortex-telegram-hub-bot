@@ -41,7 +41,7 @@ const requiredLifecycleStepIds = [
   'plan_generate_activate',
   'today_plan_progress_read_models',
   'feedback_variants_and_repeated_skips',
-  'successful_fixture_reflow_swap',
+  'proposal_first_fixture_reflow_activation',
   'stale_readiness_degraded',
   'calendar_sync_provider_safe',
   'cancel_cleanup_and_no_plan_recovery',
@@ -662,9 +662,9 @@ describe('Training E2E executable contract', () => {
       ...complete,
       lifecycleEvidence: {
         ...complete.lifecycleEvidence,
-        steps: complete.lifecycleEvidence.steps.filter((step) => step.step !== 'successful_fixture_reflow_swap'),
+        steps: complete.lifecycleEvidence.steps.filter((step) => step.step !== 'proposal_first_fixture_reflow_activation'),
       },
-    })).toThrow(/successful_fixture_reflow_swap/);
+    })).toThrow(/proposal_first_fixture_reflow_activation/);
 
     expect(() => assertCompleteEvidence({
       ...complete,

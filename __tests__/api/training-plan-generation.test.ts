@@ -82,7 +82,7 @@ const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerError = vi.fn();
 const mockIsConnected = vi.fn();
-const mockGetLatestHealthSignal = vi.fn();
+const mockGetEffectiveHealthSafetyOutput = vi.fn();
 
 vi.mock('../../src/services/onboarding', () => ({
   getProfile: (...args: unknown[]) => mockGetProfile(...args),
@@ -192,8 +192,8 @@ vi.mock('../../src/services/oauth-store', () => ({
   isConnected: (...args: unknown[]) => mockIsConnected(...args),
 }));
 
-vi.mock('../../src/services/health-signals', () => ({
-  getLatestHealthSignal: (...args: unknown[]) => mockGetLatestHealthSignal(...args),
+vi.mock('../../src/services/health-data-lifecycle', () => ({
+  getEffectiveHealthSafetyOutput: (...args: unknown[]) => mockGetEffectiveHealthSafetyOutput(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -311,7 +311,7 @@ function makePlanFromKernelInput(input: any, title = 'Coach Plan') {
 
 describe('generateTrainingPlanForUser', () => {
   it('restores the never-two-a-day invariant after quality enrichment', () => {
-    const source = readFileSync(path.resolve('src/api/routes/training-plan-generation.ts'), 'utf8');
+    const source = readFileSync(path.resolve('src/services/training-plan-generation-pipeline.ts'), 'utf8');
     const qualityCall = source.indexOf('prepareTrainingPlanForQualityGate(planData');
     const finalCapCall = source.indexOf('enforceFinalTrainingPlanTwoADayCap(', qualityCall + 1);
 
@@ -324,7 +324,7 @@ describe('generateTrainingPlanForUser', () => {
 
   it('keeps the operational generator free of direct model-provider dependencies', () => {
     const files = [
-      'src/api/routes/training-plan-generation.ts',
+      'src/services/training-plan-generation-pipeline.ts',
       'src/api/routes/training-plan-routes.ts',
     ];
     const forbidden = /anthropic|gemini|openai|ollama|ai-provider|domain-provider-router|provider-fallback|provider-registry|api-usage|usage-metering|cost-guardrail/i;
@@ -378,8 +378,8 @@ describe('generateTrainingPlanForUser', () => {
     mockLoggerWarn.mockReset();
     mockLoggerError.mockReset();
     mockIsConnected.mockReset();
-    mockGetLatestHealthSignal.mockReset();
-    mockGetLatestHealthSignal.mockReturnValue(null);
+    mockGetEffectiveHealthSafetyOutput.mockReset();
+    mockGetEffectiveHealthSafetyOutput.mockReturnValue(undefined);
     config.coaching.trainingSafetyGuardrailsEnabled = false;
     config.coaching.coachKernelEquipmentAuthorityEnabled = false;
     config.coaching.trainingCalendarCapacityKernelEnabled = false;
@@ -1334,20 +1334,14 @@ describe('generateTrainingPlanForUser', () => {
 
   it('pauses generated sessions before persistence when structured safety guardrail blocks training', async () => {
     config.coaching.trainingSafetyGuardrailsEnabled = true;
-    mockGetLatestHealthSignal.mockReturnValue({
-      id: 1,
-      user_id: 12,
-      tenant_id: 12,
-      date: '2026-04-18',
-      pain_score: null,
-      pain_location: null,
-      illness_symptoms_json: JSON.stringify(['chest_pain']),
-      injury_status: null,
-      menstrual_status: null,
-      energy_availability_risk: null,
-      source: 'structured_intake',
-      consent_scope: 'illness',
-      created_at: '2026-04-18T10:00:00.000Z',
+    mockGetEffectiveHealthSafetyOutput.mockReturnValue({
+      decisionReasons: [],
+      effectiveSeverity: 'block',
+      safetyEvaluation: {
+        status: 'flag',
+        findings: [],
+        topMessage: 'Pause training and seek qualified medical support.',
+      },
     });
 
     const result = await generateTrainingPlanForUser({
@@ -1357,7 +1351,12 @@ describe('generateTrainingPlanForUser', () => {
     });
 
     expect(result.status).toBe('created');
-    expect(mockGetLatestHealthSignal).toHaveBeenCalledWith(12, 12, expect.any(String), { maxAgeDays: 14 });
+    expect(mockGetEffectiveHealthSafetyOutput).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      affectedDate: expect.any(String),
+      maxAgeDays: 14,
+    });
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(persistInput.planData.weeks[0].sessions[0]).toMatchObject({
       sessionType: 'rest',
@@ -1379,7 +1378,7 @@ describe('generateTrainingPlanForUser', () => {
 
   it('continues generation when the bounded safety lookup returns no fresh health signal', async () => {
     config.coaching.trainingSafetyGuardrailsEnabled = true;
-    mockGetLatestHealthSignal.mockReturnValue(null);
+    mockGetEffectiveHealthSafetyOutput.mockReturnValue(undefined);
 
     const result = await generateTrainingPlanForUser({
       userId: 12,
@@ -1388,7 +1387,12 @@ describe('generateTrainingPlanForUser', () => {
     });
 
     expect(result.status).toBe('created');
-    expect(mockGetLatestHealthSignal).toHaveBeenCalledWith(12, 12, expect.any(String), { maxAgeDays: 14 });
+    expect(mockGetEffectiveHealthSafetyOutput).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      affectedDate: expect.any(String),
+      maxAgeDays: 14,
+    });
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(persistInput.planData.weeks[0].sessions[0]).toMatchObject({
       sessionType: 'run',

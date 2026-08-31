@@ -199,7 +199,7 @@ describe('GDPR table coverage', () => {
     'content_scripts', 'content_performance', 'content_learned_patterns',
     'content_pipeline', 'content_topics', 'content_notifications',
     'book_library', 'video_transcripts', 'video_studies',
-    'report_documents', 'push_preferences',
+    'report_documents', 'report_documents_scoped', 'push_preferences',
     'invoice_filings', 'invoice_vendors', 'invoice_queue',
     'finance_transactions', 'finance_tax_events',
     'recipes', 'meal_plans', 'shopping_lists',
@@ -225,6 +225,7 @@ describe('GDPR table coverage', () => {
 
   const reportTables = [
     'report_documents',
+    'report_documents_scoped',
     'push_preferences',
     'content_notifications',
   ];

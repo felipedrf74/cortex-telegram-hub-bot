@@ -161,6 +161,7 @@
       "src/services/migration-runner.ts",
       "src/services/pm2-health.ts",
       "src/services/training-plan-generation-idempotency.ts",
+      "src/services/training-plan-generation-pipeline.ts",
       "src/services/training-plan-revision-activation.ts",
       "src/services/training-operation-locks.ts",
       "src/api/routes/training-plan-generation.ts",
@@ -287,26 +288,6 @@
           }
         ],
         "reason": "The legacy route assertions were replaced by an exact real-database atomic mapping contract plus retained route-level reflow and sync behavior."
-      },
-      {
-        "test": "__tests__/api/training-plan-generation.test.ts",
-        "replacementTests": [
-          "__tests__/api/training-plan-generation.test.ts"
-        ],
-        "sources": [
-          "src/api/routes/training-plan-generation.ts"
-        ],
-        "mutationTargets": [
-          {
-            "pattern": "src/api/routes/training-plan-generation.ts:426-428",
-            "anchor": "const normalizedGoalMode: TrainingGoalMode | null = raceDateOverridesRequestedMode",
-            "behavior": "A valid future race date selects event-based generation even when the request says continuous, keeping clamping and taper validation aligned.",
-            "replacementTest": "__tests__/api/training-plan-generation.test.ts",
-            "ownerTestNamePattern": "lets a valid future race date override continuous mode and discloses the decision \\(F12\\)$",
-            "minimumMutants": 1
-          }
-        ],
-        "reason": "The retained generation suite rewrites legacy response assertions around the approved race-date-wins contract and now proves the disclosed override end to end."
       },
       {
         "test": "__tests__/api/training-plan-persistence-slot-date.test.ts",
@@ -562,7 +543,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/onboarding.ts:840-840",
+            "pattern": "src/services/onboarding.ts:861-861",
             "anchor": "step.required !== false && !answered.has(step.key)",
             "behavior": "Optional canonical clarification targets never retroactively block completion of an existing sport profile.",
             "replacementTest": "__tests__/services/chat-triggered-onboarding.test.ts",
@@ -1310,7 +1291,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/notification-contracts.ts:178-178",
+            "pattern": "src/services/notification-contracts.ts:184-184",
             "anchor": "return ['reconnect', 'open_detail'];",
             "behavior": "Sync-failure decisions stop advertising an unimplemented retry and instead expose an enabled navigation-only reconnect action.",
             "replacementTest": "__tests__/services/decision-center.test.ts",
@@ -1607,7 +1588,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/garmin-coach.ts:925-935",
+            "pattern": "src/services/garmin-coach.ts:911-918",
             "anchor": "if (opts.allowSensitiveCloudRouting !== true)",
             "behavior": "Ordinary coach reads return a deterministic local briefing before constructing or reserving any private cloud request.",
             "replacementTest": "__tests__/services/garmin-coach-user-scope.test.ts",
@@ -1667,7 +1648,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/user-data-export.ts:1935-1946",
+            "pattern": "src/services/user-data-export.ts:1949-1951",
             "anchor": "if (providerFilesPending !== 0)",
             "behavior": "Transactional account erasure refuses while any owner-scoped provider Batch file or upload intent lacks durable deletion proof.",
             "replacementTest": "__tests__/services/user-data-export.test.ts",

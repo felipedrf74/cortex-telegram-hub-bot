@@ -620,10 +620,76 @@ jobs:
           TELEGRAM_ALLOWED_USER_IDS: '123456789'
         run: npx vitest run __tests__/scripts/backend-ios-contract-fixture.test.ts
 
+  # Linux-owned Training lifecycle lane. It exercises the isolated backend,
+  # fixture-safe calendar path, and all 14 quality personas. Apple-platform
+  # evidence remains in the decoupled iOS repository (ADR-0013).
+  training_e2e:
+    name: 🏃 Training lifecycle E2E
+    runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
+    timeout-minutes: 60
+    needs: [runner, runner_guardrails, classify]
+    if: ${{ contains(fromJSON(needs.classify.outputs.selected_groups), 'training') }}
+    steps:
+      - name: Assert this allocated runner is test-only
+        if: needs.runner.outputs.is_self_hosted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          GUARD=/usr/local/sbin/nexus-pi-guardrails
+          test -x "$GUARD"
+          test ! -L "$GUARD"
+          test "$(stat -c '%u:%g:%a' "$GUARD")" = "0:0:755"
+          test "$(stat -c '%u:%g:%a' "$(dirname "$GUARD")")" = "0:0:755"
+          test ! -L "$(dirname "$GUARD")"
+          test -f "$GUARD"
+          test "$(stat -c '%h' "$GUARD")" = "1"
+          for ancestor in /usr/local /usr /; do
+            test ! -L "$ancestor"
+            test "$(stat -c '%u' "$ancestor")" = "0"
+            mode="$(stat -c '%a' "$ancestor")"
+            test "$(( 8#$mode & 8#022 ))" -eq 0
+          done
+          "$GUARD" --json
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run isolated Training lifecycle and 14-persona quality flow
+        env:
+          NEXUS_TRAINING_E2E_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          NEXUS_TRAINING_E2E_BASE_COMMIT: ${{ needs.classify.outputs.base_sha }}
+          NEXUS_TRAINING_E2E_LIVE_CALENDAR: '0'
+        run: |
+          npm run training:e2e:up
+          npm run training:e2e:smoke
+          npm run training:e2e:flow
+
+      - name: Stop isolated Training containers
+        if: always()
+        run: npm run training:e2e:down
+
+      - name: Upload Training E2E evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: training-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/training-e2e/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   docs_pr_gate:
     name: 📚 Docs PR gate
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
-    needs: [runner, runner_guardrails, classify, lint, build, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy, ios_contract]
+    needs: [runner, runner_guardrails, classify, lint, build, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy, ios_contract, training_e2e]
     if: ${{ always() && github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true' }}
     steps:
       - name: Assert this allocated runner is test-only
@@ -676,7 +742,7 @@ jobs:
   code_gate:
     name: 🧱 Code gate
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
-    needs: [runner, runner_guardrails, classify, lint, build, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy, ios_contract]
+    needs: [runner, runner_guardrails, classify, lint, build, docs_and_secrets, mutation_cleanup, test_focused, python-test, migrations, science_policy, ios_contract, training_e2e]
     if: ${{ always() && !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
     steps:
       - name: Assert this allocated runner is test-only
@@ -717,6 +783,8 @@ jobs:
           MIGRATIONS_RESULT: ${{ needs.migrations.result }}
           IOS_CONTRACT_REQUIRED: ${{ needs.classify.outputs.ios_contract }}
           IOS_CONTRACT_RESULT: ${{ needs.ios_contract.result }}
+          TRAINING_E2E_REQUIRED: ${{ contains(fromJSON(needs.classify.outputs.selected_groups), 'training') }}
+          TRAINING_E2E_RESULT: ${{ needs.training_e2e.result }}
           SELF_HOSTED: ${{ needs.runner.outputs.is_self_hosted }}
           GUARDRAILS_RESULT: ${{ needs.runner_guardrails.result }}
           SCIENCE_POLICY_RESULT: ${{ needs.science_policy.result }}
@@ -767,6 +835,12 @@ jobs:
             test "$IOS_CONTRACT_RESULT" = "success"
           else
             test "$IOS_CONTRACT_RESULT" = "skipped"
+          fi
+
+          if [ "$TRAINING_E2E_REQUIRED" = "true" ]; then
+            test "$TRAINING_E2E_RESULT" = "success"
+          else
+            test "$TRAINING_E2E_RESULT" = "skipped"
           fi
 
           test "$SCIENCE_POLICY_RESULT" = "success"

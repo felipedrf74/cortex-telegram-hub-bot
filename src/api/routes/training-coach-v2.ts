@@ -22,7 +22,7 @@
  * so per-route auth is inherited.
  */
 
-import { Router, type Response, type Request } from 'express';
+import { Router, type Response, type Request, type NextFunction } from 'express';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 
 import type { AuthenticatedRequest } from '../auth-middleware';
@@ -31,17 +31,32 @@ import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import {
   getCoachPlanPolicy,
-  setCoachPlanPolicy,
+  getCoachPlanPolicySnapshot,
+  previewCoachPlanPolicyPatch,
 } from '../../services/coach-plan-policy';
 import {
   ReflowMissingIdempotencyKeyError,
 } from '../../services/training-week-reflow';
 import {
-  executeWeekReflowWithPropagation,
   type TrainingReflowSyncTarget,
 } from '../../services/training-week-reflow-propagation';
-import { recordTravelWindow, findTravelWindowsInRange } from '../../services/travel-windows';
-import { recordHealthSignal, type HealthConsentScope, type InjuryStatus, type EnergyAvailabilityRisk } from '../../services/health-signals';
+import {
+  TravelWindowIdempotencyConflictError,
+  TravelWindowVersionConflictError,
+  deleteTravelWindowIdempotently,
+  findTravelWindowsInRange,
+  getTravelWindowById,
+  listTravelWindows,
+  recordTravelWindow,
+  updateTravelWindowIdempotently,
+  type RecordTravelWindowInput,
+  type TravelWindowRow,
+} from '../../services/travel-windows';
+import {
+  recordStructuredHealthIntake,
+  getEffectiveHealthSafetyOutput,
+  HealthDataLifecycleError,
+} from '../../services/health-data-lifecycle';
 import {
   AdaptationIdempotencyConflictError,
   AdaptationPlanNotFoundError,
@@ -75,11 +90,6 @@ import {
 import { computeLoadModelAndDeload } from './training-coach-v2-load-helper';
 import { executeCoachActions } from '../../services/coach-kernel/coach-action-executor';
 import type { LoadModelDimensionResult } from '../../services/coach-kernel/load-model';
-import { getLatestHealthSignal } from '../../services/health-signals';
-import {
-  deriveSafetyTriggerFromSignal,
-  wireHealthSignalToSafety,
-} from '../../services/coach-kernel/safety-wiring';
 import { hashOwnerIdForLog } from './_ownership-audit';
 import { isStrictIsoDate, resolveTrainingTimezone } from '../../services/training-date-utils';
 import {
@@ -97,6 +107,19 @@ import {
   assertLegacyWeekMutationAllowed,
 } from '../../services/training-plan-revision-legacy-guard';
 import { TrainingPlanRevisionError } from '../../services/training-plan-revision-errors';
+import {
+  TRAINING_COACH_V2_CONTRACT_VERSION,
+  TrainingCoachV2ProposalConflictError,
+  TrainingCoachV2ProposalStateError,
+  bindTrainingCoachV2ProposalDecision,
+  createTrainingCoachV2Proposal,
+  findTrainingCoachV2ProposalByIdempotency,
+} from '../../services/training-coach-v2-proposals';
+import {
+  TrainingCoachV2ReflowPreviewError,
+  createTrainingCoachV2ReflowPreview,
+  getTrainingCoachV2ReflowPreview,
+} from '../../services/training-coach-v2-reflow-previews';
 
 export { isStrictIsoDate };
 
@@ -401,6 +424,197 @@ export function resolvePersistedTrainingReflowSyncTarget(
   return 'auto';
 }
 
+function parsePositiveRouteId(value: unknown): number | null {
+  const raw = typeof value === 'string' ? value : Array.isArray(value) ? value[0] : '';
+  const id = Number.parseInt(String(raw), 10);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function parseTravelIfMatch(value: string | undefined): number | null {
+  if (!value) return null;
+  const match = /^"?travel-(\d+)"?$/.exec(value.trim());
+  if (!match) return null;
+  const version = Number.parseInt(match[1]!, 10);
+  return Number.isSafeInteger(version) && version > 0 ? version : null;
+}
+
+function parseCoachPolicyIfMatch(value: string | undefined): number | null {
+  if (!value) return null;
+  const match = /^"?coach-policy-(\d+)"?$/.exec(value.trim());
+  if (!match) return null;
+  const version = Number.parseInt(match[1]!, 10);
+  return Number.isSafeInteger(version) && version > 0 ? version : null;
+}
+
+function parseTravelBody(
+  body: Record<string, unknown>,
+  requireDates: boolean,
+): Partial<Omit<RecordTravelWindowInput, 'userId' | 'tenantId' | 'idempotencyKey'>> & {
+  startDate?: string;
+  endDate?: string;
+} {
+  const startDate = typeof body.startDate === 'string' ? body.startDate : undefined;
+  const endDate = typeof body.endDate === 'string' ? body.endDate : undefined;
+  if (requireDates && (!startDate || !endDate)) {
+    throw new Error('BAD_TRAVEL_INPUT: startDate and endDate are required.');
+  }
+  if ((startDate && !isStrictIsoDate(startDate)) || (endDate && !isStrictIsoDate(endDate))) {
+    throw new Error('BAD_TRAVEL_INPUT: dates must be valid YYYY-MM-DD calendar dates.');
+  }
+  if (startDate && endDate) {
+    if (endDate < startDate) throw new Error('BAD_TRAVEL_INPUT: endDate must be on or after startDate.');
+    const spanDays = Math.floor((Date.parse(`${endDate}T00:00:00.000Z`) - Date.parse(`${startDate}T00:00:00.000Z`)) / 86_400_000);
+    if (spanDays > 366) throw new Error('BAD_TRAVEL_INPUT: a travel window cannot exceed 366 days.');
+  }
+  const out: Partial<RecordTravelWindowInput> = {};
+  if (startDate) out.startDate = startDate;
+  if (endDate) out.endDate = endDate;
+  if (body.equipmentProfile !== undefined) {
+    if (typeof body.equipmentProfile !== 'string' || !body.equipmentProfile.trim() || body.equipmentProfile.length > 64) {
+      throw new Error('BAD_TRAVEL_INPUT: equipmentProfile must contain 1 to 64 characters.');
+    }
+    out.equipmentProfile = body.equipmentProfile.trim();
+  }
+  if (body.timeZoneShiftHours !== undefined) {
+    assertTravelNumber(body.timeZoneShiftHours, -14, 14, 'timeZoneShiftHours');
+    out.timeZoneShiftHours = Number(body.timeZoneShiftHours);
+  }
+  if (body.flightDurationHours !== undefined) {
+    assertTravelNumber(body.flightDurationHours, 0, 48, 'flightDurationHours');
+    out.flightDurationHours = Number(body.flightDurationHours);
+  }
+  if (body.availableSessionDurationMinutes !== undefined) {
+    assertTravelNumber(body.availableSessionDurationMinutes, 10, 360, 'availableSessionDurationMinutes', true);
+    out.availableSessionDurationMinutes = Number(body.availableSessionDurationMinutes);
+  }
+  for (const key of ['sleepDisruptionExpected', 'walkingLoadExpected', 'heatStress'] as const) {
+    if (body[key] === undefined) continue;
+    if (typeof body[key] !== 'boolean') throw new Error(`BAD_TRAVEL_INPUT: ${key} must be boolean.`);
+    out[key] = body[key];
+  }
+  if (body.notes !== undefined) {
+    if (typeof body.notes !== 'string' || body.notes.length > 500) {
+      throw new Error('BAD_TRAVEL_INPUT: notes cannot exceed 500 characters.');
+    }
+    out.notes = body.notes.trim();
+  }
+  return out;
+}
+
+function assertTravelNumber(value: unknown, min: number, max: number, field: string, integer = false): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+    throw new Error(`BAD_TRAVEL_INPUT: ${field} must be ${integer ? 'an integer' : 'a number'} from ${min} through ${max}.`);
+  }
+}
+
+function serializeTravelWindow(row: TravelWindowRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    version: row.version,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    equipmentProfile: row.equipment_profile,
+    timeZoneShiftHours: row.time_zone_shift_hours,
+    flightDurationHours: row.flight_duration_hours,
+    sleepDisruptionExpected: row.sleep_disruption_expected === 1,
+    walkingLoadExpected: row.walking_load_expected === 1,
+    heatStress: row.heat_stress === 1,
+    availableSessionDurationMinutes: row.available_session_duration_minutes,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function sendTravelMutationError(res: Response, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof TravelWindowVersionConflictError) {
+    sendError(res, 'VERSION_CONFLICT', message, 412);
+    return;
+  }
+  if (err instanceof TravelWindowIdempotencyConflictError) {
+    const missing = /required/i.test(message);
+    sendError(res, missing ? 'IDEMPOTENCY_REQUIRED' : 'IDEMPOTENCY_CONFLICT', message, missing ? 428 : 409);
+    return;
+  }
+  if (/BAD_TRAVEL_INPUT|startDate/.test(message)) {
+    sendError(res, 'BAD_INPUT', message, 400);
+    return;
+  }
+  if (/NOT_FOUND/.test(message)) {
+    sendError(res, 'TRAVEL_WINDOW_NOT_FOUND', 'Travel window not found.', 404);
+    return;
+  }
+  logger.error({ err }, 'travel_window.mutation_failed');
+  sendError(res, 'INTERNAL', 'Failed to mutate travel window.', 500);
+}
+
+function resolveActiveOwnedPlanId(req: Request, res: Response): number | null {
+  if (!v2EnabledOrShortCircuit(res)) return null;
+  const auth = req as AuthenticatedRequest;
+  const tenantId = requireTenantIdParam(auth.tenantId, 'trainingCoachV2.resolveActiveOwnedPlanId');
+  const row = getDb().prepare(`
+    SELECT id FROM fitness_training_plans
+    WHERE user_id = ? AND tenant_id = ? AND status = 'active'
+    ORDER BY start_date DESC, id DESC LIMIT 1
+  `).get(auth.userId, tenantId) as { id: number } | undefined;
+  if (!row) {
+    sendError(res, 'PLAN_NOT_FOUND', 'Active training plan not found.', 404);
+    return null;
+  }
+  return row.id;
+}
+
+function dispatchCoachV2Alias(
+  router: Router,
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  targetUrl: string,
+): void {
+  req.url = targetUrl;
+  (router as unknown as {
+    handle: (request: Request, response: Response, callback: NextFunction) => void;
+  }).handle(req, res, next);
+}
+
+function buildPrivacySafeCoachExplanations(input: {
+  weekNumber: number;
+  scenario: import('../../services/coach-kernel/scenario-classifier').ScenarioAssessment;
+  hasSafetyOverride: boolean;
+  hasTravel: boolean;
+}): Array<{ code: string; text: string }> {
+  const explanations: Array<{ code: string; text: string }> = [{
+    code: 'selected_week',
+    text: `Coach outlook is calculated for week ${input.weekNumber}.`,
+  }];
+  if (input.hasSafetyOverride) {
+    explanations.push({
+      code: 'safety_protection',
+      text: 'A consented safety report is protecting this week; private symptom details are not included here.',
+    });
+  } else if (input.hasTravel) {
+    explanations.push({
+      code: 'travel_availability',
+      text: 'Travel and availability are considered before any week change is proposed.',
+    });
+  }
+  if (input.scenario.kind === 'rate_limited') {
+    explanations.push({
+      code: 'anti_churn',
+      text: 'Another non-safety change was recently accepted, so this suggestion is waiting.',
+    });
+  } else if (input.scenario.primaryScenario === 'no_scenario') {
+    explanations.push({ code: 'week_stable', text: 'No evidence-backed week change is currently needed.' });
+  } else {
+    explanations.push({
+      code: 'coach_scenario',
+      text: `The coach identified ${input.scenario.primaryScenario.replaceAll('_', ' ')} as the main week condition.`,
+    });
+  }
+  return explanations;
+}
+
 /**
  * Mount the v2 routes onto an existing training Router. Builds a
  * SUB-ROUTER so the feature-flag gate doesn't accidentally apply to
@@ -424,66 +638,203 @@ export function mountCoachV2Routes(parent: Router): Router {
     standardHeaders: false,
     handler: (_req, res, _next, options) => {
       const retryAfter = Math.ceil(options.windowMs / 1000);
-      res.setHeader('Retry-After', retryAfter);
-      res.status(options.statusCode).json({
-        error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
+      sendError(res, 'RATE_LIMITED', 'Too many requests. Slow down.', options.statusCode, {
+        retryAfterSeconds: retryAfter,
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        outcome: 'rate_limited',
       });
     },
   });
 
-  // ── C2 — POST /week/travel ─────────────────────────────────────
+  // Additive convenience routes used by the capability-gated iOS client.
+  // They rewrite to the canonical plan/week-scoped contracts so validation,
+  // ownership, rate limits, and response envelopes cannot drift.
+  v2.get('/coach-policy', (req: Request, res: Response, next: NextFunction) => {
+    const planId = resolveActiveOwnedPlanId(req, res);
+    if (planId === null) return;
+    dispatchCoachV2Alias(v2, req, res, next, `/plans/${planId}/coach-policy`);
+  });
+  v2.patch('/coach-policy', (req: Request, res: Response, next: NextFunction) => {
+    const planId = resolveActiveOwnedPlanId(req, res);
+    if (planId === null) return;
+    dispatchCoachV2Alias(v2, req, res, next, `/plans/${planId}/coach-policy`);
+  });
+  v2.get('/coach/analysis', (req: Request, res: Response, next: NextFunction) => {
+    if (!v2EnabledOrShortCircuit(res)) return;
+    const weekId = Number.parseInt(typeof req.query.weekId === 'string' ? req.query.weekId : '', 10);
+    if (!Number.isSafeInteger(weekId) || weekId <= 0) {
+      sendError(res, 'BAD_WEEK_ID', 'weekId query parameter must be a positive integer.', 400);
+      return;
+    }
+    const owned = resolveOwnedWeek(req, res, weekId);
+    if (!owned) return;
+    const week = getDb().prepare('SELECT week_number FROM training_weeks WHERE id = ? AND plan_id = ?')
+      .get(weekId, owned.planId) as { week_number: number } | undefined;
+    const weekIndex = Math.max(0, Number(week?.week_number ?? 1) - 1);
+    dispatchCoachV2Alias(v2, req, res, next, `/plans/${owned.planId}/coach-analysis?weekIndex=${weekIndex}`);
+  });
+  v2.post('/week/reflow/preview', (req: Request, res: Response, next: NextFunction) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const weekId = Number.parseInt(String(body.weekId ?? ''), 10);
+    if (!Number.isSafeInteger(weekId) || weekId <= 0) {
+      sendError(res, 'BAD_WEEK_ID', 'weekId must be a positive integer.', 400);
+      return;
+    }
+    req.body = { ...body, mode: 'preview' };
+    dispatchCoachV2Alias(v2, req, res, next, `/week/${weekId}/reflow`);
+  });
+  v2.post('/week/reflow/proposals', (req: Request, res: Response, next: NextFunction) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const weekId = Number.parseInt(String(body.weekId ?? ''), 10);
+    if (!Number.isSafeInteger(weekId) || weekId <= 0) {
+      sendError(res, 'BAD_WEEK_ID', 'weekId must be a positive integer.', 400);
+      return;
+    }
+    if (typeof body.previewId !== 'string' || !body.previewId.trim()) {
+      sendError(res, 'PREVIEW_REQUIRED', 'previewId from a reviewed reflow preview is required.', 428);
+      return;
+    }
+    req.body = { ...body, mode: 'apply' };
+    dispatchCoachV2Alias(v2, req, res, next, `/week/${weekId}/reflow`);
+  });
+
+  // ── C2 — Travel & availability CRUD ────────────────────────────
+  v2.get('/week/travel', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
+    if (!v2EnabledOrShortCircuit(res)) return;
+    const auth = req as AuthenticatedRequest;
+    const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
+    const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
+    if ((fromDate && !isStrictIsoDate(fromDate)) || (toDate && !isStrictIsoDate(toDate))) {
+      sendError(res, 'BAD_INPUT', 'fromDate and toDate must be valid YYYY-MM-DD dates.', 400);
+      return;
+    }
+    if (fromDate && toDate && fromDate > toDate) {
+      sendError(res, 'BAD_INPUT', 'fromDate must be on or before toDate.', 400);
+      return;
+    }
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) {
+      sendError(res, 'BAD_INPUT', 'limit must be an integer from 1 through 100.', 400);
+      return;
+    }
+    const windows = listTravelWindows(auth.userId, auth.tenantId, { fromDate, toDate, limit });
+    sendSuccess(res, {
+      schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+      windows: windows.map(serializeTravelWindow),
+    });
+  });
+
   v2.post('/week/travel', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const auth = req as AuthenticatedRequest;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const startDate = typeof body.startDate === 'string' ? body.startDate : '';
-    const endDate = typeof body.endDate === 'string' ? body.endDate : '';
-    if (!startDate || !endDate) {
-      sendError(res, 'BAD_INPUT', 'startDate and endDate are required (ISO 8601).', 400);
-      return;
-    }
-    // R4 P2 fix — same strict YYYY-MM-DD gate the red-flag endpoint
-    // now applies. The travel-window writer feeds these into indexed
-    // SQLite columns, so we must reject "tomorrow", "2026-13-01",
-    // and injection-shaped strings before they reach the writer.
-    if (!isStrictIsoDate(startDate)) {
-      sendError(res, 'BAD_INPUT', 'startDate must be a valid YYYY-MM-DD calendar date.', 400);
-      return;
-    }
-    if (!isStrictIsoDate(endDate)) {
-      sendError(res, 'BAD_INPUT', 'endDate must be a valid YYYY-MM-DD calendar date.', 400);
-      return;
-    }
-    if (endDate < startDate) {
-      // Lexicographic comparison is valid on strict YYYY-MM-DD.
-      sendError(res, 'BAD_INPUT', 'endDate must be on or after startDate.', 400);
-      return;
-    }
     try {
+      const travel = parseTravelBody(body, true);
+      const idempotencyKey = req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? '');
+      if (!idempotencyKey.trim()) {
+        sendError(res, 'IDEMPOTENCY_REQUIRED', 'Idempotency-Key is required for travel creation.', 428);
+        return;
+      }
       const result = recordTravelWindow({
         userId: auth.userId,
         tenantId: auth.tenantId,
-        startDate,
-        endDate,
-        equipmentProfile: typeof body.equipmentProfile === 'string' ? body.equipmentProfile : undefined,
-        timeZoneShiftHours: typeof body.timeZoneShiftHours === 'number' ? body.timeZoneShiftHours : undefined,
-        flightDurationHours: typeof body.flightDurationHours === 'number' ? body.flightDurationHours : undefined,
-        sleepDisruptionExpected: body.sleepDisruptionExpected === true,
-        walkingLoadExpected: body.walkingLoadExpected === true,
-        heatStress: body.heatStress === true,
-        availableSessionDurationMinutes:
-          typeof body.availableSessionDurationMinutes === 'number' ? body.availableSessionDurationMinutes : undefined,
-        notes: typeof body.notes === 'string' ? body.notes : undefined,
+        ...travel,
+        startDate: travel.startDate!,
+        endDate: travel.endDate!,
+        idempotencyKey,
       });
-      sendSuccess(res, { id: result.id, alreadyExisted: result.alreadyExisted }, { status: 201 });
+      const window = getTravelWindowById(auth.userId, auth.tenantId, result.id)!;
+      sendSuccess(res, {
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        state: result.alreadyExisted ? 'replayed' : 'created',
+        alreadyExisted: result.alreadyExisted,
+        window: serializeTravelWindow(window),
+      }, { status: result.alreadyExisted ? 200 : 201 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes('startDate')) {
+      if (err instanceof TravelWindowIdempotencyConflictError) {
+        sendError(res, 'IDEMPOTENCY_CONFLICT', message, 409);
+        return;
+      }
+      if (/BAD_TRAVEL_INPUT|startDate/.test(message)) {
         sendError(res, 'BAD_INPUT', message, 400);
         return;
       }
       logger.error({ err, userId: auth.userId }, 'travel_window.write_failed');
       sendError(res, 'INTERNAL', 'Failed to record travel window.', 500);
+    }
+  });
+
+  v2.patch('/week/travel/:id', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
+    if (!v2EnabledOrShortCircuit(res)) return;
+    const auth = req as AuthenticatedRequest;
+    const id = parsePositiveRouteId(req.params.id);
+    if (id === null) {
+      sendError(res, 'BAD_TRAVEL_ID', 'Travel window id must be a positive integer.', 400);
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const expectedVersion = parseTravelIfMatch(req.header('If-Match'))
+      ?? (typeof body.expectedVersion === 'number' ? body.expectedVersion : null);
+    if (expectedVersion === null) {
+      sendError(res, 'PRECONDITION_REQUIRED', 'If-Match travel version is required.', 428);
+      return;
+    }
+    try {
+      if (!getTravelWindowById(auth.userId, auth.tenantId, id)) {
+        sendError(res, 'TRAVEL_WINDOW_NOT_FOUND', 'Travel window not found.', 404);
+        return;
+      }
+      const patch = parseTravelBody(body, false);
+      const result = updateTravelWindowIdempotently({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        id,
+        expectedVersion,
+        patch,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+      });
+      res.setHeader('ETag', `"travel-${result.window.version}"`);
+      sendSuccess(res, {
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        state: result.replayed ? 'replayed' : 'updated',
+        window: serializeTravelWindow(result.window),
+      });
+    } catch (err) {
+      sendTravelMutationError(res, err);
+    }
+  });
+
+  v2.delete('/week/travel/:id', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
+    if (!v2EnabledOrShortCircuit(res)) return;
+    const auth = req as AuthenticatedRequest;
+    const id = parsePositiveRouteId(req.params.id);
+    if (id === null) {
+      sendError(res, 'BAD_TRAVEL_ID', 'Travel window id must be a positive integer.', 400);
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const expectedVersion = parseTravelIfMatch(req.header('If-Match'))
+      ?? (typeof body.expectedVersion === 'number' ? body.expectedVersion : null);
+    if (expectedVersion === null) {
+      sendError(res, 'PRECONDITION_REQUIRED', 'If-Match travel version is required.', 428);
+      return;
+    }
+    try {
+      const result = deleteTravelWindowIdempotently({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        id,
+        expectedVersion,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
+      });
+      sendSuccess(res, {
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        state: result.replayed ? 'replayed' : result.deleted ? 'deleted' : 'already_absent',
+        deleted: result.deleted,
+      });
+    } catch (err) {
+      sendTravelMutationError(res, err);
     }
   });
 
@@ -509,60 +860,23 @@ export function mountCoachV2Routes(parent: Router): Router {
     if (!v2EnabledOrShortCircuit(res)) return;
     const auth = req as AuthenticatedRequest;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const date = typeof body.date === 'string' ? body.date : '';
-    if (!date) {
-      sendError(res, 'BAD_INPUT', 'date is required (ISO YYYY-MM-DD).', 400);
-      return;
-    }
-    // R4 P2 fix — Codex caught that the prior validation accepted
-    // any non-empty string (e.g. "tomorrow", "2026-13-99",
-    // "1970-01-01' OR 1=1"). The DB write feeds `date` straight into
-    // an indexed column, so we must reject anything that doesn't
-    // round-trip as a real calendar date in YYYY-MM-DD form. Strict
-    // regex + UTC Date round-trip rules out bogus months/days,
-    // bracketed Date strings, and timezone-suffixed inputs.
-    if (!isStrictIsoDate(date)) {
-      sendError(res, 'BAD_INPUT', 'date must be a valid YYYY-MM-DD calendar date.', 400);
-      return;
-    }
-    const consentScopeRaw = Array.isArray(body.consentScope) ? body.consentScope : [];
-    const consentScope = consentScopeRaw.filter((s): s is HealthConsentScope =>
-      s === 'pain' || s === 'illness' || s === 'injury' || s === 'menstrual' || s === 'red_s_screening',
-    );
-    if (consentScope.length === 0) {
-      sendError(res, 'BAD_INPUT', 'consentScope must include at least one of pain/illness/injury/red_s_screening.', 400);
-      return;
-    }
     try {
-      const result = recordHealthSignal({
+      const result = recordStructuredHealthIntake({
         userId: auth.userId,
         tenantId: auth.tenantId,
-        date,
-        painScore: typeof body.painScore === 'number' ? body.painScore : undefined,
-        painLocation: typeof body.painLocation === 'string' ? body.painLocation : undefined,
-        illnessSymptoms: Array.isArray(body.illnessSymptoms)
-          ? (body.illnessSymptoms as unknown[]).filter((v): v is string => typeof v === 'string')
-          : undefined,
-        injuryStatus: typeof body.injuryStatus === 'string' && (
-          body.injuryStatus === 'none' || body.injuryStatus === 'acute' ||
-          body.injuryStatus === 'chronic_managed' || body.injuryStatus === 'returning' ||
-          body.injuryStatus === 'post_exertional_symptom_risk'
-        ) ? body.injuryStatus as InjuryStatus : undefined,
-        energyAvailabilityRisk: typeof body.energyAvailabilityRisk === 'string' && (
-          body.energyAvailabilityRisk === 'low' || body.energyAvailabilityRisk === 'moderate' ||
-          body.energyAvailabilityRisk === 'high'
-        ) ? body.energyAvailabilityRisk as EnergyAvailabilityRisk : undefined,
-        // R3 P1 — the canonical `structured_intake` marker that the
-        // safety derivation reads. Without this, A4 hard-pause is
-        // unreachable from the runtime endpoint.
-        source: 'structured_intake',
-        consentScope,
+        payload: body,
+        expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : undefined,
+        idempotencyKey: req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? ''),
       });
-      sendSuccess(res, { id: result.id, droppedFields: result.droppedFields }, { status: 201 });
+      sendSuccess(res, {
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        state: result.replayed ? 'replayed' : 'created',
+        intakeId: result.intake.id,
+        intake: result.intake,
+      }, { status: result.replayed ? 200 : 201 });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (/empty|consentScope|no fields/.test(message)) {
-        sendError(res, 'BAD_INPUT', message, 400);
+      if (err instanceof HealthDataLifecycleError) {
+        sendError(res, err.code, err.message, err.statusCode);
         return;
       }
       logger.error({ err, userId: auth.userId }, 'health_intake_red_flag.failed');
@@ -580,18 +894,6 @@ export function mountCoachV2Routes(parent: Router): Router {
     if (!owned) return;
     const { weekId, planId: ownedPlanId } = owned;
     const auth = req as AuthenticatedRequest;
-    try {
-      assertLegacyWeekMutationAllowed({
-        userId: auth.userId,
-        tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.reflow'),
-      }, weekId);
-    } catch (error) {
-      if (error instanceof TrainingPlanRevisionError) {
-        sendError(res, error.code, error.message, error.statusCode);
-        return;
-      }
-      throw error;
-    }
     const body = (req.body ?? {}) as Record<string, unknown>;
     // Body planId, if supplied, MUST match the owned plan derived
     // from the week. This prevents a caller from passing a foreign
@@ -610,6 +912,7 @@ export function mountCoachV2Routes(parent: Router): Router {
       return;
     }
     const trigger = typeof body.trigger === 'string' ? body.trigger : 'manual_reflow';
+    const previewId = typeof body.previewId === 'string' ? body.previewId.trim() : '';
     // R7 P2 fix — Codex caught that the R6 rate-limit short-circuit
     // fired BEFORE executeWeekReflow's IDEMPOTENCY_REQUIRED guard,
     // so an apply-mode call with no idempotency key + a rate-limited
@@ -638,9 +941,132 @@ export function mountCoachV2Routes(parent: Router): Router {
       );
       return;
     }
+    if (mode === 'apply' && !previewId) {
+      sendError(res, 'PREVIEW_REQUIRED', 'previewId from a reviewed reflow preview is required.', 428);
+      return;
+    }
     const sessionsToPreserve = Array.isArray(body.sessionsToPreserve)
       ? (body.sessionsToPreserve as unknown[]).filter((v): v is number => typeof v === 'number')
       : undefined;
+    const replayRequest = mode === 'apply'
+      ? { previewId }
+      : {
+          trigger,
+          sessionsToPreserve: [...new Set(sessionsToPreserve ?? [])].sort((a, b) => a - b),
+        };
+    if (mode === 'apply') {
+      try {
+        const replay = findTrainingCoachV2ProposalByIdempotency({
+          tenantId: auth.tenantId,
+          userId: auth.userId,
+          kind: 'week_reflow',
+          planId,
+          weekId,
+          idempotencyKey: idempotencyKey!,
+          request: replayRequest,
+        });
+        if (replay) {
+          const bound = replay.decisionId
+            ? replay
+            : await bindTrainingCoachV2ProposalDecision({
+                tenantId: auth.tenantId,
+                userId: auth.userId,
+                proposalId: replay.proposalId,
+              });
+          sendSuccess(res, {
+            schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+            outcome: 'replayed',
+            planId,
+            weekId,
+            proposalId: bound.proposalId,
+            adaptationId: null,
+            decisionId: bound.decisionId,
+            proposal: bound,
+            scenario: null,
+            sciencePolicyVersion: null,
+          });
+          return;
+        }
+      } catch (err) {
+        if (err instanceof TrainingCoachV2ProposalConflictError) {
+          sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+          return;
+        }
+        throw err;
+      }
+    }
+    if (mode === 'apply') {
+      try {
+        const material = getTrainingCoachV2ReflowPreview({
+          tenantId: auth.tenantId,
+          userId: auth.userId,
+          planId,
+          weekId,
+          previewId,
+        });
+        const current = getDb().prepare(`
+          SELECT COALESCE(adaptation_revision, 0) AS adaptationRevision
+            FROM fitness_training_plans
+           WHERE id = ? AND tenant_id = ? AND user_id = ?
+        `).get(planId, auth.tenantId, auth.userId) as { adaptationRevision: number } | undefined;
+        if (!current || current.adaptationRevision !== material.preview.expectedVersion) {
+          sendError(
+            res,
+            'PREVIEW_VERSION_CHANGED',
+            'The plan changed after this preview. Create and review a new preview.',
+            412,
+          );
+          return;
+        }
+        const created = createTrainingCoachV2Proposal({
+          tenantId: auth.tenantId,
+          userId: auth.userId,
+          kind: 'week_reflow',
+          planId,
+          weekId,
+          expectedVersion: material.preview.expectedVersion,
+          request: material.request,
+          evidence: material.evidence,
+          replayRequest,
+          previewId,
+          idempotencyKey: idempotencyKey!,
+        });
+        const boundProposal = await bindTrainingCoachV2ProposalDecision({
+          tenantId: auth.tenantId,
+          userId: auth.userId,
+          proposalId: created.proposal.proposalId,
+        });
+        sendSuccess(res, {
+          schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+          outcome: created.replayed ? 'replayed' : 'proposal_created',
+          planId,
+          weekId,
+          previewId,
+          proposalId: created.proposal.proposalId,
+          adaptationId: null,
+          decisionId: boundProposal.decisionId,
+          proposal: boundProposal,
+          scenario: material.evidence.scenario ?? null,
+          sciencePolicyVersion: material.evidence.sciencePolicyVersion ?? null,
+        }, { status: created.replayed ? 200 : 202 });
+        return;
+      } catch (err) {
+        if (err instanceof TrainingCoachV2ProposalConflictError) {
+          sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+          return;
+        }
+        if (err instanceof TrainingCoachV2ReflowPreviewError) {
+          sendError(res, err.code, err.message, err.statusCode);
+          return;
+        }
+        if (err instanceof TrainingCoachV2ProposalStateError) {
+          const status = err.code === 'REFLOW_PREVIEW_UNAVAILABLE' ? 410 : 400;
+          sendError(res, err.code, err.message, status);
+          return;
+        }
+        throw err;
+      }
+    }
     const knowledge = loadCoachKnowledge();
     const principles = knowledge.principles;
     const sciencePolicyVersion = getSciencePolicyVersion(principles);
@@ -653,7 +1079,8 @@ export function mountCoachV2Routes(parent: Router): Router {
       const db = getDb();
       const planMeta = db.prepare(`
         SELECT id, user_id, start_date, duration_weeks, sport,
-               COALESCE(plan_version, 1) AS plan_version
+               COALESCE(plan_version, 1) AS plan_version,
+               COALESCE(adaptation_revision, 0) AS adaptation_revision
         FROM fitness_training_plans WHERE id = ?
       `).get(planId) as {
         id: number;
@@ -662,6 +1089,7 @@ export function mountCoachV2Routes(parent: Router): Router {
         duration_weeks: number;
         sport: string;
         plan_version: number;
+        adaptation_revision: number;
       };
 
       const weekRow = db.prepare(
@@ -750,30 +1178,11 @@ export function mountCoachV2Routes(parent: Router): Router {
       // from the signal so a structured intake row can actually emit
       // a hard pause. Previously hardcoded `source: 'wearable'` made
       // every signal degrade to warning-only.
-      const healthSignal = getLatestHealthSignal(auth.userId, auth.tenantId);
-      const safetyOutput = healthSignal
-        ? (() => {
-            // R8 P2-11 — single decode at the route boundary
-            // narrows enum fields + parses illness JSON once, with
-            // logger.warn-rejects for unknown values. The two
-            // downstream consumers (deriveSafetyTriggerFromSignal,
-            // wireHealthSignalToSafety) see typed inputs only.
-            const decoded = decodeHealthSignalRow(healthSignal);
-            const trig = deriveSafetyTriggerFromSignal({
-              source: decoded.source,
-              illnessSymptoms: decoded.illnessSymptoms,
-              injuryStatus: decoded.injuryStatus,
-              energyAvailabilityRisk: decoded.energyAvailabilityRisk,
-              painScore: decoded.painScore,
-              painLocation: decoded.painLocation,
-            });
-            return wireHealthSignalToSafety({
-              signal: decoded,
-              source: trig.source,
-              triggerType: trig.triggerType,
-            });
-          })()
-        : undefined;
+      const safetyOutput = getEffectiveHealthSafetyOutput({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        db,
+      });
 
       // R4 P1 fix — reflow now hydrates the SAME aggregated week
       // conditions as coach-analysis (travel, gap, adherence, missed
@@ -860,225 +1269,87 @@ export function mountCoachV2Routes(parent: Router): Router {
         principles,
       });
 
-      // R6 P2 fix — Codex caught that the reflow apply path always
-      // wrote an adaptation ledger row + bumped the revision, even
-      // when the classifier returned zero actions because the
-      // anti-churn rate limit fired. That no-op ledger row then
-      // *counted as churn* on the next request — bootstrapping the
-      // limiter into a tighter and tighter state.
-      //
-      // The new rule: if the classifier is rate-limited AND we're
-      // in apply mode, short-circuit BEFORE executeWeekReflow. No
-      // session mutations, no ledger row, no revision bump. The
-      // response uses the same serializer shape so iOS decodes it
-      // with one Codable. `mutated: false`, `mutatedRows: 0`, and
-      // `scenario.rateLimited: true` tell the caller exactly what
-      // happened. Preview mode falls through normally — previews
-      // never bump revision and never count toward the limit, so
-      // the user can still see the suppressed plan.
-      //
-      // BUT — the idempotency replay path must take precedence over
-      // the rate-limit short-circuit. A second apply with the same
-      // key is a *retry of the same intent*, not new churn, so we
-      // let it through to `executeWeekReflow` which routes it into
-      // the conflict-replay branch and surfaces the canonical
-      // alreadyExisted=true response.
-      if (mode === 'apply' && scenario.rateLimited) {
-        const existingForKey =
-          idempotencyKey !== undefined
-            ? findAdaptationByIdempotencyKey(planId, idempotencyKey)
-            : null;
-        if (existingForKey) {
-          // R8 P1-4 — Codex caught that the (plan_id, idempotency_key)
-          // UNIQUE index is per-plan, NOT per-week. A naive replay
-          // would happily return the existing row's data even when
-          // the caller meant a different week. That means a client
-          // who reuses an idempotency key across weeks gets a 200
-          // for week B when only week A was applied. Reject 409
-          // here so the client knows the key is occupied by a
-          // different week — they need to mint a fresh key.
-          const existingWeekId = extractWeekIdFromTriggerPayload(existingForKey.trigger_payload_json);
-          if (existingWeekId !== null && existingWeekId !== weekId) {
-            sendError(
-              res,
-              'IDEMPOTENCY_KEY_REUSED_DIFFERENT_WEEK',
-              `Idempotency key already used on week ${existingWeekId} for this plan; use a fresh key for week ${weekId}.`,
-              409,
-            );
-            return;
-          }
-          // Same week → fall through to executeWeekReflow so the
-          // conflict-replay path emits the canonical response.
-        } else {
-          sendSuccess(
-            res,
-            serializeReflowResponse({
-              // Synthetic result — no revision, no adaptation row.
-              // We deliberately reuse buildReplayReflowResult's
-              // shape because it already encodes "we didn't mutate
-              // anything for you" semantics.
-              result: {
-                mode: 'apply',
-                adaptationId: 0,
-                adaptationRevision: null,
-                alreadyExisted: false,
-                mutated: false,
-                mutatedRows: 0,
-                affectedSessionIds: [],
-              },
-              scenario,
-              perActionResults: [],
-              sciencePolicyVersion,
-            }),
-          );
-          return;
-        }
-      }
-
-      // R3 P2 fix — capture the per-action breakdown so the response
-      // and the ledger both surface skipped/deferred actions. Before:
-      // a deferred swap_exercise vanished silently from the apply
-      // response.
-      //
-      // R8 P3 fix — Codex caught that for rate-limited PREVIEWs the
-      // ledger row wrote empty `afterPatch.actions` and empty
-      // `decisionReasonCodes`, even though `scenario.suppressedActions`
-      // held the would-have plan. That made the audit trail blind to
-      // what the classifier wanted to do — support couldn't
-      // reconstruct "we'd have moved Tuesday → Thursday but waited."
-      // Fix: source the ledger's actions + decision codes from
-      // `scenario.suppressedActions` when `scenario.rateLimited` is
-      // true; otherwise use the canonical `scenario.actions` as
-      // before. The response surface (`serializeReflowResponse`) is
-      // unchanged — iOS still sees the suppressed actions inside
-      // `scenario` and `actions: []` at the top level.
-      //
-      // The apply rate-limit synthetic-200 branch above ALREADY
-      // short-circuits before this code path, so no ledger row is
-      // written for apply-rate-limited (the no-ledger contract from
-      // R6 P2 is preserved). Only the *preview* path falls through
-      // and writes a `scope='preview'` row that now carries the
-      // suppressed actions for audit.
-      const ledgerActions =
-        scenario.rateLimited === true
-          ? scenario.suppressedActions ?? []
-          : scenario.actions;
-      const ledgerDecisionReasonCodes = ledgerActions.map((a) => a.reasonCode);
-      const result = await executeWeekReflowWithPropagation({
-        userId: auth.userId,
-        tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.reflow'),
-        planId,
-        planVersion: planMeta.plan_version,
-        weekId,
-        mode,
-        trigger,
-        idempotencyKey,
-        sessionsToPreserve,
-        sciencePolicyVersion,
-        featureFlagSnapshot: { periodizationV2Enabled: true },
-        actor: 'user',
-        beforePatch: { sessions: sessionsRows },
-        afterPatch: {
-          // Canonical actions surface — populated even on
-          // rate-limited preview so the audit row reflects intent.
-          actions: ledgerActions,
-          // R8 P3 — explicit flag so a ledger reader can tell at a
-          // glance whether this row's `actions` array is the
-          // executed plan or the suppressed-by-rate-limit plan.
-          rateLimitedSuppressed: scenario.rateLimited === true,
-          // R8 P0-1 — perActionResults gets merged into this object
-          // by executeWeekReflow from the structured applyMutation
-          // return value. No getter / no closure-over-let.
-        },
-        decisionReasonCodes: ledgerDecisionReasonCodes,
-        syncTarget: reflowSyncTarget,
-        applyMutation: mode === 'apply'
-          ? (db) => {
-              const r = executeCoachActions(db, {
-                planId,
-                actions: scenario.actions,
-                schedulingTimezone,
-              });
-              return {
-                mutatedRows: r.mutatedRows,
-                perActionResults: r.perActionResults,
-                affectedSessionIds: r.affectedSessionIds,
-              };
-            }
-          : undefined,
-      });
-      const perActionResults =
-        (Array.isArray(result.perActionResults)
-          ? result.perActionResults
-          : []) as ReturnType<typeof executeCoachActions>['perActionResults'];
-      // R4 P2 fix — route the happy-path response through the shared
-      // serializer so the conflict-replay branch below can produce
-      // exactly the same shape (Codex caught the two responses had
-      // drifted and clients saw a half-payload on retry).
-      sendSuccess(
-        res,
-        serializeReflowResponse({
-          result,
+      // Manual reflow is proposal-first for both compatibility and revision
+      // plans. Preview computes deterministic actions only; proposal creation
+      // persists evidence but never updates sessions or adaptation_revision.
+      // Decision Center later activates under an explicit `adapt` lock.
+      if (scenario.rateLimited) {
+        sendSuccess(res, {
+          schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+          outcome: 'rate_limited',
+          planId,
+          weekId,
+          proposalId: null,
+          adaptationId: null,
           scenario,
-          perActionResults,
           sciencePolicyVersion,
-        }),
-      );
+        });
+        return;
+      }
+      if (scenario.actions.length === 0) {
+        sendSuccess(res, {
+          schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+          outcome: 'no_changes',
+          planId,
+          weekId,
+          proposalId: null,
+          adaptationId: null,
+          scenario,
+          sciencePolicyVersion,
+        });
+        return;
+      }
+      if (mode === 'preview') {
+        const preview = createTrainingCoachV2ReflowPreview({
+          tenantId: auth.tenantId,
+          userId: auth.userId,
+          planId,
+          weekId,
+          expectedVersion: planMeta.adaptation_revision,
+          request: {
+            trigger,
+            sessionsToPreserve: sessionsToPreserve ?? [],
+            actions: scenario.actions,
+            schedulingTimezone,
+            syncTarget: reflowSyncTarget,
+          },
+          evidence: {
+            schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+            sciencePolicyVersion,
+            reasonCodes: scenario.actions.map((action) => action.reasonCode),
+            planVersion: planMeta.plan_version,
+            scenario,
+          },
+        });
+        sendSuccess(res, {
+          schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+          outcome: 'preview',
+          planId,
+          weekId,
+          previewId: preview.preview.previewId,
+          previewExpiresAt: preview.preview.expiresAt,
+          proposalId: null,
+          adaptationId: null,
+          expectedVersion: planMeta.adaptation_revision,
+          actions: scenario.actions,
+          scenario,
+          sciencePolicyVersion,
+        });
+        return;
+      }
     } catch (err) {
+      if (err instanceof TrainingCoachV2ProposalConflictError) {
+        sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
+        return;
+      }
+      if (err instanceof TrainingCoachV2ProposalStateError) {
+        sendError(res, err.code, err.message, err.code === 'IDEMPOTENCY_REQUIRED' ? 428 : 400);
+        return;
+      }
       const lockError = trainingOperationLockPublicError(err);
       if (lockError) {
         res.setHeader('Retry-After', String(lockError.retryAfterSeconds));
         sendError(res, lockError.code, lockError.message, lockError.status, lockError.details);
-        return;
-      }
-      if (err instanceof ReflowMissingIdempotencyKeyError) {
-        sendError(res, 'IDEMPOTENCY_REQUIRED', err.message, 400);
-        return;
-      }
-      if (err instanceof AdaptationIdempotencyConflictError) {
-        // Codex R2 P2 fix — re-fetch the winning row instead of 500.
-        if (idempotencyKey) {
-          const existing = findAdaptationByIdempotencyKey(planId, idempotencyKey);
-          if (existing) {
-            // R8 P1-4 — same cross-week guard the rate-limit branch
-            // applies: if the existing row's weekId is different
-            // from the requested weekId, reject 409 so the client
-            // knows the key is occupied by a different week's row.
-            const existingWeekId = extractWeekIdFromTriggerPayload(existing.trigger_payload_json);
-            if (existingWeekId !== null && existingWeekId !== weekId) {
-              sendError(
-                res,
-                'IDEMPOTENCY_KEY_REUSED_DIFFERENT_WEEK',
-                `Idempotency key already used on week ${existingWeekId} for this plan; use a fresh key for week ${weekId}.`,
-                409,
-              );
-              return;
-            }
-            // R4 P2 fix — emit the SAME shape the happy path emits.
-            // Replay carries `alreadyExisted: true, mutated: false`
-            // but iOS can decode it with the same Codable as a fresh
-            // apply. Actions + perActionResults are intentionally
-            // empty here (the canonical record is in the ledger via
-            // /coach-analysis); we never re-run the classifier on a
-            // dedup.
-            sendSuccess(
-              res,
-              serializeReflowResponse({
-                result: buildReplayReflowResult({
-                  adaptationId: existing.id,
-                  adaptationRevision: existing.adaptation_revision,
-                }),
-                sciencePolicyVersion,
-              }),
-            );
-            return;
-          }
-        }
-        sendError(res, 'IDEMPOTENCY_CONFLICT', err.message, 409);
-        return;
-      }
-      if (err instanceof AdaptationPlanNotFoundError) {
-        sendError(res, 'PLAN_NOT_FOUND', err.message, 404);
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -1099,16 +1370,22 @@ export function mountCoachV2Routes(parent: Router): Router {
     // Codex R2 P0 fix — ownership-scoped read.
     const owned = resolveOwnedPlan(req, res, rawPlanId);
     if (!owned) return;
-    const policy = getCoachPlanPolicy(owned.planId);
-    if (!policy) {
+    const snapshot = getCoachPlanPolicySnapshot(owned.planId);
+    if (!snapshot) {
       sendError(res, 'PLAN_NOT_FOUND', `Plan ${owned.planId} not found.`, 404);
       return;
     }
-    sendSuccess(res, { planId: owned.planId, policy });
+    res.setHeader('ETag', snapshot.etag);
+    sendSuccess(res, {
+      schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+      planId: owned.planId,
+      version: snapshot.version,
+      policy: snapshot.policy,
+    });
   });
 
   // ── A5 — PATCH /plans/:planId/coach-policy ─────────────────────
-  v2.patch('/plans/:planId/coach-policy', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
+  v2.patch('/plans/:planId/coach-policy', coachV2RateLimitMiddleware, async (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawPlanId = resolvePlanId(req, res);
     if (rawPlanId === null) return;
@@ -1117,24 +1394,92 @@ export function mountCoachV2Routes(parent: Router): Router {
     if (!owned) return;
     const planId = owned.planId;
     const auth = req as AuthenticatedRequest;
-    try {
-      assertLegacyPlanMutationAllowed({
-        userId: auth.userId,
-        tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.policy'),
-      }, planId);
-    } catch (error) {
-      if (error instanceof TrainingPlanRevisionError) {
-        sendError(res, error.code, error.message, error.statusCode);
-        return;
-      }
-      throw error;
-    }
     const body = (req.body ?? {}) as Record<string, unknown>;
     try {
-      const updated = setCoachPlanPolicy(planId, body);
-      sendSuccess(res, { planId, policy: updated });
+      const expectedVersion = parseCoachPolicyIfMatch(req.header('If-Match'))
+        ?? (typeof body.expectedVersion === 'number' ? body.expectedVersion : null);
+      if (expectedVersion === null) {
+        sendError(res, 'PRECONDITION_REQUIRED', 'If-Match coach policy version is required.', 428);
+        return;
+      }
+      const idempotencyKey = req.header('Idempotency-Key') ?? String(body.idempotencyKey ?? '');
+      if (!idempotencyKey.trim()) {
+        sendError(res, 'IDEMPOTENCY_REQUIRED', 'Idempotency-Key is required for coach policy proposals.', 428);
+        return;
+      }
+      const ignoredKeys = new Set(['expectedVersion', 'idempotencyKey']);
+      const patch = Object.fromEntries(Object.entries(body).filter(([key]) => !ignoredKeys.has(key)));
+      const replayRequest = { expectedVersion, patch };
+      const replay = findTrainingCoachV2ProposalByIdempotency({
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        kind: 'coach_policy',
+        planId,
+        weekId: null,
+        idempotencyKey,
+        request: replayRequest,
+      });
+      if (replay) {
+        const bound = replay.decisionId
+          ? replay
+          : await bindTrainingCoachV2ProposalDecision({
+              tenantId: auth.tenantId,
+              userId: auth.userId,
+              proposalId: replay.proposalId,
+            });
+        sendSuccess(res, {
+          schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+          outcome: 'replayed',
+          proposal: bound,
+          decisionId: bound.decisionId,
+        });
+        return;
+      }
+      const current = getCoachPlanPolicySnapshot(planId)!;
+      if (current.version !== expectedVersion) {
+        sendError(res, 'VERSION_CONFLICT', 'Coach policy version does not match If-Match.', 412);
+        return;
+      }
+      const proposed = previewCoachPlanPolicyPatch(planId, patch);
+      const proposal = createTrainingCoachV2Proposal({
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        kind: 'coach_policy',
+        planId,
+        expectedVersion,
+        request: { patch, proposedPolicy: proposed.policy },
+        evidence: {
+          source: 'explicit_user_request',
+          currentPolicyVersion: current.version,
+          currentPolicy: current.policy,
+          schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        },
+        replayRequest,
+        idempotencyKey,
+      });
+      const boundProposal = await bindTrainingCoachV2ProposalDecision({
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        proposalId: proposal.proposal.proposalId,
+      });
+      sendSuccess(res, {
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
+        outcome: proposal.replayed ? 'replayed' : 'proposal_created',
+        proposal: boundProposal,
+        decisionId: boundProposal.decisionId,
+        currentPolicy: current.policy,
+        proposedPolicy: proposed.policy,
+      }, { status: proposal.replayed ? 200 : 202 });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof TrainingCoachV2ProposalConflictError) {
+        sendError(res, 'IDEMPOTENCY_CONFLICT', message, 409);
+        return;
+      }
+      if (err instanceof TrainingCoachV2ProposalStateError) {
+        sendError(res, err.code, message, err.code === 'IDEMPOTENCY_REQUIRED' ? 428 : 400);
+        return;
+      }
       if (/does not exist/i.test(message)) {
         sendError(res, 'PLAN_NOT_FOUND', `Plan ${planId} not found.`, 404);
         return;
@@ -1231,6 +1576,10 @@ export function mountCoachV2Routes(parent: Router): Router {
         return;
       }
       const safeWeekIndex = weekIndex;
+      const weekNumber = safeWeekIndex + 1;
+      const weekIdentity = db.prepare(`
+        SELECT id FROM training_weeks WHERE plan_id = ? AND week_number = ?
+      `).get(planId, weekNumber) as { id: number } | undefined;
       const weekIntent = meso.weeks[safeWeekIndex];
 
       // Build intensity profiles for the week's sessions (A2b).
@@ -1331,30 +1680,11 @@ export function mountCoachV2Routes(parent: Router): Router {
       // consented HealthSignal and run it through the safety wiring;
       // the resulting safetyOutput is what makes C8's hard-pause
       // path actually reachable from the runtime endpoint.
-      const healthSignal = getLatestHealthSignal(auth.userId, auth.tenantId);
-      const safetyOutput = healthSignal
-        ? (() => {
-            // R8 P2-11 — single decode at the route boundary
-            // narrows enum fields + parses illness JSON once, with
-            // logger.warn-rejects for unknown values. The two
-            // downstream consumers (deriveSafetyTriggerFromSignal,
-            // wireHealthSignalToSafety) see typed inputs only.
-            const decoded = decodeHealthSignalRow(healthSignal);
-            const trig = deriveSafetyTriggerFromSignal({
-              source: decoded.source,
-              illnessSymptoms: decoded.illnessSymptoms,
-              injuryStatus: decoded.injuryStatus,
-              energyAvailabilityRisk: decoded.energyAvailabilityRisk,
-              painScore: decoded.painScore,
-              painLocation: decoded.painLocation,
-            });
-            return wireHealthSignalToSafety({
-              signal: decoded,
-              source: trig.source,
-              triggerType: trig.triggerType,
-            });
-          })()
-        : undefined;
+      const safetyOutput = getEffectiveHealthSafetyOutput({
+        userId: auth.userId,
+        tenantId: auth.tenantId,
+        db,
+      });
 
       // Aggregate conditions (C7).
       const weekConditions = aggregateWeekConditions({
@@ -1385,8 +1715,12 @@ export function mountCoachV2Routes(parent: Router): Router {
       });
 
       sendSuccess(res, {
+        schemaVersion: TRAINING_COACH_V2_CONTRACT_VERSION,
         planId,
+        weekId: weekIdentity?.id ?? null,
         weekIndex: safeWeekIndex,
+        weekNumber,
+        generatedAt: new Date().toISOString(),
         sciencePolicyVersion,
         athleteLevel: { level: levelInfo.level, inferred: levelInfo.inferred },
         raceCalendar,
@@ -1415,6 +1749,12 @@ export function mountCoachV2Routes(parent: Router): Router {
         taperDecision,
         weekConditions,
         scenario,
+        explanations: buildPrivacySafeCoachExplanations({
+          weekNumber,
+          scenario,
+          hasSafetyOverride: safetyOutput?.effectiveSeverity === 'block',
+          hasTravel: travelWindows.length > 0,
+        }),
       });
     } catch (err) {
       logger.error({ err, planId, weekIndex }, 'coach_analysis.failed');

@@ -894,7 +894,12 @@ describe('Secretary Notification Orchestrator', () => {
       apnsCategory: 'DECISION_CLARIFICATION',
       iosDestination: 'decision_center',
       privacySafeCopyPolicy: 'health',
-      supportedActions: ['activate_training_plan_revision', 'approve_product_learning_case', 'open_detail'],
+      supportedActions: [
+        'activate_training_plan_revision',
+        'activate_training_coach_v2_proposal',
+        'approve_product_learning_case',
+        'open_detail',
+      ],
       actionId: 'approve_product_learning_case',
       contributesToBadge: true,
     });

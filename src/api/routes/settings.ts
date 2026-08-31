@@ -376,7 +376,11 @@ export function settingsRoutes(): Router {
       userData.savedIdeas = contentRecords('saved_ideas');
 
       // ── Reports & notifications ──
-      userData.reportDocuments = safeAll('SELECT * FROM report_documents WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.reportDocuments = safeAll(
+        'SELECT * FROM report_documents_scoped WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC',
+        tenantId,
+        userId,
+      );
       userData.pushPreferences = safeAll('SELECT * FROM push_preferences WHERE user_id = ?', userId);
       userData.contentNotifications = contentRecords('content_notifications', 'created_at');
 

@@ -3,7 +3,7 @@
 /**
  * Module-level singleton that retains the *raw* deterministic `WeeklyPlan`
  * objects produced by `buildCoachKernelTrainingPlan`, keyed by
- * (athleteId, weekStart). Each entry also stores the AthleteState that
+ * (tenantId, athleteId, weekStart). Each entry also stores the AthleteState that
  * generated the plan, which the home-view route needs to re-run
  * `adjustForFatigue` against today's live readiness.
  *
@@ -26,6 +26,7 @@
 
 import { InMemoryCoachPlanStore, type CoachPlanStore, type StoredCoachPlan } from './coach-kernel/stores/in-memory-plan-store';
 import type { AthleteState, WeeklyPlan } from './coach-kernel/types';
+import { requireTenantIdParam } from './tenant-scope';
 
 export type { StoredCoachPlan } from './coach-kernel/stores/in-memory-plan-store';
 
@@ -43,19 +44,34 @@ export function _resetCoachPlanStoreForTests(): void {
 
 /** Persist a WeeklyPlan + its producing AthleteState so the home-view
  *  route can read guardrails *and* re-run fatigue adjustment later. */
-export function recordWeeklyPlan(plan: WeeklyPlan, athleteState: AthleteState): StoredCoachPlan {
-  return store.save({ plan, athleteState });
+export function recordWeeklyPlan(
+  tenantId: number,
+  plan: WeeklyPlan,
+  athleteState: AthleteState,
+): StoredCoachPlan {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachPlanRegistry.recordWeeklyPlan');
+  return store.save({ tenantId: scopedTenantId, plan, athleteState });
 }
 
-/** Look up a specific stored entry by athlete + week-start date. */
-export function getStoredPlanForWeek(athleteId: number, weekStart: string): StoredCoachPlan | null {
-  return store.get(athleteId, weekStart);
+/** Look up a specific stored entry by tenant + athlete + week-start date. */
+export function getStoredPlanForWeek(
+  athleteId: number,
+  tenantId: number,
+  weekStart: string,
+): StoredCoachPlan | null {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachPlanRegistry.getStoredPlanForWeek');
+  return store.get(athleteId, scopedTenantId, weekStart);
 }
 
 /** Back-compat convenience: just the WeeklyPlan for callers that don't
  *  need the AthleteState. */
-export function getWeeklyPlanForWeek(athleteId: number, weekStart: string): WeeklyPlan | null {
-  return store.get(athleteId, weekStart)?.plan ?? null;
+export function getWeeklyPlanForWeek(
+  athleteId: number,
+  tenantId: number,
+  weekStart: string,
+): WeeklyPlan | null {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachPlanRegistry.getWeeklyPlanForWeek');
+  return store.get(athleteId, scopedTenantId, weekStart)?.plan ?? null;
 }
 
 /**
@@ -65,16 +81,21 @@ export function getWeeklyPlanForWeek(athleteId: number, weekStart: string): Week
  * stored plan covers the given date (fresh server / stale cache after
  * restart).
  */
-export function getStoredPlanCoveringDate(athleteId: number, date: string): StoredCoachPlan | null {
+export function getStoredPlanCoveringDate(
+  athleteId: number,
+  tenantId: number,
+  date: string,
+): StoredCoachPlan | null {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachPlanRegistry.getStoredPlanCoveringDate');
   // Try the common case first: callers usually know their own weekStart.
-  const direct = store.get(athleteId, date);
+  const direct = store.get(athleteId, scopedTenantId, date);
   if (direct) return direct;
 
   const target = new Date(`${date}T00:00:00.000Z`).getTime();
   if (Number.isNaN(target)) return null;
   for (let offset = 0; offset <= 6; offset++) {
     const candidate = new Date(target - offset * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const entry = store.get(athleteId, candidate);
+    const entry = store.get(athleteId, scopedTenantId, candidate);
     if (entry) return entry;
   }
   return null;
@@ -82,8 +103,12 @@ export function getStoredPlanCoveringDate(athleteId: number, date: string): Stor
 
 /** Back-compat convenience: same as `getStoredPlanCoveringDate` but
  *  returns only the WeeklyPlan. */
-export function getWeeklyPlanCoveringDate(athleteId: number, date: string): WeeklyPlan | null {
-  return getStoredPlanCoveringDate(athleteId, date)?.plan ?? null;
+export function getWeeklyPlanCoveringDate(
+  athleteId: number,
+  tenantId: number,
+  date: string,
+): WeeklyPlan | null {
+  return getStoredPlanCoveringDate(athleteId, tenantId, date)?.plan ?? null;
 }
 
 /**
@@ -93,6 +118,7 @@ export function getWeeklyPlanCoveringDate(athleteId: number, date: string): Week
  * just hard-deleted. Returns the number of entries removed for
  * auditing. Safe to call when the registry is empty for that athlete.
  */
-export function clearStoredPlansForAthlete(athleteId: number): number {
-  return store.clearForAthlete(athleteId);
+export function clearStoredPlansForAthlete(athleteId: number, tenantId: number): number {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachPlanRegistry.clearStoredPlansForAthlete');
+  return store.clearForAthlete(athleteId, scopedTenantId);
 }

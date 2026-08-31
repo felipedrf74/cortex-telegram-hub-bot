@@ -35,8 +35,9 @@ const mockGetActivePlan = vi.hoisted(() => vi.fn());
 const mockGetCurrentWeek = vi.hoisted(() => vi.fn());
 const mockGetWeeklyAdherence = vi.hoisted(() => vi.fn());
 const mockComputeAdjustmentRecommendation = vi.hoisted(() => vi.fn());
-const mockUpdateWeekAdjustment = vi.hoisted(() => vi.fn());
 const mockGetWeeksForPlan = vi.hoisted(() => vi.fn());
+const mockCreateTrainingCoachV2Proposal = vi.hoisted(() => vi.fn());
+const mockBindTrainingCoachV2ProposalDecision = vi.hoisted(() => vi.fn());
 const mockCalculateReadiness = vi.hoisted(() => vi.fn());
 const mockPersistReadinessScore = vi.hoisted(() => vi.fn());
 const mockGetEffectiveEntitlement = vi.hoisted(() => vi.fn());
@@ -54,6 +55,7 @@ const mockRunAutoresearch = vi.hoisted(() => vi.fn());
 const mockGetEvalTarget = vi.hoisted(() => vi.fn());
 const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
 const mockRunTaskLedgerRetentionJob = vi.hoisted(() => vi.fn());
+const mockSweepExpiredStructuredHealthData = vi.hoisted(() => vi.fn());
 const mockRunPipelineAgent = vi.hoisted(() => vi.fn());
 const mockWrapJob = vi.hoisted(() => vi.fn(
   (name: string, fn: (...args: unknown[]) => unknown, _options?: unknown) => {
@@ -250,6 +252,9 @@ vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.f
 vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
 vi.mock('../../src/agents/voice-evolution-agent', () => ({ runScheduledVoiceEvolutionAgent: vi.fn() }));
 vi.mock('../../src/services/intelligence-bus', () => ({ expireStaleSignals: vi.fn() }));
+vi.mock('../../src/services/health-data-lifecycle', () => ({
+  sweepExpiredStructuredHealthData: (...args: unknown[]) => mockSweepExpiredStructuredHealthData(...args),
+}));
 vi.mock('../../src/commands/books', () => ({ seedBooksIfEmpty: vi.fn() }));
 vi.mock('../../src/services/autoresearch', () => ({
   computePromptStateHash: (...args: unknown[]) => mockComputePromptStateHash(...args),
@@ -351,9 +356,18 @@ vi.mock('../../src/services/training-plans', () => ({
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
   computeAdjustmentRecommendation: (...args: unknown[]) => mockComputeAdjustmentRecommendation(...args),
-  updateWeekAdjustment: (...args: unknown[]) => mockUpdateWeekAdjustment(...args),
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionsForWeek: vi.fn(() => []),
+}));
+vi.mock('../../src/services/training-coach-v2-proposals', () => ({
+  createTrainingCoachV2Proposal: (...args: unknown[]) => mockCreateTrainingCoachV2Proposal(...args),
+  bindTrainingCoachV2ProposalDecision: (...args: unknown[]) => mockBindTrainingCoachV2ProposalDecision(...args),
+}));
+vi.mock('../../src/services/coach-kernel/knowledge-loader', () => ({
+  loadCoachKnowledge: vi.fn(() => ({ principles: {} })),
+}));
+vi.mock('../../src/services/coach-kernel/training-principles', () => ({
+  getSciencePolicyVersion: vi.fn(() => 'science-test-v1'),
 }));
 vi.mock('../../src/services/readiness-scorer', () => ({
   calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
@@ -384,6 +398,7 @@ import {
   decisionMetricsRollupDateForScheduler,
   getActiveUserIds,
   getActiveTaskSyncScopes,
+  getActiveTrainingScopes,
   getOwnerUserIds,
   runContentTopicCronForActiveUsers,
   runWeeklyContentPackageCronForActiveUsers,
@@ -402,11 +417,22 @@ import { addToConversation } from '../../src/state/conversation';
 import { getDueReminders, markReminderFired } from '../../src/state/reminders';
 import { logger } from '../../src/utils/logger';
 import { AiBudgetError } from '../../src/services/cost-guardrail';
-import { TrainingPlanRevisionError } from '../../src/services/training-plan-revision-errors';
+
+function useTrainingScopeDb(scopes: Array<{ tenant_id: number; user_id: number }>): void {
+  mockGetDb.mockReturnValue({
+    prepare: vi.fn((sql: string) => ({
+      all: vi.fn(() => sql.includes('FROM fitness_training_plans') ? scopes : []),
+      get: vi.fn(() => sql.includes('COALESCE(adaptation_revision')
+        ? { adaptationRevision: 0 }
+        : { present: 1, engaged: 1, total: 0 }),
+    })),
+  });
+}
 
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv('COACH_PERIODIZATION_V2_ENABLED', 'on');
     mockRunPipelineAgent.mockReset();
     mockRunPipelineAgent.mockResolvedValue(undefined);
     delete process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED;
@@ -436,11 +462,16 @@ describe('scheduler tenant scoping', () => {
     mockGetSharedListPendingTasks.mockResolvedValue({ success: true, data: [] });
     mockIsSelfCreatedTask.mockReturnValue(false);
     mockGetDb.mockReturnValue({
-      prepare: vi.fn(() => ({
-        all: vi.fn(() => [
-          { id: 11, telegram_id: 1011 },
-          { id: 22, telegram_id: null },
-        ]),
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM fitness_training_plans')
+          ? [
+              { tenant_id: 11, user_id: 11 },
+              { tenant_id: 22, user_id: 22 },
+            ]
+          : [
+              { id: 11, telegram_id: 1011 },
+              { id: 22, telegram_id: null },
+            ]),
         get: vi.fn(() => ({ present: 1, engaged: 1, total: 0 })),
       })),
     });
@@ -466,6 +497,11 @@ describe('scheduler tenant scoping', () => {
       retentionDays: 30,
       cutoff: '2026-04-01T00:00:00.000Z',
       targets: [],
+    });
+    mockSweepExpiredStructuredHealthData.mockReturnValue({
+      deleted: 0,
+      scopesProcessed: 0,
+      hasMore: false,
     });
     mockGenerateCoachBriefing.mockResolvedValue({
       message: 'coach briefing',
@@ -537,10 +573,21 @@ describe('scheduler tenant scoping', () => {
     mockGetCurrentWeek.mockReturnValue(null);
     mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
     mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 100, reason: 'No adjustment' });
-    mockUpdateWeekAdjustment.mockReturnValue(true);
     mockGetWeeksForPlan.mockReturnValue([]);
+    mockCreateTrainingCoachV2Proposal.mockReturnValue({
+      proposal: { proposalId: 'tcv2_sched_1' },
+      replayed: false,
+    });
+    mockBindTrainingCoachV2ProposalDecision.mockResolvedValue({
+      proposalId: 'tcv2_sched_1',
+      decisionId: 'decision_sched_1',
+    });
     mockCalculateReadiness.mockResolvedValue({ score: 80, recommendation: 'Ready', factors: {} });
     mockPersistReadinessScore.mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('computes Decision Metrics rollup date in the scheduler timezone across Lisbon DST', () => {
@@ -1151,7 +1198,8 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 
-  it('training plan adjust cron emits NotificationIntent for native users after weekly adjustment', async () => {
+  it('training plan adjust cron creates a Decision Center proposal without mutating the week', async () => {
+    useTrainingScopeDb([{ tenant_id: 22, user_id: 22 }]);
     mockGetActivePlan.mockReturnValue({ id: 501, name: 'Base plan', duration_weeks: 4 });
     mockGetCurrentWeek.mockReturnValue({ id: 601, week_number: 2 });
     mockGetWeeklyAdherence.mockReturnValue({
@@ -1172,24 +1220,44 @@ describe('scheduler tenant scoping', () => {
 
     await trainingJob!();
 
-    expect(mockUpdateWeekAdjustment).toHaveBeenCalledWith(602, 80, 'Adherence dipped this week');
-    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockCreateTrainingCoachV2Proposal).toHaveBeenCalledWith(expect.objectContaining({
       userId: 22,
       tenantId: 22,
-      sourceSkill: 'training',
-      type: 'schedule_changed',
-      priority: 'active',
-      relatedEntityId: 'training-plan-adjust:501:602',
+      kind: 'week_reflow',
+      planId: 501,
+      weekId: 602,
+      expectedVersion: 0,
+      request: {
+        trigger: 'scheduled_weekly_adjustment',
+        schedulingTimezone: 'Europe/Lisbon',
+        scheduledAdjustment: {
+          intensityPct: 80,
+          reason: 'Adherence dipped this week',
+        },
+      },
+      evidence: expect.objectContaining({
+        sciencePolicyVersion: 'science-test-v1',
+        source: 'scheduled_adherence_review',
+        currentWeekId: 601,
+        adherenceRate: 75,
+      }),
+      idempotencyKey: 'training-weekly-adjust:22:22:501:602:0',
+    }));
+    expect(mockBindTrainingCoachV2ProposalDecision).toHaveBeenCalledWith({
+      tenantId: 22,
+      userId: 22,
+      proposalId: 'tcv2_sched_1',
+    });
+    expect(mockCreateNotificationIntent).not.toHaveBeenCalledWith(expect.objectContaining({
       relatedEntityType: 'training_week_adjustment',
-      title: 'Training week adjusted',
-      body: 'Nexus adjusted your next training week.',
-      sensitiveBody: expect.stringContaining('Base plan'),
-      privacyPolicy: 'health',
-      requiresUserAction: false,
     }));
   });
 
-  it('skips revision-owned weekly projections without aborting later personal scopes', async () => {
+  it('creates distinct scoped proposals when one user trains in two tenants', async () => {
+    useTrainingScopeDb([
+      { tenant_id: 20, user_id: 30 },
+      { tenant_id: 21, user_id: 30 },
+    ]);
     mockGetActivePlan.mockReturnValue({ id: 501, name: 'Base plan', duration_weeks: 4 });
     mockGetCurrentWeek.mockReturnValue({ id: 601, week_number: 2 });
     mockGetWeeklyAdherence.mockReturnValue({
@@ -1206,15 +1274,6 @@ describe('scheduler tenant scoping', () => {
       reason: 'Adherence dipped this week',
     });
     mockGetWeeksForPlan.mockReturnValue([{ id: 602, week_number: 3 }]);
-    mockUpdateWeekAdjustment
-      .mockImplementationOnce(() => {
-        throw new TrainingPlanRevisionError(
-          'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
-          'This week is owned by an immutable Training revision.',
-          409,
-        );
-      })
-      .mockReturnValueOnce(true);
 
     startScheduler();
     const trainingJob = mockCronSchedule.mock.calls.find((call) => call[0] === '0 19 * * 0')?.[1] as (() => Promise<void>) | undefined;
@@ -1222,16 +1281,22 @@ describe('scheduler tenant scoping', () => {
 
     await trainingJob!();
 
-    expect(mockUpdateWeekAdjustment).toHaveBeenCalledTimes(2);
-    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
-    expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 22,
-      tenantId: 22,
-      relatedEntityType: 'training_week_adjustment',
+    expect(mockCreateTrainingCoachV2Proposal).toHaveBeenCalledTimes(2);
+    expect(mockCreateTrainingCoachV2Proposal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      userId: 30,
+      tenantId: 20,
+      idempotencyKey: 'training-weekly-adjust:20:30:501:602:0',
     }));
+    expect(mockCreateTrainingCoachV2Proposal).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      userId: 30,
+      tenantId: 21,
+      idempotencyKey: 'training-weekly-adjust:21:30:501:602:0',
+    }));
+    expect(mockBindTrainingCoachV2ProposalDecision).toHaveBeenCalledTimes(2);
   });
 
   it('training plan renewal cron emits NotificationIntent through the orchestrator instead of direct push only', async () => {
+    useTrainingScopeDb([{ tenant_id: 22, user_id: 22 }]);
     mockGetActivePlan.mockReturnValue({ id: 701, name: 'Race block', duration_weeks: 4 });
     mockGetCurrentWeek.mockReturnValue({ id: 801, week_number: 4 });
     mockGetWeeklyAdherence.mockReturnValue({
@@ -1252,6 +1317,7 @@ describe('scheduler tenant scoping', () => {
 
     await trainingJob!();
 
+    expect(mockCreateTrainingCoachV2Proposal).not.toHaveBeenCalled();
     expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
       userId: 22,
       tenantId: 22,
@@ -1306,6 +1372,25 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 
+  it('runs one bounded structured-health retention sweep per hourly signal cleanup', async () => {
+    mockSweepExpiredStructuredHealthData.mockReturnValue({
+      deleted: 250,
+      scopesProcessed: 18,
+      hasMore: true,
+    });
+
+    startScheduler();
+    const cleanupJob = mockCronSchedule.mock.calls
+      .find((call) => (call[1] as { jobName?: string }).jobName === 'expire_signals')?.[1] as
+      (() => Promise<unknown>) | undefined;
+    expect(cleanupJob).toBeTypeOf('function');
+
+    await cleanupJob!();
+
+    expect(mockSweepExpiredStructuredHealthData).toHaveBeenCalledOnce();
+    expect(mockSweepExpiredStructuredHealthData).toHaveBeenCalledWith({ limit: 250 });
+  });
+
   it('builds task-sync scopes without importing providers across tenant boundaries', () => {
     mockGetDb.mockReturnValue({
       prepare: vi.fn((sql: string) => ({
@@ -1336,6 +1421,46 @@ describe('scheduler tenant scoping', () => {
     expect(getActiveTaskSyncScopes([11])).toEqual([
       { tenantId: 11, userId: 11, importProviders: true },
     ]);
+  });
+
+  it('enumerates explicit Training tenant/user scopes without assuming identity', () => {
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => {
+          if (sql.includes('FROM fitness_training_plans')) {
+            return [
+              { tenant_id: 20, user_id: 30 },
+              { tenant_id: 11, user_id: 11 },
+            ];
+          }
+          if (sql.includes('FROM training_active_plan_references')) {
+            return [{ tenant_id: 21, user_id: 30 }];
+          }
+          if (sql.includes('FROM secretary_agenda_items')) {
+            return [
+              { tenant_id: '22', user_id: 30 },
+              { tenant_id: 'invalid', user_id: 40 },
+            ];
+          }
+          return [];
+        }),
+      })),
+    });
+
+    expect(getActiveTrainingScopes([11])).toEqual([
+      { tenantId: 11, userId: 11 },
+      { tenantId: 20, userId: 30 },
+      { tenantId: 21, userId: 30 },
+      { tenantId: 22, userId: 30 },
+    ]);
+  });
+
+  it('does not manufacture a Training tenant by copying an active user id', () => {
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn(() => ({ all: vi.fn(() => []) })),
+    });
+
+    expect(getActiveTrainingScopes([91])).toEqual([]);
   });
 
   it('pending chat action expiry is wired through the scheduler and skips no-op runs', async () => {
@@ -1969,9 +2094,9 @@ describe('scheduler tenant scoping', () => {
       internalReason: 'lock_unavailable',
     }));
 
-    await sendCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+    await sendCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
 
-    expect(mockReleaseFreshReportScheduleClaim).toHaveBeenCalledWith(11, 'coach_briefing');
+    expect(mockReleaseFreshReportScheduleClaim).toHaveBeenCalledWith(11, 'coach_briefing', 10, 11);
     expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
       userId: 11,
       body: 'Your next Coach report will retry automatically after a temporary service delay.',
@@ -2001,8 +2126,8 @@ describe('scheduler tenant scoping', () => {
       return { decision: duplicate ? 'deduped' : 'in_app_only' };
     });
 
-    await sendCoachBriefingForTarget({ tenantId: 11, telegramId: null });
-    await sendCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+    await sendCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
+    await sendCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
 
     expect(emitted.size).toBe(1);
     expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(2);
@@ -2011,6 +2136,35 @@ describe('scheduler tenant scoping', () => {
     }
     expect(mockReleaseFreshReportScheduleClaim).not.toHaveBeenCalled();
   });
+
+  it('keeps Coach briefing user identity separate from delegated tenant scope', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 730,
+      user_id: 30,
+      tenant_id: 20,
+      status: 'active',
+    });
+
+    await sendCoachBriefingForTarget({ tenantId: 20, userId: 30, telegramId: null });
+
+    expect(mockGetEffectiveEntitlement).toHaveBeenCalledWith(30);
+    expect(mockGetActivePlan).toHaveBeenCalledWith(30, 20);
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(30, expect.objectContaining({
+      tenantId: 20,
+      meteringUserId: 30,
+    }));
+    expect(mockRunWithContext).toHaveBeenCalledWith({
+      source: 'cron:garmin_coach',
+      userId: 30,
+      tenantId: 20,
+    }, expect.any(Function));
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 30,
+      tenantId: 20,
+      type: 'coach_briefing',
+    }));
+  });
+
   it('sendCoachBriefings generates, stores, and scopes coach state for every paid active tenant', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 701,
@@ -2069,14 +2223,14 @@ describe('scheduler tenant scoping', () => {
       expect.objectContaining({ source: 'cron:garmin_coach', userId: 22 }),
       expect.any(Function),
     );
-    expect(setLastCoachState).toHaveBeenCalledWith(11, expect.any(Array), expect.any(String));
-    expect(setLastCoachState).toHaveBeenCalledWith(22, expect.any(Array), expect.any(String));
-    expect(addToConversation).toHaveBeenCalledWith(11, 'triathlon', 'assistant', 'coach briefing');
-    expect(addToConversation).toHaveBeenCalledWith(22, 'triathlon', 'assistant', 'coach briefing');
-    expect(setLastActiveDomain).toHaveBeenCalledWith(11, 'triathlon');
-    expect(setLastActiveDomain).toHaveBeenCalledWith(22, 'triathlon');
-    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
-    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 22, type: 'coach_briefing' }));
+    expect(setLastCoachState).toHaveBeenCalledWith(11, expect.any(Array), expect.any(String), 11);
+    expect(setLastCoachState).toHaveBeenCalledWith(22, expect.any(Array), expect.any(String), 22);
+    expect(addToConversation).toHaveBeenCalledWith(11, 'triathlon', 'assistant', 'coach briefing', 11);
+    expect(addToConversation).toHaveBeenCalledWith(22, 'triathlon', 'assistant', 'coach briefing', 22);
+    expect(setLastActiveDomain).toHaveBeenCalledWith(11, 'triathlon', 11);
+    expect(setLastActiveDomain).toHaveBeenCalledWith(22, 'triathlon', 22);
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, tenantId: 11, type: 'coach_briefing' }));
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 22, tenantId: 22, type: 'coach_briefing' }));
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
   });
 
@@ -2097,7 +2251,7 @@ describe('scheduler tenant scoping', () => {
       analysisMs: 22,
     });
 
-    const outcome = await runScheduledCoachBriefingForTarget({ tenantId: 11, telegramId: null });
+    const outcome = await runScheduledCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
 
     expect(outcome).toMatchObject({
       jobId: 'garmin_coach',
@@ -2321,7 +2475,7 @@ describe('scheduler tenant scoping', () => {
     expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
       userId: 11,
       type: 'insight',
-      dedupeKey: 'training:coach_budget:11:AI_DAILY_LIMIT_REACHED:202604180000',
+      dedupeKey: 'training:coach_budget:11:11:AI_DAILY_LIMIT_REACHED:202604180000',
     }));
   });
 });

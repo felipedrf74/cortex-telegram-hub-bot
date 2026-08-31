@@ -1139,7 +1139,7 @@ describe('Notification inbox routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.unreadCount).toBe(4);
     expect(mockGetUnreadCountExcludingNotificationIds).toHaveBeenCalledWith(7, [9], 7);
-    expect(mockGetUnreadReportCountExcludingIds).toHaveBeenCalledWith(7, [3]);
+    expect(mockGetUnreadReportCountExcludingIds).toHaveBeenCalledWith(7, [3], 7);
   });
 
   it('excludes bridged content and report rows from the unified inbox list', async () => {

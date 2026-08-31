@@ -417,7 +417,7 @@ function seedStaleReadiness() {
     }), staleAt);
     insertHealth.run(userId, 'resting_heart_rate', today, JSON.stringify({ value: 52 }), staleAt);
     db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`readiness:${tenantId}:${userId}`);
-    db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`coach-briefing:${userId}`);
+    db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`coach-briefing:${tenantId}:${userId}`);
     db.prepare("DELETE FROM api_cache WHERE cache_key LIKE 'training-home:' || ? || ':' || ? || ':%'").run(tenantId, userId);
     return { staleAt };
   } finally {
@@ -429,11 +429,11 @@ function seedDegradedCoach() {
   const db = new Database(databasePath);
   try {
     const report = db.prepare(`
-      INSERT INTO report_documents
-        (user_id, type, title, summary, document_json, source_job)
-      VALUES (?, 'coach_briefing', 'Fixture degraded coach read',
+      INSERT INTO report_documents_scoped
+        (tenant_id, user_id, type, title, summary, document_json, source_job)
+      VALUES (?, ?, 'coach_briefing', 'Fixture degraded coach read',
               'Some fixture inputs were unavailable.', ?, 'training_e2e_fixture')
-    `).run(userId, JSON.stringify({
+    `).run(tenantId, userId, JSON.stringify({
       message: 'Some fixture inputs were unavailable.',
       recommendations: [],
       errors: ['fixture_dependency_unavailable'],
@@ -453,11 +453,11 @@ function cleanupTrainingE2EFixtures() {
     }
     db.prepare("DELETE FROM apple_health_data WHERE user_id = ? AND source_name = 'training_e2e'").run(userId);
     if (fixtureState.coachReportId !== null) {
-      db.prepare("DELETE FROM report_documents WHERE id = ? AND user_id = ? AND source_job = 'training_e2e_fixture'")
-        .run(fixtureState.coachReportId, userId);
+      db.prepare("DELETE FROM report_documents_scoped WHERE id = ? AND tenant_id = ? AND user_id = ? AND source_job = 'training_e2e_fixture'")
+        .run(fixtureState.coachReportId, tenantId, userId);
     }
     db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`readiness:${tenantId}:${userId}`);
-    db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`coach-briefing:${userId}`);
+    db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`coach-briefing:${tenantId}:${userId}`);
     db.prepare("DELETE FROM api_cache WHERE cache_key LIKE 'training-home:' || ? || ':' || ? || ':%'").run(tenantId, userId);
   } finally {
     db.close();
@@ -700,13 +700,14 @@ assert(reflowCandidate, 'Expected an actionable strength session for a real fixt
 const reflowDates = trainingWeekDateRange(reflowCandidate.planStartDate, reflowCandidate.weekNumber);
 const travelWindow = await api('POST', '/api/v1/training/week/travel', {
   ...reflowDates,
+  idempotencyKey: `training-e2e-travel-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
   equipmentProfile: 'hotel_only',
   timeZoneShiftHours: 4,
   sleepDisruptionExpected: true,
   availableSessionDurationMinutes: 35,
   notes: `Fixture-only reflow trigger ${flowAttemptId}`,
 }, [201]);
-fixtureState.travelWindowId = Number(travelWindow.payload?.data?.id);
+fixtureState.travelWindowId = Number(travelWindow.payload?.data?.window?.id);
 assert(
   Number.isInteger(fixtureState.travelWindowId) && fixtureState.travelWindowId > 0,
   'Travel fixture did not return an id',
@@ -717,8 +718,9 @@ const reflowPreview = await api('POST', `/api/v1/training/week/${reflowCandidate
   mode: 'preview',
   trigger: 'fixture_travel_reflow',
 });
-assert(reflowPreview.payload?.data?.mode === 'preview', 'Fixture reflow preview did not return preview mode');
-assert(reflowPreview.payload?.data?.mutated === false, 'Fixture reflow preview mutated state');
+assert(reflowPreview.payload?.data?.outcome === 'preview', 'Fixture reflow preview did not return preview outcome');
+assert(reflowPreview.payload?.data?.proposalId === null, 'Fixture reflow preview created a proposal');
+assert(reflowPreview.payload?.data?.adaptationId === null, 'Fixture reflow preview created an adaptation');
 assert(
   Array.isArray(reflowPreview.payload?.data?.scenario?.modifiers)
     && reflowPreview.payload.data.scenario.modifiers.includes('travel_adjustment'),
@@ -744,24 +746,38 @@ const reflowApply = await api('POST', `/api/v1/training/week/${reflowCandidate.w
   planId,
   mode: 'apply',
   trigger: 'fixture_travel_reflow',
+  previewId: reflowPreview.payload.data.previewId,
   idempotencyKey: reflowIdempotencyKey,
-});
-assert(reflowApply.payload?.data?.mode === 'apply', 'Fixture reflow apply did not return apply mode');
-assert(reflowApply.payload?.data?.mutated === true, 'Fixture reflow apply did not mutate a session');
-assert(Number(reflowApply.payload?.data?.mutatedRows ?? 0) >= 1, 'Fixture reflow apply reported zero mutated rows');
+}, [202]);
+assert(reflowApply.payload?.data?.outcome === 'proposal_created', 'Fixture reflow did not create a proposal');
+assert(reflowApply.payload?.data?.adaptationId === null, 'Fixture proposal mutated the plan before approval');
+assert(typeof reflowApply.payload?.data?.proposalId === 'string', 'Fixture reflow proposal id is missing');
+assert(typeof reflowApply.payload?.data?.decisionId === 'string', 'Fixture reflow Decision Center id is missing');
 assert(
-  Array.isArray(reflowApply.payload?.data?.affectedSessionIds)
-    && reflowApply.payload.data.affectedSessionIds.map(String).includes(String(reflowCandidate.sessionId)),
-  'Fixture reflow apply did not report the strength session as affected',
+  readSessionReflowState(planId, reflowCandidate.sessionId)?.intensityText !== 'cap@tempo',
+  'Fixture reflow proposal mutated the session before Decision Center approval',
 );
+const decisionId = reflowApply.payload.data.decisionId;
+const decision = await api('GET', `/api/v1/decisions/${encodeURIComponent(decisionId)}`);
+const decisionItem = decision.payload?.data?.item;
+assert(Number.isSafeInteger(decisionItem?.recordVersion), 'Fixture reflow decision record version is missing');
+assert(typeof decisionItem?.contextVersion === 'string', 'Fixture reflow decision context version is missing');
+const activation = await api('POST', `/api/v1/decisions/${encodeURIComponent(decisionId)}/actions`, {
+  actionId: 'activate_training_coach_v2_proposal',
+  idempotencyKey: `training-e2e-reflow-approval-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
+  expectedVersion: decisionItem.recordVersion,
+  contextVersion: decisionItem.contextVersion,
+});
+assert(activation.payload?.data?.status === 'succeeded', 'Decision Center did not activate the fixture reflow');
 const reflowReplay = await api('POST', `/api/v1/training/week/${reflowCandidate.weekId}/reflow`, {
   planId,
   mode: 'apply',
   trigger: 'fixture_travel_reflow',
+  previewId: reflowPreview.payload.data.previewId,
   idempotencyKey: reflowIdempotencyKey,
 });
-assert(reflowReplay.payload?.data?.alreadyExisted === true, 'Fixture reflow replay was not idempotent');
-assert(reflowReplay.payload?.data?.mutated === false, 'Fixture reflow replay mutated state');
+assert(reflowReplay.payload?.data?.outcome === 'replayed', 'Fixture reflow replay was not idempotent');
+assert(reflowReplay.payload?.data?.proposalId === reflowApply.payload.data.proposalId, 'Fixture reflow replay changed proposal identity');
 const reflowReadback = readSessionReflowState(planId, reflowCandidate.sessionId);
 const candidateActionReasonCodes = reflowPreview.payload.data.actions
   .filter((action) => String(action?.sessionId) === String(reflowCandidate.sessionId))
@@ -778,14 +794,16 @@ assert(
   `Fixture reflow acquired provider state: ${JSON.stringify(isolationAfterReflow)}`,
 );
 evidence.steps.push({
-  step: 'successful_fixture_reflow_swap',
+  step: 'proposal_first_fixture_reflow_activation',
   status: 'pass',
   travelWindowId: fixtureState.travelWindowId,
   weekId: reflowCandidate.weekId,
   sessionId: reflowCandidate.sessionId,
   previewActionCount: reflowPreview.payload.data.actions.length,
-  mutatedRows: reflowApply.payload.data.mutatedRows,
-  replayAlreadyExisted: reflowReplay.payload.data.alreadyExisted,
+  proposalId: reflowApply.payload.data.proposalId,
+  decisionId,
+  activationStatus: activation.payload.data.status,
+  replayOutcome: reflowReplay.payload.data.outcome,
   readback: reflowReadback,
   candidateActionReasonCodes,
   providerIsolation: isolationAfterReflow,

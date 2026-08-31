@@ -232,11 +232,9 @@ describe('cache-coherence-registry', () => {
   it('maps training writes to training, dashboard, and planning surfaces', () => {
     invalidateTrainingDerivedCaches(42);
 
-    expect(clearKeys()).toEqual([
-      'coach-briefing:42',
-      'dashboard-readiness:42',
-    ]);
+    expect(clearKeys()).toEqual(['dashboard-readiness:42']);
     expect(prefixKeys()).toEqual([
+      'coach-briefing:',
       // F34 stronger guarantee: readiness responses are keyed
       // `readiness:{tenantId}:{userId}`. The old exact `readiness:42`
       // invalidation matched no production row and left fresh HealthKit
@@ -291,7 +289,7 @@ describe('cache-coherence-registry', () => {
 
   it('routes onboarding profiles through their legacy domain invalidation graph', () => {
     invalidateOnboardingDerivedCaches(42, 'triathlon-running');
-    expect(clearKeys()).toContain('coach-briefing:42');
+    expect(prefixKeys()).toContain('coach-briefing:');
     expect(prefixKeys()).toContain('training-home:');
 
     mockClearCache.mockReset();
@@ -348,7 +346,7 @@ describe('cache-coherence-registry', () => {
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
     invalidateIntegrationDerivedCaches(42, 'garmin');
-    expect(clearKeys()).toContain('coach-briefing:42');
+    expect(prefixKeys()).toContain('coach-briefing:');
     expect(prefixKeys()).toContain('training-home:');
 
     mockClearCache.mockReset();

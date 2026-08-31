@@ -177,6 +177,17 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     apnsActionAllowed: false,
     highRiskConfirmationRequired: true,
   },
+  activate_training_coach_v2_proposal: {
+    executor: 'training',
+    verifier: 'training_coach_v2_proposals',
+    implemented: true,
+    mutating: true,
+    expectedMutation: 'Activate the exact approved Coach V2 proposal under the scoped Training adapt lock and verify its stored readback.',
+    successUi: 'Training change applied.',
+    retryAvailable: true,
+    apnsActionAllowed: false,
+    highRiskConfirmationRequired: true,
+  },
   approve_product_learning_case: {
     executor: 'training',
     verifier: 'product_learning_case_review_approvals',

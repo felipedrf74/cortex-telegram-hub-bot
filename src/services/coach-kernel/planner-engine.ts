@@ -22,11 +22,9 @@ import { profileFollowUpNotes } from '../training-profile-model';
 import { logger } from '../../utils/logger';
 import {
   buildInjurySafetyDecisionReasons,
-  buildSecretaryWeeklySummary,
   buildWeeklyDecisionNotes,
   dedupeDecisionLines,
 } from './decision-trail';
-import { listSecretaryAgendaItems } from '../secretary-scheduling-arbitrator';
 import {
   analyzeTrainingFeedback,
   applyFeedbackToAthleteState,
@@ -83,33 +81,6 @@ function inferPhase(athlete: AthleteState, weekStart: string): BlockPhase {
   return 'build';
 }
 
-/**
- * C8: pull Secretary agenda items for this athlete/week and build the
- * one-line summary that gets woven into weekly decision notes. Wrapped in
- * try/catch so unit tests that don't initialize the Secretary database
- * (no `vi.mock` for `../database`) still pass — `listSecretaryAgendaItems`
- * touches SQLite directly.
- *
- * Returns `null` on any failure or empty result. The notes builder drops
- * the Secretary line entirely when this returns null/empty.
- */
-function trySecretaryWeeklySummary(athleteId: number, weekStart: string): string | null {
-  try {
-    const items = listSecretaryAgendaItems({
-      ownerUserId: athleteId,
-      // Single-tenant assumption: tenant === ownerUserId. Production
-      // multi-tenant callers should pass through `resolveCurrentTenantIdForUser`
-      // at the higher layer (training-coach-kernel-plan-generator) before
-      // calling buildWeekPlan; this fallback is the safe default.
-      tenantId: athleteId,
-      includeInactive: true,
-    });
-    return buildSecretaryWeeklySummary(items, weekStart);
-  } catch {
-    return null;
-  }
-}
-
 function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
   const reconciliation = reconcileWeeklyCapacity(athlete, weeklyPlan.sessions);
   const reconciledSessions = weeklyPlan.discipline === 'triathlon'
@@ -148,7 +119,15 @@ function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): W
 export function buildWeekPlan(
   athlete: AthleteState,
   weekStart: string,
-  options: { exerciseIdentityMode?: TrainingExerciseIdentityV1Mode } = {},
+  options: {
+    exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
+    /**
+     * Tenant-scoped Secretary evidence is collected by the generation
+     * orchestrator. The deterministic kernel receives only the already-built
+     * privacy-light summary and never reaches into Secretary storage.
+     */
+    secretaryWeeklySummary?: string | null;
+  } = {},
 ): WeeklyPlan {
   const feedbackAnalysis = analyzeTrainingFeedback(athlete);
   const coachingAthlete = applyFeedbackToAthleteState(athlete, feedbackAnalysis);
@@ -227,13 +206,13 @@ export function buildWeekPlan(
       strengthRecoveryRotationIndex: Math.max(0, coachingAthlete.currentBlock.weekIndex - 1),
     }), coachingAthlete),
   );
-  // C8: weave Secretary's weekly contribution into the notes when the
-  // agenda store is reachable (production); silently no-op when it isn't
-  // (test environments without a mocked DB).
-  const secretarySummary = trySecretaryWeeklySummary(coachingAthlete.profile.athleteId, weekStart);
   const finalPlan: WeeklyPlan = {
     ...guardedPlan,
-    notes: buildWeeklyDecisionNotes(guardedPlan, coachingAthlete, secretarySummary),
+    notes: buildWeeklyDecisionNotes(
+      guardedPlan,
+      coachingAthlete,
+      options.secretaryWeeklySummary,
+    ),
   };
 
   logger.debug({
@@ -325,7 +304,11 @@ function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecis
   return output;
 }
 
-export function adjustForFatigue(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
+export function adjustForFatigue(
+  athlete: AthleteState,
+  weeklyPlan: WeeklyPlan,
+  options: { secretaryWeeklySummary?: string | null } = {},
+): WeeklyPlan {
   if (athlete.readiness.level === 'green' || athlete.readiness.level === 'yellow') return weeklyPlan;
   const fatiguePhase: BlockPhase = athlete.readiness.level === 'red' ? 'deload' : 'maintenance';
   const adjustedState: AthleteState = {
@@ -344,10 +327,13 @@ export function adjustForFatigue(athlete: AthleteState, weeklyPlan: WeeklyPlan):
     ]),
   };
   const guardedPlan = reconcilePlanSessions(adjustedState, applyGuardrails(adjustedPlan, adjustedState));
-  const secretarySummary = trySecretaryWeeklySummary(adjustedState.profile.athleteId, weeklyPlan.weekStart);
   const finalPlan: WeeklyPlan = {
     ...guardedPlan,
-    notes: buildWeeklyDecisionNotes(guardedPlan, adjustedState, secretarySummary),
+    notes: buildWeeklyDecisionNotes(
+      guardedPlan,
+      adjustedState,
+      options.secretaryWeeklySummary,
+    ),
   };
 
   logger.debug({

@@ -88,7 +88,7 @@ function jobBlock(source: string, jobId: string): string {
   const start = source.indexOf(`\n  ${jobId}:\n`);
   expect(start, `job ${jobId} exists`).toBeGreaterThan(-1);
   const rest = source.slice(start + 1);
-  const next = rest.slice(1).search(/\n {2}[a-z_]+:\n/);
+  const next = rest.slice(1).search(/\n {2}[a-z0-9_-]+:\n/);
   return next === -1 ? rest : rest.slice(0, next + 1);
 }
 

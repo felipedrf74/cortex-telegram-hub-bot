@@ -157,7 +157,6 @@ export function buildTrainingPlansSubSkillDefinition(): SubSkillDefinition {
     requiredTier: 'pro',
     tools: [
       'create_training_plan', 'get_training_plan', 'log_training_completion',
-      'link_session_calendar',
     ],
     cronJobs: ['training_plan_adjust'],
   };

@@ -105,6 +105,23 @@ export function recordTrainingSecretaryFeedback(
       hints_json = excluded.hints_json,
       updated_at = excluded.updated_at
     WHERE excluded.agenda_version > training_feedback_decisions.agenda_version
+       OR (
+         excluded.agenda_version = training_feedback_decisions.agenda_version
+         AND excluded.agenda_item_id = training_feedback_decisions.agenda_item_id
+         AND EXISTS (
+           SELECT 1
+           FROM secretary_agenda_items authoritative
+           WHERE authoritative.agenda_item_id = excluded.agenda_item_id
+             AND authoritative.source_intent_id = excluded.source_intent_id
+             AND authoritative.owner_user_id = excluded.user_id
+             AND authoritative.tenant_id = excluded.tenant_id
+             AND authoritative.source_skill = 'training'
+             AND authoritative.version = excluded.agenda_version
+             AND authoritative.decision_action = excluded.status
+             AND authoritative.start_at IS excluded.scheduled_start
+             AND authoritative.end_at IS excluded.scheduled_end
+         )
+       )
   `).run(
     feedback.ownerUserId,
     tenantId,

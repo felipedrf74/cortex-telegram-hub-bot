@@ -133,7 +133,7 @@ describe('Training E2E iOS unified result contract', () => {
     expect(result.status).toBe(0);
     expect(calls).toEqual([
       'seed:prepare',
-      'test:-only-testing:Nexus HubUITests/TrainingIsolatedBackendE2EUITests -only-testing:Nexus HubUITests/TrainingFixtureBypassUITests -only-testing:Nexus HubUITests/TrainingValidationUITests',
+      'test:-only-testing:Nexus HubUITests/TrainingIsolatedBackendE2EUITests/test_isolatedBackendPlanRendersTodayPlanProgressAndPersistsFeedback -only-testing:Nexus HubUITests/TrainingFixtureBypassUITests -only-testing:Nexus HubUITests/TrainingValidationUITests',
       'seed:cleanup',
     ]);
     expect(summary).toMatchObject({

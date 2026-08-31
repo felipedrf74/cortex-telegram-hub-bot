@@ -38,7 +38,7 @@ export interface TrainingHomePayloadDependencies {
   }>;
   getReadiness: (userId: number, tenantId: number) => Promise<(ReadinessInput & { reasonCode?: string | null }) | null>;
   buildActiveSignalsResponse: (userId: number, tenantId?: number) => Promise<{ signals: TrainingSignalInput[] }> | { signals: TrainingSignalInput[] };
-  getCoachBriefingSnapshot: (userId: number) => CoachBriefingSnapshot | null;
+  getCoachBriefingSnapshot: (userId: number, tenantId: number) => CoachBriefingSnapshot | null;
 }
 
 interface KernelTodayContext {
@@ -76,7 +76,7 @@ export async function buildTrainingHomePayload(
     ? signalResult.value
     : { signals: [] };
 
-  const coachBriefing = dependencies.getCoachBriefingSnapshot(userId);
+  const coachBriefing = dependencies.getCoachBriefingSnapshot(userId, tenantId);
   const reasonCodes = [
     ...(todayResult.status === 'rejected' ? ['TODAY_UNAVAILABLE'] : []),
     ...(weekResult.status === 'rejected' ? ['WEEK_UNAVAILABLE'] : []),
@@ -91,6 +91,7 @@ export async function buildTrainingHomePayload(
   const tomorrowSession = (week.sessions || []).find((session) => trainingWeekdayMatches(session.day, tomorrow)) || null;
   const kernelContext = resolveKernelTodayContext(
     userId,
+    tenantId,
     readinessResult.status === 'fulfilled' ? readinessResult.value : null,
   );
 
@@ -133,10 +134,11 @@ export async function buildTrainingHomePayload(
 
 function resolveKernelTodayContext(
   userId: number,
+  tenantId: number,
   liveReadiness: { score: number; factors?: any } | null,
 ): KernelTodayContext {
   const today = new Date().toISOString().slice(0, 10);
-  const stored = getStoredPlanCoveringDate(userId, today);
+  const stored = getStoredPlanCoveringDate(userId, tenantId, today);
   if (!stored) return { originalPrescription: null, adaptedPrescription: null };
 
   const todayDow = dayOfWeekForDate(today);

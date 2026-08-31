@@ -61,7 +61,7 @@ function seedAgendaTable(): void {
 }
 
 function insertTrainingAgendaItem(opts: {
-  id: string; userId: number; startAt: string; title?: string; lifecycleState?: string;
+  id: string; userId: number; tenantId?: number; startAt: string; title?: string; lifecycleState?: string;
 }): void {
   testDb.prepare(`
     INSERT INTO secretary_agenda_items
@@ -70,7 +70,7 @@ function insertTrainingAgendaItem(opts: {
        source_shape_hash, created_at, updated_at, start_at)
     VALUES (?, ?, ?, 'training', ?, 1, ?, 'synced', ?, 'scheduled', ?, ?, ?, ?)
   `).run(
-    opts.id, opts.userId, String(opts.userId), `intent-${opts.id}`,
+    opts.id, opts.userId, String(opts.tenantId ?? opts.userId), `intent-${opts.id}`,
     opts.lifecycleState ?? 'scheduled', opts.title ?? 'Threshold run',
     `shape-${opts.id}`, '2026-05-07T10:00:00.000Z', '2026-05-07T10:00:00.000Z', opts.startAt,
   );
@@ -143,7 +143,7 @@ describe('Phase 2 — notification producers', () => {
       // 60 minutes out — inside the window.
       insertTrainingAgendaItem({ id: 'ag-201', userId: 201, startAt: '2026-05-07T13:02:00.000Z' });
 
-      const summary = await runTrainingSessionReminders([201]);
+      const summary = await runTrainingSessionReminders([{ userId: 201, tenantId: 201 }]);
 
       expect(summary.notified).toBe(1);
       const item = listNotificationCenterItems(201, 201)[0];
@@ -156,7 +156,7 @@ describe('Phase 2 — notification producers', () => {
       // 4 hours out — far outside a 60-minute lead time.
       insertTrainingAgendaItem({ id: 'ag-202', userId: 202, startAt: '2026-05-07T16:00:00.000Z' });
 
-      expect((await runTrainingSessionReminders([202])).notified).toBe(0);
+      expect((await runTrainingSessionReminders([{ userId: 202, tenantId: 202 }])).notified).toBe(0);
     });
 
     it('respects a different lead time for a different user', async () => {
@@ -165,7 +165,7 @@ describe('Phase 2 — notification producers', () => {
       // Would have matched a 60-minute lead time, but this user chose 30.
       insertTrainingAgendaItem({ id: 'ag-203b', userId: 203, startAt: '2026-05-07T13:02:00.000Z' });
 
-      const summary = await runTrainingSessionReminders([203]);
+      const summary = await runTrainingSessionReminders([{ userId: 203, tenantId: 203 }]);
 
       expect(summary.notified).toBe(1);
       expect(listNotificationCenterItems(203, 203)[0].title).toBe('Threshold run');
@@ -177,7 +177,7 @@ describe('Phase 2 — notification producers', () => {
         id: 'ag-204', userId: 204, startAt: '2026-05-07T13:02:00.000Z', lifecycleState: 'canceled',
       });
 
-      expect((await runTrainingSessionReminders([204])).notified).toBe(0);
+      expect((await runTrainingSessionReminders([{ userId: 204, tenantId: 204 }])).notified).toBe(0);
     });
 
     it('stays silent when the user muted training', async () => {
@@ -187,7 +187,7 @@ describe('Phase 2 — notification producers', () => {
       } as never);
       insertTrainingAgendaItem({ id: 'ag-205', userId: 205, startAt: '2026-05-07T13:02:00.000Z' });
 
-      expect((await runTrainingSessionReminders([205])).notified).toBe(0);
+      expect((await runTrainingSessionReminders([{ userId: 205, tenantId: 205 }])).notified).toBe(0);
     });
 
     it('honours the legacy Reminders push toggle without hiding the inbox item', async () => {
@@ -196,7 +196,7 @@ describe('Phase 2 — notification producers', () => {
       insertTrainingAgendaItem({ id: 'ag-208', userId: 208, startAt: '2026-05-07T13:02:00.000Z' });
       mockSendPushNotification.mockClear();
 
-      const summary = await runTrainingSessionReminders([208]);
+      const summary = await runTrainingSessionReminders([{ userId: 208, tenantId: 208 }]);
 
       expect(summary.notified).toBe(1);
       expect(listNotificationCenterItems(208, 208)).toHaveLength(1);
@@ -217,10 +217,10 @@ describe('Phase 2 — notification producers', () => {
       updateNotificationProfile(206, 206, { workoutReminderMinutes: 60 } as never);
       insertTrainingAgendaItem({ id: 'ag-206', userId: 206, startAt: '2026-05-07T13:02:00.000Z' });
 
-      await runTrainingSessionReminders([206]);
+      await runTrainingSessionReminders([{ userId: 206, tenantId: 206 }]);
       // The sweep runs every 5 minutes; the window is 5 minutes wide, so a
       // boundary tick must not re-mint the same reminder.
-      const second = await runTrainingSessionReminders([206]);
+      const second = await runTrainingSessionReminders([{ userId: 206, tenantId: 206 }]);
 
       expect(second.notified).toBe(0);
       expect(listNotificationCenterItems(206, 206)).toHaveLength(1);
@@ -228,7 +228,36 @@ describe('Phase 2 — notification producers', () => {
 
     it('does nothing for a user who never opened notification settings', async () => {
       insertTrainingAgendaItem({ id: 'ag-207', userId: 207, startAt: '2026-05-07T13:02:00.000Z' });
-      expect((await runTrainingSessionReminders([207])).notified).toBe(0);
+      expect((await runTrainingSessionReminders([{ userId: 207, tenantId: 207 }])).notified).toBe(0);
+    });
+
+    it('isolates reminders by the explicit tenant scope for the same user', async () => {
+      updateNotificationProfile(209, 701, { workoutReminderMinutes: 60 } as never);
+      insertTrainingAgendaItem({ id: 'ag-209-a', userId: 209, tenantId: 701, startAt: '2026-05-07T13:02:00.000Z' });
+      insertTrainingAgendaItem({ id: 'ag-209-b', userId: 209, tenantId: 702, startAt: '2026-05-07T13:02:00.000Z' });
+
+      const summary = await runTrainingSessionReminders([{ userId: 209, tenantId: 701 }]);
+
+      expect(summary).toMatchObject({ inspected: 1, notified: 1, failed: 0 });
+      expect(listNotificationCenterItems(209, 701)).toHaveLength(1);
+      expect(listNotificationCenterItems(209, 702)).toHaveLength(0);
+    });
+
+    it('delivers every due reminder through deterministic pagination', async () => {
+      updateNotificationProfile(210, 710, { workoutReminderMinutes: 60 } as never);
+      for (let index = 0; index < 23; index += 1) {
+        insertTrainingAgendaItem({
+          id: `ag-210-${String(index).padStart(2, '0')}`,
+          userId: 210,
+          tenantId: 710,
+          startAt: `2026-05-07T13:0${index % 5}:00.000Z`,
+        });
+      }
+
+      const summary = await runTrainingSessionReminders([{ userId: 210, tenantId: 710 }], undefined, 7);
+
+      expect(summary).toMatchObject({ inspected: 23, notified: 23, failed: 0 });
+      expect(listNotificationCenterItems(210, 710)).toHaveLength(23);
     });
   });
 });

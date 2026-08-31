@@ -32,6 +32,7 @@
  *     opt-in for every field. A row with no consent is rejected.
  */
 
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { requireTenantIdParam } from './tenant-scope';
@@ -76,6 +77,9 @@ export interface HealthSignalRow {
   source: string | null;
   consent_scope: string;
   created_at: string;
+  expires_at?: string | null;
+  idempotency_key?: string | null;
+  request_hash?: string | null;
 }
 
 export interface RecordHealthSignalInput {
@@ -90,6 +94,9 @@ export interface RecordHealthSignalInput {
   energyAvailabilityRisk?: EnergyAvailabilityRisk;
   source?: string;
   consentScope: HealthConsentScope[];
+  /** Structured lifecycle callers recompute/publish once after correction and consent authority is committed. */
+  publishSafetySignal?: boolean;
+  db?: Database.Database;
 }
 
 export interface RecordHealthSignalResult {
@@ -190,39 +197,47 @@ export function recordHealthSignal(
 
   const consentScopeString = Array.from(scopes).sort().join(',');
 
-  const db = getDb();
-  const inserted = db.prepare(`
-    INSERT INTO athlete_health_signals (
-      user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json,
-      injury_status, menstrual_status, energy_availability_risk,
-      source, consent_scope
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.userId,
-    tenantId,
-    input.date,
-    painScore,
-    painLocation,
-    illnessSymptoms ? JSON.stringify(illnessSymptoms) : null,
-    injuryStatus,
-    menstrualStatus,
-    energyAvailabilityRisk,
-    input.source ?? null,
-    consentScopeString,
-  );
+  const db = input.db ?? getDb();
+  let id = 0;
+  db.transaction(() => {
+    const inserted = db.prepare(`
+      INSERT INTO athlete_health_signals (
+        user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json,
+        injury_status, menstrual_status, energy_availability_risk,
+        source, consent_scope
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.userId,
+      tenantId,
+      input.date,
+      painScore,
+      painLocation,
+      illnessSymptoms ? JSON.stringify(illnessSymptoms) : null,
+      injuryStatus,
+      menstrualStatus,
+      energyAvailabilityRisk,
+      input.source ?? null,
+      consentScopeString,
+    );
 
-  const id = Number(inserted.lastInsertRowid);
-  publishStructuredRedFlagIfNeeded({
-    userId: input.userId,
-    tenantId,
-    date: input.date,
-    source: input.source,
-    painScore,
-    painLocation,
-    illnessSymptoms,
-    injuryStatus,
-    energyAvailabilityRisk,
-  });
+    id = Number(inserted.lastInsertRowid);
+    // The sanitized derived safety signal is written in the same database
+    // transaction as the private source row. A crash cannot leave one without
+    // the other; provider or model output is never involved in this decision.
+    if (input.publishSafetySignal !== false) {
+      publishStructuredRedFlagIfNeeded({
+        userId: input.userId,
+        tenantId,
+        date: input.date,
+        source: input.source,
+        painScore,
+        painLocation,
+        illnessSymptoms,
+        injuryStatus,
+        energyAvailabilityRisk,
+      }, db);
+    }
+  })();
 
   return { id, droppedFields };
 }
@@ -237,7 +252,7 @@ function publishStructuredRedFlagIfNeeded(input: {
   illnessSymptoms: readonly string[] | null;
   injuryStatus: InjuryStatus | null;
   energyAvailabilityRisk: EnergyAvailabilityRisk | null;
-}): void {
+}, db: Database.Database): void {
   const trigger = deriveSafetyTriggerFromSignal({
     source: input.source,
     painScore: input.painScore ?? undefined,
@@ -252,7 +267,7 @@ function publishStructuredRedFlagIfNeeded(input: {
     tenantId: input.tenantId,
     date: input.date,
     triggerType: trigger.triggerType,
-  });
+  }, db);
 }
 
 /**
@@ -271,7 +286,9 @@ export function getLatestHealthSignal(
 ): HealthSignalRow | null {
   const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'getLatestHealthSignal');
-  const maxAgeDays = options.maxAgeDays;
+  // Sensitive Training health data is active for at most 365 days. Callers
+  // may ask for a shorter window, never a longer implicit one.
+  const maxAgeDays = Math.min(365, options.maxAgeDays ?? 365);
   const hasMaxAgeDays = typeof maxAgeDays === 'number' && Number.isFinite(maxAgeDays) && maxAgeDays > 0;
   const resolvedAsOfDate = (asOfDate ?? new Date().toISOString()).slice(0, 10);
   const cutoffDate = hasMaxAgeDays
@@ -280,31 +297,141 @@ export function getLatestHealthSignal(
       .slice(0, 10)
     : null;
   if (asOfDate) {
-    const row = db.prepare(`
+    const rows = db.prepare(`
       SELECT * FROM athlete_health_signals
       WHERE user_id = ? AND tenant_id = ? AND date <= ?
-        ${cutoffDate ? 'AND date >= ?' : ''}
+        ${cutoffDate ? 'AND date > ?' : ''}
+        AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
       ORDER BY date DESC, created_at DESC
-      LIMIT 1
-    `).get(...(
+    `).all(...(
       cutoffDate
         ? [userId, scopedTenantId, resolvedAsOfDate, cutoffDate]
         : [userId, scopedTenantId, resolvedAsOfDate]
-    )) as HealthSignalRow | undefined;
-    return row ?? null;
+    )) as HealthSignalRow[];
+    return firstAuthorizedHealthSignal(rows, db);
   }
-  const row = db.prepare(`
+  const rows = db.prepare(`
     SELECT * FROM athlete_health_signals
     WHERE user_id = ? AND tenant_id = ?
-      ${cutoffDate ? 'AND date >= ?' : ''}
+      ${cutoffDate ? 'AND date > ?' : ''}
+      AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
     ORDER BY date DESC, created_at DESC
-    LIMIT 1
-  `).get(...(
+  `).all(...(
     cutoffDate
       ? [userId, scopedTenantId, cutoffDate]
       : [userId, scopedTenantId]
-  )) as HealthSignalRow | undefined;
-  return row ?? null;
+  )) as HealthSignalRow[];
+  return firstAuthorizedHealthSignal(rows, db);
+}
+
+function applyLatestHealthCorrection(
+  row: HealthSignalRow,
+  db: Database.Database = getDb(),
+): HealthSignalRow {
+  const correction = db.prepare(`
+    SELECT effective_signal_json
+    FROM athlete_health_signal_corrections
+    WHERE tenant_id = ? AND user_id = ? AND signal_id = ?
+    ORDER BY id DESC LIMIT 1
+  `).get(row.tenant_id, row.user_id, row.id) as { effective_signal_json: string } | undefined;
+  if (!correction) return row;
+  try {
+    const effective = JSON.parse(correction.effective_signal_json) as Record<string, unknown>;
+    return {
+      ...row,
+      date: typeof effective.date === 'string' ? effective.date : row.date,
+      pain_score: typeof effective.painScore === 'number' ? effective.painScore : null,
+      pain_location: typeof effective.painLocation === 'string' ? effective.painLocation : null,
+      illness_symptoms_json: Array.isArray(effective.illnessSymptoms)
+        ? JSON.stringify(effective.illnessSymptoms)
+        : null,
+      injury_status: typeof effective.injuryStatus === 'string'
+        ? effective.injuryStatus as InjuryStatus
+        : null,
+      menstrual_status: null,
+      energy_availability_risk: typeof effective.energyAvailabilityRisk === 'string'
+        ? effective.energyAvailabilityRisk as EnergyAvailabilityRisk
+        : null,
+      consent_scope: Array.isArray(effective.consentScope)
+        ? effective.consentScope.filter((scope): scope is string => typeof scope === 'string').join(',')
+        : row.consent_scope,
+      source: 'structured_intake',
+    };
+  } catch (err) {
+    logger.warn({ err, signalId: row.id }, 'health_signal.correction_parse_failed');
+    return row;
+  }
+}
+
+function currentHealthConsentScopes(
+  db: Database.Database,
+  tenantId: number,
+  userId: number,
+): Set<HealthConsentScope> | null {
+  const row = db.prepare(`
+    SELECT active_scopes_json, withdrawn
+    FROM health_data_consent_revisions
+    WHERE tenant_id = ? AND user_id = ?
+    ORDER BY revision DESC
+    LIMIT 1
+  `).get(tenantId, userId) as {
+    active_scopes_json: string;
+    withdrawn: number;
+  } | undefined;
+  // Pre-lifecycle rows retain their row-level consent contract. Once the
+  // lifecycle authority exists, its latest revision is authoritative.
+  if (!row) return null;
+  if (row.withdrawn === 1) return new Set();
+  try {
+    const parsed = JSON.parse(row.active_scopes_json) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((scope): scope is HealthConsentScope =>
+      typeof scope === 'string' && Object.values(FIELD_CONSENT_MAP).includes(scope as HealthConsentScope)));
+  } catch (err) {
+    logger.warn({ err, tenantId, userId }, 'health_signal.current_consent_parse_failed');
+    return new Set();
+  }
+}
+
+function authorizedHealthSignal(
+  row: HealthSignalRow,
+  db: Database.Database,
+  currentScopes: Set<HealthConsentScope> | null,
+): HealthSignalRow | null {
+  const effective = applyLatestHealthCorrection(row, db);
+  const rowScopes = new Set(effective.consent_scope.split(',').filter(Boolean) as HealthConsentScope[]);
+  const allowed = (scope: HealthConsentScope): boolean =>
+    rowScopes.has(scope) && (currentScopes === null || currentScopes.has(scope));
+  const authorized: HealthSignalRow = {
+    ...effective,
+    pain_score: allowed('pain') ? effective.pain_score : null,
+    pain_location: allowed('pain') ? effective.pain_location : null,
+    illness_symptoms_json: allowed('illness') ? effective.illness_symptoms_json : null,
+    injury_status: allowed('injury') ? effective.injury_status : null,
+    menstrual_status: allowed('menstrual') ? effective.menstrual_status : null,
+    energy_availability_risk: allowed('red_s_screening') ? effective.energy_availability_risk : null,
+    consent_scope: [...rowScopes].filter(allowed).sort().join(','),
+  };
+  const hasAuthorizedData = authorized.pain_score !== null
+    || authorized.pain_location !== null
+    || authorized.illness_symptoms_json !== null
+    || authorized.injury_status !== null
+    || authorized.menstrual_status !== null
+    || authorized.energy_availability_risk !== null;
+  return hasAuthorizedData ? authorized : null;
+}
+
+function firstAuthorizedHealthSignal(
+  rows: HealthSignalRow[],
+  db: Database.Database,
+): HealthSignalRow | null {
+  if (rows.length === 0) return null;
+  const currentScopes = currentHealthConsentScopes(db, rows[0].tenant_id, rows[0].user_id);
+  for (const row of rows) {
+    const authorized = authorizedHealthSignal(row, db, currentScopes);
+    if (authorized) return authorized;
+  }
+  return null;
 }
 
 /**
@@ -320,14 +447,21 @@ export function findPainSignalsInRange(
 ): HealthSignalRow[] {
   const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'findPainSignalsInRange');
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT * FROM athlete_health_signals
     WHERE user_id = ?
       AND tenant_id = ?
       AND date BETWEEN ? AND ?
-      AND pain_score IS NOT NULL
+      AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
     ORDER BY date DESC, created_at DESC
   `).all(userId, scopedTenantId, fromDate, toDate) as HealthSignalRow[];
+  const currentScopes = currentHealthConsentScopes(db, scopedTenantId, userId);
+  return rows
+    .map((row) => authorizedHealthSignal(row, db, currentScopes))
+    .filter((row): row is HealthSignalRow => row !== null
+      && row.date >= fromDate
+      && row.date <= toDate
+      && row.pain_score !== null);
 }
 
 /**
@@ -343,14 +477,29 @@ export function findIllnessSignalsInRange(
 ): HealthSignalRow[] {
   const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'findIllnessSignalsInRange');
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT * FROM athlete_health_signals
     WHERE user_id = ?
       AND tenant_id = ?
       AND date BETWEEN ? AND ?
-      AND illness_symptoms_json IS NOT NULL
+      AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
     ORDER BY date DESC, created_at DESC
   `).all(userId, scopedTenantId, fromDate, toDate) as HealthSignalRow[];
+  const currentScopes = currentHealthConsentScopes(db, scopedTenantId, userId);
+  return rows
+    .map((row) => authorizedHealthSignal(row, db, currentScopes))
+    .filter((row): row is HealthSignalRow => {
+      if (!row || row.date < fromDate || row.date > toDate || !row.illness_symptoms_json) return false;
+      try {
+        const symptoms = JSON.parse(row.illness_symptoms_json) as unknown;
+        return Array.isArray(symptoms) && symptoms.length > 0;
+      } catch {
+        // Keep an authorized corrupt row visible to the safety classifier so
+        // it logs and takes the conservative illness fallback. Silently
+        // dropping it would misclassify the gap as a vacation.
+        return true;
+      }
+    });
 }
 
 /**
@@ -361,8 +510,11 @@ export function findIllnessSignalsInRange(
  * The corresponding adaptation-ledger redaction is handled separately
  * by `purgeSensitivePayloadsForUser` (slice A0b).
  */
-export function deleteHealthHistoryForUser(userId: number, tenantId: number): number {
-  const db = getDb();
+export function deleteHealthHistoryForUser(
+  userId: number,
+  tenantId: number,
+  db: Database.Database = getDb(),
+): number {
   const scopedTenantId = requireTenantIdParam(tenantId, 'deleteHealthHistoryForUser');
   const result = db.prepare(
     'DELETE FROM athlete_health_signals WHERE user_id = ? AND tenant_id = ?',

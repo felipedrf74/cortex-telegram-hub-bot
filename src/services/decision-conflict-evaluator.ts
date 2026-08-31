@@ -375,7 +375,9 @@ function compareActions(candidate: NormalizedDecisionAction, existing: ConflictC
   // that exact version, it is validation evidence rather than a competing
   // action. Mismatched or unacknowledged integrity state still falls through
   // to the hard-conflict path below and can never auto-resolve.
-  if (existing.authority === 'data_integrity'
+  if ((existing.authority === 'data_integrity'
+        || (existing.authority === 'approved_commitment'
+          && existing.action.intent === 'preserve_active_training_plan'))
       && candidateAcknowledgesIntegrityVersion(candidate, existing.action)) {
     return result;
   }

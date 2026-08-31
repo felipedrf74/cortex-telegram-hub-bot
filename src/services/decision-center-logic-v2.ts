@@ -251,6 +251,7 @@ const MUTATING_ACTION_IDS = new Set([
   'undo_reflow',
   'choose_priority',
   'activate_training_plan_revision',
+  'activate_training_coach_v2_proposal',
 ]);
 
 const GENERIC_COPY_PATTERNS = [

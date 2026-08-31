@@ -111,6 +111,81 @@ describe('buildDefaultSegments — interval sessions', () => {
     const longReps = long.filter((s) => s.role === 'interval').length;
     expect(longReps).toBeGreaterThanOrEqual(shortReps);
   });
+
+  it.each([
+    ['tempo', 12],
+    ['threshold', 30],
+    ['threshold', 60],
+    ['threshold', 90],
+    ['vo2', 45],
+    ['neuromuscular', 75],
+  ] as const)('closes every %s interval profile to exactly %i minutes', (primaryZone, durationMinutes) => {
+    const segments = buildDefaultSegments(
+      tmpl({ sessionType: `${primaryZone}_run`, primaryZone }),
+      durationMinutes,
+    );
+    const durationSec = segments.reduce(
+      (sum, segment) => sum + (segment.durationSec ?? 0) * (segment.reps ?? 1),
+      0,
+    );
+
+    expect(durationSec).toBe(durationMinutes * 60);
+  });
+
+  it('preserves canonical work/recovery durations and fills residual time with aerobic steady work', () => {
+    const segments = buildDefaultSegments(
+      tmpl({ sessionType: 'threshold_run', primaryZone: 'threshold' }),
+      60,
+    );
+    const work = segments.filter((segment) => segment.role === 'interval');
+    const recoveries = segments.filter((segment) => segment.role === 'recovery');
+    const residual = segments.find((segment) => segment.role === 'steady');
+
+    expect(work).toHaveLength(3);
+    expect(work.every((segment) => segment.durationSec === 480)).toBe(true);
+    expect(recoveries).toHaveLength(3);
+    expect(recoveries.every((segment) => segment.durationSec === 180)).toBe(true);
+    expect(residual).toMatchObject({
+      durationSec: 360,
+      targetZone: 'aerobic',
+    });
+  });
+
+  it('proportionally fits one work/recovery pair when the interval budget is shorter than one canonical pair', () => {
+    const segments = buildDefaultSegments(
+      tmpl({ sessionType: 'threshold_run', primaryZone: 'threshold' }),
+      10,
+    );
+    const work = segments.find((segment) => segment.role === 'interval');
+    const recovery = segments.find((segment) => segment.role === 'recovery');
+
+    // 10 minutes leaves 390 seconds after the 20% warmup and 15% cooldown.
+    // The canonical 480:180 work/recovery ratio is retained within that budget.
+    expect(work?.durationSec).toBe(284);
+    expect(recovery?.durationSec).toBe(106);
+    expect(segments.some((segment) => segment.role === 'steady')).toBe(false);
+  });
+
+  it('calculates load from the complete requested duration, including aerobic residual time', () => {
+    const profile = buildSessionIntensityProfile(
+      tmpl({ sessionType: 'threshold_run', primaryZone: 'threshold' }),
+      60,
+      { thresholdPaceSecondsPerKm: 240 },
+    );
+    const segmentSeconds = profile.segments.reduce(
+      (sum, segment) => sum + (segment.durationSec ?? 0) * (segment.reps ?? 1),
+      0,
+    );
+    const expectedLoad = computeEstimatedLoad(
+      profile.segments,
+      'running',
+      { thresholdPaceSecondsPerKm: 240 },
+    );
+
+    expect(segmentSeconds).toBe(3600);
+    expect(profile.estimatedLoad).toBe(expectedLoad);
+    expect(profile.intensityDistribution.aerobic).toBeGreaterThan(0.2);
+  });
 });
 
 describe('computeIntensityDistribution', () => {

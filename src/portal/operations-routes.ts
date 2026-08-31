@@ -9,6 +9,11 @@ import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-f
 import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
 import { getTrainingGenerationObservabilitySnapshot } from '../services/training-generation-observability';
+import {
+  getTrainingCoachV2SoakSnapshot,
+  recordTrainingCoachV2RuleReview,
+  TrainingCoachV2SoakMetricError,
+} from '../services/training-coach-v2-soak-metrics';
 import { getContentWorkspaceObservabilitySnapshot } from '../services/content-workspace-observability';
 import {
   acknowledgeOperatorAlert,
@@ -156,6 +161,65 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
           progression_state_counts: {},
         },
       });
+    }
+  });
+
+  app.get('/api/training-coach-v2-soak', requirePortalAdminToken, (req: Request, res: Response) => {
+    try {
+      res.json({
+        ok: true,
+        coachV2Soak: getTrainingCoachV2SoakSnapshot({
+          from: typeof req.query?.from === 'string' ? req.query.from : undefined,
+          to: typeof req.query?.to === 'string' ? req.query.to : undefined,
+        }),
+      });
+    } catch (err) {
+      if (err instanceof TrainingCoachV2SoakMetricError) {
+        res.status(400).json({ ok: false, code: err.code, message: err.message });
+        return;
+      }
+      sendPortalInternalError(res, err, 'Coach V2 soak metrics unavailable', 'Portal: Coach V2 soak metrics failed');
+    }
+  });
+
+  app.post('/api/training-coach-v2-soak/reviews', requirePortalAdminToken, (req: Request, res: Response) => {
+    try {
+      const tenantId = Number(req.body?.tenantId);
+      const userId = Number(req.body?.userId);
+      const proposalId = typeof req.body?.proposalId === 'string' ? req.body.proposalId.trim() : '';
+      const ruleId = typeof req.body?.ruleId === 'string' ? req.body.ruleId : '';
+      const outcome = req.body?.outcome;
+      const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : '';
+      if (!Number.isSafeInteger(tenantId) || tenantId <= 0
+          || !Number.isSafeInteger(userId) || userId <= 0
+          || !proposalId || proposalId.length > 160
+          || (outcome !== 'correct' && outcome !== 'incorrect')) {
+        res.status(400).json({ ok: false, code: 'BAD_REVIEW', message: 'A scoped proposal, rule, outcome, and idempotency key are required.' });
+        return;
+      }
+      const result = recordTrainingCoachV2RuleReview({
+        tenantId,
+        userId,
+        proposalId,
+        ruleId,
+        outcome,
+        idempotencyKey,
+      });
+      logPortalAdminMutation(req, userId, 'training_coach_v2.rule_review', {
+        tenantId,
+        proposalId,
+        ruleId: ruleId.trim().toLowerCase(),
+        outcome,
+        replayed: result.replayed,
+      });
+      res.status(result.replayed ? 200 : 201).json({ ok: true, replayed: result.replayed });
+    } catch (err) {
+      if (err instanceof TrainingCoachV2SoakMetricError) {
+        const status = err.code === 'RULE_FIRING_NOT_FOUND' ? 404 : 409;
+        res.status(status).json({ ok: false, code: err.code, message: err.message });
+        return;
+      }
+      sendPortalInternalError(res, err, 'Coach V2 rule review failed', 'Portal: Coach V2 rule review failed');
     }
   });
 

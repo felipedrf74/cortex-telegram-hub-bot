@@ -41,6 +41,20 @@ describe('lean required CI contracts', () => {
     expect(focusedJob).not.toContain('--skip-tests');
   });
 
+  it('runs the isolated Training lifecycle lane for Training-classified changes', () => {
+    const lane = workflow.match(
+      /  training_e2e:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
+    )?.groups?.body ?? '';
+
+    expect(lane).toContain("contains(fromJSON(needs.classify.outputs.selected_groups), 'training')");
+    expect(lane).toContain('npm run training:e2e:up');
+    expect(lane).toContain('npm run training:e2e:smoke');
+    expect(lane).toContain('npm run training:e2e:flow');
+    expect(lane).toContain('npm run training:e2e:down');
+    expect(lane).toContain('.local/training-e2e/');
+    expect(workflow).toContain('TRAINING_E2E_RESULT: ${{ needs.training_e2e.result }}');
+  });
+
   it('publishes exact selected-test metadata for the protected main SHA', () => {
     expect(workflow).toContain('NEXUS_TEST_SELECTION_OUTPUT: .local/ci-evidence/test-selection.json');
     expect(workflow).toContain('protected-main-test-selection-${{ github.run_id }}-${{ github.run_attempt }}');

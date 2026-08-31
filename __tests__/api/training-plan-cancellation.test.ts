@@ -206,9 +206,9 @@ describe('training-plan-cancellation (hard delete)', () => {
     // be wiped so iOS Training Home doesn't keep rendering the
     // cancelled plan's day strip / coach card / week-protection
     // narrative from durable reports + in-memory caches.
-    expect(mocks.deleteReportsByType).toHaveBeenCalledWith(12, ['coach_briefing', 'coach_phase']);
-    expect(mocks.clearStoredPlansForAthlete).toHaveBeenCalledWith(12);
-    expect(mocks.clearLastCoachState).toHaveBeenCalledWith(12);
+    expect(mocks.deleteReportsByType).toHaveBeenCalledWith(12, ['coach_briefing', 'coach_phase'], 12);
+    expect(mocks.clearStoredPlansForAthlete).toHaveBeenCalledWith(12, 12);
+    expect(mocks.clearLastCoachState).toHaveBeenCalledWith(12, 12);
   });
 
   it('deletes matching orphan generated calendar events before hard-delete', async () => {

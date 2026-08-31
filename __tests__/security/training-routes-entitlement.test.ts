@@ -253,12 +253,13 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/api/routes/training-coach-briefing', () => ({
   COACH_BRIEFING_TTL: 21_600,
+  coachBriefingCacheKey: (userId: number, tenantId: number) => `coach-briefing:${tenantId}:${userId}`,
   normalizeCoachRecommendation: vi.fn((rec: Record<string, unknown>) => rec),
   getCoachBriefingSnapshot: vi.fn(() => null),
   restoreCoachBriefingFromLatestReport: (...args: unknown[]) => (
     mockRestoreCoachBriefingFromLatestReport(...args)
   ),
-  syncCoachStateForUser: vi.fn((_userId: number, payload: unknown) => payload),
+  syncCoachStateForUser: vi.fn((_userId: number, _tenantId: number, payload: unknown) => payload),
 }));
 
 vi.mock('../../src/api/routes/training-read-models', () => ({

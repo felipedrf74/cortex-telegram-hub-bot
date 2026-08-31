@@ -119,7 +119,7 @@ describe('report-document-store: creation', () => {
 
     expect(id).toBe(-1);
     expect(getRecentReports(0)).toEqual([]);
-    const row = testDb.prepare('SELECT COUNT(*) as count FROM report_documents').get() as { count: number };
+    const row = testDb.prepare('SELECT COUNT(*) as count FROM report_documents_scoped').get() as { count: number };
     expect(row.count).toBe(0);
     expect(getTenantScopeAnomalies()).toEqual(
       expect.arrayContaining([
@@ -184,6 +184,29 @@ describe('report-document-store: retrieval', () => {
     // The key contract: we get A report of the right type.
     expect(latest!.type).toBe('morning_briefing');
     expect(latest!.id).toBeGreaterThan(0);
+  });
+
+  it('isolates the same user report history across active tenants', () => {
+    const tenantOneId = storeReport({
+      userId: 1,
+      tenantId: 701,
+      type: 'coach_briefing',
+      title: 'Tenant 701 coach',
+      documentJson: { message: 'tenant-701' },
+    });
+    const tenantTwoId = storeReport({
+      userId: 1,
+      tenantId: 702,
+      type: 'coach_briefing',
+      title: 'Tenant 702 coach',
+      documentJson: { message: 'tenant-702' },
+    });
+
+    expect(getLatestByType(1, 'coach_briefing', 701)?.id).toBe(tenantOneId);
+    expect(getLatestByType(1, 'coach_briefing', 702)?.id).toBe(tenantTwoId);
+    expect(getLatestByType(1, 'coach_briefing', 703)).toBeNull();
+    expect(getReportById(tenantTwoId, 1, 701)).toBeNull();
+    expect(getReportById(tenantTwoId, 1, 702)?.tenantId).toBe(702);
   });
 });
 

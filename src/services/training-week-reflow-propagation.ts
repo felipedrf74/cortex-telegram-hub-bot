@@ -13,6 +13,7 @@ import { emitDomainEvent } from './event-outbox';
 import { invalidateTrainingDerivedCaches } from './cache-coherence-registry';
 import { requireTenantIdParam } from './tenant-scope';
 import { withTrainingCalendarOperationLock } from './training-operation-locks';
+import type { TrainingOperationLockLease } from './training-operation-locks';
 import {
   executeWeekReflow,
   type ReflowInput,
@@ -40,6 +41,54 @@ export interface WeekReflowPropagationReceipt {
 export type PropagatedWeekReflowResult = ReflowResult & {
   propagation: WeekReflowPropagationReceipt;
 };
+
+/**
+ * Executes a reflow when the caller already owns the plan-wide `adapt` lock
+ * and surrounding SQLite transaction. Decision Center proposal activation is
+ * the only current caller. Keeping this seam here preserves the invariant that
+ * every mutating reflow atomically records its Secretary-owned propagation
+ * request without trying to acquire a conflicting nested calendar lock.
+ */
+export function executeWeekReflowUnderExistingAdaptLock(
+  input: PropagatedWeekReflowInput,
+  lease: Pick<TrainingOperationLockLease, 'assertActive'>,
+  db: Database.Database = getDb(),
+): PropagatedWeekReflowResult {
+  const tenantId = requireTenantIdParam(
+    input.tenantId,
+    'executeWeekReflowUnderExistingAdaptLock',
+  );
+  if (input.mode !== 'apply') {
+    throw new Error('TRAINING_WEEK_REFLOW_EXISTING_LOCK_REQUIRES_APPLY');
+  }
+  lease.assertActive();
+  assertReflowScope(input, tenantId, db);
+  const result = executeWeekReflow({
+    ...stripPropagationFields(input),
+    afterApply: (transactionDb, context) => {
+      if (context.affectedSessionIds.length === 0) return;
+      lease.assertActive();
+      emitWeekReflowPropagationRequest({
+        db: transactionDb,
+        userId: input.userId,
+        tenantId,
+        planId: input.planId,
+        planVersion: input.planVersion,
+        weekId: input.weekId,
+        adaptationRevision: context.adaptationRevision,
+        sessionIds: context.affectedSessionIds,
+        reflowScope: hasAppliedPlanPause(context.perActionResults) ? 'plan' : 'week',
+        syncTarget: input.syncTarget,
+      });
+      lease.assertActive();
+    },
+  });
+  lease.assertActive();
+  return withPropagationReceipt(
+    result,
+    result.mutated && result.affectedSessionIds.length > 0,
+  );
+}
 
 export async function executeWeekReflowWithPropagation(
   input: PropagatedWeekReflowInput,

@@ -5,6 +5,7 @@ import { contentLiveEvalDotenvOptions } from './services/content-live-evaluation
 import { resolveOllamaSmallOnlyRuntimeConfig } from './services/ollama-model-policy';
 import { resolveOpenAIBatchProjectCredentials } from './services/openai-batch-project-config';
 import { isHistoricalStripeMonthlyPriceId } from './services/stripe-price-identity';
+import { isTrainingCoachV2Enabled } from './services/training-coach-v2-rollout';
 dotenv.config(contentLiveEvalDotenvOptions());
 
 // Invalid model overrides still fail startup when the signed manifest is
@@ -32,6 +33,14 @@ const IOS_JWT_SECRET_MIN_BYTES = 32;
 const IOS_JWT_PLACEHOLDER_PATTERN = /(change[-_ ]?me|changeme|stub)/i;
 const PORTAL_PUBLIC_BIND_ACK_VALUE = 'production-public-host-reviewed';
 const CONTENT_ENGINE_PORT = optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 });
+const trainingEnduranceCoherenceV2Raw = process.env.TRAINING_ENDURANCE_COHERENCE_V2_ENABLED
+  ?.trim()
+  .toLowerCase();
+// Warning-only coherence checks are now the safe default. Operators retain an
+// explicit `off` kill switch; unknown values fail closed instead of silently
+// enabling a misspelled configuration.
+const TRAINING_ENDURANCE_COHERENCE_V2_ENABLED = trainingEnduranceCoherenceV2Raw === undefined
+  || trainingEnduranceCoherenceV2Raw === 'on';
 export type NotificationDeliveryMode = 'mock' | 'apns';
 type ContentWorkspaceRolloutConfigMode = 'off' | 'read_only' | 'recovery_only' | 'write';
 
@@ -765,7 +774,7 @@ export const config = {
     // after false-positive rate per new rule < 5% AND churn rate
     // <25%. When OFF, the new routes return 404 — the legacy
     // training endpoints remain fully functional.
-    periodizationV2Enabled: process.env.COACH_PERIODIZATION_V2_ENABLED === 'on',
+    periodizationV2Enabled: isTrainingCoachV2Enabled(),
     trainingSafetyGuardrailsEnabled: process.env.TRAINING_SAFETY_GUARDRAILS_ENABLED === 'on',
     trainingSafetyHealthSignalMaxAgeDays: optionalInt('TRAINING_SAFETY_HEALTH_SIGNAL_MAX_AGE_DAYS', 14, {
       min: 1,
@@ -776,7 +785,7 @@ export const config = {
     trainingCatalogDbEnabled: process.env.TRAINING_CATALOG_DB_ENABLED === 'on',
     trainingCompletionFeedbackV2Enabled: process.env.TRAINING_COMPLETION_FEEDBACK_V2_ENABLED !== 'off',
     trainingSelectorPolicyV2Enabled: process.env.TRAINING_SELECTOR_POLICY_V2_ENABLED === 'on',
-    trainingEnduranceCoherenceV2Enabled: process.env.TRAINING_ENDURANCE_COHERENCE_V2_ENABLED === 'on',
+    trainingEnduranceCoherenceV2Enabled: TRAINING_ENDURANCE_COHERENCE_V2_ENABLED,
     trainingCalendarCapacityKernelEnabled: process.env.TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED === 'on',
   },
   // ── Apple Push Notification Service (APNs) ────────────────────────

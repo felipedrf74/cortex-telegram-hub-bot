@@ -25,6 +25,7 @@
  *   and emits a debug log so support can diagnose silent drops.
  */
 
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { requireTenantIdParam } from './tenant-scope';
@@ -223,8 +224,11 @@ export function getReadinessEventsInRange(
  * sensitive payloads. Together these provide the "delete my health
  * history" primitive.
  */
-export function deleteReadinessHistoryForUser(userId: number, tenantId: number): number {
-  const db = getDb();
+export function deleteReadinessHistoryForUser(
+  userId: number,
+  tenantId: number,
+  db: Database.Database = getDb(),
+): number {
   const scopedTenantId = requireTenantIdParam(tenantId, 'deleteReadinessHistoryForUser');
   const result = db.prepare(
     'DELETE FROM athlete_readiness_events WHERE user_id = ? AND tenant_id = ?',

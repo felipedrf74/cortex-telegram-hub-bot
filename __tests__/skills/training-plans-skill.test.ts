@@ -6,6 +6,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   DEFAULT_SKILLS,
   buildTrainingPlansSubSkillDefinition,
@@ -34,7 +36,6 @@ describe('Training Plans Sub-Skill Config', () => {
         'create_training_plan',
         'get_training_plan',
         'log_training_completion',
-        'link_session_calendar',
       ],
       cronJobs: ['training_plan_adjust'],
     });
@@ -44,7 +45,15 @@ describe('Training Plans Sub-Skill Config', () => {
     expect(tp.tools).not.toContain('add_training_week');
     expect(tp.tools).not.toContain('add_training_session');
     expect(tp.tools).not.toContain('update_training_session');
-    expect(tp.tools).toHaveLength(4);
+    expect(tp.tools).not.toContain('link_session_calendar');
+    expect(tp.tools).toHaveLength(3);
+  });
+
+  it('sport prompts do not advertise the retired raw calendar-link writer', () => {
+    for (const sport of ['cycling', 'gym', 'running', 'swim']) {
+      const prompt = readFileSync(resolve(process.cwd(), `prompts/triathlon/${sport}.md`), 'utf8');
+      expect(prompt).not.toContain('link_session_calendar');
+    }
   });
 
   it('training_plan_adjust cron job is mapped to triathlon/training-plans', () => {

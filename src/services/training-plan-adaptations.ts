@@ -51,7 +51,6 @@
  */
 
 import type Database from 'better-sqlite3';
-
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import {
@@ -630,8 +629,8 @@ function redactRowIfNeeded(
 export function purgeSensitivePayloadsForUser(
   userId: number,
   tenantId: number,
+  db: Database.Database = getDb(),
 ): number {
-  const db = getDb();
   const scopedTenantId = requireTenantIdParam(tenantId, 'purgeSensitivePayloadsForUser');
   // The ledger joins through fitness_training_plans → user_id + tenant_id;
   // we only redact rows whose plan belongs to this user and tenant.

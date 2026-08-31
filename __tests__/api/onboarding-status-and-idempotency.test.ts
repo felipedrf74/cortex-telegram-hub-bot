@@ -88,6 +88,7 @@ async function dispatch(
   url: string,
   userId: number,
   body?: any,
+  headers: Record<string, string> = {},
 ): Promise<MockRes> {
   const router = onboardingRoutes();
   const [pathPart] = url.split('?');
@@ -103,7 +104,10 @@ async function dispatch(
     path: pathPart,
     query: {},
     params: {} as Record<string, string>,
-    headers: {},
+    headers,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name];
+    },
   } as unknown as Request;
 
   if (segments[0] && !['pending', 'profile'].includes(segments[0])) {
@@ -237,5 +241,52 @@ describe('POST /onboarding/:questionnaireId/answer stepIndex concurrency', () =>
     });
     // Server cursor is untouched.
     expect(getActiveSession(3002, 'fitness')?.current_step).toBe(0);
+  });
+
+  it('accepts skip=true without an answer and leaves the field unanswered', async () => {
+    startOrResume(3003, 'fitness');
+
+    const response = await dispatch('POST', '/fitness/answer', 3003, {
+      stepIndex: 0,
+      skip: true,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({ currentStep: 1, skipped: true });
+    expect(getActiveSession(3003, 'fitness')?.answers).toEqual({});
+  });
+
+  it('rejects a missing answer unless skip is explicitly true', async () => {
+    startOrResume(3004, 'fitness');
+
+    const response = await dispatch('POST', '/fitness/answer', 3004, { stepIndex: 0 });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('BAD_REQUEST');
+    expect(getActiveSession(3004, 'fitness')?.current_step).toBe(0);
+  });
+});
+
+describe('GET /onboarding/:questionnaireId localized wire copy', () => {
+  beforeEach(() => {
+    testDb = createMigratedTestDatabase();
+    clearTenantScopeAnomaliesForTests();
+  });
+
+  afterEach(() => testDb?.close());
+
+  it('returns localized labels with canonical values for pt-PT', async () => {
+    const response = await dispatch(
+      'GET',
+      '/triathlon-swim',
+      3101,
+      undefined,
+      { 'x-language': 'pt-PT' },
+    );
+
+    expect(response.statusCode).toBe(200);
+    const equipment = response.body.data.steps.find((step: any) => step.field === 'equipment_access');
+    expect(equipment.options[0]).toBe('Pull buoy');
+    expect(equipment.optionLabels[0]).toBe('Flutuador de pernas');
   });
 });

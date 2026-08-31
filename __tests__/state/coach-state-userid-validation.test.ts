@@ -46,13 +46,15 @@ const recommendation: CoachRecommendation = {
 
 function createSchema(): void {
   testDb.exec(`
-    CREATE TABLE coach_states (
-      user_id INTEGER PRIMARY KEY,
+    CREATE TABLE coach_states_scoped (
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
       recommendations_json TEXT NOT NULL,
       briefing_summary TEXT NOT NULL,
       created_at_ms INTEGER NOT NULL,
       expires_at_ms INTEGER NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, user_id)
     );
   `);
 }

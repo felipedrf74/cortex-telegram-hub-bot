@@ -27,6 +27,7 @@ import { findExistingOwnership } from '../../services/training-plan-lifecycle';
 import { isConnected } from '../../services/oauth-store';
 import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import { getTrainingCalendarCleanupSnapshot } from '../../services/training-calendar-cleanup-recovery';
 
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
 const READINESS_STALE_MAX_AGE_HOURS = 36;
@@ -155,6 +156,7 @@ export async function getTodaySession(userId: number, tenantId: number) {
         name: activePlan.name,
         planVersion: activePlan.plan_version ?? null,
         lifecycleState: activePlan.status ?? 'active',
+        weekId: currentWeek?.id ?? null,
         weekNumber: currentWeek?.week_number || 1,
         phase: currentWeek?.focus || activePlan.periodization || null,
         calendarSource: resolvePlanCalendarSource(activePlan),
@@ -357,6 +359,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
     name: string;
     planVersion?: number | null;
     lifecycleState?: string | null;
+    weekId?: number | null;
     weekNumber: number;
     phase: string | null;
     calendarSource?: string | null;
@@ -372,6 +375,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
         name: plan.name,
         planVersion: plan.plan_version ?? null,
         lifecycleState: plan.status ?? 'active',
+        weekId: currentWeek?.id ?? null,
         weekNumber,
         phase: currentWeek?.focus || plan.periodization || null,
         calendarSource: resolvePlanCalendarSource(plan),
@@ -426,7 +430,7 @@ export async function getWeekPlan(userId: number, tenantId: number) {
     completedCount: sessions.filter((s: any) => s.status === 'completed').length,
     totalCount: sessions.filter((s: any) => !isInactiveTrainingReadModelStatus(s.status)).length,
     ...summarizeTrainingSyncState(sessions),
-    calendarCleanup: buildTrainingCalendarCleanupSnapshot(userId, tenantId),
+    calendarCleanup: getTrainingCalendarCleanupSnapshot(userId, tenantId),
   };
 }
 
@@ -439,7 +443,7 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       // Ghost provider events can outlive the plan that created them —
       // a canceled plan whose deletes dead-lettered is exactly the case
       // the count exists for, so it ships on the no-plan path too.
-      calendarCleanup: buildTrainingCalendarCleanupSnapshot(userId, tenantId),
+      calendarCleanup: getTrainingCalendarCleanupSnapshot(userId, tenantId),
     };
   }
 
@@ -470,6 +474,7 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
     const syncSummary = summarizeTrainingSyncState(sessions);
 
     mappedWeeks.push({
+      weekId: week.id,
       weekNumber: week.week_number,
       phase: week.focus || plan.periodization || null,
       intensityPct: typeof week.intensity_pct === 'number' ? week.intensity_pct : null,
@@ -515,49 +520,8 @@ export async function getAllPlanWeeks(userId: number, tenantId: number) {
       calendarSource: resolvePlanCalendarSource(plan),
     },
     weeks: mappedWeeks,
-    calendarCleanup: buildTrainingCalendarCleanupSnapshot(userId, tenantId),
+    calendarCleanup: getTrainingCalendarCleanupSnapshot(userId, tenantId),
   };
-}
-
-// Dead-lettered calendar-cleanup visibility (migration 220): counts
-// Training-sourced agenda rows whose provider delete permanently failed
-// (`delete_failed` at/over the dead-letter threshold) — those events
-// still exist in the user's Google/Outlook calendar and the sync loop
-// has stopped retrying them. `null` means "nothing to report" (zero
-// rows, pre-migration DB, or the table is unavailable) so old clients
-// and healthy states stay byte-identical.
-// Mirrors PROVIDER_SYNC_DEAD_LETTER_THRESHOLD in
-// services/secretary-agenda-provider-sync.ts (module-private there).
-const TRAINING_CALENDAR_CLEANUP_DEAD_LETTER_THRESHOLD = 5;
-
-function buildTrainingCalendarCleanupSnapshot(
-  userId: number,
-  tenantId: number,
-): { deadLetteredCount: number } | null {
-  try {
-    const db = getDb();
-    const hasTable = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-    ).get('secretary_agenda_items');
-    if (!hasTable) return null;
-    const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name?: string }>;
-    if (!columns.some((column) => column?.name === 'provider_sync_failure_count')) return null;
-    const row = db.prepare(`
-      SELECT COUNT(*) AS deadLetteredCount
-      FROM secretary_agenda_items
-      WHERE owner_user_id = ?
-        AND tenant_id = ?
-        AND source_skill = 'training'
-        AND provider_sync_state = 'delete_failed'
-        AND provider_sync_failure_count >= ?
-    `).get(userId, String(tenantId), TRAINING_CALENDAR_CLEANUP_DEAD_LETTER_THRESHOLD) as
-      { deadLetteredCount?: number } | undefined;
-    const count = typeof row?.deadLetteredCount === 'number' ? row.deadLetteredCount : 0;
-    return count > 0 ? { deadLetteredCount: count } : null;
-  } catch (err) {
-    logger.debug({ err, userId, tenantId }, 'training calendar cleanup snapshot failed — omitting');
-    return null;
-  }
 }
 
 function resolvePlanCalendarSource(plan: any): 'google' | 'outlook' | null {

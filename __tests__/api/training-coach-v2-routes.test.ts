@@ -105,7 +105,7 @@ async function req(
   requestPath: string,
   body?: unknown,
   headers: Record<string, string> = {},
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: any; headers: http.IncomingHttpHeaders }> {
   const payload = body !== undefined ? JSON.stringify(body) : undefined;
   return new Promise((resolve, reject) => {
     const request = http.request(`${baseUrl}${requestPath}`, {
@@ -126,7 +126,7 @@ async function req(
         } catch {
           json = null;
         }
-        resolve({ status: response.statusCode ?? 0, json });
+        resolve({ status: response.statusCode ?? 0, json, headers: response.headers });
       });
     });
     request.on('error', reject);
@@ -195,9 +195,14 @@ describe('POST /week/travel (C2)', () => {
       heatStress: false,
       availableSessionDurationMinutes: 30,
       notes: 'business trip',
-    });
+    }, { 'Idempotency-Key': 'travel-full-payload' });
     expect(result.status).toBe(201);
-    expect(result.json?.data?.id).toBeGreaterThan(0);
+    expect(result.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      state: 'created',
+      alreadyExisted: false,
+      window: { id: expect.any(Number), version: 1 },
+    });
     const row = testDb.prepare(
       'SELECT * FROM travel_windows WHERE user_id = 100',
     ).get() as {
@@ -222,17 +227,19 @@ describe('POST /week/travel (C2)', () => {
       notes: 'private trip notes',
     };
 
-    const first = await req('POST', '/api/v1/training/week/travel', body);
-    const replay = await req('POST', '/api/v1/training/week/travel', { ...body, notes: 'retry notes changed' });
+    const headers = { 'Idempotency-Key': 'travel-create-replay' };
+    const first = await req('POST', '/api/v1/training/week/travel', body, headers);
+    const replay = await req('POST', '/api/v1/training/week/travel', body, headers);
     const count = testDb.prepare(
       'SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100 AND tenant_id = 100',
     ).get() as { n: number };
 
     expect(first.status).toBe(201);
-    expect(replay.status).toBe(201);
+    expect(replay.status).toBe(200);
     expect(first.json?.data?.alreadyExisted).toBe(false);
     expect(replay.json?.data?.alreadyExisted).toBe(true);
-    expect(replay.json?.data?.id).toBe(first.json?.data?.id);
+    expect(replay.json?.data?.state).toBe('replayed');
+    expect(replay.json?.data?.window?.id).toBe(first.json?.data?.window?.id);
     expect(count.n).toBe(1);
   });
 
@@ -243,13 +250,17 @@ describe('POST /week/travel (C2)', () => {
       equipmentProfile: 'hotel_only',
     };
 
-    const tenantA = await req('POST', '/api/v1/training/week/travel', body, { 'x-test-tenant-id': '100' });
-    const tenantB = await req('POST', '/api/v1/training/week/travel', body, { 'x-test-tenant-id': '200' });
+    const tenantA = await req('POST', '/api/v1/training/week/travel', body, {
+      'x-test-tenant-id': '100', 'Idempotency-Key': 'travel-shared-key',
+    });
+    const tenantB = await req('POST', '/api/v1/training/week/travel', body, {
+      'x-test-tenant-id': '200', 'Idempotency-Key': 'travel-shared-key',
+    });
 
     expect(tenantA.status).toBe(201);
     expect(tenantB.status).toBe(201);
     expect(tenantB.json?.data?.alreadyExisted).toBe(false);
-    expect(tenantB.json?.data?.id).not.toBe(tenantA.json?.data?.id);
+    expect(tenantB.json?.data?.window?.id).not.toBe(tenantA.json?.data?.window?.id);
     expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100').get()).toMatchObject({ n: 2 });
   });
 
@@ -259,18 +270,18 @@ describe('POST /week/travel (C2)', () => {
       endDate: '2026-06-08',
       equipmentProfile: 'hotel_only',
       availableSessionDurationMinutes: 30,
-    });
+    }, { 'Idempotency-Key': 'travel-overlap-first' });
     const overlap = await req('POST', '/api/v1/training/week/travel', {
       startDate: '2026-06-05',
       endDate: '2026-06-10',
       equipmentProfile: 'bodyweight_only',
       availableSessionDurationMinutes: 20,
-    });
+    }, { 'Idempotency-Key': 'travel-overlap-second' });
 
     expect(first.status).toBe(201);
     expect(overlap.status).toBe(201);
     expect(overlap.json?.data?.alreadyExisted).toBe(false);
-    expect(overlap.json?.data?.id).not.toBe(first.json?.data?.id);
+    expect(overlap.json?.data?.window?.id).not.toBe(first.json?.data?.window?.id);
     expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100 AND tenant_id = 100').get()).toMatchObject({ n: 2 });
   });
 
@@ -288,318 +299,326 @@ describe('POST /week/travel (C2)', () => {
   });
 });
 
-describe('POST /week/:weekId/reflow (C6)', () => {
-  it('preview mode works without idempotencyKey', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'preview', trigger: 'manual_reflow',
+describe('GET/PATCH/DELETE /week/travel', () => {
+  it('lists bounded tenant-scoped windows and rejects a non-numeric limit', async () => {
+    const created = await req('POST', '/api/v1/training/week/travel', {
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      notes: 'private travel note',
+    }, { 'Idempotency-Key': 'travel-list-create' });
+    expect(created.status).toBe(201);
+
+    const listed = await req('GET', '/api/v1/training/week/travel?fromDate=2026-06-03&toDate=2026-06-04&limit=10');
+    expect(listed.status).toBe(200);
+    expect(listed.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      windows: [{
+        id: created.json?.data?.window?.id,
+        version: 1,
+        startDate: '2026-06-01',
+        endDate: '2026-06-08',
+      }],
     });
-    expect(result.status).toBe(200);
-    expect(result.json?.data?.mode).toBe('preview');
-    expect(result.json?.data?.mutated).toBe(false);
-    expect(result.json?.data?.adaptationRevision).toBeNull();
+
+    const foreign = await req('GET', '/api/v1/training/week/travel', undefined, {
+      'x-test-tenant-id': '200',
+    });
+    expect(foreign.status).toBe(200);
+    expect(foreign.json?.data?.windows).toEqual([]);
+
+    const malformed = await req('GET', '/api/v1/training/week/travel?limit=abc');
+    expect(malformed.status).toBe(400);
+    expect(malformed.json?.error).toMatchObject({ code: 'BAD_INPUT' });
   });
 
-  it('apply mode WITHOUT idempotencyKey → 400 IDEMPOTENCY_REQUIRED', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
+  it('validates the fully merged PATCH, then CAS-updates and replays the exact mutation', async () => {
+    const created = await req('POST', '/api/v1/training/week/travel', {
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      notes: 'initial',
+    }, { 'Idempotency-Key': 'travel-patch-create' });
+    const id = created.json?.data?.window?.id as number;
+
+    const invalidMerged = await req('PATCH', `/api/v1/training/week/travel/${id}`, {
+      startDate: '2024-01-01',
+    }, { 'If-Match': '"travel-1"', 'Idempotency-Key': 'travel-patch-too-long' });
+    expect(invalidMerged.status).toBe(400);
+    expect(invalidMerged.json?.error?.message).toMatch(/cannot exceed 366 days/);
+    expect(testDb.prepare('SELECT version FROM travel_windows WHERE id = ?').get(id)).toEqual({ version: 1 });
+
+    const headers = { 'If-Match': '"travel-1"', 'Idempotency-Key': 'travel-patch-exact' };
+    const updated = await req('PATCH', `/api/v1/training/week/travel/${id}`, {
+      notes: 'reviewed availability',
+      availableSessionDurationMinutes: 35,
+    }, headers);
+    const replay = await req('PATCH', `/api/v1/training/week/travel/${id}`, {
+      notes: 'reviewed availability',
+      availableSessionDurationMinutes: 35,
+    }, headers);
+    expect(updated.status).toBe(200);
+    expect(updated.json?.data).toMatchObject({
+      state: 'updated',
+      window: { id, version: 2, notes: 'reviewed availability', availableSessionDurationMinutes: 35 },
     });
-    expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('IDEMPOTENCY_REQUIRED');
+    expect(replay.status).toBe(200);
+    expect(replay.json?.data).toMatchObject({ state: 'replayed', window: { id, version: 2 } });
+
+    const stale = await req('PATCH', `/api/v1/training/week/travel/${id}`, { notes: 'stale' }, {
+      'If-Match': '"travel-1"', 'Idempotency-Key': 'travel-patch-stale',
+    });
+    expect(stale.status).toBe(412);
+    expect(stale.json?.error?.code).toBe('VERSION_CONFLICT');
+
+    const foreign = await req('PATCH', `/api/v1/training/week/travel/${id}`, { notes: 'foreign' }, {
+      'x-test-tenant-id': '200', 'If-Match': '"travel-2"', 'Idempotency-Key': 'travel-patch-foreign',
+    });
+    expect(foreign.status).toBe(404);
   });
 
-  it('apply mode WITH idempotencyKey writes a ledger row', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'route-test-key-1',
-    });
-    expect(result.status).toBe(200);
-    expect(result.json?.data?.adaptationRevision).toBe(1);
-    expect(result.json?.data?.propagation).toMatchObject({
-      state: 'not_synced',
-      pending: false,
-      adaptationRevision: 1,
-    });
-    const ledger = testDb.prepare(
-      "SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1 AND scope = 'week'",
-    ).get() as { n: number };
-    expect(ledger.n).toBe(1);
-  });
+  it('deletes with CAS and replays after the row is gone without crossing tenant scope', async () => {
+    const created = await req('POST', '/api/v1/training/week/travel', {
+      startDate: '2026-07-01',
+      endDate: '2026-07-02',
+    }, { 'Idempotency-Key': 'travel-delete-create' });
+    const id = created.json?.data?.window?.id as number;
 
-  it('apply mode dedupes same idempotencyKey across requests', async () => {
-    await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'dup-key',
+    const foreign = await req('DELETE', `/api/v1/training/week/travel/${id}`, {}, {
+      'x-test-tenant-id': '200', 'If-Match': '"travel-1"', 'Idempotency-Key': 'travel-delete-foreign',
     });
-    const second = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'dup-key',
-    });
-    expect(second.json?.data?.alreadyExisted).toBe(true);
-    expect(second.json?.data?.mutated).toBe(false);
-  });
+    expect(foreign.status).toBe(200);
+    expect(foreign.json?.data).toMatchObject({ state: 'already_absent', deleted: false });
+    expect(testDb.prepare('SELECT id FROM travel_windows WHERE id = ?').get(id)).toBeDefined();
 
-  // R7 P2 — Codex caught that the R6 rate-limit short-circuit
-  // returned 200 synthetic success when apply was called without
-  // an idempotencyKey on a rate-limited plan. The fix hoists the
-  // IDEMPOTENCY_REQUIRED gate above the short-circuit AND treats
-  // empty/whitespace keys as missing.
-  it('R7 P2 — apply on a rate-limited plan still 400s when idempotencyKey is missing', async () => {
-    // Pre-fill 3 applied non-safety adaptations so the
-    // anti-churn limiter is in the limited state.
-    for (let i = 0; i < 3; i++) {
-      await req('POST', '/api/v1/training/week/1/reflow', {
-        planId: 1, mode: 'apply', trigger: 'manual_reflow',
-        idempotencyKey: `prefill-${i}`,
-      });
-    }
-    const ledgerBefore = testDb.prepare(
-      "SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1 AND scope = 'week'",
-    ).get() as { n: number };
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      // no idempotencyKey
-    });
-    expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('IDEMPOTENCY_REQUIRED');
-    const ledgerAfter = testDb.prepare(
-      "SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1 AND scope = 'week'",
-    ).get() as { n: number };
-    // No new rows from the rejected request.
-    expect(ledgerAfter.n).toBe(ledgerBefore.n);
-  });
-
-  it('R7 P2 — apply with empty idempotencyKey treated as missing → 400', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: '',
-    });
-    expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('IDEMPOTENCY_REQUIRED');
-  });
-
-  it('R7 P2 — apply with whitespace-only idempotencyKey treated as missing → 400', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: '   ',
-    });
-    expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('IDEMPOTENCY_REQUIRED');
-  });
-
-  it('R7 P2 — preview still works without idempotencyKey (precedence preserved)', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'preview', trigger: 'manual_reflow',
-    });
-    expect(result.status).toBe(200);
-    expect(result.json?.data?.mode).toBe('preview');
-  });
-
-  it('R7 P2 — leading/trailing whitespace stripped, valid key still accepted', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: '  trim-test-key  ',
-    });
-    expect(result.status).toBe(200);
-    // Same trimmed key replays.
-    const second = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'trim-test-key',
-    });
-    expect(second.json?.data?.alreadyExisted).toBe(true);
-  });
-
-  // R8 P3 — rate-limited preview must NOT write an empty audit row.
-  // Codex caught that for `mode: preview` + `scenario.rateLimited`,
-  // the ledger's afterPatch.actions and decisionReasonCodes were
-  // empty arrays — losing the would-have plan that
-  // `scenario.suppressedActions` captures. The fix sources the
-  // ledger from suppressedActions when rateLimited is true so the
-  // audit row reflects intent. Response shape stays unchanged.
-  it('R8 P3 — rate-limited preview ledger captures suppressed actions + reason codes', async () => {
-    // Trip the daily limit with prefilled applies.
-    for (let i = 0; i < 3; i++) {
-      await req('POST', '/api/v1/training/week/1/reflow', {
-        planId: 1, mode: 'apply', trigger: 'manual_reflow',
-        idempotencyKey: `r8-prefill-${i}`,
-      });
-    }
-    // Now run a preview — actions are suppressed but suppressedActions
-    // should land in the audit row.
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'preview', trigger: 'manual_preview',
-    });
-    expect(result.status).toBe(200);
-    // Response shape — actions still empty (suppressed by rate limit),
-    // but scenario carries the suppressedActions.
-    expect(result.json?.data?.actions ?? []).toEqual([]);
-    expect(result.json?.data?.scenario?.rateLimited).toBe(true);
-    const suppressedFromResponse = result.json?.data?.scenario?.suppressedActions ?? [];
-    // Locate the preview ledger row.
-    const previewRow = testDb.prepare(
-      `SELECT after_patch_json, decision_reason_codes_json FROM training_plan_adaptations
-       WHERE plan_id = 1 AND scope = 'preview' ORDER BY id DESC LIMIT 1`,
-    ).get() as { after_patch_json: string; decision_reason_codes_json: string };
-    expect(previewRow).toBeDefined();
-    const afterPatch = JSON.parse(previewRow.after_patch_json);
-    // R8 P3 contract: rate-limited preview ledger row carries the
-    // would-have actions (NOT the executed empty set) so audit can
-    // reconstruct intent.
-    expect(afterPatch.rateLimitedSuppressed).toBe(true);
-    expect(Array.isArray(afterPatch.actions)).toBe(true);
-    expect(afterPatch.actions.length).toBe(suppressedFromResponse.length);
-    // Decision reason codes mirror the suppressed actions' codes.
-    const reasonCodes = JSON.parse(previewRow.decision_reason_codes_json) as string[];
-    expect(reasonCodes.length).toBe(suppressedFromResponse.length);
-    if (suppressedFromResponse.length > 0) {
-      expect(reasonCodes[0]).toBe(suppressedFromResponse[0].reasonCode);
-    }
-  });
-
-  it('R8 P3 — rate-limited APPLY still writes ZERO ledger rows (no-ledger contract preserved)', async () => {
-    // Prefill 3 applies → rate limit tripped for the next apply.
-    for (let i = 0; i < 3; i++) {
-      await req('POST', '/api/v1/training/week/1/reflow', {
-        planId: 1, mode: 'apply', trigger: 'manual_reflow',
-        idempotencyKey: `r8-rl-prefill-${i}`,
-      });
-    }
-    const ledgerBefore = testDb.prepare(
-      'SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1',
-    ).get() as { n: number };
-    // Apply with a NEW idempotency key (no replay) → rate-limit
-    // short-circuit fires, synthetic 200, no new ledger row.
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'r8-rl-fresh-key',
-    });
-    expect(result.status).toBe(200);
-    expect(result.json?.data?.mutated).toBe(false);
-    expect(result.json?.data?.adaptationRevision).toBeNull();
-    const ledgerAfter = testDb.prepare(
-      'SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1',
-    ).get() as { n: number };
-    expect(ledgerAfter.n).toBe(ledgerBefore.n);
-  });
-
-  // R8 P1-4 — Codex caught that the (plan_id, idempotency_key)
-  // UNIQUE is per-plan not per-week, so a key reused on a
-  // different week of the same plan would either replay the wrong
-  // row's data (different week) or — in the rate-limit short-circuit
-  // — accept the synthetic 200 then later land a real row on a
-  // different week. The fix rejects 409 IDEMPOTENCY_KEY_REUSED_DIFFERENT_WEEK.
-  it('R8 P1-4 — apply with idempotencyKey reused across weeks rejects with 409', async () => {
-    // Seed a second week on the same plan.
-    testDb.prepare(
-      "INSERT INTO training_weeks (id, plan_id, week_number, focus, intensity_pct, auto_adjusted, created_at) VALUES (2, 1, 2, 'base', 70, 0, datetime('now'))",
-    ).run();
-    // First apply on week 1 with key "shared".
-    const first = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'shared',
-    });
-    expect(first.status).toBe(200);
-    const ledgerAfterFirst = testDb.prepare(
-      "SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1 AND idempotency_key = 'shared'",
-    ).get() as { n: number };
-    expect(ledgerAfterFirst.n).toBe(1);
-    // Second apply on week 2 with the SAME key → 409.
-    const second = await req('POST', '/api/v1/training/week/2/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'shared',
-    });
-    expect(second.status).toBe(409);
-    expect(second.json?.error?.code).toBe('IDEMPOTENCY_KEY_REUSED_DIFFERENT_WEEK');
-    // No new ledger row was written for week 2.
-    const ledgerAfterSecond = testDb.prepare(
-      "SELECT COUNT(*) AS n FROM training_plan_adaptations WHERE plan_id = 1 AND idempotency_key = 'shared'",
-    ).get() as { n: number };
-    expect(ledgerAfterSecond.n).toBe(1);
-  });
-
-  it('R8 P1-4 — apply replay on SAME week + same key still returns alreadyExisted (no 409)', async () => {
-    const first = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'same-week-key',
-    });
-    expect(first.status).toBe(200);
-    const second = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'same-week-key',
-    });
-    expect(second.status).toBe(200);
-    expect(second.json?.data?.alreadyExisted).toBe(true);
-  });
-
-  it('R8 P1-4 — rate-limited apply on a different week with reused key → 409 (not synthetic 200)', async () => {
-    // Seed week 2.
-    testDb.prepare(
-      "INSERT INTO training_weeks (id, plan_id, week_number, focus, intensity_pct, auto_adjusted, created_at) VALUES (3, 1, 3, 'base', 70, 0, datetime('now'))",
-    ).run();
-    // Apply on week 1 with key — succeeds, gets a real row.
-    const initial = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'rl-shared',
-    });
-    expect(initial.status).toBe(200);
-    // Prefill the daily limit so the next apply is rate-limited.
-    for (let i = 0; i < 3; i++) {
-      const prefill = await req('POST', '/api/v1/training/week/1/reflow', {
-        planId: 1, mode: 'apply', trigger: 'manual_reflow',
-        idempotencyKey: `rl-other-${i}`,
-      });
-      expect(prefill.status).toBe(200);
-    }
-    // Now apply on week 3 with the original "rl-shared" key while rate-limited.
-    // The existing row's weekId is 1, requested is 3 → must reject 409.
-    const result = await req('POST', '/api/v1/training/week/3/reflow', {
-      planId: 1, mode: 'apply', trigger: 'manual_reflow',
-      idempotencyKey: 'rl-shared',
-    });
-    expect(result.status).toBe(409);
-    expect(result.json?.error?.code).toBe('IDEMPOTENCY_KEY_REUSED_DIFFERENT_WEEK');
-  });
-
-  it('R8 P3 — non-rate-limited preview ledger still uses canonical actions (no regression)', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'preview', trigger: 'baseline_preview',
-    });
-    expect(result.status).toBe(200);
-    // Find the preview row for this trigger.
-    const previewRow = testDb.prepare(
-      `SELECT after_patch_json FROM training_plan_adaptations
-       WHERE plan_id = 1 AND scope = 'preview' AND trigger_type = 'baseline_preview'
-       ORDER BY id DESC LIMIT 1`,
-    ).get() as { after_patch_json: string } | undefined;
-    expect(previewRow).toBeDefined();
-    const afterPatch = JSON.parse((previewRow as { after_patch_json: string }).after_patch_json);
-    // rateLimitedSuppressed flag false (or absent) when classifier
-    // did not hit the rate limit.
-    expect(afterPatch.rateLimitedSuppressed).toBeFalsy();
-  });
-
-  it('rejects bad mode with 400', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'commit',
-    });
-    expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('BAD_MODE');
-  });
-
-  it('rejects bad weekId with 400', async () => {
-    const result = await req('POST', '/api/v1/training/week/abc/reflow', {
-      planId: 1, mode: 'preview',
-    });
-    expect(result.status).toBe(400);
-  });
-
-  it('unknown week → 404', async () => {
-    const result = await req('POST', '/api/v1/training/week/9999/reflow', {
-      planId: 1, mode: 'apply', trigger: 't', idempotencyKey: 'k',
-    });
-    expect(result.status).toBe(404);
+    const headers = { 'If-Match': '"travel-1"', 'Idempotency-Key': 'travel-delete-exact' };
+    const deleted = await req('DELETE', `/api/v1/training/week/travel/${id}`, {}, headers);
+    const replay = await req('DELETE', `/api/v1/training/week/travel/${id}`, {}, headers);
+    expect(deleted.status).toBe(200);
+    expect(deleted.json?.data).toMatchObject({ state: 'deleted', deleted: true });
+    expect(replay.status).toBe(200);
+    expect(replay.json?.data).toMatchObject({ state: 'replayed', deleted: true });
+    expect(testDb.prepare('SELECT id FROM travel_windows WHERE id = ?').get(id)).toBeUndefined();
   });
 });
 
+describe('POST /week/:weekId/reflow proposal-first contract', () => {
+  async function seedHardPauseScenario(weekId = 1, sessionId = 501): Promise<void> {
+    testDb.prepare(
+      "INSERT OR IGNORE INTO training_sessions (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status) VALUES (?, ?, 1, 'Monday', 'easy_run', 'Actionable run', 60, 'pending')",
+    ).run(sessionId, weekId);
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['illness'],
+    }, { 'Idempotency-Key': 'reflow-safety-' + String(weekId) });
+    expect([200, 201]).toContain(intake.status);
+  }
+
+  async function createPreview(weekId = 1): Promise<any> {
+    await seedHardPauseScenario(weekId, 500 + weekId);
+    const preview = await req('POST', '/api/v1/training/week/reflow/preview', {
+      weekId,
+      trigger: 'manual_reflow',
+      sessionsToPreserve: [],
+    });
+    expect(preview.status).toBe(200);
+    expect(preview.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      outcome: 'preview',
+      planId: 1,
+      weekId,
+      proposalId: null,
+      adaptationId: null,
+      expectedVersion: expect.any(Number),
+    });
+    expect(preview.json?.data?.previewId).toEqual(expect.any(String));
+    return preview.json.data;
+  }
+
+  it('returns the standard no_changes envelope without inventing nullable identifiers', async () => {
+    const result = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'preview',
+      trigger: 'manual_reflow',
+    });
+    expect(result.status).toBe(200);
+    expect(result.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      outcome: 'no_changes',
+      planId: 1,
+      weekId: 1,
+      proposalId: null,
+      adaptationId: null,
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_coach_v2_reflow_previews').get()).toEqual({ n: 0 });
+  });
+
+  it('requires idempotency before a reviewed preview and rejects missing preview identity', async () => {
+    const missingKey = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'apply',
+      trigger: 'manual_reflow',
+    });
+    expect(missingKey.status).toBe(400);
+    expect(missingKey.json?.error?.code).toBe('IDEMPOTENCY_REQUIRED');
+
+    const missingPreview = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'apply',
+      trigger: 'manual_reflow',
+      idempotencyKey: 'proposal-without-preview',
+    });
+    expect(missingPreview.status).toBe(428);
+    expect(missingPreview.json?.error?.code).toBe('PREVIEW_REQUIRED');
+  });
+
+  it('binds the exact preview to a Decision Center proposal without mutating plan or sessions', async () => {
+    const preview = await createPreview();
+    const before = testDb.prepare(
+      'SELECT adaptation_revision AS revision FROM fitness_training_plans WHERE id = 1',
+    ).get();
+    const sessionBefore = testDb.prepare(
+      'SELECT duration_minutes AS duration, status FROM training_sessions WHERE id = 501',
+    ).get();
+
+    const proposed = await req('POST', '/api/v1/training/week/reflow/proposals', {
+      weekId: 1,
+      previewId: preview.previewId,
+    }, { 'Idempotency-Key': 'proposal-first-reflow' });
+
+    expect(proposed.status).toBe(202);
+    expect(proposed.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      outcome: 'proposal_created',
+      planId: 1,
+      weekId: 1,
+      previewId: preview.previewId,
+      proposalId: expect.any(String),
+      adaptationId: null,
+      decisionId: expect.any(String),
+      proposal: {
+        kind: 'week_reflow',
+        planId: 1,
+        weekId: 1,
+        previewId: preview.previewId,
+      },
+    });
+    expect(testDb.prepare(
+      'SELECT adaptation_revision AS revision FROM fitness_training_plans WHERE id = 1',
+    ).get()).toEqual(before);
+    expect(testDb.prepare(
+      'SELECT duration_minutes AS duration, status FROM training_sessions WHERE id = 501',
+    ).get()).toEqual(sessionBefore);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_coach_v2_proposals').get()).toEqual({ n: 1 });
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_plan_adaptations').get()).toEqual({ n: 0 });
+  });
+
+  it('replays before volatile version checks and rejects a key bound to another reviewed preview', async () => {
+    const preview = await createPreview();
+    const first = await req('POST', '/api/v1/training/week/reflow/proposals', {
+      weekId: 1,
+      previewId: preview.previewId,
+    }, { 'Idempotency-Key': '  stable-reflow-replay  ' });
+    expect(first.status).toBe(202);
+
+    testDb.prepare('UPDATE fitness_training_plans SET adaptation_revision = 7 WHERE id = 1').run();
+    const replay = await req('POST', '/api/v1/training/week/reflow/proposals', {
+      weekId: 1,
+      previewId: preview.previewId,
+    }, { 'Idempotency-Key': 'stable-reflow-replay' });
+    expect(replay.status).toBe(200);
+    expect(replay.json?.data).toMatchObject({
+      outcome: 'replayed',
+      proposalId: first.json?.data?.proposalId,
+      decisionId: first.json?.data?.decisionId,
+    });
+
+    const differentPreview = await req('POST', '/api/v1/training/week/reflow/preview', {
+      weekId: 1,
+      trigger: 'manual_reflow_after_state_change',
+    });
+    expect(differentPreview.status).toBe(200);
+    expect(differentPreview.json?.data?.previewId).toEqual(expect.any(String));
+    const conflict = await req('POST', '/api/v1/training/week/reflow/proposals', {
+      weekId: 1,
+      previewId: differentPreview.json.data.previewId,
+    }, { 'Idempotency-Key': 'stable-reflow-replay' });
+    expect(conflict.status).toBe(409);
+    expect(conflict.json?.error?.code).toBe('IDEMPOTENCY_CONFLICT');
+  });
+
+  it('returns rate_limited with nullable identifiers and persists neither preview nor proposal', async () => {
+    testDb.prepare(
+      "INSERT INTO training_sessions (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status) VALUES (580, 1, 1, 'Monday', 'easy_run', 'Travel run', 60, 'pending')",
+    ).run();
+    testDb.prepare(
+      "INSERT INTO travel_windows (user_id, tenant_id, start_date, end_date, time_zone_shift_hours, flight_duration_hours, sleep_disruption_expected, walking_load_expected, heat_stress, version) VALUES (100, 100, '2026-01-05', '2026-01-11', 8, 12, 1, 1, 1, 1)",
+    ).run();
+    for (let revision = 1; revision <= 3; revision += 1) {
+      testDb.prepare(
+        "INSERT INTO training_plan_adaptations (plan_id, adaptation_revision, scope, trigger_type, decision_reason_codes_json, science_policy_version, actor) VALUES (1, ?, 'week', 'manual_reflow', '[\"travel_capacity\"]', 'science.v1', 'user')",
+      ).run(revision);
+    }
+
+    const result = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'preview',
+      trigger: 'manual_reflow',
+    });
+    expect(result.status).toBe(200);
+    expect(result.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      outcome: 'rate_limited',
+      planId: 1,
+      weekId: 1,
+      proposalId: null,
+      adaptationId: null,
+      scenario: { rateLimited: true },
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_coach_v2_reflow_previews').get()).toEqual({ n: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_coach_v2_proposals').get()).toEqual({ n: 0 });
+  });
+
+  it('keeps a proposal key scoped to the reviewed week and rejects cross-week reuse', async () => {
+    const firstPreview = await createPreview(1);
+    const first = await req('POST', '/api/v1/training/week/reflow/proposals', {
+      weekId: 1,
+      previewId: firstPreview.previewId,
+    }, { 'Idempotency-Key': 'cross-week-proposal-key' });
+    expect(first.status).toBe(202);
+
+    testDb.prepare(
+      "INSERT INTO training_weeks (id, plan_id, week_number, focus, intensity_pct, auto_adjusted, created_at) VALUES (2, 1, 2, 'base', 70, 0, datetime('now'))",
+    ).run();
+    const secondPreview = await createPreview(2);
+    const second = await req('POST', '/api/v1/training/week/reflow/proposals', {
+      weekId: 2,
+      previewId: secondPreview.previewId,
+    }, { 'Idempotency-Key': 'cross-week-proposal-key' });
+    expect(second.status).toBe(409);
+    expect(second.json?.error?.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_coach_v2_proposals').get()).toEqual({ n: 1 });
+  });
+
+  it('rejects bad mode, bad week identity, and unknown weeks without mutation', async () => {
+    const badMode = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'commit',
+    });
+    const badWeek = await req('POST', '/api/v1/training/week/abc/reflow', {
+      planId: 1,
+      mode: 'preview',
+    });
+    const unknown = await req('POST', '/api/v1/training/week/9999/reflow', {
+      planId: 1,
+      mode: 'preview',
+    });
+    expect(badMode.status).toBe(400);
+    expect(badMode.json?.error?.code).toBe('BAD_MODE');
+    expect(badWeek.status).toBe(400);
+    expect(unknown.status).toBe(404);
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM training_coach_v2_proposals').get()).toEqual({ n: 0 });
+  });
+});
 describe('F24 — live reflow propagation wiring', () => {
   it.each([
     ['google', 'google'],
@@ -618,65 +637,141 @@ describe('F24 — live reflow propagation wiring', () => {
     expect(resolvePersistedTrainingReflowSyncTarget('{"preferredTime":"07:00"}')).toBe('auto');
   });
 
-  it('routes the live apply endpoint through the scoped propagation orchestrator', () => {
+  it('keeps reflow proposal-first and defers provider effects to the approved activation outbox', () => {
     const source = fs.readFileSync(path.resolve(
       __dirname,
       '../../src/api/routes/training-coach-v2.ts',
     ), 'utf8');
-    expect(source).toContain('await executeWeekReflowWithPropagation({');
-    expect(source).toContain("tenantId: requireTenantIdParam(auth.tenantId, 'training.coach.reflow')");
-    expect(source).toContain('planVersion: planMeta.plan_version');
+    expect(source).toContain('createTrainingCoachV2ReflowPreview({');
+    expect(source).toContain('createTrainingCoachV2Proposal({');
+    expect(source).toContain('bindTrainingCoachV2ProposalDecision({');
     // Stronger F24 guarantee: reflow preserves the plan's persisted calendar
     // choice; none/apple must never be upgraded into an auto provider write.
     expect(source).toContain('const reflowSyncTarget = resolvePersistedTrainingReflowSyncTarget(');
     expect(source).toContain('syncTarget: reflowSyncTarget');
     expect(source).not.toContain("syncTarget: 'auto'");
+    expect(source).not.toContain('executeWeekReflowWithPropagation({');
     expect(source).not.toMatch(/\bexecuteWeekReflow\s*\(\s*\{/);
   });
 });
 
-describe('GET/PATCH /plans/:planId/coach-policy (A5)', () => {
-  it('GET returns default policy when not set', async () => {
+describe('GET/PATCH /plans/:planId/coach-policy proposal contract', () => {
+  it('GET returns the versioned default policy and ETag', async () => {
     const result = await req('GET', '/api/v1/training/plans/1/coach-policy');
     expect(result.status).toBe(200);
-    expect(result.json?.data?.policy?.progressionAggressiveness).toBe('standard');
-    expect(result.json?.data?.policy?.deloadStrategy).toBe('hybrid');
+    expect(result.headers.etag).toBe('"coach-policy-1"');
+    expect(result.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      planId: 1,
+      version: 1,
+      policy: {
+        progressionAggressiveness: 'standard',
+        deloadStrategy: 'hybrid',
+      },
+    });
   });
 
-  it('GET for unknown plan → 404', async () => {
-    const result = await req('GET', '/api/v1/training/plans/9999/coach-policy');
-    expect(result.status).toBe(404);
-  });
-
-  it("PATCH persists 'data_informed' deloadStrategy", async () => {
+  it('PATCH preserves omitted fields and creates a proposal without mutating the policy projection', async () => {
     const result = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
       deloadStrategy: 'data_informed',
+    }, {
+      'If-Match': '"coach-policy-1"',
+      'Idempotency-Key': 'policy-proposal-preserve',
+    });
+    expect(result.status).toBe(202);
+    expect(result.json?.data).toMatchObject({
+      schemaVersion: 'training-coach-v2.2',
+      outcome: 'proposal_created',
+      decisionId: expect.any(String),
+      currentPolicy: {
+        progressionAggressiveness: 'standard',
+        deloadStrategy: 'hybrid',
+      },
+      proposedPolicy: {
+        progressionAggressiveness: 'standard',
+        deloadStrategy: 'data_informed',
+      },
+      proposal: { kind: 'coach_policy', planId: 1, weekId: null },
+    });
+
+    const unchanged = await req('GET', '/api/v1/training/plans/1/coach-policy');
+    expect(unchanged.json?.data).toMatchObject({
+      version: 1,
+      policy: {
+        progressionAggressiveness: 'standard',
+        deloadStrategy: 'hybrid',
+      },
+    });
+  });
+
+  it('replays by idempotency key before volatile CAS and rejects a changed request', async () => {
+    const headers = {
+      'If-Match': '"coach-policy-1"',
+      'Idempotency-Key': 'policy-stable-replay',
+    };
+    const first = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
+      progressionAggressiveness: 'conservative',
+    }, headers);
+    expect(first.status).toBe(202);
+
+    testDb.prepare('UPDATE fitness_training_plans SET coach_plan_policy_version = 2 WHERE id = 1').run();
+    const replay = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
+      progressionAggressiveness: 'conservative',
+    }, headers);
+    expect(replay.status).toBe(200);
+    expect(replay.json?.data).toMatchObject({
+      outcome: 'replayed',
+      decisionId: first.json?.data?.decisionId,
+      proposal: { proposalId: first.json?.data?.proposal?.proposalId },
+    });
+
+    const conflict = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
       progressionAggressiveness: 'aggressive',
-    });
-    expect(result.status).toBe(200);
-    expect(result.json?.data?.policy?.deloadStrategy).toBe('data_informed');
-    expect(result.json?.data?.policy?.progressionAggressiveness).toBe('aggressive');
-    // Round-trip via subsequent GET.
-    const got = await req('GET', '/api/v1/training/plans/1/coach-policy');
-    expect(got.json?.data?.policy?.deloadStrategy).toBe('data_informed');
+    }, headers);
+    expect(conflict.status).toBe(409);
+    expect(conflict.json?.error?.code).toBe('IDEMPOTENCY_CONFLICT');
   });
 
-  it("PATCH with invalid deloadStrategy 'data_driven' → 400 BAD_INPUT", async () => {
-    const result = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
+  it('requires ETag and idempotency, rejects stale CAS, and validates the patch', async () => {
+    const missingEtag = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
+      deloadStrategy: 'data_informed',
+    }, { 'Idempotency-Key': 'policy-missing-etag' });
+    expect(missingEtag.status).toBe(428);
+    expect(missingEtag.json?.error?.code).toBe('PRECONDITION_REQUIRED');
+
+    const missingKey = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
+      deloadStrategy: 'data_informed',
+    }, { 'If-Match': '"coach-policy-1"' });
+    expect(missingKey.status).toBe(428);
+    expect(missingKey.json?.error?.code).toBe('IDEMPOTENCY_REQUIRED');
+
+    const stale = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
+      deloadStrategy: 'data_informed',
+    }, {
+      'If-Match': '"coach-policy-9"',
+      'Idempotency-Key': 'policy-stale',
+    });
+    expect(stale.status).toBe(412);
+    expect(stale.json?.error?.code).toBe('VERSION_CONFLICT');
+
+    const invalid = await req('PATCH', '/api/v1/training/plans/1/coach-policy', {
       deloadStrategy: 'data_driven',
+    }, {
+      'If-Match': '"coach-policy-1"',
+      'Idempotency-Key': 'policy-invalid',
     });
-    expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('BAD_INPUT');
+    expect(invalid.status).toBe(400);
+    expect(invalid.json?.error?.code).toBe('BAD_INPUT');
   });
 
-  it('PATCH for unknown plan → 404', async () => {
+  it('returns uniform 404 for an unknown plan before proposal validation', async () => {
     const result = await req('PATCH', '/api/v1/training/plans/9999/coach-policy', {
       progressionAggressiveness: 'standard',
     });
     expect(result.status).toBe(404);
+    expect(result.json?.error?.code).toBe('PLAN_NOT_FOUND');
   });
 });
-
 describe('GET /plans/:planId/coach-analysis — end-to-end v2 composition', () => {
   it('returns mesocycle + weekIntent + intensityProfiles + deload + scenario', async () => {
     // Seed a couple of sessions in week 1 so the analysis has something to iterate.
@@ -796,17 +891,37 @@ describe('Codex R2 P0 — cross-user ownership checks (reflow + policy routes)',
     expect(result.json?.error?.code).toBe('PLAN_WEEK_MISMATCH');
   });
 
-  it('POST /week/:weekId/reflow with body planId omitted falls back to owned plan', async () => {
-    // No planId in body — derives from the week's parent plan.
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      mode: 'apply', idempotencyKey: 'fallback-key', trigger: 't',
+  it('POST /week/:weekId/reflow with body planId omitted binds a reviewed proposal to the owned plan', async () => {
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['illness'],
+    }, { 'Idempotency-Key': 'owned-plan-fallback-safety' });
+    expect(intake.status).toBe(201);
+    const preview = await req('POST', '/api/v1/training/week/1/reflow', {
+      mode: 'preview', trigger: 't',
     });
-    expect(result.status).toBe(200);
-    expect(result.json?.data?.adaptationRevision).toBe(1);
+    expect(preview.status).toBe(200);
+    expect(preview.json?.data?.outcome).toBe('preview');
+
+    // No planId in either body — both requests derive it from the owned week.
+    const result = await req('POST', '/api/v1/training/week/1/reflow', {
+      mode: 'apply',
+      idempotencyKey: 'fallback-key',
+      previewId: preview.json.data.previewId,
+      trigger: 't',
+    });
+    expect(result.status).toBe(202);
+    expect(result.json?.data).toMatchObject({
+      outcome: 'proposal_created',
+      planId: 1,
+      weekId: 1,
+      adaptationId: null,
+    });
   });
 });
 
-describe('Codex R2 P1 — reflow apply actually mutates sessions', () => {
+describe('Codex R2 P1 — reflow review and proposal never mutate sessions directly', () => {
   beforeEach(() => {
     // Seed an aerobic session that we'll watch get scaled by deload.
     testDb.prepare(`
@@ -821,27 +936,41 @@ describe('Codex R2 P1 — reflow apply actually mutates sessions', () => {
       planId: 1, mode: 'preview', trigger: 'preview_test',
     });
     expect(result.status).toBe(200);
-    expect(result.json?.data?.scenario?.actions).toBeInstanceOf(Array);
-    expect(result.json?.data?.mutated).toBe(false);
+    expect(['preview', 'no_changes']).toContain(result.json?.data?.outcome);
+    expect(result.json?.data?.adaptationId).toBeNull();
     const after = testDb.prepare('SELECT duration_minutes FROM training_sessions WHERE id = 501').get() as { duration_minutes: number };
     expect(after.duration_minutes).toBe(before.duration_minutes);
   });
 
-  it('apply returns scenario.actions AND mutatedRows count', async () => {
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', trigger: 'apply_test', idempotencyKey: 'apply-mutation-key',
+  it('reviewed apply creates an evidence-bound proposal without mutation counters', async () => {
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['illness'],
+    }, { 'Idempotency-Key': 'apply-evidence-safety' });
+    expect(intake.status).toBe(201);
+    const preview = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1, mode: 'preview', trigger: 'apply_test',
     });
-    expect(result.status).toBe(200);
+    expect(preview.status).toBe(200);
+    const before = testDb.prepare('SELECT duration_minutes FROM training_sessions WHERE id = 501').get();
+    const result = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'apply',
+      trigger: 'apply_test',
+      idempotencyKey: 'apply-mutation-key',
+      previewId: preview.json.data.previewId,
+    });
+    expect(result.status).toBe(202);
+    expect(result.json?.data?.outcome).toBe('proposal_created');
     expect(result.json?.data?.scenario?.actions).toBeInstanceOf(Array);
-    // mutatedRows comes from the action executor; for an accumulation
-    // week with no missed sessions / no safety flags / no deload due,
-    // the classifier emits no actions and mutatedRows is 0. But the
-    // shape MUST be present.
-    expect(typeof result.json?.data?.mutatedRows).toBe('number');
+    expect(result.json?.data?.adaptationId).toBeNull();
+    expect(result.json?.data?.mutatedRows).toBeUndefined();
+    expect(testDb.prepare('SELECT duration_minutes FROM training_sessions WHERE id = 501').get()).toEqual(before);
   });
 });
 
-describe('Codex R2 P2 — idempotency conflict surfaces winning row, not 500', () => {
+describe('Codex R2 P2 — proposal idempotency replay surfaces the winning proposal', () => {
   beforeEach(() => {
     testDb.prepare(`
       INSERT INTO training_sessions (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
@@ -849,18 +978,37 @@ describe('Codex R2 P2 — idempotency conflict surfaces winning row, not 500', (
     `).run();
   });
 
-  it('duplicate idempotencyKey within window returns alreadyExisted=true via route', async () => {
-    const first = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', idempotencyKey: 'conflict-route', trigger: 't',
+  it('duplicate idempotencyKey and preview return the original proposal', async () => {
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['illness'],
+    }, { 'Idempotency-Key': 'idempotency-replay-safety' });
+    expect(intake.status).toBe(201);
+    const preview = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1, mode: 'preview', trigger: 't',
     });
-    expect(first.status).toBe(200);
-    expect(first.json?.data?.adaptationRevision).toBe(1);
+    expect(preview.status).toBe(200);
+    const first = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'apply',
+      idempotencyKey: 'conflict-route',
+      previewId: preview.json.data.previewId,
+      trigger: 't',
+    });
+    expect(first.status).toBe(202);
+    expect(first.json?.data?.outcome).toBe('proposal_created');
     const second = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', idempotencyKey: 'conflict-route', trigger: 't',
+      planId: 1,
+      mode: 'apply',
+      idempotencyKey: 'conflict-route',
+      previewId: preview.json.data.previewId,
+      trigger: 't',
     });
     expect(second.status).toBe(200);
-    expect(second.json?.data?.alreadyExisted).toBe(true);
-    expect(second.json?.data?.adaptationId).toBe(first.json?.data?.adaptationId);
+    expect(second.json?.data?.outcome).toBe('replayed');
+    expect(second.json?.data?.proposalId).toBe(first.json?.data?.proposalId);
+    expect(second.json?.data?.adaptationId).toBeNull();
   });
 });
 
@@ -942,45 +1090,81 @@ describe('R3 P0/P1/P2 fixes — uniform status, hard pause, completed protection
     expect(result.json?.error?.code).toBe('WEEK_NOT_FOUND');
   });
 
-  it('R3 P1 — completed session is NOT mutated by reflow apply', async () => {
+  it('R3 P1 — completed session is NOT mutated while reflow awaits approval', async () => {
     testDb.prepare(`
       INSERT INTO training_sessions (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
       VALUES (910, 1, 1, 'Monday', 'easy_run', 'already done', 45, 'completed')
     `).run();
-    // Even if the classifier produced a drop_session for id=910, the
-    // executor's SQL guard refuses to mutate completed rows.
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', idempotencyKey: 'completed-protection', trigger: 't',
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['illness'],
+    }, { 'Idempotency-Key': 'completed-protection-safety' });
+    expect(intake.status).toBe(201);
+    const preview = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1, mode: 'preview', trigger: 't',
     });
-    expect(result.status).toBe(200);
+    expect(preview.status).toBe(200);
+    const result = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'apply',
+      idempotencyKey: 'completed-protection',
+      previewId: preview.json.data.previewId,
+      trigger: 't',
+    });
+    expect(result.status).toBe(202);
+    expect(result.json?.data?.outcome).toBe('proposal_created');
     const after = testDb.prepare('SELECT status FROM training_sessions WHERE id = 910').get() as { status: string };
     expect(after.status).toBe('completed'); // preserved
   });
 
-  it('R3 P2 — apply response includes perActionResults', async () => {
+  it('R3 P2 — proposal response carries reviewed actions but no direct-execution results', async () => {
     testDb.prepare(`
       INSERT INTO training_sessions (id, week_id, plan_id, day_of_week, session_type, title, duration_minutes, status)
       VALUES (920, 1, 1, 'Tuesday', 'easy_run', 'pending session', 60, 'pending')
     `).run();
-    const result = await req('POST', '/api/v1/training/week/1/reflow', {
-      planId: 1, mode: 'apply', idempotencyKey: 'per-action-results', trigger: 't',
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['illness'],
+    }, { 'Idempotency-Key': 'per-action-safety' });
+    expect(intake.status).toBe(201);
+    const preview = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1, mode: 'preview', trigger: 't',
     });
-    expect(result.status).toBe(200);
-    expect(Array.isArray(result.json?.data?.perActionResults)).toBe(true);
+    expect(preview.status).toBe(200);
+    const result = await req('POST', '/api/v1/training/week/1/reflow', {
+      planId: 1,
+      mode: 'apply',
+      idempotencyKey: 'per-action-results',
+      previewId: preview.json.data.previewId,
+      trigger: 't',
+    });
+    expect(result.status).toBe(202);
+    expect(Array.isArray(result.json?.data?.scenario?.actions)).toBe(true);
+    expect(result.json?.data?.perActionResults).toBeUndefined();
   });
 });
 
 describe('R3 P1 — A4 hard-pause via structured intake', () => {
+  async function recordStructuredSafety(
+    facts: Record<string, unknown>,
+    idempotencyKey: string,
+  ): Promise<void> {
+    const intake = await req('POST', '/api/v1/training/health-intake/red-flag', {
+      date: new Date().toISOString().slice(0, 10),
+      ...facts,
+    }, { 'Idempotency-Key': idempotencyKey });
+    expect(intake.status).toBe(201);
+  }
+
   it('chest_pain via structured intake → coach-analysis emits pause_training', async () => {
-    // Write a structured-intake red-flag signal directly via the
-    // service module to verify the end-to-end derive→wire→classify
-    // pipeline produces a hard pause. The route endpoint exists
-    // separately at POST /health-intake/red-flag.
-    testDb.prepare(`
-      INSERT INTO athlete_health_signals
-        (user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', 9, 'chest', '["chest_pain"]', 'structured_intake', 'pain,illness')
-    `).run();
+    await recordStructuredSafety({
+      painScore: 9,
+      painLocation: 'chest',
+      illnessSymptoms: ['chest_pain'],
+      consentScope: ['pain', 'illness'],
+    }, 'analysis-chest-pain');
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
     const actions = result.json?.data?.scenario?.actions ?? [];
@@ -990,11 +1174,11 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   });
 
   it('severe structured pain with location → coach-analysis emits pause_training without symptom wording', async () => {
-    testDb.prepare(`
-      INSERT INTO athlete_health_signals
-        (user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', 9, 'left knee', '[]', 'structured_intake', 'pain')
-    `).run();
+    await recordStructuredSafety({
+      painScore: 9,
+      painLocation: 'left knee',
+      consentScope: ['pain'],
+    }, 'analysis-severe-pain');
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
     const actions = result.json?.data?.scenario?.actions ?? [];
@@ -1007,8 +1191,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
         (user_id, tenant_id, date, pain_score, pain_location, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', 9, 'chest', '[]', 'wearable', 'pain')
-    `).run();
+      VALUES (100, 100, ?, 9, 'chest', '[]', 'wearable', 'pain')
+    `).run(new Date().toISOString().slice(0, 10));
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
     const actions = result.json?.data?.scenario?.actions ?? [];
@@ -1017,15 +1201,15 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
 
   it('POST /health-intake/red-flag persists structured signal', async () => {
     const result = await req('POST', '/api/v1/training/health-intake/red-flag', {
-      date: '2026-05-23',
+      date: new Date().toISOString().slice(0, 10),
       illnessSymptoms: ['fever'],
       consentScope: ['illness'],
-    });
+    }, { 'Idempotency-Key': 'health-intake-persist' });
     expect(result.status).toBe(201);
-    expect(result.json?.data?.id).toBeGreaterThan(0);
+    expect(result.json?.data?.intakeId).toBeGreaterThan(0);
     const row = testDb.prepare(
       'SELECT source, tenant_id FROM athlete_health_signals WHERE id = ?',
-    ).get(result.json.data.id) as { source: string; tenant_id: number };
+    ).get(result.json.data.intakeId) as { source: string; tenant_id: number };
     expect(row.source).toBe('structured_intake');
     expect(row.tenant_id).toBe(100);
     expect(testDb.prepare(`
@@ -1036,11 +1220,10 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   });
 
   it('fever/systemic illness via structured intake → coach-analysis emits pause_training', async () => {
-    testDb.prepare(`
-      INSERT INTO athlete_health_signals
-        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', '["fever"]', 'structured_intake', 'illness')
-    `).run();
+    await recordStructuredSafety({
+      illnessSymptoms: ['fever'],
+      consentScope: ['illness'],
+    }, 'analysis-fever');
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
     const pause = (result.json?.data?.scenario?.actions ?? []).find(
@@ -1052,11 +1235,12 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
 
   it('POST /health-intake/red-flag rejects empty consentScope with 400', async () => {
     const result = await req('POST', '/api/v1/training/health-intake/red-flag', {
-      date: '2026-05-23',
+      date: new Date().toISOString().slice(0, 10),
       illnessSymptoms: ['fever'],
       consentScope: [],
-    });
-    expect(result.status).toBe(400);
+    }, { 'Idempotency-Key': 'health-intake-empty-consent' });
+    expect(result.status).toBe(428);
+    expect(result.json?.error?.code).toBe('CONSENT_REQUIRED');
   });
 
   // ── R4 P2 — strict YYYY-MM-DD date validation on /health-intake/red-flag ──
@@ -1070,9 +1254,9 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       date: 'tomorrow',
       illnessSymptoms: ['fever'],
       consentScope: ['illness'],
-    });
+    }, { 'Idempotency-Key': 'health-invalid-tomorrow' });
     expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('BAD_INPUT');
+    expect(result.json?.error?.code).toBe('BAD_DATE');
     expect(result.json?.error?.message).toMatch(/valid YYYY-MM-DD/);
   });
 
@@ -1081,9 +1265,9 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       date: '2026-13-01',
       illnessSymptoms: ['fever'],
       consentScope: ['illness'],
-    });
+    }, { 'Idempotency-Key': 'health-invalid-month' });
     expect(result.status).toBe(400);
-    expect(result.json?.error?.code).toBe('BAD_INPUT');
+    expect(result.json?.error?.code).toBe('BAD_DATE');
   });
 
   it('R4 P2 — /health-intake/red-flag rejects Feb 30 (calendar round-trip catches it)', async () => {
@@ -1091,7 +1275,7 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       date: '2026-02-30',
       illnessSymptoms: ['fever'],
       consentScope: ['illness'],
-    });
+    }, { 'Idempotency-Key': 'health-invalid-february' });
     expect(result.status).toBe(400);
   });
 
@@ -1100,7 +1284,7 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       date: '2026-05-23T00:00:00Z',
       illnessSymptoms: ['fever'],
       consentScope: ['illness'],
-    });
+    }, { 'Idempotency-Key': 'health-invalid-timestamp' });
     expect(result.status).toBe(400);
   });
 
@@ -1109,7 +1293,7 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       date: "1970-01-01' OR 1=1",
       illnessSymptoms: ['fever'],
       consentScope: ['illness'],
-    });
+    }, { 'Idempotency-Key': 'health-invalid-injection' });
     expect(result.status).toBe(400);
   });
 
@@ -1119,7 +1303,7 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
       endDate: '2026-06-01',
     });
     expect(result.status).toBe(400);
-    expect(result.json?.error?.message).toMatch(/startDate.*YYYY-MM-DD/);
+    expect(result.json?.error?.message).toMatch(/dates.*YYYY-MM-DD/);
   });
 
   it('R4 P2 — /week/travel rejects endDate before startDate', async () => {
@@ -1135,17 +1319,16 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     const result = await req('POST', '/api/v1/training/week/travel', {
       startDate: '2026-06-10',
       endDate: '2026-06-10',
-    });
+    }, { 'Idempotency-Key': 'travel-same-day' });
     expect(result.status).toBe(201);
-    expect(result.json?.data?.id).toBeGreaterThan(0);
+    expect(result.json?.data?.window?.id).toBeGreaterThan(0);
   });
 
   it('R4 P1 — fainting-only structured intake → pause_training', async () => {
-    testDb.prepare(`
-      INSERT INTO athlete_health_signals
-        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', '["fainting"]', 'structured_intake', 'illness')
-    `).run();
+    await recordStructuredSafety({
+      illnessSymptoms: ['fainting'],
+      consentScope: ['illness'],
+    }, 'analysis-fainting');
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
     const pause = (result.json?.data?.scenario?.actions ?? []).find(
@@ -1156,11 +1339,10 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   });
 
   it('R4 P1 — acute_injury structured intake → pause_training (no pain score required)', async () => {
-    testDb.prepare(`
-      INSERT INTO athlete_health_signals
-        (user_id, tenant_id, date, injury_status, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', 'acute', 'structured_intake', 'injury')
-    `).run();
+    await recordStructuredSafety({
+      injuryStatus: 'acute',
+      consentScope: ['injury'],
+    }, 'analysis-acute-injury');
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     expect(result.status).toBe(200);
     const pause = (result.json?.data?.scenario?.actions ?? []).find(
@@ -1170,11 +1352,10 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
   });
 
   it('R4 P1 — severe_dizziness-only structured intake → pause_training', async () => {
-    testDb.prepare(`
-      INSERT INTO athlete_health_signals
-        (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', '["severe_dizziness"]', 'structured_intake', 'illness')
-    `).run();
+    await recordStructuredSafety({
+      illnessSymptoms: ['severe_dizziness'],
+      consentScope: ['illness'],
+    }, 'analysis-severe-dizziness');
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     const pause = (result.json?.data?.scenario?.actions ?? []).find(
       (a: any) => a.type === 'pause_training',
@@ -1186,8 +1367,8 @@ describe('R3 P1 — A4 hard-pause via structured intake', () => {
     testDb.prepare(`
       INSERT INTO athlete_health_signals
         (user_id, tenant_id, date, illness_symptoms_json, source, consent_scope)
-      VALUES (100, 100, '2026-05-23', '["chest_pain"]', 'wearable', 'illness')
-    `).run();
+      VALUES (100, 100, ?, '["chest_pain"]', 'wearable', 'illness')
+    `).run(new Date().toISOString().slice(0, 10));
     const result = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
     const pause = (result.json?.data?.scenario?.actions ?? []).find(
       (a: any) => a.type === 'pause_training',
