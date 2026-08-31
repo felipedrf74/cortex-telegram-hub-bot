@@ -17,10 +17,11 @@ describe('lean required CI contracts', () => {
     expect(workflow.match(/^\s{4}name: 🔨 Build$/gm)).toHaveLength(1);
   });
 
-  it('runs selected tests once on pull requests and main', () => {
+  it('runs one selected set as bounded coverage shards on pull requests and main', () => {
     expect(workflow).toContain('test_focused:');
     expect(workflow).toContain("needs.classify.outputs.vitest_mode == 'focused'");
     expect(workflow).toContain('scripts/risk-gate.sh \\');
+    expect(workflow).toContain('--coverage-shards 4');
     expect(workflow).not.toContain('changed_coverage:');
     expect(workflow).not.toContain('changed-coverage-gate.mjs');
     expect(workflow).not.toContain('test_full_shard:');
@@ -38,6 +39,7 @@ describe('lean required CI contracts', () => {
     // and finalized its coverage artifacts.
     expect(focusedJob).toContain('timeout-minutes: 75');
     expect(focusedJob).toContain('--coverage');
+    expect(focusedJob).toContain('--coverage-shards 4');
     expect(focusedJob).toContain('scripts/risk-gate.sh \\');
     expect(focusedJob).not.toContain('--skip-tests');
   });

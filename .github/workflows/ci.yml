@@ -444,11 +444,10 @@ jobs:
   test_focused:
     name: 🧪 Focused tests
     runs-on: ${{ fromJSON(needs.runner.outputs.labels) }}
-    # Multi-area changes can conservatively select every group with coverage;
-    # keep enough headroom for Vitest to emit its governed result artifact.
-    # The complete selected suite reached the old 45-minute limit before
-    # coverage finalization on 2026-08-31, so retain the scope and extend only
-    # the execution budget.
+    # Multi-area changes can conservatively select every group with coverage.
+    # Four non-overlapping blob shards retain the one exact selected set while
+    # bounding per-process coverage state; Vitest merges them into one governed
+    # result and coverage artifact before the changed-line gate runs.
     timeout-minutes: 75
     needs: [runner, runner_guardrails, classify]
     if: ${{ !(github.event_name == 'pull_request' && needs.classify.outputs.docs_only == 'true') }}
@@ -516,6 +515,7 @@ jobs:
           scripts/risk-gate.sh \
             --base "$BASE" \
             --coverage \
+            --coverage-shards 4 \
             --skip-typecheck \
             --skip-python \
             --skip-migrations

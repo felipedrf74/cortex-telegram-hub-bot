@@ -40,7 +40,7 @@ describe('lean risk gate', () => {
     expect(output).toContain(`--base ${head}`);
   });
 
-  it('runs one deduplicated focused Vitest selection', () => {
+  it('runs one deduplicated focused Vitest selection through bounded coverage shards', () => {
     const output = execFileSync('bash', [
       'scripts/risk-gate.sh',
       '--dry-run',
@@ -48,13 +48,16 @@ describe('lean risk gate', () => {
       '--skip-python',
       '--skip-migrations',
       '--coverage',
+      '--coverage-shards',
+      '4',
       '--files',
       'src/services/content-radar-engine.ts',
     ], { encoding: 'utf8' });
     expect(output).toContain('vitest mode: focused');
     expect(output).toContain('<core+owning-group-tests+static-dependents+changed-tests>');
-    expect(output).toMatch(/--coverage\.changed=[0-9a-f]{40}/);
-    expect(output.match(/npx vitest run/g)).toHaveLength(1);
+    expect(output).toMatch(/--coverage-base [0-9a-f]{40}/);
+    expect(output).toContain('--coverage-shards 4');
+    expect(output).toContain('merge-reports');
     expect(output).toContain('changed-coverage-gate.mjs');
     expect(output).not.toContain('critical-union');
   });
@@ -72,6 +75,19 @@ describe('lean risk gate', () => {
     ], { encoding: 'utf8' });
     expect(output).toContain('vitest mode: full');
     expect(output).toContain('run-test-tier.mjs deterministic');
+  });
+
+  it('rejects coverage sharding without coverage instrumentation', () => {
+    const result = spawnSync('bash', [
+      'scripts/risk-gate.sh',
+      '--dry-run',
+      '--coverage-shards',
+      '4',
+      '--files',
+      'src/services/content-radar-engine.ts',
+    ], { encoding: 'utf8' });
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain('--coverage-shards requires --coverage');
   });
 
   it('fails when classification cannot map a production path', () => {
