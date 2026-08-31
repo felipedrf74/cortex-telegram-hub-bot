@@ -887,6 +887,7 @@ describe('Shopping List', () => {
   });
 
   it('returns null for non-existent shopping list', () => {
+    expect(getShoppingList(1, '2099-01-01')).toBeNull();
     expect(getShoppingList(1, '2024-06-24')).toBeNull();
   });
 
