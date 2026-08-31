@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DateTime } from 'luxon';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 import fs from 'fs';
@@ -35,6 +36,7 @@ vi.mock('../../src/api/routes/training-plan-calendar-sync', () => ({
 
 import {
   buildChatActionPlan,
+  buildConfirmedDestructiveTargetsForPlanSteps,
   buildDeterministicChatActionPlan,
   buildLlmPlannerPrompt,
   buildTier1ClassifierPrompt,
@@ -50,6 +52,7 @@ import {
   expireStalePendingChatActionsForJob,
   getActivePendingChatAction,
   getPendingChatActionById,
+  markPendingChatActionNeedsUserFollowup,
   rememberRecentChatEntity,
   resetChatActionStateForTests,
   upsertPendingChatAction,
@@ -85,7 +88,8 @@ import { isPendingChatWorkCancellationTurn } from '../../src/services/chat-pendi
 import { buildContentAgencyPackage, ensureContentAgencyTables, getContentAgencyProject, persistContentAgencyArtifact } from '../../src/services/content-agency';
 import { createContentArtifact, createContentWorkspaceItem, getContentWorkspaceItem } from '../../src/services/content-workspace';
 import { getTopics } from '../../src/services/content-scheduler';
-import { addRecipe, generateShoppingList, getMealPlan, getRecipeById, getShoppingList, setMealPlan } from '../../src/services/cooking-chef';
+import { addRecipe, generateShoppingList, getMealPlan, getPantryItemById, getRecipeById, getShoppingList, setMealPlan, upsertPantryItem } from '../../src/services/cooking-chef';
+import { setCookingPreferenceMemory } from '../../src/services/cooking-preferences';
 import { addTransaction, calculateAndStoreTax, getTaxEvents, getTransactions } from '../../src/services/finance-tracker';
 import { confirmTrainingSessionReflow, previewTrainingSessionReflow } from '../../src/api/routes/training-plan-calendar-sync';
 import {
@@ -101,6 +105,10 @@ import {
 } from '../../src/services/task-store/offline-first-task-service';
 import { executeContentAgencyStep } from '../../src/services/skills/content/executor';
 import { replayDuplicateClaimedActionRun } from '../../src/services/chat/executor/helpers';
+import { executeCookingMealPlanStep, executeCookingSupportStep } from '../../src/services/skills/cooking/executor';
+import { extractCookingDeleteTarget } from '../../src/services/skills/cooking/parser';
+import { parseBroadSkillActionIntent } from '../../src/services/chat/planner/broad-skill-intents';
+import { setDbProvider } from '../../src/services/intelligence-bus';
 
 const FROZEN_NOW = '2026-05-14T12:00:00+01:00';
 
@@ -146,6 +154,7 @@ describe('ChatActionPlanner', () => {
     resetPendingChatConfirmationsForTests();
     resetPendingChatCoreV2CommandsForTests();
     testDb = createMigratedTestDatabase();
+    setDbProvider(() => testDb);
     for (const userId of [42, 999, 4201, 4202, 4210, 4211, 4213, 4301, 4302, 4303, 4401]) {
       seedPlannerUser(userId);
     }
@@ -3049,6 +3058,951 @@ describe('ChatActionPlanner', () => {
     expect(getMealPlan(4301, '2026-05-18', '2026-05-18', 4301)[0]).toMatchObject({
       meal_type: 'dinner',
       title: 'Salmão com legumes',
+    });
+  });
+
+  it('blocks a malformed optional Cooking recipe id instead of dropping it silently', () => {
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'cooking',
+        action: 'cooking_meal_plan',
+        args: { date: '2026-05-18', mealType: 'dinner', title: 'Soup' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, userId: 4301, tenantId: 4301, persistRuns: false })!;
+    plan.steps[0].args.recipeId = 0;
+
+    const execution = executeCookingMealPlanStep(
+      plan.steps[0],
+      plan,
+      { ...baseInput, userId: 4301, tenantId: 4301, persistRuns: false },
+      false,
+    );
+
+    expect(execution).toMatchObject({
+      status: 'blocked',
+      error: 'cooking_meal_plan_requires_positive_recipe_id',
+    });
+    expect(getMealPlan(4301, '2026-05-18', '2026-05-18', 4301)).toEqual([]);
+  });
+
+  it('blocks impossible dates and unsupported meal types before a Cooking write', () => {
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'cooking',
+        action: 'cooking_meal_plan',
+        args: { date: '2026-05-18', mealType: 'dinner', title: 'Soup' },
+        missingFields: [],
+      }],
+    }), { ...baseInput, userId: 4301, tenantId: 4301, persistRuns: false })!;
+
+    for (const args of [
+      { date: '2026-02-30', mealType: 'dinner', title: 'Soup' },
+      { date: '2026-05-18', mealType: 'brunch', title: 'Soup' },
+    ]) {
+      const step = { ...plan.steps[0], args };
+      expect(executeCookingMealPlanStep(
+        step,
+        { ...plan, steps: [step] },
+        { ...baseInput, userId: 4301, tenantId: 4301, persistRuns: false },
+        false,
+      )).toMatchObject({
+        status: 'blocked',
+        error: 'cooking_meal_plan_requires_date_meal_type_and_title',
+      });
+    }
+    expect(getMealPlan(4301, '2026-05-18', '2026-05-18', 4301)).toEqual([]);
+  });
+
+  it('routes broad weekly Cooking generation to advisory support instead of an unexecutable safe write', async () => {
+    const firstInput = {
+      ...baseInput,
+      text: 'Plan my meals for next week',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-weekly-plan',
+      messageId: 'msg-cooking-weekly-plan-1',
+      persistRuns: true,
+    };
+    const firstPlan = buildDeterministicChatActionPlan(firstInput);
+
+    expect(firstPlan?.steps[0]).toMatchObject({
+      skill: 'cooking',
+      action: 'cooking_meal_support',
+      risk: 'read_only',
+      requiredArgsPresent: true,
+      args: { capabilityBoundary: 'single_meal_slot_only' },
+    });
+    expect(getActivePendingChatAction({
+      userId: firstInput.userId,
+      tenantId: firstInput.tenantId,
+      conversationId: firstInput.conversationId,
+      skill: 'cooking',
+      nowIso: FROZEN_NOW,
+    })).toBeNull();
+  });
+
+  it('keeps shopping-list reads read-only and resolves explicit or relative write weeks safely', () => {
+    for (const text of [
+      "What's on my shopping list?",
+      'Show my shopping list so I can prepare dinner',
+      'Prepare dinner using my shopping list',
+    ]) {
+      expect(buildDeterministicChatActionPlan({ ...baseInput, text, locale: 'en-US' })?.steps[0]).toMatchObject({
+        action: 'cooking_meal_support',
+        risk: 'read_only',
+        args: { supportMode: 'shopping_list_read' },
+      });
+    }
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Generate shopping list for 2026-09-07',
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({
+      action: 'cooking_grocery_list',
+      requiredArgsPresent: true,
+      args: { weekStart: '2026-09-07' },
+    });
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: "Generate last week's shopping list",
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({ args: { weekStart: '2026-05-04' }, requiredArgsPresent: true });
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Generate shopping list for 2026-09-08',
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({ action: 'cooking_grocery_list', requiredArgsPresent: false });
+  });
+
+  it('fails closed on non-dish meal-title remnants while accepting explicit safe dish titles', () => {
+    for (const text of [
+      'Plan dinner tomorrow at 7pm',
+      'Plan dinner tomorrow at home',
+      'Plan dinner tomorrow with Sarah',
+      'Plan dinner tomorrow with no fish',
+      'Plan dinner tomorrow: no fish',
+      'Plan dinner tomorrow vegetarian',
+    ]) {
+      expect(buildDeterministicChatActionPlan({ ...baseInput, text, locale: 'en-US' })?.steps[0]).toMatchObject({
+        action: 'cooking_meal_plan',
+        requiredArgsPresent: false,
+        args: { date: '2026-05-15', mealType: 'dinner' },
+      });
+    }
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Plan dinner tonight: salmon',
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({
+      action: 'cooking_meal_plan',
+      requiredArgsPresent: true,
+      args: { date: '2026-05-14', mealType: 'dinner', title: 'salmon' },
+    });
+  });
+
+  it('routes typed Cooking deletes through exact confirmation while leaving remaining CRUD on the tool path', () => {
+    const expected = [
+      ['Delete recipe 4', 'cooking_delete_recipe', { recipeId: 4 }],
+      ['Delete dinner tomorrow', 'cooking_delete_meal', { date: '2026-05-15', mealType: 'dinner' }],
+      ['Delete pantry item 9', 'cooking_delete_pantry_item', { itemId: 9 }],
+    ] as const;
+    for (const [text, action, args] of expected) {
+      expect(shouldRunActionPlannerBeforeReadOnlyFastPaths(text)).toBe(true);
+      expect(buildDeterministicChatActionPlan({ ...baseInput, text, locale: 'en-US' })).toMatchObject({
+        requiresConfirmation: true,
+        steps: [{ action, risk: 'destructive', args, requiredArgsPresent: true }],
+      });
+    }
+
+    for (const legacyText of [
+      'Add eggs to my cooking pantry',
+      'Remove peanuts from recipe 4',
+    ]) {
+      expect(shouldRunActionPlannerBeforeReadOnlyFastPaths(legacyText)).toBe(false);
+      expect(buildDeterministicChatActionPlan({ ...baseInput, text: legacyText, locale: 'en-US' })).toBeNull();
+    }
+    const ingredientRemoval = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Remove salmon from dinner tomorrow',
+      locale: 'en-US',
+    });
+    expect(ingredientRemoval?.steps[0]).toMatchObject({
+      action: 'cooking_meal_support',
+      risk: 'read_only',
+    });
+
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Create a task: update the pantry inventory',
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({
+      skill: 'tasks',
+      action: 'create_task',
+    });
+    expect(parseBroadSkillActionIntent({
+      ...baseInput,
+      text: 'Create a notification about pantry inventory',
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({
+      skill: 'notifications',
+      action: 'notification_create_intent',
+    });
+    expect(buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Remove the dinner event from my calendar',
+      locale: 'en-US',
+    })?.steps[0]).toMatchObject({
+      skill: 'secretary_calendar',
+      action: 'delete_event',
+    });
+    expect(extractCookingDeleteTarget(
+      'Remove the dinner event from my calendar',
+      DateTime.fromISO(FROZEN_NOW),
+    )).toBeNull();
+  });
+
+  it('parses repeated Cooking delete modifiers without ambiguous regex backtracking', () => {
+    const repeatedArticles = 'a '.repeat(500);
+    expect(extractCookingDeleteTarget(
+      `Delete ${repeatedArticles}recipe 4`,
+      DateTime.fromISO(FROZEN_NOW),
+    )).toEqual({
+      action: 'cooking_delete_recipe',
+      args: { recipeId: 4 },
+      requiredArgsPresent: true,
+    });
+    expect(extractCookingDeleteTarget(
+      `Delete ${repeatedArticles}pantry item 9`,
+      DateTime.fromISO(FROZEN_NOW),
+    )).toEqual({
+      action: 'cooking_delete_pantry_item',
+      args: { itemId: 9 },
+      requiredArgsPresent: true,
+    });
+    expect(extractCookingDeleteTarget(
+      `Delete ${repeatedArticles}tomorrow dinner`,
+      DateTime.fromISO(FROZEN_NOW),
+    )).toEqual({
+      action: 'cooking_delete_meal',
+      args: { date: '2026-05-15', mealType: 'dinner' },
+      requiredArgsPresent: true,
+    });
+  });
+
+  it('routes advertised Spanish Cooking writes through the deterministic preflight', () => {
+    const expected = [
+      ['Elimina receta 4', 'cooking_delete_recipe', { recipeId: 4 }],
+      ['Planea la cena mañana: paella', 'cooking_meal_plan', { date: '2026-05-15', mealType: 'dinner', title: 'paella' }],
+      ['Genera la lista de la compra de esta semana', 'cooking_grocery_list', { weekStart: '2026-05-11' }],
+    ] as const;
+    for (const [text, action, args] of expected) {
+      expect(shouldRunActionPlannerBeforeReadOnlyFastPaths(text)).toBe(true);
+      expect(buildDeterministicChatActionPlan({ ...baseInput, text, locale: 'es-ES' })?.steps[0]).toMatchObject({
+        action,
+        args,
+        requiredArgsPresent: true,
+      });
+    }
+  });
+
+  it('stages composite Cooking delete grants, names exact targets, and verifies confirmed deletion', async () => {
+    const userId = 4304;
+    const tenantId = 4304;
+    const recipe = addRecipe(userId, 'Temporary rice bowl', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId });
+    setMealPlan(userId, '2026-05-15', 'dinner', 'Temporary dinner', { tenantId });
+    const pantryItem = upsertPantryItem(userId, { name: 'Temporary oats' }, tenantId);
+    const inputs = [
+      { text: `Delete recipe ${recipe.id}`, target: String(recipe.id) },
+      { text: 'Delete dinner tomorrow', target: 'dinner on 2026-05-15' },
+      { text: `Delete pantry item ${pantryItem.id}`, target: String(pantryItem.id) },
+    ];
+
+    const plans = inputs.map((entry, index) => buildDeterministicChatActionPlan({
+      ...baseInput,
+      userId,
+      tenantId,
+      text: entry.text,
+      locale: 'en-US',
+      conversationId: 'conv-cooking-delete',
+      messageId: `msg-cooking-delete-${index}`,
+      persistRuns: false,
+    })!);
+    expect(buildConfirmedDestructiveTargetsForPlanSteps(plans[1].steps)).toEqual([{
+      tool: 'cooking_delete_meal',
+      targetId: 'date=2026-05-15&meal_type=dinner',
+    }]);
+
+    for (let index = 0; index < plans.length; index += 1) {
+      const input = {
+        ...baseInput,
+        userId,
+        tenantId,
+        text: inputs[index].text,
+        locale: 'en-US',
+        conversationId: 'conv-cooking-delete',
+        messageId: `msg-cooking-delete-${index}`,
+        persistRuns: false,
+      };
+      const preview = await executeChatActionPlan(plans[index], input, {} as never);
+      expect(preview.metadata.actionStatus).toBe('needs_confirmation');
+      expect(preview.text).toContain(inputs[index].target);
+      const executed = await executeChatActionPlan(plans[index], input, {} as never, { confirmed: true });
+      expect(executed.metadata.actionStatus).toBe('verified_success');
+    }
+
+    expect(getRecipeById(userId, recipe.id, tenantId)).toBeNull();
+    expect(getMealPlan(userId, '2026-05-15', '2026-05-15', tenantId)).toHaveLength(0);
+    expect(getPantryItemById(userId, pantryItem.id, tenantId)).toBeNull();
+  });
+
+  it('clarifies incomplete Cooking deletes and blocks stale or in-use targets', async () => {
+    for (const text of ['Delete recipe', 'Delete meal tomorrow', 'Delete pantry item']) {
+      const plan = buildDeterministicChatActionPlan({ ...baseInput, text, locale: 'en-US' });
+      expect(plan?.steps[0]).toMatchObject({ risk: 'destructive', requiredArgsPresent: false });
+      expect(plan?.clarificationQuestion).toBeTruthy();
+    }
+
+    const userId = 4305;
+    const tenantId = 4305;
+    const linkedRecipe = addRecipe(userId, 'Linked soup', [
+      { name: 'Lentils', quantity: '100', unit: 'g' },
+    ], { tenantId });
+    setMealPlan(userId, '2099-05-15', 'dinner', 'Linked soup', { tenantId, recipeId: linkedRecipe.id });
+    for (const [text, expectedError] of [
+      ['Delete recipe 999999', 'cooking_item_not_found'],
+      [`Delete recipe ${linkedRecipe.id}`, 'cooking_recipe_in_use'],
+    ] as const) {
+      const input = {
+        ...baseInput,
+        userId,
+        tenantId,
+        text,
+        locale: 'en-US',
+        conversationId: 'conv-cooking-delete-blocked',
+        messageId: `msg-${text.replace(/\s+/g, '-')}`,
+        persistRuns: false,
+      };
+      const plan = buildDeterministicChatActionPlan(input)!;
+      const response = await executeChatActionPlan(plan, input, {} as never, { confirmed: true });
+      expect(response.metadata.actionStatus).toBe('blocked');
+      expect(response.metadata.actionResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ error: expectedError }),
+      ]));
+    }
+    expect(getRecipeById(userId, linkedRecipe.id, tenantId)).not.toBeNull();
+  });
+
+  it('closes a persisted destructive Cooking run when confirmed LLM slots fail validation', async () => {
+    const input = {
+      ...baseInput,
+      userId: 4309,
+      tenantId: 4309,
+      text: 'Delete dinner on the invalid date',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-invalid-delete',
+      messageId: 'msg-cooking-invalid-delete',
+      persistRuns: true,
+    };
+    const plan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'cooking',
+        action: 'cooking_delete_meal',
+        args: { date: 'not-a-date', mealType: 'dinner' },
+        missingFields: [],
+      }],
+    }), input)!;
+    plan.steps[0].requiredArgsPresent = true;
+    plan.clarificationQuestion = undefined;
+
+    const preview = await executeChatActionPlan(plan, input, {} as never);
+    expect(preview.metadata.actionStatus).toBe('needs_confirmation');
+    const confirmed = await executeChatActionPlan(plan, input, {} as never, { confirmed: true });
+    expect(confirmed.metadata.actionStatus).toBe('blocked');
+    expect(testDb.prepare(
+      'SELECT status FROM chat_action_runs WHERE message_id = ? AND action_type = ? LIMIT 1',
+    ).get(input.messageId, 'cooking_delete_meal')).toEqual({ status: 'blocked' });
+  });
+
+  it('continues incomplete Cooking deletes into exact confirmation and verified removal', async () => {
+    const userId = 4310;
+    const tenantId = 4310;
+    const recipe = addRecipe(userId, 'Delete continuation recipe', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId });
+    const pantryItem = upsertPantryItem(userId, { name: 'Delete continuation pantry item' }, tenantId);
+    setMealPlan(userId, '2026-05-15', 'dinner', 'Delete continuation dinner', { tenantId });
+    const cases = [
+      {
+        action: 'cooking_delete_recipe',
+        initialText: 'Delete recipe',
+        reply: String(recipe.id),
+        verify: () => expect(getRecipeById(userId, recipe.id, tenantId)).toBeNull(),
+      },
+      {
+        action: 'cooking_delete_pantry_item',
+        initialText: 'Delete pantry item',
+        reply: String(pantryItem.id),
+        verify: () => expect(getPantryItemById(userId, pantryItem.id, tenantId)).toBeNull(),
+      },
+      {
+        action: 'cooking_delete_meal',
+        initialText: 'Delete meal',
+        reply: 'tomorrow dinner',
+        verify: () => expect(getMealPlan(userId, '2026-05-15', '2026-05-15', tenantId)).toHaveLength(0),
+      },
+    ] as const;
+
+    for (const [index, entry] of cases.entries()) {
+      const firstInput = {
+        ...baseInput,
+        userId,
+        tenantId,
+        text: entry.initialText,
+        locale: 'en-US',
+        conversationId: `conv-cooking-delete-continuation-${index}`,
+        messageId: `msg-cooking-delete-continuation-${index}-1`,
+        persistRuns: true,
+      };
+      const incomplete = buildDeterministicChatActionPlan(firstInput)!;
+      expect((await executeChatActionPlan(incomplete, firstInput, {} as never)).metadata.actionStatus)
+        .toBe('needs_clarification');
+      expect(getActivePendingChatAction({
+        userId,
+        tenantId,
+        conversationId: firstInput.conversationId,
+        skill: 'cooking',
+        nowIso: FROZEN_NOW,
+      })).toMatchObject({ action: entry.action, status: 'needs_input' });
+
+      const followupInput = {
+        ...firstInput,
+        text: entry.reply,
+        messageId: `msg-cooking-delete-continuation-${index}-2`,
+      };
+      const completed = await buildChatActionPlan(followupInput);
+      expect(completed).toMatchObject({
+        requiresConfirmation: true,
+        steps: [{ action: entry.action, risk: 'destructive', requiredArgsPresent: true }],
+      });
+      expect((await executeChatActionPlan(completed!, followupInput, {} as never)).metadata.actionStatus)
+        .toBe('needs_confirmation');
+      const awaitingConfirmation = getActivePendingChatAction({
+        userId,
+        tenantId,
+        conversationId: firstInput.conversationId,
+        skill: 'cooking',
+        nowIso: FROZEN_NOW,
+      });
+      expect(awaitingConfirmation).toMatchObject({
+        action: entry.action,
+        status: 'needs_confirmation',
+        confirmationState: 'required',
+        missingSlots: [],
+      });
+      expect((await executeChatActionPlan(completed!, followupInput, {} as never, { confirmed: true })).metadata.actionStatus)
+        .toBe('verified_success');
+      expect(getActivePendingChatAction({
+        userId,
+        tenantId,
+        conversationId: firstInput.conversationId,
+        skill: 'cooking',
+        nowIso: FROZEN_NOW,
+      })).toBeNull();
+      expect(testDb.prepare(
+        'SELECT status, confirmation_state FROM chat_pending_actions WHERE id = ?',
+      ).get(awaitingConfirmation!.id)).toEqual({ status: 'completed', confirmation_state: 'confirmed' });
+      entry.verify();
+    }
+  });
+
+  it('keeps a destructive Cooking pending row open when the confirmed mutation is blocked', async () => {
+    const userId = 4311;
+    const tenantId = 4311;
+    const recipe = addRecipe(userId, 'Still planned recipe', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId });
+    setMealPlan(userId, '2099-05-15', 'dinner', 'Still planned recipe', {
+      tenantId,
+      recipeId: recipe.id,
+    });
+    const firstInput = {
+      ...baseInput,
+      userId,
+      tenantId,
+      text: 'Delete recipe',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-delete-blocked-pending',
+      messageId: 'msg-cooking-delete-blocked-pending-1',
+      persistRuns: true,
+    };
+    const incomplete = buildDeterministicChatActionPlan(firstInput)!;
+    expect((await executeChatActionPlan(incomplete, firstInput, {} as never)).metadata.actionStatus)
+      .toBe('needs_clarification');
+
+    const followupInput = {
+      ...firstInput,
+      text: String(recipe.id),
+      messageId: 'msg-cooking-delete-blocked-pending-2',
+    };
+    const completed = await buildChatActionPlan(followupInput);
+    expect((await executeChatActionPlan(completed!, followupInput, {} as never)).metadata.actionStatus)
+      .toBe('needs_confirmation');
+    expect((await executeChatActionPlan(completed!, followupInput, {} as never, { confirmed: true })).metadata.actionStatus)
+      .toBe('blocked');
+    expect(getActivePendingChatAction({
+      userId,
+      tenantId,
+      conversationId: firstInput.conversationId,
+      skill: 'cooking',
+      nowIso: FROZEN_NOW,
+    })).toMatchObject({
+      action: 'cooking_delete_recipe',
+      status: 'needs_confirmation',
+      confirmationState: 'required',
+    });
+  });
+
+  it('collects and executes a pending dated Cooking meal slot, then closes the pending row', async () => {
+    const firstInput = {
+      ...baseInput,
+      userId: 4303,
+      tenantId: 4303,
+      text: 'Plan dinner tomorrow',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-single-slot',
+      messageId: 'msg-cooking-single-slot-1',
+      persistRuns: true,
+      requireSafeWriteConfirmation: false,
+    };
+    const firstPlan = buildDeterministicChatActionPlan(firstInput);
+    expect(firstPlan?.steps[0]).toMatchObject({
+      skill: 'cooking',
+      action: 'cooking_meal_plan',
+      requiredArgsPresent: false,
+      args: { date: '2026-05-15', mealType: 'dinner' },
+    });
+    const firstResponse = await executeChatActionPlan(firstPlan!, firstInput, {} as never);
+    expect(firstResponse.metadata.actionStatus).toBe('needs_clarification');
+    expect(getActivePendingChatAction({
+      userId: firstInput.userId,
+      tenantId: firstInput.tenantId,
+      conversationId: firstInput.conversationId,
+      skill: 'cooking',
+      nowIso: FROZEN_NOW,
+    })).toMatchObject({
+      collectedSlots: { date: '2026-05-15', mealType: 'dinner' },
+      missingSlots: ['title'],
+      status: 'needs_input',
+    });
+
+    const secondInput = {
+      ...firstInput,
+      text: 'Grilled salmon with vegetables',
+      messageId: 'msg-cooking-single-slot-2',
+    };
+    const secondPlan = await buildChatActionPlan(secondInput);
+    expect(secondPlan?.steps[0]).toMatchObject({
+      skill: 'cooking',
+      action: 'cooking_meal_plan',
+      requiredArgsPresent: true,
+      args: {
+        date: '2026-05-15',
+        mealType: 'dinner',
+        title: 'Grilled salmon with vegetables',
+      },
+    });
+
+    const secondResponse = await executeChatActionPlan(secondPlan!, secondInput, {} as never);
+    expect(secondResponse.metadata.actionStatus).toBe('verified_success');
+    expect(getActivePendingChatAction({
+      userId: secondInput.userId,
+      tenantId: secondInput.tenantId,
+      conversationId: secondInput.conversationId,
+      skill: 'cooking',
+      nowIso: FROZEN_NOW,
+    })).toBeNull();
+    expect(getMealPlan(firstInput.userId, '2026-05-15', '2026-05-15', firstInput.tenantId)[0]).toMatchObject({
+      meal_type: 'dinner',
+      title: 'Grilled salmon with vegetables',
+    });
+
+    const replayResponse = await executeChatActionPlan(secondPlan!, secondInput, {} as never);
+    expect(replayResponse.metadata.actionStatus).toBe('verified_success');
+  });
+
+  it('completes only the exact pending Cooking draft and keeps older follow-up rows untouched', async () => {
+    const scope = { userId: 4303, tenantId: 4303, conversationId: 'conv-cooking-exact-pending' };
+    const oldPending = upsertPendingChatAction({
+      ...scope,
+      skill: 'cooking',
+      action: 'cooking_meal_plan',
+      collectedSlots: { date: '2026-05-15', mealType: 'dinner' },
+      missingSlots: ['title'],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: '2026-05-14T11:50:00+01:00',
+    });
+    expect(markPendingChatActionNeedsUserFollowup({
+      ...scope,
+      skill: 'cooking',
+      action: 'cooking_meal_plan',
+      nowIso: '2026-05-14T11:51:00+01:00',
+    })).toBe(1);
+    const currentPending = upsertPendingChatAction({
+      ...scope,
+      skill: 'cooking',
+      action: 'cooking_meal_plan',
+      collectedSlots: { date: '2026-05-16', mealType: 'lunch' },
+      missingSlots: ['title'],
+      riskClass: 'R1',
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      originatingSurface: 'ios',
+      nowIso: FROZEN_NOW,
+    });
+    const input = {
+      ...baseInput,
+      ...scope,
+      text: 'meal eggs and toast',
+      locale: 'en-US',
+      messageId: 'msg-cooking-exact-pending',
+      persistRuns: true,
+      requireSafeWriteConfirmation: false,
+    };
+    const plan = await buildChatActionPlan(input);
+    expect(plan?.steps[0]).toMatchObject({
+      action: 'cooking_meal_plan',
+      args: {
+        date: '2026-05-16',
+        mealType: 'lunch',
+        title: 'eggs and toast',
+        pendingActionId: currentPending.id,
+      },
+    });
+    const response = await executeChatActionPlan(plan!, input, {} as never);
+    expect(response.metadata.actionStatus).toBe('verified_success');
+    expect(getPendingChatActionById({
+      userId: scope.userId,
+      tenantId: scope.tenantId,
+      pendingActionId: oldPending.id,
+      nowIso: FROZEN_NOW,
+    })).toMatchObject({ status: 'needs_user_followup', collectedSlots: { date: '2026-05-15', mealType: 'dinner' } });
+  });
+
+  it('does not merge a new complete meal request into a conflicting pending slot', async () => {
+    const firstInput = {
+      ...baseInput,
+      userId: 4303,
+      tenantId: 4303,
+      text: 'Plan dinner tomorrow',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-conflicting-pending',
+      messageId: 'msg-cooking-conflicting-pending-1',
+      persistRuns: true,
+      requireSafeWriteConfirmation: false,
+    };
+    const firstPlan = buildDeterministicChatActionPlan(firstInput)!;
+    await executeChatActionPlan(firstPlan, firstInput, {} as never);
+
+    const secondInput = {
+      ...firstInput,
+      text: 'Plan lunch 2026-05-16: tacos',
+      messageId: 'msg-cooking-conflicting-pending-2',
+    };
+    const secondPlan = await buildChatActionPlan(secondInput);
+    expect(secondPlan?.steps[0]).toMatchObject({
+      action: 'cooking_meal_plan',
+      args: { date: '2026-05-16', mealType: 'lunch', title: 'tacos' },
+    });
+    expect(secondPlan?.steps[0].args).not.toHaveProperty('pendingActionId');
+    expect((await executeChatActionPlan(secondPlan!, secondInput, {} as never)).metadata.actionStatus).toBe('verified_success');
+    expect(getActivePendingChatAction({
+      userId: firstInput.userId,
+      tenantId: firstInput.tenantId,
+      conversationId: firstInput.conversationId,
+      skill: 'cooking',
+      nowIso: FROZEN_NOW,
+    })).toMatchObject({
+      collectedSlots: { date: '2026-05-15', mealType: 'dinner' },
+      missingSlots: ['title'],
+    });
+  });
+
+  it('does not let a pending Cooking slot capture a cross-skill command, question, or typed delete', async () => {
+    const firstInput = {
+      ...baseInput,
+      userId: 4308,
+      tenantId: 4308,
+      text: 'Plan dinner salmon',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-pending-ownership',
+      messageId: 'msg-cooking-pending-ownership-1',
+      persistRuns: true,
+    };
+    const pendingPlan = buildDeterministicChatActionPlan(firstInput)!;
+    expect(pendingPlan.steps[0]).toMatchObject({
+      action: 'cooking_meal_plan',
+      requiredArgsPresent: false,
+      args: { mealType: 'dinner', title: 'salmon' },
+    });
+    await executeChatActionPlan(pendingPlan, firstInput, {} as never);
+
+    const calendarPlan = await buildChatActionPlan({
+      ...firstInput,
+      text: 'Schedule a meeting tomorrow from 10:00 to 11:00 called Design sync',
+      messageId: 'msg-cooking-pending-ownership-2',
+    });
+    expect(calendarPlan?.steps[0]?.action).not.toBe('cooking_meal_plan');
+    expect(getMealPlan(4308, '2026-05-15', '2026-05-15', 4308)).toHaveLength(0);
+
+    const questionPlan = await buildChatActionPlan({
+      ...firstInput,
+      text: 'What should I eat tomorrow?',
+      messageId: 'msg-cooking-pending-ownership-3',
+    });
+    expect(questionPlan?.steps[0]?.action).not.toBe('cooking_meal_plan');
+    expect(getMealPlan(4308, '2026-05-15', '2026-05-15', 4308)).toHaveLength(0);
+
+    const deletePlan = await buildChatActionPlan({
+      ...firstInput,
+      text: 'Delete dinner tomorrow',
+      messageId: 'msg-cooking-pending-ownership-4',
+    });
+    expect(deletePlan).toMatchObject({
+      requiresConfirmation: true,
+      steps: [{ action: 'cooking_delete_meal', risk: 'destructive', args: { date: '2026-05-15', mealType: 'dinner' } }],
+    });
+    expect(getActivePendingChatAction({
+      userId: firstInput.userId,
+      tenantId: firstInput.tenantId,
+      conversationId: firstInput.conversationId,
+      skill: 'cooking',
+      nowIso: FROZEN_NOW,
+    })).toMatchObject({ collectedSlots: { mealType: 'dinner', title: 'salmon' }, missingSlots: ['date'] });
+  });
+
+  it('keeps an unmatched Cooking pending answer in clarification instead of treating a constraint as a title', async () => {
+    const firstInput = {
+      ...baseInput,
+      userId: 4303,
+      tenantId: 4303,
+      text: 'Plan dinner tomorrow',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-unmatched-slot',
+      messageId: 'msg-cooking-unmatched-slot-1',
+      persistRuns: true,
+    };
+    const firstPlan = buildDeterministicChatActionPlan(firstInput);
+    await executeChatActionPlan(firstPlan!, firstInput, {} as never);
+
+    const secondInput = { ...firstInput, text: 'High-protein, vegetarian', messageId: 'msg-cooking-unmatched-slot-2' };
+    const secondPlan = await buildChatActionPlan(secondInput);
+    expect(secondPlan?.steps[0]).toMatchObject({ action: 'cooking_meal_plan', requiredArgsPresent: false });
+    expect(secondPlan?.clarificationQuestion).toMatch(/title/i);
+  });
+
+  it('accepts dietary adjectives when a pending reply still names a concrete dish', async () => {
+    for (const [index, titleReply] of ['Vegan chili', 'Vegetarian lasagna', 'Title: gluten-free pasta'].entries()) {
+      const firstInput = {
+        ...baseInput,
+        userId: 4306,
+        tenantId: 4306,
+        text: 'Plan dinner tomorrow',
+        locale: 'en-US',
+        conversationId: `conv-cooking-diet-title-${index}`,
+        messageId: `msg-cooking-diet-title-${index}-1`,
+        persistRuns: true,
+      };
+      await executeChatActionPlan(buildDeterministicChatActionPlan(firstInput)!, firstInput, {} as never);
+      const continuation = await buildChatActionPlan({
+        ...firstInput,
+        text: titleReply,
+        messageId: `msg-cooking-diet-title-${index}-2`,
+      });
+      expect(continuation?.steps[0]).toMatchObject({
+        action: 'cooking_meal_plan',
+        requiredArgsPresent: true,
+        args: {
+          date: '2026-05-15',
+          mealType: 'dinner',
+          title: titleReply.replace(/^Title:\s*/i, ''),
+        },
+      });
+    }
+  });
+
+  it('keeps Cooking fueling support registry fields aligned with its parser payload', async () => {
+    const plan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Fueling support for tomorrow long run',
+      locale: 'en-US',
+      messageId: 'msg-cooking-fueling-support',
+      persistRuns: false,
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      skill: 'cooking',
+      action: 'cooking_fueling_support',
+      requiredArgsPresent: true,
+    });
+    expect(plan?.steps[0].args.mealContext).toBe('Fueling support for tomorrow long run');
+    const definition = getChatActionRegistry().find((entry) => entry.action === 'cooking_fueling_support');
+    expect(definition?.requiredFields).toEqual(['mealContext']);
+  });
+
+  it('builds timezone-scoped local fueling context without live provider reads', () => {
+    const input = {
+      ...baseInput,
+      userId: 4303,
+      tenantId: 4303,
+      text: 'Fueling support for tomorrow long run',
+      locale: 'en-US',
+      messageId: 'msg-cooking-fueling-context',
+      persistRuns: false,
+    };
+    setMealPlan(4303, '2026-05-15', 'breakfast', 'Oats and fruit', { tenantId: 4303 });
+    upsertPantryItem(4303, {
+      name: 'Oats',
+      freshnessStatus: 'fresh',
+      expiresAt: '2099-01-01',
+    }, 4303);
+    const plan = buildDeterministicChatActionPlan(input)!;
+
+    const execution = executeCookingSupportStep(plan.steps[0], input);
+
+    expect(execution.status).toBe('verified_success');
+    expect(execution.result).toMatchObject({
+      requestedDate: '2026-05-15',
+      timezone: 'Europe/Lisbon',
+      timing: 'pre_workout',
+      plannedMeals: [{ mealType: 'breakfast', title: 'Oats and fruit' }],
+      pantry: { availableItems: 1, expiredItems: 0 },
+      training: { session: null },
+      degraded: true,
+      providerReadsPerformed: false,
+      warningCodes: expect.arrayContaining(['COOKING_NO_ACTIVE_TRAINING_PLAN']),
+    });
+    expect((execution.result as any).guidance).toEqual(expect.arrayContaining([
+      expect.stringMatching(/carbohydrate-forward/i),
+    ]));
+  });
+
+  it('discloses saved meals and shopping items omitted after a later safety preference', async () => {
+    const userId = 4307;
+    const tenantId = 4307;
+    const unsafeRecipe = addRecipe(userId, 'Peanut noodles', [
+      { name: 'Peanuts', quantity: '30', unit: 'g' },
+      { name: 'Noodles', quantity: '100', unit: 'g' },
+    ], { tenantId });
+    addRecipe(userId, 'Tomato pasta', [
+      { name: 'Tomatoes', quantity: '200', unit: 'g' },
+      { name: 'Pasta', quantity: '100', unit: 'g' },
+    ], { tenantId });
+    setMealPlan(userId, '2026-05-15', 'dinner', 'Peanut noodles', {
+      tenantId,
+      recipeId: unsafeRecipe.id,
+    });
+    generateShoppingList(userId, '2026-05-11', tenantId);
+    setCookingPreferenceMemory(userId, { kind: 'allergy', value: 'peanuts' }, tenantId);
+    const input = {
+      ...baseInput,
+      userId,
+      tenantId,
+      text: 'What is dinner tomorrow?',
+      locale: 'en-US',
+      conversationId: 'conv-cooking-later-safety',
+      messageId: 'msg-cooking-later-safety',
+      persistRuns: false,
+    };
+    const plan = buildDeterministicChatActionPlan(input)!;
+    const direct = executeCookingSupportStep(plan.steps[0], input);
+    expect(direct.result).toMatchObject({
+      plannedMeals: [],
+      mealSafetyConflicts: 1,
+      shoppingSafetyConflicts: 1,
+    });
+    expect((direct.result as any).suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: 'Tomato pasta' }),
+    ]));
+
+    const response = await executeChatActionPlan(plan, input, {} as never);
+    expect(response.text).not.toContain('Peanut noodles');
+    expect(response.text).toContain('Tomato pasta');
+    expect(response.text).toMatch(/conflicting saved meal.*omitted/i);
+    expect(response.text).toMatch(/conflicting shopping item.*omitted/i);
+  });
+
+  it('fails closed when a linked recipe cannot be read for meal safety verification', () => {
+    const userId = 4308;
+    const tenantId = 4308;
+    seedPlannerUser(userId);
+    const recipe = addRecipe(userId, 'Unverifiable meal', [
+      { name: 'Unknown ingredient', quantity: '1', unit: 'portion' },
+    ], { tenantId });
+    setMealPlan(userId, '2026-05-15', 'dinner', 'Unverifiable meal', {
+      tenantId,
+      recipeId: recipe.id,
+    });
+    setCookingPreferenceMemory(userId, { kind: 'allergy', value: 'peanuts' }, tenantId);
+    testDb.exec('DROP TABLE recipes');
+    const input = {
+      ...baseInput,
+      userId,
+      tenantId,
+      text: 'What is dinner tomorrow?',
+      locale: 'en-US',
+      messageId: 'msg-cooking-unverifiable-recipe',
+      persistRuns: false,
+    };
+    const plan = buildDeterministicChatActionPlan(input)!;
+
+    const execution = executeCookingSupportStep(plan.steps[0], input);
+
+    expect(execution.status).toBe('partial_success');
+    expect(execution.result).toMatchObject({
+      plannedMeals: [],
+      mealSafetyUnverified: 1,
+      sourceHealth: { recipeLibrary: 'unavailable' },
+      warningCodes: expect.arrayContaining([
+        'COOKING_RECIPE_LIBRARY_UNAVAILABLE',
+        'COOKING_MEAL_SAFETY_UNVERIFIED',
+      ]),
+    });
+  });
+
+  it('resolves qualified weekdays and prior weeks without silently defaulting to today', () => {
+    const fridayInput = {
+      ...baseInput,
+      text: 'Fueling for Friday next week',
+      locale: 'en-US',
+      messageId: 'msg-cooking-friday-next-week',
+      persistRuns: false,
+    };
+    const fridayExecution = executeCookingSupportStep(buildDeterministicChatActionPlan(fridayInput)!.steps[0], fridayInput);
+    expect(fridayExecution.result).toMatchObject({
+      requestedDate: '2026-05-22',
+      requestedRange: { from: '2026-05-22', to: '2026-05-22', scope: 'date' },
+    });
+
+    const lastWeekInput = {
+      ...baseInput,
+      text: 'Show my meal plan last week',
+      locale: 'en-US',
+      messageId: 'msg-cooking-last-week',
+      persistRuns: false,
+    };
+    const lastWeekExecution = executeCookingSupportStep(buildDeterministicChatActionPlan(lastWeekInput)!.steps[0], lastWeekInput);
+    expect(lastWeekExecution.result).toMatchObject({
+      requestedDate: '2026-05-04',
+      requestedRange: { from: '2026-05-04', to: '2026-05-10', scope: 'week' },
     });
   });
 

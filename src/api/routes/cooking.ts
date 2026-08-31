@@ -13,6 +13,8 @@
  * Endpoints:
  *   GET    /recipes                      — list recipes with optional filters
  *   POST   /recipes                      — create a new recipe
+ *   GET    /recipes/:id                  — fetch one recipe
+ *   PATCH  /recipes/:id                  — update one recipe
  *   DELETE /recipes/:id                  — remove a recipe
  *   GET    /meal-plan?from=&to=          — list meal plan entries in range
  *   POST   /meal-plan                    — upsert one meal plan slot
@@ -21,17 +23,19 @@
  *   DELETE /meal-plan?date=&mealType=    — clear one meal plan slot
  *   GET    /shopping-list?week=          — fetch the shopping list for a week
  *   POST   /shopping-list/generate       — (re)generate from the week's meal plan
+ *   PATCH  /shopping-list/items/:index   — update one visible item's checked state
  *   GET    /pantry                       — list pantry items
  *   POST   /pantry/items                 — create/update one pantry item
+ *   GET    /pantry/items/:id             — fetch one pantry item
  *   PATCH  /pantry/items/:id             — update one pantry item
  *   DELETE /pantry/items/:id             — remove one pantry item
  *   GET    /preferences                  — read Cooking preference memory
  *   POST   /preferences                  — write/correct Cooking preference memory
+ *   POST   /meal-plan/create-prep-event  — schedule one scoped prep event
  *
- * Part of TASK-14 Phase 1 (foundation) — backend plumbing for the
- * iOS Cooking skill landing page. Real UI features ship in follow-up
- * sessions; this file exists so the iOS CookingService + Repository
- * have something to call.
+ * These routes are the deterministic backend contract used by Cooking
+ * clients; domain validation, safety policy, and tenant isolation remain in
+ * the service layer.
  */
 
 import { Router, Response } from 'express';
@@ -62,6 +66,7 @@ import {
   type PantryItemInput,
   type Recipe,
   type CookingSubstitutionReason,
+  CookingRecipeDeleteConflictError,
 } from '../../services/cooking-chef';
 import { assessCookingMealPlan } from '../../services/cooking-intelligence';
 import {
@@ -77,7 +82,7 @@ import {
   type CookingPreferenceWriteInput,
 } from '../../services/cooking-preferences';
 import { hasConnectedCalendarForUser } from '../../services/unified-calendar';
-import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
+import { getActivePlans, getCurrentWeek, getSessionsForWeek, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   buildCookingMealPrepSchedulingIntent,
@@ -89,14 +94,13 @@ import { runOutboxTransaction } from '../../services/event-outbox';
 import { consumeResourceBudget } from '../../services/resource-budgets';
 import { assertTenantScope } from '../../services/tenant-scope';
 import { readTrainingContextAll } from '../../services/training-signals';
-import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
-import { config } from '../../config';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { resolveCalendarWritePreference } from '../../services/provider-preferences';
 import { createUnifiedCalendarSecretaryProviderAdapter } from '../../services/secretary-unified-calendar-provider-adapter';
 import { syncSecretaryAgendaItemsToProvider } from '../../services/secretary-agenda-provider-sync';
 import { getSecretaryAgendaItemById } from '../../services/secretary-scheduling-arbitrator';
+import { getUserTimezoneById } from '../../services/user-service';
 
 type MealAdaptationKind = 'protein_up' | 'recovery' | 'carbs_up' | 'carbs_down';
 
@@ -119,8 +123,10 @@ interface CookingTrainingSnapshot {
   lowSleep: boolean;
   lowHrv: boolean;
   highLegLoad: boolean;
+  todayScheduleKnown: boolean;
   todayHasTraining: boolean;
   todayHasHardSession: boolean;
+  tomorrowScheduleKnown: boolean;
   tomorrowHasTraining: boolean;
   tomorrowHasHardSession: boolean;
 }
@@ -157,7 +163,7 @@ function readCookingSecretaryAvailabilityContextSafely(input: {
   try {
     return buildCookingSecretaryAvailabilityContext(input);
   } catch (err) {
-    const timezone = config.app.timezone || 'Europe/Lisbon';
+    const timezone = getUserTimezoneById(input.userId);
     logger.debug({ err, userId: input.userId, tenantId: input.tenantId }, 'Cooking Secretary availability context unavailable');
     return {
       source: 'secretary_agenda_items',
@@ -203,6 +209,43 @@ function sendCookingPreferenceErrorIfNeeded(res: Response, err: unknown): boolea
   return true;
 }
 
+function sendCookingInputErrorIfNeeded(res: Response, err: unknown): boolean {
+  const message = err instanceof Error ? err.message : '';
+  if (message.startsWith('COOKING_PANTRY_INVALID_EXPIRY')) {
+    sendError(res, 'BAD_REQUEST', 'expiresAt must be a valid YYYY-MM-DD date', 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_PANTRY_INVALID')) {
+    sendError(res, 'BAD_REQUEST', message.replace(/^COOKING_PANTRY_INVALID_[A-Z_]+:\s*/, ''), 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_MEAL_PLAN_RECIPE_NOT_FOUND')) {
+    sendError(res, 'BAD_REQUEST', 'recipeId must reference an active recipe in the current tenant scope', 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_RECIPE_INVALID')) {
+    sendError(res, 'BAD_REQUEST', message, 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_MEAL_PLAN_INVALID')) {
+    sendError(res, 'BAD_REQUEST', message, 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_SUBSTITUTION_INVALID')) {
+    sendError(res, 'BAD_REQUEST', message, 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_SHOPPING_LIST_INVALID_WEEK_START')) {
+    sendError(res, 'BAD_REQUEST', 'week must be a valid Monday in YYYY-MM-DD format', 400);
+    return true;
+  }
+  if (message.startsWith('COOKING_SHOPPING_LIST_INVALID_WEEK_DATE')) {
+    sendError(res, 'BAD_REQUEST', 'week must be a valid YYYY-MM-DD date', 400);
+    return true;
+  }
+  return false;
+}
+
 function sendCookingSafetyErrorIfNeeded(
   res: Response,
   err: unknown,
@@ -224,10 +267,44 @@ function sendCookingSafetyErrorIfNeeded(
   return true;
 }
 
+function parseStrictRouteInteger(value: unknown, minimum: number): number | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const normalized = String(value).trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : null;
+}
+
+function parseBoundedRouteLimit(value: unknown, fallback: number, maximum: number): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = parseStrictRouteInteger(value, 1);
+  return parsed === null ? fallback : Math.min(parsed, maximum);
+}
+
 function isValidNutritionField(value: unknown): value is number | null | undefined {
   return value === undefined
     || value === null
     || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
+}
+
+function isValidIngredient(value: unknown): value is Ingredient {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ingredient = value as Record<string, unknown>;
+  return Object.prototype.hasOwnProperty.call(ingredient, 'name')
+    && Object.prototype.hasOwnProperty.call(ingredient, 'quantity')
+    && Object.prototype.hasOwnProperty.call(ingredient, 'unit')
+    && typeof ingredient.name === 'string'
+    && ingredient.name.trim().length > 0
+    && typeof ingredient.quantity === 'string'
+    && typeof ingredient.unit === 'string';
+}
+
+function isValidIngredientList(value: unknown): value is Ingredient[] {
+  if (!Array.isArray(value)) return false;
+  for (const ingredient of value) {
+    if (!isValidIngredient(ingredient)) return false;
+  }
+  return true;
 }
 
 function isCookingSubstitutionReason(value: unknown): value is CookingSubstitutionReason {
@@ -263,15 +340,9 @@ function isHardTrainingSession(session: TrainingSession): boolean {
   ].some((token) => haystack.includes(token));
 }
 
-function isDefaultPersonalTenantScope(userId: number, tenantId: number): boolean {
-  // Wearable readiness adapters are still keyed only by user_id. Keep them on
-  // the default personal tenant until those adapters can accept tenant scope.
-  return userId === tenantId;
-}
-
-async function buildCookingTrainingSnapshot(opts: { userId: number; tenantId: number }): Promise<CookingTrainingSnapshot> {
+function buildCookingLocalTrainingSnapshot(opts: { userId: number; tenantId: number }): CookingTrainingSnapshot {
   const { userId, tenantId } = opts;
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = getUserTimezoneById(userId);
   const now = DateTime.now().setZone(zone);
   const tomorrow = now.plus({ days: 1 });
   const todayIso = now.toISODate() ?? DateTime.now().toISODate() ?? '';
@@ -280,48 +351,55 @@ async function buildCookingTrainingSnapshot(opts: { userId: number; tenantId: nu
   const tomorrowName = tomorrow.toFormat('EEEE');
 
   const activePlans = getActivePlans(userId, tenantId);
-  const sessionsForDay = (target: DateTime, dayName: string) => activePlans.flatMap((plan) => {
-    const week = getCurrentWeek(plan.id);
-    if (!week) return [];
-
-    const targetWeek = target.hasSame(now, 'week')
-      ? week
-      : getWeeksForPlan(plan.id).find((candidate) => candidate.week_number === week.week_number + 1) ?? week;
-
-    return getSessionsForWeek(targetWeek.id);
-  }).filter((session) => session.status !== 'skipped' && session.day_of_week === dayName);
-
-  const todaySessions = sessionsForDay(now, todayName);
-  const tomorrowSessions = sessionsForDay(tomorrow, tomorrowName);
-  const trainingContext = readTrainingContextAll({ userId, tenantId });
-
-  let readinessScore: number | null = null;
-  if (isDefaultPersonalTenantScope(userId, tenantId)) {
-    try {
-      readinessScore = (await getWearableReadiness(userId, todayIso))?.readinessScore ?? null;
-    } catch (err) {
-      logger.debug({ err, userId, tenantId }, 'Cooking meal-plan readiness lookup failed');
+  const inactiveSessionStatuses = new Set(['rest', 'skipped', 'unscheduled', 'deferred', 'dropped', 'cancelled', 'superseded']);
+  const scheduleForDay = (target: DateTime, dayName: string): { known: boolean; sessions: TrainingSession[] } => {
+    const targetDate = target.toISODate();
+    if (!targetDate) return { known: false, sessions: [] };
+    let known = false;
+    const sessions: TrainingSession[] = [];
+    for (const plan of activePlans) {
+      if (targetDate < plan.start_date || targetDate > plan.end_date) continue;
+      const week = getCurrentWeek(plan.id, { now: target.toJSDate(), timezone: zone });
+      if (!week) continue;
+      known = true;
+      sessions.push(...getSessionsForWeek(week.id));
     }
-  } else {
-    logger.debug(
-      { userId, tenantId },
-      'Cooking meal-plan readiness suppressed for non-default tenant scope',
-    );
-  }
+    return {
+      known,
+      sessions: sessions.filter((session) => !inactiveSessionStatuses.has(String(session.status ?? '').toLowerCase()) && session.day_of_week === dayName),
+    };
+  };
+
+  const todaySchedule = scheduleForDay(now, todayName);
+  const tomorrowSchedule = scheduleForDay(tomorrow, tomorrowName);
+  const trainingContext = readTrainingContextAll({ userId, tenantId });
+  // Ordinary meal-plan reads stay local-only. Wearable fetches and OAuth token
+  // refresh belong to sync jobs, which publish tenant-scoped training signals.
+  const localReadinessScore = trainingContext.signals
+    .find((signal) => signal.signal_type === 'low_readiness')
+    ?.payload?.score;
+  const readinessScore = typeof localReadinessScore === 'number'
+    && Number.isFinite(localReadinessScore)
+    && localReadinessScore >= 0
+    && localReadinessScore <= 100
+    ? localReadinessScore
+    : null;
 
   return {
     hasTrainingContext: activePlans.length > 0 || trainingContext.signals.length > 0 || readinessScore != null,
     todayIso,
     tomorrowIso,
     readinessScore,
-    lowReadiness: trainingContext.flags.lowReadiness || (readinessScore != null && readinessScore < 45),
+    lowReadiness: trainingContext.flags.lowReadiness,
     lowSleep: trainingContext.flags.lowSleep,
     lowHrv: trainingContext.flags.lowHrv,
     highLegLoad: trainingContext.flags.highLegLoad,
-    todayHasTraining: todaySessions.length > 0,
-    todayHasHardSession: todaySessions.some(isHardTrainingSession),
-    tomorrowHasTraining: tomorrowSessions.length > 0,
-    tomorrowHasHardSession: tomorrowSessions.some(isHardTrainingSession),
+    todayScheduleKnown: todaySchedule.known,
+    todayHasTraining: todaySchedule.sessions.length > 0,
+    todayHasHardSession: todaySchedule.sessions.some(isHardTrainingSession),
+    tomorrowScheduleKnown: tomorrowSchedule.known,
+    tomorrowHasTraining: tomorrowSchedule.sessions.length > 0,
+    tomorrowHasHardSession: tomorrowSchedule.sessions.some(isHardTrainingSession),
   };
 }
 
@@ -396,7 +474,7 @@ function buildMealAdaptation(meal: MealPlan, snapshot: CookingTrainingSnapshot):
     };
   }
 
-  if (isTodayMeal && mealType === 'dinner' && !snapshot.tomorrowHasTraining) {
+  if (isTodayMeal && mealType === 'dinner' && snapshot.tomorrowScheduleKnown && !snapshot.tomorrowHasTraining) {
     return {
       kind: 'carbs_down',
       reasonCodes: ['REST_DAY_TOMORROW'],
@@ -430,7 +508,7 @@ function buildMealAdaptation(meal: MealPlan, snapshot: CookingTrainingSnapshot):
     }
   }
 
-  if (isTomorrowMeal && mealType === 'dinner' && !snapshot.tomorrowHasTraining) {
+  if (isTomorrowMeal && mealType === 'dinner' && snapshot.tomorrowScheduleKnown && !snapshot.tomorrowHasTraining) {
     return {
       kind: 'carbs_down',
       reasonCodes: ['REST_DAY'],
@@ -464,9 +542,7 @@ export function cookingRoutes(): Router {
 
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
     const tags = typeof req.query.tags === 'string' ? req.query.tags : undefined;
-    const limit = req.query.limit
-      ? Math.min(parseInt(String(req.query.limit), 10) || 20, 100)
-      : 20;
+    const limit = parseBoundedRouteLimit(req.query.limit, 20, 100);
 
     try {
       const recipes = getRecipes(userId, { search, tags, limit, tenantId });
@@ -493,14 +569,14 @@ export function cookingRoutes(): Router {
    */
   router.post('/recipes', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body;
+    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body ?? {};
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       sendError(res, 'BAD_REQUEST', 'title is required');
       return;
     }
-    if (!Array.isArray(ingredients)) {
-      sendError(res, 'BAD_REQUEST', 'ingredients must be an array');
+    if (!isValidIngredientList(ingredients)) {
+      sendError(res, 'BAD_REQUEST', 'ingredients must be an array of objects with a non-empty string name and string quantity and unit');
       return;
     }
     if (instructions !== undefined && instructions !== null && typeof instructions !== 'string') {
@@ -547,10 +623,12 @@ export function cookingRoutes(): Router {
         return created;
       });
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { recipe }, { status: 201 });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
       if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /recipes', surface: 'recipe' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -567,10 +645,10 @@ export function cookingRoutes(): Router {
    */
   router.get('/recipes/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const recipeId = parseInt(req.params.id, 10);
+    const recipeId = parseStrictRouteInteger(req.params.id, 1);
 
-    if (Number.isNaN(recipeId)) {
-      sendError(res, 'BAD_REQUEST', 'id must be a number');
+    if (recipeId === null) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
       return;
     }
 
@@ -600,11 +678,11 @@ export function cookingRoutes(): Router {
    */
   router.patch('/recipes/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const recipeId = parseInt(req.params.id, 10);
-    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body;
+    const recipeId = parseStrictRouteInteger(req.params.id, 1);
+    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body ?? {};
 
-    if (Number.isNaN(recipeId)) {
-      sendError(res, 'BAD_REQUEST', 'id must be a number');
+    if (recipeId === null) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
       return;
     }
 
@@ -621,8 +699,8 @@ export function cookingRoutes(): Router {
       sendError(res, 'BAD_REQUEST', 'title must be a non-empty string when provided');
       return;
     }
-    if (ingredients !== undefined && !Array.isArray(ingredients)) {
-      sendError(res, 'BAD_REQUEST', 'ingredients must be an array when provided');
+    if (ingredients !== undefined && !isValidIngredientList(ingredients)) {
+      sendError(res, 'BAD_REQUEST', 'ingredients must be an array of objects with a non-empty string name and string quantity and unit when provided');
       return;
     }
     if (instructions !== undefined && instructions !== null && typeof instructions !== 'string') {
@@ -654,9 +732,11 @@ export function cookingRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
         return;
       }
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { recipe: updated });
     } catch (err: unknown) {
       if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'PATCH /recipes/:id', surface: 'recipe' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -672,10 +752,10 @@ export function cookingRoutes(): Router {
    */
   router.delete('/recipes/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const recipeId = parseInt(req.params.id, 10);
+    const recipeId = parseStrictRouteInteger(req.params.id, 1);
 
-    if (Number.isNaN(recipeId)) {
-      sendError(res, 'BAD_REQUEST', 'id must be a number');
+    if (recipeId === null) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
       return;
     }
 
@@ -685,8 +765,13 @@ export function cookingRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
         return;
       }
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { deleted: true, id: recipeId });
     } catch (err: unknown) {
+      if (err instanceof CookingRecipeDeleteConflictError) {
+        sendError(res, 'COOKING_RECIPE_IN_USE', 'Recipe is used by an active meal plan', 409);
+        return;
+      }
       sendCookingInternalError(res, {
         err,
         userId,
@@ -709,9 +794,7 @@ export function cookingRoutes(): Router {
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
     const category = typeof req.query.category === 'string' ? req.query.category : undefined;
     const includeExpired = String(req.query.includeExpired ?? '').toLowerCase() === 'true';
-    const limit = req.query.limit
-      ? Math.min(parseInt(String(req.query.limit), 10) || 100, 250)
-      : 100;
+    const limit = parseBoundedRouteLimit(req.query.limit, 100, 250);
 
     try {
       const items = getPantryItems(userId, { tenantId, search, category, includeExpired, limit });
@@ -751,6 +834,7 @@ export function cookingRoutes(): Router {
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { item }, { status: 201 });
     } catch (err: unknown) {
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -765,10 +849,10 @@ export function cookingRoutes(): Router {
    */
   router.get('/pantry/items/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const itemId = parseInt(req.params.id, 10);
+    const itemId = parseStrictRouteInteger(req.params.id, 1);
 
-    if (Number.isNaN(itemId)) {
-      sendError(res, 'BAD_REQUEST', 'id must be a number');
+    if (itemId === null) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
       return;
     }
 
@@ -795,11 +879,11 @@ export function cookingRoutes(): Router {
    */
   router.patch('/pantry/items/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const itemId = parseInt(req.params.id, 10);
+    const itemId = parseStrictRouteInteger(req.params.id, 1);
     const input = req.body as Partial<PantryItemInput>;
 
-    if (Number.isNaN(itemId)) {
-      sendError(res, 'BAD_REQUEST', 'id must be a number');
+    if (itemId === null) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
       return;
     }
     if (!input || Object.keys(input).length === 0) {
@@ -826,6 +910,7 @@ export function cookingRoutes(): Router {
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { item });
     } catch (err: unknown) {
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -841,10 +926,10 @@ export function cookingRoutes(): Router {
    */
   router.delete('/pantry/items/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const itemId = parseInt(req.params.id, 10);
+    const itemId = parseStrictRouteInteger(req.params.id, 1);
 
-    if (Number.isNaN(itemId)) {
-      sendError(res, 'BAD_REQUEST', 'id must be a number');
+    if (itemId === null) {
+      sendError(res, 'BAD_REQUEST', 'id must be a positive integer');
       return;
     }
 
@@ -950,7 +1035,7 @@ export function cookingRoutes(): Router {
 
     try {
       const plans = getMealPlan(userId, from, to, tenantId);
-      const trainingSnapshot = await buildCookingTrainingSnapshot({ userId, tenantId });
+      const trainingSnapshot = buildCookingLocalTrainingSnapshot({ userId, tenantId });
       const meals: MealPlanRouteRow[] = plans.map((plan) => ({
         ...plan,
         adaptation: buildMealAdaptation(plan, trainingSnapshot),
@@ -961,7 +1046,15 @@ export function cookingRoutes(): Router {
           .filter((recipe): recipe is NonNullable<typeof recipe> => Boolean(recipe))
           .map((recipe) => [recipe.id, recipe]),
       );
-      const shoppingList = getShoppingList(userId, from, tenantId);
+      const userTimezone = getUserTimezoneById(userId);
+      const fromDate = DateTime.fromISO(from, { zone: userTimezone });
+      const toDate = DateTime.fromISO(to, { zone: userTimezone });
+      const fromWeekStart = fromDate.startOf('week');
+      const shoppingList = fromWeekStart.isValid
+        && toDate.isValid
+        && fromWeekStart.hasSame(toDate.startOf('week'), 'day')
+        ? getShoppingList(userId, fromWeekStart.toISODate()!, tenantId)
+        : null;
       const preferenceReadModel = buildCookingPreferenceReadModel(userId, tenantId);
       const financeBudgetContext = readCookingFinanceBudgetContextSafely({ userId, tenantId, from, to });
       const secretaryAvailabilityContext = readCookingSecretaryAvailabilityContextSafely({ userId, tenantId, from, to });
@@ -1011,6 +1104,7 @@ export function cookingRoutes(): Router {
         },
       });
     } catch (err: unknown) {
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1027,7 +1121,7 @@ export function cookingRoutes(): Router {
    */
   router.post('/meal-plan', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const { date, mealType, title, recipeId, notes } = req.body;
+    const { date, mealType, title, recipeId, notes } = req.body ?? {};
 
     if (!date || !mealType || !title) {
       sendError(res, 'BAD_REQUEST', 'date, mealType, and title are required');
@@ -1041,6 +1135,7 @@ export function cookingRoutes(): Router {
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
       if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /meal-plan', surface: 'meal_plan' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1097,6 +1192,7 @@ export function cookingRoutes(): Router {
       });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1162,6 +1258,7 @@ export function cookingRoutes(): Router {
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
       if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /meal-plan/substitutions/apply', surface: 'meal_plan_substitution' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       const message = err instanceof Error ? err.message : '';
       if (message.startsWith('COOKING_SUBSTITUTION')) {
         sendError(res, 'BAD_REQUEST', message, 400);
@@ -1194,6 +1291,7 @@ export function cookingRoutes(): Router {
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { deleted, date, mealType });
     } catch (err: unknown) {
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1222,6 +1320,8 @@ export function cookingRoutes(): Router {
       const list = getShoppingList(userId, week, tenantId);
       sendSuccess(res, { list });
     } catch (err: unknown) {
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'GET /shopping-list', surface: 'shopping_list' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1239,7 +1339,7 @@ export function cookingRoutes(): Router {
    */
   router.post('/shopping-list/generate', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const { week } = req.body;
+    const { week } = req.body ?? {};
 
     if (!week || typeof week !== 'string') {
       sendError(res, 'BAD_REQUEST', 'week is required in the body (YYYY-MM-DD)');
@@ -1253,6 +1353,8 @@ export function cookingRoutes(): Router {
       sendSuccess(res, { list });
     } catch (err: unknown) {
       if (sendCookingScopeConflictIfNeeded(res, err)) return;
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'POST /shopping-list/generate', surface: 'shopping_list' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       sendCookingInternalError(res, {
         err,
         userId,
@@ -1270,10 +1372,10 @@ export function cookingRoutes(): Router {
    */
   router.patch('/shopping-list/items/:index', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as AuthenticatedRequest;
-    const index = parseInt(req.params.index, 10);
-    const { week, checked } = req.body;
+    const index = parseStrictRouteInteger(req.params.index, 0);
+    const { week, checked } = req.body ?? {};
 
-    if (Number.isNaN(index) || index < 0) {
+    if (index === null) {
       sendError(res, 'BAD_REQUEST', 'index must be a non-negative integer');
       return;
     }
@@ -1295,6 +1397,8 @@ export function cookingRoutes(): Router {
       invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { list });
     } catch (err: unknown) {
+      if (sendCookingSafetyErrorIfNeeded(res, err, { userId, tenantId, route: 'PATCH /shopping-list/items/:index', surface: 'shopping_list' })) return;
+      if (sendCookingInputErrorIfNeeded(res, err)) return;
       const message = err instanceof Error ? err.message : '';
       if (message.includes('out of range')) {
         logger.error({ err, userId, week, index }, 'iOS cooking shopping-list item update rejected');
@@ -1341,24 +1445,56 @@ export function cookingRoutes(): Router {
    */
   router.post('/meal-plan/create-prep-event', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = assertTenantScope(req as AuthenticatedRequest, 'cooking_meal_prep_event');
-    const { week, dayOfWeek, startHour, durationMinutes } = req.body;
+    const { week, dayOfWeek, startHour, durationMinutes } = req.body ?? {};
 
     if (!week || typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
       sendError(res, 'BAD_REQUEST', 'week is required and must be YYYY-MM-DD');
       return;
     }
+    if (dayOfWeek !== undefined
+        && (!Number.isSafeInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6)) {
+      sendError(res, 'BAD_REQUEST', 'dayOfWeek must be an integer between 0 and 6');
+      return;
+    }
+    if (startHour !== undefined
+        && (!Number.isSafeInteger(startHour) || startHour < 0 || startHour > 23)) {
+      sendError(res, 'BAD_REQUEST', 'startHour must be an integer between 0 and 23');
+      return;
+    }
+    if (durationMinutes !== undefined
+        && (!Number.isSafeInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 480)) {
+      sendError(res, 'BAD_REQUEST', 'durationMinutes must be an integer between 1 and 480');
+      return;
+    }
+
+    const tz = getUserTimezoneById(userId);
+    const mondayDate = DateTime.fromISO(week, { zone: tz });
+    if (!mondayDate.isValid || mondayDate.toISODate() !== week || mondayDate.weekday !== 1) {
+      sendError(res, 'BAD_REQUEST', 'week must be a valid Monday in YYYY-MM-DD format');
+      return;
+    }
 
     // Defaults: Sunday at 14:00 for 120 minutes. These match what
     // the iOS confirmation sheet shows as the default selection.
-    const dow = typeof dayOfWeek === 'number' && dayOfWeek >= 0 && dayOfWeek <= 6
-      ? dayOfWeek
-      : 0;
-    const hour = typeof startHour === 'number' && startHour >= 0 && startHour <= 23
-      ? startHour
-      : 14;
-    const duration = typeof durationMinutes === 'number' && durationMinutes > 0 && durationMinutes <= 480
-      ? durationMinutes
-      : 120;
+    const dow = dayOfWeek ?? 0;
+    const hour = startHour ?? 14;
+    const duration = durationMinutes ?? 120;
+    // dayOfWeek is 0-6 where 0=Sunday. Resolve and reject the exact local
+    // start before any calendar/provider read so a stale request cannot create
+    // Secretary work or consume an external provider budget.
+    const dayOffsetFromMonday = dow === 0 ? 6 : dow - 1;
+    const eventDay = mondayDate.plus({ days: dayOffsetFromMonday });
+    const startDt = eventDay.set({ hour, minute: 0, second: 0, millisecond: 0 });
+    const endDt = startDt.plus({ minutes: duration });
+    if (startDt.toMillis() <= DateTime.now().setZone(tz).toMillis()) {
+      sendError(
+        res,
+        'COOKING_PREP_PAST_WINDOW',
+        'Meal prep must be scheduled for a future local time.',
+        400,
+      );
+      return;
+    }
 
     if (!hasConnectedCalendarForUser(userId)) {
       sendError(
@@ -1385,14 +1521,6 @@ export function cookingRoutes(): Router {
     }
 
     try {
-      // Compute the target week's Monday (parse `week` as a local date).
-      const tz = config.app.timezone;
-      const mondayDate = DateTime.fromISO(week, { zone: tz });
-      if (!mondayDate.isValid) {
-        sendError(res, 'BAD_REQUEST', `Invalid date: ${week}`);
-        return;
-      }
-
       // Read the week's meal plan so we can summarize what's being prepped.
       // Week ends on Sunday (6 days after Monday).
       const weekEnd = mondayDate.plus({ days: 6 }).toFormat('yyyy-LL-dd');
@@ -1408,25 +1536,15 @@ export function cookingRoutes(): Router {
         return;
       }
 
-      // Find the target day: dayOfWeek is 0-6 where 0=Sunday, so the
-      // target day within the ISO week (Monday=1, ..., Sunday=7) is
-      // computed as: Sunday→(Mon+6), Monday→(Mon+0), Tuesday→(Mon+1), etc.
-      // Simplest: offset from Monday. Sunday = 6, Monday = 0, ..., Saturday = 5.
-      const dayOffsetFromMonday = dow === 0 ? 6 : dow - 1;
-      const eventDay = mondayDate.plus({ days: dayOffsetFromMonday });
-
       // Set the event time. Use the configured timezone explicitly so
       // the event lands at the right local hour regardless of server TZ.
-      const startDt = eventDay.set({ hour, minute: 0, second: 0, millisecond: 0 });
-      const endDt = startDt.plus({ minutes: duration });
-
       const title = meals.length === 1
         ? `Meal prep — ${meals[0].title}`
         : `Meal prep — ${meals.length} meals`;
 
       // unified-calendar uses ISO strings that the underlying Google
       // API interprets with the event's timeZone field. Our helper
-      // passes config.app.timezone for the timeZone, so ISO without
+      // passes the user's timezone for the timeZone, so ISO without
       // offset works correctly.
       const startIso = startDt.toISO() || startDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
       const endIso = endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");

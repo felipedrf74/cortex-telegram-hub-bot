@@ -65,7 +65,7 @@ export const CONFIRMED_TARGET_FIELDS: Record<string, readonly string[]> = {
   finance_delete_transaction: ['transaction_id'],
   finance_mark_tax_paid: ['month'],
   cooking_delete_recipe: ['recipe_id'],
-  cooking_delete_meal: ['date'],
+  cooking_delete_meal: ['date', 'meal_type'],
   cooking_delete_pantry_item: ['item_id'],
   send_outlook_email: ['to'],
   reply_outlook_email: ['message_id'],
@@ -75,15 +75,25 @@ function extractTargetIdCandidates(
   toolName: string,
   input: Record<string, unknown> | null | undefined,
 ): string[] {
+  const targetId = buildConfirmedDestructiveTargetId(toolName, input);
+  return targetId ? [targetId] : [];
+}
+
+export function buildConfirmedDestructiveTargetId(
+  toolName: string,
+  input: Record<string, unknown> | null | undefined,
+): string | null {
   const fields = CONFIRMED_TARGET_FIELDS[toolName];
-  if (!fields || !input) return [];
-  const candidates: string[] = [];
+  if (!fields || !input) return null;
+  const values: string[] = [];
   for (const field of fields) {
     const value = input[field];
-    if (typeof value === 'string' && value.trim()) candidates.push(value.trim());
-    else if (typeof value === 'number' && Number.isFinite(value)) candidates.push(String(value));
+    if (typeof value === 'string' && value.trim()) values.push(value.trim());
+    else if (typeof value === 'number' && Number.isFinite(value)) values.push(String(value));
+    else return null;
   }
-  return candidates;
+  if (values.length === 1) return values[0] ?? null;
+  return fields.map((field, index) => `${field}=${encodeURIComponent(values[index] ?? '')}`).join('&');
 }
 
 function consumeConfirmedDestructiveGrant(

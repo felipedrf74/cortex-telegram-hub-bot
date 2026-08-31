@@ -13,6 +13,8 @@ import {
 import { getDecisionOverview } from './decision-center';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
+import { getUserTimezoneById } from './user-service';
+import { resolveTrainingTimezone } from './training-date-utils';
 
 export interface DailyBriefResponse {
   date: string;
@@ -52,6 +54,11 @@ function buildEmptyDailyBriefDay(date: string, language?: string): WeeklyPlanDay
       decisions: [],
     },
     meals: [],
+    cooking: {
+      status: 'unavailable',
+      headline: 'Cooking plan unavailable for this day.',
+      warningCodes: ['COOKING_CONTEXT_UNAVAILABLE'],
+    },
     content: null,
     secretary: {
       focusBlock: null,
@@ -68,8 +75,13 @@ function buildEmptyDailyBriefDay(date: string, language?: string): WeeklyPlanDay
   };
 }
 
-function buildEmptyDailyBriefResponse(opts: { userId: number; date?: string; language?: string }): DailyBriefResponse {
-  const targetDate = resolveTargetDate(opts.date);
+function buildEmptyDailyBriefResponse(opts: {
+  userId: number;
+  date?: string;
+  language?: string;
+  timezone?: string;
+}): DailyBriefResponse {
+  const targetDate = resolveTargetDate(opts.date, opts.timezone);
   return {
     date: targetDate,
     generatedAt: new Date().toISOString(),
@@ -162,6 +174,11 @@ function buildUnavailableDailyBriefDay(date: string, language?: string): WeeklyP
       decisions: [],
     },
     meals: [],
+    cooking: {
+      status: 'unavailable',
+      headline: 'Cooking plan unavailable for this day.',
+      warningCodes: ['COOKING_CONTEXT_UNAVAILABLE'],
+    },
     content: null,
     secretary: {
       focusBlock: null,
@@ -178,8 +195,13 @@ function buildUnavailableDailyBriefDay(date: string, language?: string): WeeklyP
   };
 }
 
-function buildUnavailableDailyBriefResponse(opts: { userId: number; date?: string; language?: string }): DailyBriefResponse {
-  const targetDate = resolveTargetDate(opts.date);
+function buildUnavailableDailyBriefResponse(opts: {
+  userId: number;
+  date?: string;
+  language?: string;
+  timezone?: string;
+}): DailyBriefResponse {
+  const targetDate = resolveTargetDate(opts.date, opts.timezone);
   return {
     ...buildEmptyDailyBriefResponse(opts),
     date: targetDate,
@@ -244,8 +266,10 @@ export async function composeDailyBrief(opts: {
   tenantId?: number;
   date?: string;
   language?: string;
+  timezone?: string;
   forceRefresh?: boolean;
 }): Promise<DailyBriefResponse> {
+  const timezone = resolveDailyBriefTimezone(opts.userId, opts.timezone);
   if (!isValidTenantUserId(opts.userId)) {
     recordTenantScopeAnomaly({
       layer: 'orchestration',
@@ -256,7 +280,7 @@ export async function composeDailyBrief(opts: {
         date: opts.date ?? null,
       },
     });
-    return buildEmptyDailyBriefResponse(opts);
+    return buildEmptyDailyBriefResponse({ ...opts, timezone });
   }
   const tenantId = isValidTenantUserId(opts.tenantId) ? opts.tenantId! : opts.userId;
   if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
@@ -272,9 +296,9 @@ export async function composeDailyBrief(opts: {
     });
   }
 
-  const targetDate = resolveTargetDate(opts.date);
+  const targetDate = resolveTargetDate(opts.date, timezone);
   const languageBucket = resolveLanguageBucket(opts.language);
-  const cacheKey = `plan:today:u:${opts.userId}:t:${tenantId}:${targetDate}:${languageBucket}`;
+  const cacheKey = `plan:today:u:${opts.userId}:t:${tenantId}:${targetDate}:tz:${timezone}:${languageBucket}`;
   if (!opts.forceRefresh) {
     const cached = getCached<DailyBriefResponse>(cacheKey);
     if (cached) {
@@ -286,7 +310,8 @@ export async function composeDailyBrief(opts: {
     const weekPlan = await composeWeeklyPlan({
       userId: opts.userId,
       tenantId,
-      weekStart: weekStartForDate(targetDate),
+      weekStart: weekStartForDate(targetDate, timezone),
+      timezone,
       forceRefresh: opts.forceRefresh,
     });
 
@@ -294,7 +319,7 @@ export async function composeDailyBrief(opts: {
     const day = weekPlan.days.find((entry) => entry.date === targetDate) ?? fallbackDay;
     const conflicts = weekPlan.conflicts.filter((conflict) => conflict.date === targetDate);
     const secretaryTodaySignals = readSecretaryTodayDecisionSignals(opts.userId, tenantId);
-    let coordination = buildUnavailableDailyBriefResponse(opts).coordination;
+    let coordination = buildUnavailableDailyBriefResponse({ ...opts, timezone }).coordination;
     let coordinationDegraded = day === fallbackDay;
 
     if (!coordinationDegraded) {
@@ -335,7 +360,7 @@ export async function composeDailyBrief(opts: {
       { err, userId: opts.userId, date: targetDate },
       'daily brief weekly-plan compose failed — returning degraded fallback',
     );
-    return buildUnavailableDailyBriefResponse(opts);
+    return buildUnavailableDailyBriefResponse({ ...opts, timezone });
   }
 }
 
@@ -442,18 +467,27 @@ function compact(values: Array<string | null | undefined>): string[] {
   return values.filter((value): value is string => Boolean(value && value.trim().length > 0));
 }
 
-function resolveTargetDate(date?: string): string {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function resolveTargetDate(date?: string, timezone?: string): string {
+  const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
   const parsed = date
     ? DateTime.fromISO(date, { zone }).startOf('day')
     : DateTime.now().setZone(zone).startOf('day');
   return (parsed.isValid ? parsed : DateTime.now().setZone(zone)).toISODate()!;
 }
 
-function weekStartForDate(date: string): string {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function weekStartForDate(date: string, timezone?: string): string {
+  const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
   const parsed = DateTime.fromISO(date, { zone }).startOf('day');
   return (parsed.isValid ? parsed : DateTime.now().setZone(zone)).startOf('week').toISODate()!;
+}
+
+function resolveDailyBriefTimezone(userId: number, requested?: string | null): string {
+  if (requested) return resolveTrainingTimezone(requested);
+  try {
+    return resolveTrainingTimezone(getUserTimezoneById(userId));
+  } catch {
+    return resolveTrainingTimezone(config.app.timezone);
+  }
 }
 
 function resolveLanguageBucket(language?: string): string {

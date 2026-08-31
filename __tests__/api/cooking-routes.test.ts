@@ -149,7 +149,7 @@ import { getOrCreateUser } from '../../src/services/user-service';
 import { addRecipe, setMealPlan, generateShoppingList, upsertPantryItem, getRecipeById, getShoppingList, getMealPlan } from '../../src/services/cooking-chef';
 import * as cookingChef from '../../src/services/cooking-chef';
 import { createPlan, createWeek, createSession } from '../../src/services/training-plans';
-import { publishHighLegLoad, publishLowSleep } from '../../src/services/training-signals';
+import { publishHighLegLoad, publishLowReadiness, publishLowSleep } from '../../src/services/training-signals';
 import { setDbProvider } from '../../src/services/intelligence-bus';
 import { addTransaction } from '../../src/services/finance-tracker';
 import { submitSecretarySchedulingIntent } from '../../src/services/secretary-scheduling-arbitrator';
@@ -207,6 +207,11 @@ async function dispatch(
   });
 
   return res;
+}
+
+function freezeBeforePrepWeek(): void {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-04-12T08:00:00.000Z'));
 }
 
 describe('Cooking API — shopping list item updates', () => {
@@ -296,7 +301,10 @@ describe('Cooking API — shopping list item updates', () => {
     mockSubmitCookingMealPrepSchedulingIntent.mockImplementation(secretaryDecisionForInput);
   });
 
-  afterEach(() => testDb?.close());
+  afterEach(() => {
+    vi.useRealTimers();
+    testDb?.close();
+  });
 
   it('persists checked state for one shopping list item', async () => {
     const user = getOrCreateUser(21001, { username: 'cook' });
@@ -315,6 +323,116 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.list.items[0].name).toBe('Tomatoes');
     expect(res.body.data.list.items[0].checked).toBe(true);
+  });
+
+  it('maps shopping-list PATCH safety failures to the stable safe API error', async () => {
+    const user = getOrCreateUser(210011, { username: 'cook-shopping-safety' });
+    const updateSpy = vi.spyOn(cookingChef, 'updateShoppingListItemChecked').mockImplementation(() => {
+      throw new Error('COOKING_SAFETY_BLOCKED: shopping list safety profile unavailable');
+    });
+
+    const res = await dispatch('PATCH', '/shopping-list/items/0', user.id, {
+      week: '2026-04-13',
+      checked: true,
+    }, 101);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'Cooking item conflicts with a saved cooking safety preference',
+    });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'COOKING_SAFETY_BLOCKED',
+        userId: user.id,
+        tenantId: 101,
+        route: 'PATCH /shopping-list/items/:index',
+        surface: 'shopping_list',
+      }),
+      'COOKING_SAFETY_BLOCKED',
+    );
+    updateSpy.mockRestore();
+  });
+
+  it('rejects partial numeric route identifiers without mutating Cooking resources', async () => {
+    const user = getOrCreateUser(210012, { username: 'cook-strict-route-ids' });
+    const recipe = addRecipe(user.id, 'Strict route soup', [
+      { name: 'Carrot', quantity: '2', unit: 'pcs' },
+    ], { tenantId: 101 });
+    const pantryItem = upsertPantryItem(user.id, { name: 'Strict route rice' }, 101);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Strict route soup', {
+      recipeId: recipe.id,
+      tenantId: 101,
+    });
+    generateShoppingList(user.id, '2026-04-13', 101);
+
+    const recipeDelete = await dispatch('DELETE', `/recipes/${recipe.id}junk`, user.id, undefined, 101);
+    const pantryDelete = await dispatch('DELETE', `/pantry/items/${pantryItem.id}.5`, user.id, undefined, 101);
+    const shoppingPatch = await dispatch('PATCH', '/shopping-list/items/0junk', user.id, {
+      week: '2026-04-13',
+      checked: true,
+    }, 101);
+
+    expect(recipeDelete.statusCode).toBe(400);
+    expect(pantryDelete.statusCode).toBe(400);
+    expect(shoppingPatch.statusCode).toBe(400);
+    expect(getRecipeById(user.id, recipe.id, 101)).not.toBeNull();
+    expect(cookingChef.getPantryItemById(user.id, pantryItem.id, 101)).not.toBeNull();
+    expect(getShoppingList(user.id, '2026-04-13', 101)?.items[0].checked).toBe(false);
+  });
+
+  it('returns stable client errors for empty bodies and invalid meal-prep schedule fields', async () => {
+    const user = getOrCreateUser(210013, { username: 'cook-route-validation' });
+
+    const missingRecipeBody = await dispatch('POST', '/recipes', user.id, undefined, 101);
+    const missingMealBody = await dispatch('POST', '/meal-plan', user.id, undefined, 101);
+    const impossibleWeek = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-02-30',
+    }, 101);
+    const fractionalSchedule = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 1.5,
+      startHour: 14,
+      durationMinutes: 120,
+    }, 101);
+
+    expect(missingRecipeBody.statusCode).toBe(400);
+    expect(missingMealBody.statusCode).toBe(400);
+    expect(impossibleWeek.statusCode).toBe(400);
+    expect(impossibleWeek.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'week must be a valid Monday in YYYY-MM-DD format',
+    });
+    expect(fractionalSchedule.statusCode).toBe(400);
+    expect(fractionalSchedule.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'dayOfWeek must be an integer between 0 and 6',
+    });
+    expect(mockHasConnectedCalendarForUser).not.toHaveBeenCalled();
+    expect(mockResolveCalendarWritePreference).not.toHaveBeenCalled();
+  });
+
+  it('rejects a past local meal-prep window before calendar or Secretary reads', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-20T08:00:00.000Z'));
+    const user = getOrCreateUser(210014, { username: 'cook-past-prep' });
+
+    const response = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    }, user.id);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'COOKING_PREP_PAST_WINDOW',
+      message: 'Meal prep must be scheduled for a future local time.',
+    });
+    expect(mockHasConnectedCalendarForUser).not.toHaveBeenCalled();
+    expect(mockResolveCalendarWritePreference).not.toHaveBeenCalled();
+    expect(mockPreviewCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
+    expect(mockSubmitCookingMealPrepSchedulingIntent).not.toHaveBeenCalled();
   });
 
   it('rejects non-string recipe instructions on create without leaking SQLite errors', async () => {
@@ -424,6 +542,24 @@ describe('Cooking API — shopping list item updates', () => {
     ]);
   });
 
+  it('invalidates Cooking projections after recipe create, update, and delete', async () => {
+    const user = getOrCreateUser(21029, { username: 'cook29-cache' });
+    const created = await dispatch('POST', '/recipes', user.id, {
+      title: 'Cache-aware bowl',
+      ingredients: [{ name: 'Rice', quantity: '1', unit: 'cup' }],
+    });
+    const recipeId = created.body.data.recipe.id;
+    const updated = await dispatch('PATCH', `/recipes/${recipeId}`, user.id, { title: 'Updated cache-aware bowl' });
+    const deleted = await dispatch('DELETE', `/recipes/${recipeId}`, user.id);
+
+    expect(created.statusCode).toBe(201);
+    expect(updated.statusCode).toBe(200);
+    expect(deleted.statusCode).toBe(200);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenNthCalledWith(1, user.id);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenNthCalledWith(2, user.id);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenNthCalledWith(3, user.id);
+  });
+
   it('ignores body-side tenantId spoofing on recipe create and update', async () => {
     const user = getOrCreateUser(21026, { username: 'cook26' });
 
@@ -458,6 +594,53 @@ describe('Cooking API — shopping list item updates', () => {
     expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
     expect(({} as any).polluted).toBeUndefined();
     expect(created.body.data.recipe.ingredients[0].name).toBe('Rice');
+  });
+
+  it('rejects malformed recipe ingredient elements on create', async () => {
+    const user = getOrCreateUser(210271, { username: 'cook27-create-validation' });
+    const malformedIngredientLists = [
+      [null],
+      ['Rice'],
+      [{}],
+      [{ name: 'Rice', quantity: '100' }],
+      [{ name: '   ', quantity: '100', unit: 'g' }],
+    ];
+
+    for (const ingredients of malformedIngredientLists) {
+      const created = await dispatch('POST', '/recipes', user.id, {
+        title: 'Malformed ingredient probe',
+        ingredients,
+      });
+
+      expect(created.statusCode, JSON.stringify(created.body)).toBe(400);
+      expect(created.body).toMatchObject({
+        ok: false,
+        error: { code: 'BAD_REQUEST' },
+      });
+      expect(JSON.stringify(created.body)).not.toContain('TypeError');
+    }
+
+    expect(cookingChef.getRecipes(user.id)).toEqual([]);
+  });
+
+  it('rejects malformed recipe ingredient elements on update without changing the recipe', async () => {
+    const user = getOrCreateUser(210272, { username: 'cook27-update-validation' });
+    const recipe = addRecipe(user.id, 'Safe bowl', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ]);
+
+    const updated = await dispatch('PATCH', `/recipes/${recipe.id}`, user.id, {
+      ingredients: [{ name: 'Rice', quantity: 100, unit: 'g' }],
+    });
+
+    expect(updated.statusCode, JSON.stringify(updated.body)).toBe(400);
+    expect(updated.body).toMatchObject({
+      ok: false,
+      error: { code: 'BAD_REQUEST' },
+    });
+    expect(getRecipeById(user.id, recipe.id)?.ingredients).toEqual([
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ]);
   });
 
   it('handles reasonably oversized recipe text without crashing or leaking internals', async () => {
@@ -511,6 +694,119 @@ describe('Cooking API — shopping list item updates', () => {
     expect(deleted.statusCode).toBe(200);
     expect(deleted.body.data.deleted).toBe(true);
     expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('returns a client error for invalid pantry expiry dates without persisting them', async () => {
+    const user = getOrCreateUser(210141, { username: 'cook14-invalid-expiry' });
+
+    const created = await dispatch('POST', '/pantry/items', user.id, {
+      name: 'Milk',
+      expiresAt: '2026-02-30',
+    }, 101);
+
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(400);
+    expect(created.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'expiresAt must be a valid YYYY-MM-DD date',
+      },
+    });
+    expect(cookingChef.getPantryItems(user.id, { tenantId: 101, includeExpired: true })).toEqual([]);
+  });
+
+  it('returns a client error for an invalid pantry expiry PATCH without changing the item', async () => {
+    const user = getOrCreateUser(210143, { username: 'cook14-invalid-expiry-patch' });
+    const item = upsertPantryItem(user.id, { name: 'Milk', expiresAt: '2026-03-01' }, 101);
+
+    const updated = await dispatch('PATCH', `/pantry/items/${item.id}`, user.id, {
+      expiresAt: '2026-02-30',
+    }, 101);
+
+    expect(updated.statusCode, JSON.stringify(updated.body)).toBe(400);
+    expect(updated.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'expiresAt must be a valid YYYY-MM-DD date',
+    });
+    expect(cookingChef.getPantryItemById(user.id, item.id, 101)?.expires_at).toBe('2026-03-01');
+  });
+
+  it('rejects invalid pantry status writes without silently normalizing them', async () => {
+    const user = getOrCreateUser(210144, { username: 'cook14-invalid-status' });
+    const invalidFreshness = await dispatch('POST', '/pantry/items', user.id, {
+      name: 'Milk',
+      freshnessStatus: 'recent',
+    }, 101);
+    const invalidAvailability = await dispatch('POST', '/pantry/items', user.id, {
+      name: 'Rice',
+      availabilityStatus: 'removed',
+    }, 101);
+
+    expect(invalidFreshness.statusCode).toBe(400);
+    expect(invalidFreshness.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'freshnessStatus must be fresh, unknown, use_soon, or expired',
+    });
+    expect(invalidAvailability.statusCode).toBe(400);
+    expect(invalidAvailability.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'availabilityStatus must be available, low_stock, or unavailable',
+    });
+    expect(cookingChef.getPantryItems(user.id, { tenantId: 101, includeExpired: true })).toEqual([]);
+  });
+
+  it('rejects a pantry PATCH containing only unsupported fields', async () => {
+    const user = getOrCreateUser(210145, { username: 'cook14-unknown-field' });
+    const item = upsertPantryItem(user.id, { name: 'Rice', quantity: '1' }, 101);
+
+    const response = await dispatch('PATCH', `/pantry/items/${item.id}`, user.id, {
+      unexpected: 'value',
+    }, 101);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'at least one supported pantry field must be provided',
+    });
+    expect(cookingChef.getPantryItemById(user.id, item.id, 101)?.quantity).toBe('1');
+  });
+
+  it('rejects a meal-plan recipe link outside the active scope as a client error', async () => {
+    const user = getOrCreateUser(210142, { username: 'cook14-invalid-recipe-link' });
+    const foreignRecipe = addRecipe(user.id, 'Tenant A meal', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+
+    const response = await dispatch('POST', '/meal-plan', user.id, {
+      date: '2026-04-13',
+      mealType: 'dinner',
+      title: 'Cross-tenant meal',
+      recipeId: foreignRecipe.id,
+    }, 202);
+
+    expect(response.statusCode, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'recipeId must reference an active recipe in the current tenant scope',
+    });
+    expect(getMealPlan(user.id, '2026-04-13', '2026-04-13', 202)).toEqual([]);
+  });
+
+  it('returns a stable conflict when deleting a recipe used by an active meal plan', async () => {
+    const user = getOrCreateUser(210144, { username: 'cook14-recipe-in-use' });
+    const recipe = addRecipe(user.id, 'Protected meal', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ], { tenantId: 101 });
+    setMealPlan(user.id, '2999-04-13', 'dinner', 'Protected meal', { recipeId: recipe.id, tenantId: 101 });
+
+    const response = await dispatch('DELETE', `/recipes/${recipe.id}`, user.id, undefined, 101);
+
+    expect(response.statusCode, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: 'COOKING_RECIPE_IN_USE',
+      message: 'Recipe is used by an active meal plan',
+    });
+    expect(getRecipeById(user.id, recipe.id, 101)).not.toBeNull();
   });
 
   it('does not expose same-user pantry items across tenants', async () => {
@@ -747,6 +1043,22 @@ describe('Cooking API — shopping list item updates', () => {
     expect(mockInvalidateCookingDerivedCaches).not.toHaveBeenCalled();
   });
 
+  it('returns a client error for an impossible substitution date', async () => {
+    const user = getOrCreateUser(210185, { username: 'cook18-invalid-date' });
+
+    const response = await dispatch('POST', '/meal-plan/substitutions/suggest', user.id, {
+      date: '2026-02-30',
+      mealType: 'dinner',
+      originalIngredient: 'Peanuts',
+    }, 101);
+
+    expect(response.statusCode, JSON.stringify(response.body)).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('COOKING_SUBSTITUTION_INVALID_DATE'),
+    });
+  });
+
   it('does not suggest substitutions across tenant scope', async () => {
     const user = getOrCreateUser(210184, { username: 'cook18d' });
     const recipe = addRecipe(user.id, 'Peanut noodles', [
@@ -960,6 +1272,36 @@ describe('Cooking API — shopping list item updates', () => {
     spy.mockRestore();
   });
 
+  it('keeps shopping-list reads and item updates compatible with any date in the requested week', async () => {
+    const user = getOrCreateUser(210021, { username: 'cook-week-date' });
+    const recipe = addRecipe(user.id, 'Week-date rice', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Week-date rice', { recipeId: recipe.id });
+    generateShoppingList(user.id, '2026-04-13');
+
+    const read = await dispatch('GET', '/shopping-list?week=2026-04-19', user.id);
+    expect(read.statusCode).toBe(200);
+    expect(read.body.data.list).toMatchObject({ week_start: '2026-04-13' });
+
+    const patched = await dispatch('PATCH', '/shopping-list/items/0', user.id, {
+      week: '2026-04-15',
+      checked: true,
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.body.data.list).toMatchObject({
+      week_start: '2026-04-13',
+      items: [expect.objectContaining({ checked: true })],
+    });
+
+    const invalid = await dispatch('GET', '/shopping-list?week=2026-02-30', user.id);
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'week must be a valid YYYY-MM-DD date',
+    });
+  });
+
   it('returns 404 when the week has no shopping list', async () => {
     const user = getOrCreateUser(21002, { username: 'cook2' });
 
@@ -1030,29 +1372,43 @@ describe('Cooking API — shopping list item updates', () => {
     expect(tenantB.body.data.meals[0].adaptation).toBeNull();
   });
 
-  it('suppresses wearable readiness adaptation for non-default tenant scope', async () => {
+  it('keeps meal-plan reads provider-free and uses persisted readiness signals', async () => {
     const user = getOrCreateUser(210042, { username: 'cook4wearable' });
     const today = DateTime.now().setZone('Europe/Lisbon').toISODate()!;
     mockGetWearableReadiness.mockResolvedValue({ readinessScore: 30 });
     setMealPlan(user.id, today, 'dinner', 'Default tenant dinner', { tenantId: user.id });
-    setMealPlan(user.id, today, 'dinner', 'Tenant B dinner', { tenantId: 202 });
+    publishLowReadiness({ userId: user.id, tenantId: user.id, score: 34 });
 
     const defaultTenant = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id);
 
     expect(defaultTenant.statusCode).toBe(200);
     expect(defaultTenant.body.data.meals[0].adaptation).toMatchObject({
       kind: 'recovery',
-      readinessScore: 30,
+      readinessScore: 34,
       reasonCodes: ['LOW_READINESS'],
     });
-    expect(mockGetWearableReadiness).toHaveBeenCalledTimes(1);
-
-    mockGetWearableReadiness.mockClear();
-    const tenantB = await dispatch('GET', `/meal-plan?from=${today}&to=${today}`, user.id, undefined, 202);
-
-    expect(tenantB.statusCode).toBe(200);
-    expect(tenantB.body.data.meals[0].adaptation).toBeNull();
     expect(mockGetWearableReadiness).not.toHaveBeenCalled();
+  });
+
+  it('uses the authenticated user timezone for today meal adaptations', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-17T07:30:00.000Z'));
+    try {
+      const user = getOrCreateUser(210043, { username: 'cook4-honolulu' });
+      testDb.prepare('UPDATE users SET timezone = ? WHERE id = ?').run('Pacific/Honolulu', user.id);
+      setMealPlan(user.id, '2026-04-16', 'dinner', 'Honolulu local dinner', { tenantId: user.id });
+      publishHighLegLoad({ userId: user.id, tenantId: user.id, source: 'gym', rpe: 9 });
+
+      const response = await dispatch('GET', '/meal-plan?from=2026-04-16&to=2026-04-16', user.id);
+
+      expect(response.statusCode, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data.meals[0].adaptation).toMatchObject({
+        kind: 'protein_up',
+        reasonCodes: ['HIGH_LEG_LOAD'],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not invent meal adaptations without training context', async () => {
@@ -1180,6 +1536,20 @@ describe('Cooking API — shopping list item updates', () => {
     expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id);
   });
 
+  it('uses the containing Monday shopping list when assessing a mid-week meal-plan range', async () => {
+    const user = getOrCreateUser(210061, { username: 'cook6-midweek' });
+    const recipe = addRecipe(user.id, 'Tuesday bowl', [
+      { name: 'Rice', quantity: '100', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-14', 'dinner', 'Tuesday bowl', { recipeId: recipe.id });
+    generateShoppingList(user.id, '2026-04-13');
+
+    const response = await dispatch('GET', '/meal-plan?from=2026-04-14&to=2026-04-14', user.id);
+
+    expect(response.statusCode, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data.assessment.groceryCoherence.status).not.toBe('missing');
+  });
+
   it('classifies portuguese ingredient names into useful aisles', async () => {
     const user = getOrCreateUser(21007, { username: 'cook7' });
     const recipe = addRecipe(user.id, 'Jantar PT', [
@@ -1228,6 +1598,7 @@ describe('Cooking API — shopping list item updates', () => {
   });
 
   it('leaves notification and calendar-cache completion to the durable provider-sync event', async () => {
+    freezeBeforePrepWeek();
     const user = getOrCreateUser(21012, { username: 'cook12' });
     const recipe = addRecipe(user.id, 'Prep chicken', [
       { name: 'Chicken', quantity: '500', unit: 'g' },
@@ -1286,6 +1657,7 @@ describe('Cooking API — shopping list item updates', () => {
   });
 
   it('returns the durable existing mapping when an idempotent retry has no eligible sync work', async () => {
+    freezeBeforePrepWeek();
     const user = getOrCreateUser(21016, { username: 'cook16' });
     const recipe = addRecipe(user.id, 'Prep lentils', [
       { name: 'Lentils', quantity: '500', unit: 'g' },
@@ -1333,6 +1705,7 @@ describe('Cooking API — shopping list item updates', () => {
   });
 
   it('fails safely without notifying when a provider create outcome requires reconciliation', async () => {
+    freezeBeforePrepWeek();
     const user = getOrCreateUser(21017, { username: 'cook17' });
     const recipe = addRecipe(user.id, 'Prep tofu', [
       { name: 'Tofu', quantity: '500', unit: 'g' },
@@ -1403,6 +1776,7 @@ describe('Cooking API — shopping list item updates', () => {
   });
 
   it('checks the authenticated user calendar before creating a meal prep event', async () => {
+    freezeBeforePrepWeek();
     const user = getOrCreateUser(21014, { username: 'cook14' });
     const recipe = addRecipe(user.id, 'Prep rice', [
       { name: 'Rice', quantity: '500', unit: 'g' },
@@ -1426,6 +1800,7 @@ describe('Cooking API — shopping list item updates', () => {
   });
 
   it('refuses an unavailable provider preference before Secretary persistence', async () => {
+    freezeBeforePrepWeek();
     const user = getOrCreateUser(21018, { username: 'cook18' });
     const recipe = addRecipe(user.id, 'Prep oats', [
       { name: 'Oats', quantity: '500', unit: 'g' },
@@ -1456,6 +1831,7 @@ describe('Cooking API — shopping list item updates', () => {
   });
 
   it('fails closed when meal prep scheduling cannot verify live calendar availability', async () => {
+    freezeBeforePrepWeek();
     const user = getOrCreateUser(21015, { username: 'cook15' });
     const recipe = addRecipe(user.id, 'Prep beans', [
       { name: 'Beans', quantity: '500', unit: 'g' },

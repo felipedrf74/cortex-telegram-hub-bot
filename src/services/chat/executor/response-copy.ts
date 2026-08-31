@@ -144,15 +144,49 @@ export function successCopy(
   }
   if (first?.step.action === 'cooking_grocery_list') {
     const itemCount = Number((first.result as any)?.itemCount ?? 0);
+    const weekStart = String((first.result as any)?.weekStart ?? (first.step.args as any).weekStart ?? '');
+    const parsedNow = DateTime.fromISO(input.nowIso ?? new Date().toISOString(), { setZone: true }).setZone(input.timezone);
+    const currentWeekStart = parsedNow.isValid ? parsedNow.startOf('week').toISODate() : null;
+    const weekLabel = weekStart && weekStart !== currentWeekStart
+      ? (input.locale?.startsWith('pt') ? `da semana de ${weekStart}` : `for the week of ${weekStart}`)
+      : (input.locale?.startsWith('pt') ? 'desta semana' : 'for this week');
     return input.locale?.startsWith('pt')
-      ? `Feito — gerei a lista de compras desta semana com ${itemCount} item(ns) e verifiquei a gravação.`
-      : `Done — I generated this week's grocery list with ${itemCount} item(s) and verified it was saved.`;
+      ? `Feito — gerei a lista de compras ${weekLabel} com ${itemCount} item(ns) e verifiquei a gravação.`
+      : `Done — I generated the grocery list ${weekLabel} with ${itemCount} item(s) and verified it was saved.`;
   }
   if (first?.step.action === 'cooking_meal_plan') {
     const args = first.step.args as any;
-    return input.locale?.startsWith('pt')
+    const issues = Array.isArray((first.result as any)?.meal?.issues)
+      ? (first.result as any).meal.issues as Array<{ message?: unknown }>
+      : [];
+    const warning = issues
+      .map((issue) => typeof issue?.message === 'string' ? issue.message.trim() : '')
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(' ');
+    const success = input.locale?.startsWith('pt')
       ? `Feito — guardei “${args.title}” para ${args.mealType} em ${args.date} e verifiquei o plano.`
       : `Done — I saved “${args.title}” for ${args.mealType} on ${args.date} and verified the plan.`;
+    if (!warning) return success;
+    return input.locale?.startsWith('pt')
+      ? `${success} Atenção antes de cozinhar: ${warning}`
+      : `${success} Check before cooking: ${warning}`;
+  }
+  if (first?.step.action === 'cooking_delete_recipe') {
+    return input.locale?.startsWith('pt')
+      ? `Feito — apaguei a receita ${String((first.result as any)?.recipeId ?? (first.step.args as any).recipeId)} e verifiquei a remoção.`
+      : `Done — I deleted recipe ${String((first.result as any)?.recipeId ?? (first.step.args as any).recipeId)} and verified its removal.`;
+  }
+  if (first?.step.action === 'cooking_delete_meal') {
+    const result = first.result as any;
+    return input.locale?.startsWith('pt')
+      ? `Feito — apaguei ${result?.mealType ?? (first.step.args as any).mealType} de ${result?.date ?? (first.step.args as any).date} e verifiquei a remoção.`
+      : `Done — I deleted ${result?.mealType ?? (first.step.args as any).mealType} on ${result?.date ?? (first.step.args as any).date} and verified its removal.`;
+  }
+  if (first?.step.action === 'cooking_delete_pantry_item') {
+    return input.locale?.startsWith('pt')
+      ? `Feito — apaguei o item ${String((first.result as any)?.itemId ?? (first.step.args as any).itemId)} da despensa e verifiquei a remoção.`
+      : `Done — I deleted pantry item ${String((first.result as any)?.itemId ?? (first.step.args as any).itemId)} and verified its removal.`;
   }
   if (first?.step.action === 'cooking_substitute_ingredient') {
     const result = first.result as any;
@@ -165,9 +199,82 @@ export function successCopy(
   }
   if (first?.step.action === 'cooking_meal_support' || first?.step.action === 'cooking_fueling_support') {
     const result = first.result as any;
+    const plannedMealCount = Array.isArray(result?.plannedMeals)
+      ? result.plannedMeals.length
+      : Number(result?.plannedMeals ?? 0);
+    const guidance = Array.isArray(result?.guidance)
+      ? result.guidance.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 4)
+      : [];
+    const shoppingItems = Array.isArray(result?.shoppingItems)
+      ? result.shoppingItems
+        .map((item: unknown) => item && typeof item === 'object' && typeof (item as any).name === 'string' ? (item as any).name.trim() : '')
+        .filter(Boolean)
+        .slice(0, 12)
+      : [];
+    const plannedTitles = Array.isArray(result?.plannedMeals)
+      ? result.plannedMeals
+        .map((meal: unknown) => meal && typeof meal === 'object' && typeof (meal as any).title === 'string' ? (meal as any).title.trim() : '')
+        .filter(Boolean)
+        .slice(0, 8)
+      : [];
+    const suggestionTitles = Array.isArray(result?.suggestions)
+      ? result.suggestions
+        .map((suggestion: unknown) => suggestion && typeof suggestion === 'object' && typeof (suggestion as any).title === 'string' ? (suggestion as any).title.trim() : '')
+        .filter(Boolean)
+        .slice(0, 3)
+      : [];
+    const degradedNote = result?.degraded === true
+      ? (input.locale?.startsWith('pt') ? ' Algumas fontes locais estão indisponíveis ou incompletas.' : ' Some local sources are unavailable or incomplete.')
+      : '';
+    const shoppingSafetyConflicts = Number(result?.shoppingSafetyConflicts ?? 0);
+    const mealSafetyConflicts = Number(result?.mealSafetyConflicts ?? 0);
+    const mealSafetyUnverified = Number(result?.mealSafetyUnverified ?? 0);
+    const safetyNotes: string[] = [];
+    if (shoppingSafetyConflicts > 0) {
+      safetyNotes.push(input.locale?.startsWith('pt')
+        ? `${shoppingSafetyConflicts} item(ns) da lista em conflito foram omitidos devido às preferências de segurança atuais.`
+        : `${shoppingSafetyConflicts} conflicting shopping item(s) were omitted because of current safety preferences.`);
+    }
+    if (mealSafetyConflicts > 0) {
+      safetyNotes.push(input.locale?.startsWith('pt')
+        ? `${mealSafetyConflicts} refeição(ões) guardada(s) em conflito foram omitida(s) devido às preferências de segurança atuais.`
+        : `${mealSafetyConflicts} conflicting saved meal(s) were omitted because of current safety preferences.`);
+    }
+    if (mealSafetyUnverified > 0) {
+      safetyNotes.push(input.locale?.startsWith('pt')
+        ? `${mealSafetyUnverified} refeição(ões) guardada(s) foram omitida(s) porque a segurança não pôde ser verificada.`
+        : `${mealSafetyUnverified} saved meal(s) were omitted because their safety could not be verified.`);
+    }
+    const safetyNote = safetyNotes.length > 0 ? ` ${safetyNotes.join(' ')}` : '';
+    const guidanceCopy = guidance.length > 0
+      ? `${input.locale?.startsWith('pt') ? ' Orientação' : ' Guidance'}: ${guidance.join(' ')}`
+      : '';
+    const rangeLabel = result?.requestedRange?.scope === 'week'
+      ? (input.locale?.startsWith('pt') ? 'na semana pedida' : 'for the requested week')
+      : (input.locale?.startsWith('pt') ? `em ${result?.requestedDate ?? 'a data pedida'}` : `on ${result?.requestedDate ?? 'the requested date'}`);
+    if ((first.step.args as any).supportMode === 'shopping_list_read') {
+      const itemCopy = shoppingItems.length > 0
+        ? shoppingItems.join(', ')
+        : input.locale?.startsWith('pt') ? 'nenhum item guardado' : 'no saved items';
+      return input.locale?.startsWith('pt')
+        ? `Lista de compras da semana pedida: ${itemCopy}.${degradedNote}${safetyNote}`
+        : `Shopping list for the requested week: ${itemCopy}.${degradedNote}${safetyNote}`;
+    }
+    if (first.step.action === 'cooking_meal_support') {
+      if (plannedTitles.length > 0) {
+        return input.locale?.startsWith('pt')
+          ? `Refeições guardadas ${rangeLabel}: ${plannedTitles.join(', ')}.${degradedNote}${safetyNote}${guidanceCopy}`
+          : `Saved meals ${rangeLabel}: ${plannedTitles.join(', ')}.${degradedNote}${safetyNote}${guidanceCopy}`;
+      }
+      if (suggestionTitles.length > 0) {
+        return input.locale?.startsWith('pt')
+          ? `Sugestões das suas receitas guardadas ${rangeLabel}: ${suggestionTitles.join(', ')}.${degradedNote}${safetyNote}${guidanceCopy}`
+          : `Suggestions from your saved recipes ${rangeLabel}: ${suggestionTitles.join(', ')}.${degradedNote}${safetyNote}${guidanceCopy}`;
+      }
+    }
     return input.locale?.startsWith('pt')
-      ? `Cozinha: há ${result?.plannedMeals ?? 0} refeição(ões) planeadas e ${result?.shoppingItemCount ?? 0} item(ns) na lista de compras desta semana.`
-      : `Cooking: there are ${result?.plannedMeals ?? 0} planned meal(s) and ${result?.shoppingItemCount ?? 0} shopping item(s) this week.`;
+      ? `Cozinha ${rangeLabel}: há ${plannedMealCount} refeição(ões) planeadas e ${Number(result?.shoppingItemCount ?? 0)} item(ns) na lista de compras.${degradedNote}${safetyNote}${guidanceCopy}`
+      : `Cooking ${rangeLabel}: there are ${plannedMealCount} planned meal(s) and ${Number(result?.shoppingItemCount ?? 0)} shopping item(s).${degradedNote}${safetyNote}${guidanceCopy}`;
   }
   if (first?.step.action === 'finance_summary') {
     const result = first.result as any;
@@ -566,6 +673,26 @@ export function confirmationCopy(plan: ChatActionPlan, input: ChatPlannerInput):
       return `Confirma que queres criar o lembrete “${String(args.message || input.text)}” para ${remindAt.toFormat('dd/LL HH:mm')}?`;
     }
     return `Confirm that you want to create the reminder “${String(args.message || input.text)}” for ${remindAt.toFormat('LLL d, HH:mm')}?`;
+  }
+  if (first?.action === 'cooking_delete_recipe') {
+    const recipeId = String((first.args as any).recipeId);
+    return input.locale?.startsWith('pt')
+      ? `Confirma que queres apagar a receita ${recipeId}?`
+      : `Confirm that you want to delete recipe ${recipeId}?`;
+  }
+  if (first?.action === 'cooking_delete_meal') {
+    const args = first.args as any;
+    const mealType = String(args.mealType);
+    const date = String(args.date);
+    return input.locale?.startsWith('pt')
+      ? `Confirma que queres apagar ${mealType} de ${date}?`
+      : `Confirm that you want to delete ${mealType} on ${date}?`;
+  }
+  if (first?.action === 'cooking_delete_pantry_item') {
+    const itemId = String((first.args as any).itemId);
+    return input.locale?.startsWith('pt')
+      ? `Confirma que queres apagar o item ${itemId} da despensa?`
+      : `Confirm that you want to delete pantry item ${itemId}?`;
   }
   if (first?.action === 'cooking_substitute_ingredient') {
     const args = first.args as any;

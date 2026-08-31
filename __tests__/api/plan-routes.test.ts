@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 import {
   clearTenantScopeAnomaliesForTests,
@@ -12,6 +12,8 @@ const mockSetCacheSWR = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGetUserById = vi.fn();
 const mockGetUserLanguageById = vi.fn();
+const mockGetUserTimezoneById = vi.fn();
+let mockEffectivePlan: 'free' | 'pro' | 'max' | 'owner' = 'max';
 
 function expectCachePrefixesCleared(...prefixes: string[]) {
   const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
@@ -39,7 +41,19 @@ vi.mock('../../src/services/cache-store', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
   getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
 }));
+
+vi.mock('../../src/services/entitlement', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/entitlement')>(
+    '../../src/services/entitlement',
+  );
+  return {
+    ...actual,
+    getEffectiveEntitlement: vi.fn(() => ({ plan: mockEffectivePlan })),
+    entitlementPlanToSkillTier: vi.fn((plan: string) => plan),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -131,6 +145,7 @@ async function dispatch(
 
 describe('plan routes', () => {
   beforeEach(() => {
+    mockEffectivePlan = 'max';
     clearTenantScopeAnomaliesForTests();
     mockComposeWeeklyPlan.mockReset();
     mockComposeDailyBrief.mockReset();
@@ -139,6 +154,7 @@ describe('plan routes', () => {
     mockClearCacheByPrefix.mockReset();
     mockGetUserById.mockReset();
     mockGetUserLanguageById.mockReset();
+    mockGetUserTimezoneById.mockReset();
 
     mockComposeWeeklyPlan.mockResolvedValue({
       weekStart: '2026-04-13',
@@ -213,7 +229,12 @@ describe('plan routes', () => {
     });
     mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
     mockGetUserLanguageById.mockReturnValue('pt-BR');
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
     mockGetCachedSWR.mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('keeps plan routes available even if the old mesh flag is off', async () => {
@@ -238,6 +259,28 @@ describe('plan routes', () => {
     expect(first.headers.ETag).toBeTruthy();
     expect(first.headers['Server-Timing']).toEqual(expect.stringContaining('daily_brief;dur='));
     expect(second.statusCode).toBe(304);
+  });
+
+  it('keys implicit daily and weekly route caches in the authenticated user timezone', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-13T01:00:00.000Z'));
+    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+
+    await dispatch('GET', '/today');
+    await dispatch('GET', '/week');
+
+    expect(mockGetCachedSWR).toHaveBeenCalledWith(
+      'plan:today:u:12:tenant:12:2026-04-12:tz:Pacific/Honolulu:route:pt-br',
+    );
+    expect(mockGetCachedSWR).toHaveBeenCalledWith(
+      'plan:week:u:12:tenant:12:2026-04-06:tz:Pacific/Honolulu:route:pt-br',
+    );
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      timezone: 'Pacific/Honolulu',
+    }));
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      timezone: 'Pacific/Honolulu',
+    }));
   });
 
   it('fails closed on invalid tenant scope before composing the weekly plan', async () => {
@@ -277,12 +320,37 @@ describe('plan routes', () => {
   });
 
   it('requires max tier for the explain route', async () => {
-    mockGetUserById.mockReturnValue({ id: 12, tier: 'pro' });
+    mockEffectivePlan = 'pro';
 
     const response = await dispatch('GET', '/week/explain');
 
     expect(response.statusCode).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('does not attribute every degraded weekly plan to the daily AI cap', async () => {
+    mockComposeWeeklyPlan.mockResolvedValueOnce({
+      weekStart: '2026-04-13',
+      weekEnd: '2026-04-19',
+      generatedAt: '2026-04-14T10:00:00.000Z',
+      variant: 'conservative',
+      degraded: true,
+      gated: { skills: ['cooking'] },
+      garmin_stale: false,
+      conflicts: [],
+      creativeCopy: { headline: '', note: '' },
+      summary: { sessionCount: 0, mealCount: 0, activeConflictCount: 0 },
+      days: [],
+    });
+
+    const response = await dispatch('GET', '/week/explain?weekStart=2026-04-13');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.explanation).toContain('planning sources or generation gates were unavailable');
+    expect(response.body.data.explanation).not.toContain('daily AI cap');
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      timezone: 'Europe/Lisbon',
+    }));
   });
 
   it('returns ETag headers and honors If-None-Match', async () => {
@@ -329,7 +397,7 @@ describe('plan routes', () => {
     expect(response.body.cached).toBe(true);
     expect(response.body.data.creativeCopy.headline).toBe('Cached');
     expect(response.headers.ETag).toBeTruthy();
-    expect(mockGetCachedSWR).toHaveBeenCalledWith('plan:today:u:12:tenant:12:2026-04-14:route:pt-br');
+    expect(mockGetCachedSWR).toHaveBeenCalledWith('plan:today:u:12:tenant:12:2026-04-14:tz:Europe/Lisbon:route:pt-br');
     expect(mockComposeDailyBrief).not.toHaveBeenCalled();
   });
 
@@ -357,9 +425,14 @@ describe('plan routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.cached).toBe(true);
     expect(response.body.data.creativeCopy.headline).toBe('Stale');
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({ userId: 12, tenantId: 12, weekStart: '2026-04-13' });
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-13',
+      timezone: 'Europe/Lisbon',
+    });
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      'plan:week:u:12:tenant:12:2026-04-13:route:pt-br',
+      'plan:week:u:12:tenant:12:2026-04-13:tz:Europe/Lisbon:route:pt-br',
       expect.objectContaining({ weekStart: '2026-04-13' }),
       120,
       600,
@@ -370,9 +443,14 @@ describe('plan routes', () => {
     const response = await dispatch('GET', '/week?weekStart=2026-04-13', { tenantId: 34 });
 
     expect(response.statusCode).toBe(200);
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({ userId: 12, tenantId: 34, weekStart: '2026-04-13' });
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 34,
+      weekStart: '2026-04-13',
+      timezone: 'Europe/Lisbon',
+    });
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      'plan:week:u:12:tenant:34:2026-04-13:route:pt-br',
+      'plan:week:u:12:tenant:34:2026-04-13:tz:Europe/Lisbon:route:pt-br',
       expect.objectContaining({ weekStart: '2026-04-13' }),
       120,
       600,
@@ -405,11 +483,13 @@ describe('plan routes', () => {
     expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
       userId: 12,
       tenantId: 12,
+      timezone: 'Europe/Lisbon',
       syncSignals: true,
     }));
     expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
       userId: 12,
       tenantId: 12,
+      timezone: 'Europe/Lisbon',
     }));
   });
 

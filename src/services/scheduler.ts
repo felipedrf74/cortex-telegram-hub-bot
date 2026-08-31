@@ -76,6 +76,8 @@ import { runWithContext, type RequestSource } from '../utils/request-context';
 import { getOwnerBootstrapTarget } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
+import { composeDailyBrief, type DailyBriefResponse } from './daily-brief-orchestrator';
+import { composeWeeklyPlan, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
@@ -145,7 +147,8 @@ function safeErrorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-type ActiveUserTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'telegramId'>;
+type ActiveUserTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'telegramId'>
+  & Partial<Pick<AgentJobTenantTarget, 'userId'>>;
 
 function registerJob(
   id: string,
@@ -629,9 +632,32 @@ export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
   };
 }
 
-export async function buildDailyBriefingDataForUser(userId: number, tenantId = userId): Promise<DailyBriefingData> {
-  const today = now();
-  const data: DailyBriefingData = {
+export type ScheduledDailyBriefingData = DailyBriefingData & {
+  /** Canonical Cooking slice from `/plan/today`, stored only in the authenticated report document. */
+  planToday?: {
+    date: string;
+    degraded: boolean;
+    cookingGated: boolean;
+    dayHeadline: string;
+    cooking: {
+      headline: string;
+      status: NonNullable<DailyBriefResponse['day']['cooking']>['status'];
+      warningCodes: string[];
+      meals: DailyBriefResponse['day']['meals'];
+    };
+  };
+};
+
+export async function buildDailyBriefingDataForUser(
+  userId: number,
+  tenantId = userId,
+): Promise<ScheduledDailyBriefingData> {
+  const userTimezone = getUserTimezoneById(userId) || config.app.timezone;
+  const today = now().setZone(userTimezone);
+  const todayStart = startOfDay(today);
+  const todayEnd = endOfDay(today);
+  const yesterday = today.minus({ days: 1 });
+  const data: ScheduledDailyBriefingData = {
     date: today.toFormat('cccc, LLLL dd'),
     events: [],
     highPriorityTasks: [],
@@ -644,7 +670,7 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
 
   if (hasConnectedCalendarForUser(userId)) {
     try {
-      const events = await getEvents(startOfDay(), endOfDay(), userId);
+      const events = await getEvents(todayStart, todayEnd, userId);
       data.events = events.map((e) => ({
         summary: e.summary,
         start: e.start,
@@ -654,7 +680,7 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
         /gym|train|run|bike|cycling|workout|strength/i.test(e.summary)
       );
       if (training) {
-        data.training = `${training.summary} at ${formatTime(training.start)}`;
+        data.training = `${training.summary} at ${formatTimeInZone(training.start, userTimezone)}`;
       }
     } catch (err) {
       logger.error({ err, userId }, 'Failed to fetch events for briefing');
@@ -667,16 +693,16 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
       Promise.all([
         taskProvider.getAllPendingTasks(),
         taskProvider.getCompletedTasksInRange(
-          startOfDay(now().minus({ days: 1 })),
-          endOfDay(now().minus({ days: 1 }))
+          startOfDay(yesterday),
+          endOfDay(yesterday),
         ),
       ]),
     );
 
     if (pendingResult.success) {
       const tasks = pendingResult.data;
-      const todayStart = new Date(startOfDay()).getTime();
-      const todayEnd = new Date(endOfDay()).getTime();
+      const todayStartMs = new Date(todayStart).getTime();
+      const todayEndMs = new Date(todayEnd).getTime();
 
       data.highPriorityTasks = tasks
         .filter((t: TodoTask) => t.importance === 'high')
@@ -686,15 +712,15 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
         .filter((t: TodoTask) => {
           if (!t.dueDateTime) return false;
           const due = new Date(t.dueDateTime).getTime();
-          return due >= todayStart && due <= todayEnd;
+          return due >= todayStartMs && due <= todayEndMs;
         })
         .map((t: TodoTask) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
 
       const MAX_OVERDUE_DISPLAY = 20;
       const allOverdue = tasks
-        .filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart)
+        .filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStartMs)
         .map((t: TodoTask) => {
-          const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+          const daysLate = Math.ceil((todayStartMs - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
           return { title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance, daysLate };
         })
         .sort((a: { daysLate: number }, b: { daysLate: number }) => a.daysLate - b.daysLate);
@@ -711,10 +737,10 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
     logger.error({ err, userId }, 'Failed to fetch tasks for briefing');
   }
 
-  const reminders = getRemindersForToday(userId, tenantId, getUserTimezoneById(userId));
+  const reminders = getRemindersForToday(userId, tenantId, userTimezone);
   data.reminders = reminders.map((r) => ({
     message: r.message,
-    time: formatTime(r.remind_at),
+    time: formatTimeInZone(r.remind_at, userTimezone),
   }));
 
   if (isOutlookMailConfiguredForUser(userId)) {
@@ -729,7 +755,59 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
     data.automatedNotifications = [...todayNotifications];
   }
 
+  try {
+    const localDate = today.toISODate()!;
+    const canonicalBrief = await composeDailyBrief({
+      userId,
+      tenantId,
+      date: localDate,
+    });
+    data.planToday = {
+      date: canonicalBrief.date,
+      degraded: canonicalBrief.degraded,
+      cookingGated: canonicalBrief.gated.skills.includes('cooking'),
+      dayHeadline: canonicalBrief.day.headline,
+      cooking: {
+        headline: canonicalBrief.day.cooking?.headline
+          ?? scheduledCookingHeadline(
+            canonicalBrief.day.meals,
+            canonicalBrief.degraded,
+            canonicalBrief.gated.skills.includes('cooking'),
+          ),
+        status: canonicalBrief.day.cooking?.status
+          ?? (canonicalBrief.gated.skills.includes('cooking') ? 'gated' : canonicalBrief.degraded ? 'unavailable' : canonicalBrief.day.meals.length > 0 ? 'ready' : 'empty'),
+        warningCodes: canonicalBrief.day.cooking?.warningCodes ?? [],
+        meals: canonicalBrief.day.meals,
+      },
+    };
+  } catch (err) {
+    // The legacy briefing remains deliverable if planning reads fail. This
+    // additive document field never changes notification copy or policy.
+    logger.warn({ err, userId, tenantId }, 'Daily briefing: canonical Cooking day unavailable');
+  }
+
   return data;
+}
+
+function scheduledCookingHeadline(
+  meals: DailyBriefResponse['day']['meals'],
+  degraded = false,
+  gated = false,
+): string {
+  if (gated) return 'Cooking coordination is gated for this account.';
+  if (meals.length === 0 && degraded) return 'Cooking plan unavailable or incomplete for this day; an empty plan is not assumed.';
+  if (meals.length === 0) return 'No meals planned for this day.';
+  if (meals.length === 1) {
+    const meal = meals[0];
+    const mealType = meal.mealType ? `${meal.mealType.charAt(0).toUpperCase()}${meal.mealType.slice(1)}` : 'Meal';
+    return `${mealType}: ${meal.title}`;
+  }
+  return `${meals.length} meals planned for this day.`;
+}
+
+function formatTimeInZone(value: string, timezone: string): string {
+  const parsed = DateTime.fromISO(value, { setZone: true });
+  return parsed.isValid ? parsed.setZone(timezone).toFormat('HH:mm') : formatTime(value);
 }
 
 /**
@@ -743,11 +821,11 @@ export async function buildDailyBriefingDataForUser(userId: number, tenantId = u
  * Fails soft: a weekly review that loses this section is worth far more than
  * one that fails to build.
  */
-function handledByNexusThisWeek(userId: number): { count: number; highlights: string[] } {
+function handledByNexusThisWeek(userId: number, tenantId = userId): { count: number; highlights: string[] } {
   try {
     const { listHandledByNexusItems } = require('./decision-center');
     const weekStart = now().startOf('week').toISO();
-    const items = (listHandledByNexusItems(userId, userId, 25) as Array<{ title: string; createdAt: string }>)
+    const items = (listHandledByNexusItems(userId, tenantId, 25) as Array<{ title: string; createdAt: string }>)
       .filter((item) => !weekStart || item.createdAt >= weekStart);
     return {
       count: items.length,
@@ -761,7 +839,7 @@ function handledByNexusThisWeek(userId: number): { count: number; highlights: st
   }
 }
 
-export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
+export async function buildWeeklyReviewPayloadForUser(userId: number, tenantId = userId): Promise<{
   message: string;
   summary: string;
   documentJson: Record<string, any>;
@@ -770,8 +848,10 @@ export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
   message += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
   const taskProvider = getTaskProviderForUser(userId);
-  const [todoData, calendarEvents] = await Promise.all([
-    Promise.resolve(runWithContext({ source: 'cron:weekly_review', userId }, async () =>
+  const timezone = getUserTimezoneById(userId);
+  const weekStart = now().setZone(timezone).startOf('week').toISODate()!;
+  const [todoData, calendarEvents, cookingPlan] = await Promise.all([
+    Promise.resolve(runWithContext({ source: 'cron:weekly_review', userId, tenantId }, async () =>
       Promise.all([
         taskProvider.getCompletedTasksInRange(startOfWeek(), endOfWeek()),
         taskProvider.getAllPendingTasks(),
@@ -786,6 +866,10 @@ export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
           return [] as any[];
         })
       : Promise.resolve([] as any[]),
+    composeWeeklyPlan({ userId, tenantId, weekStart }).catch((err) => {
+      logger.warn({ err, userId, tenantId }, 'Weekly review: canonical Cooking plan unavailable');
+      return null;
+    }),
   ]);
 
   if (todoData) {
@@ -814,11 +898,18 @@ export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
     message += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
   }
 
+  if (cookingPlan) {
+    const cookingGated = cookingPlan.gated.skills.includes('cooking');
+    message += cookingGated
+      ? '\n🍳 Cooking coordination is gated for this account.\n'
+      : `\n🍳 Meals planned: ${cookingPlan.summary.mealCount}\n`;
+  }
+
   // "What Nexus handled without you" — the only slot in the product that
   // demonstrates value without asking for anything. Costs no new producer:
   // the handled-by-Nexus ledger is already written on every auto-resolved
   // decision and, until now, was read only by the Decision Center overview.
-  const handled = handledByNexusThisWeek(userId);
+  const handled = handledByNexusThisWeek(userId, tenantId);
   if (handled.count > 0) {
     message += `\n🤖 Handled without you: ${handled.count}\n`;
     for (const line of handled.highlights) message += `- ${escapeHtml(line)}\n`;
@@ -830,6 +921,7 @@ export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
     meetingsCount: calendarEvents.length,
     handledByNexusCount: handled.count,
     handledByNexusHighlights: handled.highlights,
+    cooking: cookingPlan ? weeklyCookingReviewProjection(cookingPlan) : null,
   };
   if (todoData) {
     const [completedResult, pendingResult] = todoData;
@@ -850,6 +942,23 @@ export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
     message: message.trim(),
     summary: `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd')}`,
     documentJson,
+  };
+}
+
+function weeklyCookingReviewProjection(plan: WeeklyPlanResponse): Record<string, unknown> {
+  return {
+    weekStart: plan.weekStart,
+    weekEnd: plan.weekEnd,
+    degraded: plan.degraded,
+    gated: plan.gated.skills.includes('cooking'),
+    mealCount: plan.summary.mealCount,
+    days: plan.days.map((day) => ({
+      date: day.date,
+      status: day.cooking?.status ?? 'unavailable',
+      headline: day.cooking?.headline ?? 'Cooking plan unavailable for this day.',
+      warningCodes: day.cooking?.warningCodes ?? [],
+      meals: day.meals,
+    })),
   };
 }
 
@@ -3749,13 +3858,14 @@ export async function sendCoachBriefings(): Promise<void> {
 }
 
 export async function runEndOfDaySummaryForTarget(target: ActiveUserTarget): Promise<void> {
-  const report = await buildEndOfDaySummaryForUser(target.tenantId);
+  const userId = target.userId ?? target.tenantId;
+  const report = await buildEndOfDaySummaryForUser(userId);
   if (!report) return;
 
   // Store durable evening report
   try {
     await storeAndPushReport({
-      userId: target.tenantId,
+      userId,
       type: 'evening_summary' as const,
       title: 'End-of-day summary',
       summary: report.summary,
@@ -3764,17 +3874,18 @@ export async function runEndOfDaySummaryForTarget(target: ActiveUserTarget): Pro
       pushCategory: 'evening_summary',
     });
   } catch (err) {
-    logger.debug({ err, userId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
+    logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
   }
 }
 
 export async function sendDailyBriefingForTarget(target: ActiveUserTarget): Promise<void> {
-  const data = await buildDailyBriefingDataForUser(target.tenantId, target.tenantId);
+  const userId = target.userId ?? target.tenantId;
+  const data = await buildDailyBriefingDataForUser(userId, target.tenantId);
 
   // ── Store durable report + push (April 2026) ────────────────────
   try {
     await storeAndPushReport({
-      userId: target.tenantId,
+      userId,
       type: 'morning_briefing' as const,
       title: `☀️ ${data.date}`,
       summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
@@ -3783,7 +3894,7 @@ export async function sendDailyBriefingForTarget(target: ActiveUserTarget): Prom
       pushCategory: 'morning_briefing',
     });
   } catch (err) {
-    logger.debug({ err, userId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
+    logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
   }
 }
 
@@ -3801,12 +3912,13 @@ function isChatCoreV2AutoRevertEvalCronEnabled(env: NodeJS.ProcessEnv = process.
   return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'no';
 }
 
-async function sendWeeklyReviewForTarget(target: ActiveUserTarget): Promise<void> {
-  const payload = await buildWeeklyReviewPayloadForUser(target.tenantId);
+export async function sendWeeklyReviewForTarget(target: ActiveUserTarget): Promise<void> {
+  const userId = target.userId ?? target.tenantId;
+  const payload = await buildWeeklyReviewPayloadForUser(userId, target.tenantId);
   // Store durable report + push
   try {
     await storeAndPushReport({
-      userId: target.tenantId,
+      userId,
       type: 'weekly_review' as const,
       title: '📊 Week in Review',
       summary: payload.summary,
@@ -3815,7 +3927,7 @@ async function sendWeeklyReviewForTarget(target: ActiveUserTarget): Promise<void
       pushCategory: 'weekly_review',
     });
   } catch (err) {
-    logger.debug({ err, userId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
+    logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
   }
 }
 

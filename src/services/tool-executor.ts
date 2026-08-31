@@ -347,6 +347,28 @@ function disabledRawTrainingWriterResult(toolName: string): {
   };
 }
 
+function cookingToolValidationFailure(code: string, error: string): {
+  success: false;
+  code: string;
+  error: string;
+} {
+  return { success: false, code, error };
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function isOptionalBoundedInteger(value: unknown, maximum: number): boolean {
+  return value === undefined || (isPositiveSafeInteger(value) && value <= maximum);
+}
+
+function isOptionalConfidence(value: unknown): boolean {
+  return value === undefined
+    || value === null
+    || (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
 export async function executeToolCall(
   toolName: string,
   input: Record<string, any>,
@@ -1336,11 +1358,18 @@ export async function executeToolCall(
           cookTime: input.cook_time_min, servings: input.servings, tags: input.tags,
           tenantId: scope.tenantId,
         });
+        invalidateCookingDerivedCaches(uid);
         return { success: true, id: recipe.id, title: recipe.title };
       }
       case 'cooking_get_recipes': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (!isOptionalBoundedInteger(input.limit, 100)) {
+          return cookingToolValidationFailure(
+            'COOKING_RECIPE_INVALID_LIMIT',
+            'limit must be an integer between 1 and 100',
+          );
+        }
         const uid = scope.userId;
         return cookingChef.getRecipes(uid, {
           tags: input.tags,
@@ -1352,12 +1381,26 @@ export async function executeToolCall(
       case 'cooking_delete_recipe': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (!isPositiveSafeInteger(input.recipe_id)) {
+          return cookingToolValidationFailure(
+            'COOKING_RECIPE_INVALID_ID',
+            'recipe_id must be a positive integer',
+          );
+        }
         const uid = scope.userId;
-        return cookingChef.deleteRecipe(uid, input.recipe_id, scope.tenantId) ? { success: true } : { error: 'Recipe not found' };
+        const deleted = cookingChef.deleteRecipe(uid, input.recipe_id, scope.tenantId);
+        if (deleted) invalidateCookingDerivedCaches(uid);
+        return deleted ? { success: true } : { error: 'Recipe not found' };
       }
       case 'cooking_upsert_pantry_item': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (!isOptionalConfidence(input.confidence)) {
+          return cookingToolValidationFailure(
+            'COOKING_PANTRY_INVALID_CONFIDENCE',
+            'confidence must be a number between 0 and 1',
+          );
+        }
         const uid = scope.userId;
         const item = cookingChef.upsertPantryItem(uid, {
           name: input.name,
@@ -1377,6 +1420,12 @@ export async function executeToolCall(
       case 'cooking_get_pantry': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (!isOptionalBoundedInteger(input.limit, 250)) {
+          return cookingToolValidationFailure(
+            'COOKING_PANTRY_INVALID_LIMIT',
+            'limit must be an integer between 1 and 250',
+          );
+        }
         const uid = scope.userId;
         return cookingChef.getPantryItems(uid, {
           tenantId: scope.tenantId,
@@ -1389,6 +1438,12 @@ export async function executeToolCall(
       case 'cooking_delete_pantry_item': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (!isPositiveSafeInteger(input.item_id)) {
+          return cookingToolValidationFailure(
+            'COOKING_PANTRY_INVALID_ID',
+            'item_id must be a positive integer',
+          );
+        }
         const uid = scope.userId;
         const deleted = cookingChef.deletePantryItem(uid, input.item_id, scope.tenantId);
         if (deleted) invalidateCookingDerivedCaches(uid);
@@ -1397,6 +1452,12 @@ export async function executeToolCall(
       case 'cooking_set_preference': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
+        if (!isOptionalConfidence(input.confidence)) {
+          return cookingToolValidationFailure(
+            'COOKING_PREFERENCE_INVALID_CONFIDENCE',
+            'confidence must be a number between 0 and 1',
+          );
+        }
         const uid = scope.userId;
         try {
           const memory = cookingPreferences.setCookingPreferenceMemory(uid, {
@@ -1415,8 +1476,9 @@ export async function executeToolCall(
             freshness_status: memory.freshnessStatus,
           };
         } catch (err) {
-          const message = err instanceof Error ? err.message : 'Invalid cooking preference';
-          return { error: message };
+          const inputError = cookingToolInputError(err);
+          if (inputError) return inputError;
+          return { error: 'Invalid cooking preference' };
         }
       }
       case 'cooking_get_preferences': {
@@ -1433,7 +1495,13 @@ export async function executeToolCall(
           recipeId: input.recipe_id, notes: input.notes, tenantId: scope.tenantId,
         });
         invalidateCookingDerivedCaches(uid);
-        return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
+        return {
+          success: true,
+          date: meal.date,
+          meal_type: meal.meal_type,
+          title: meal.title,
+          ...(meal.issues?.length ? { issues: meal.issues } : {}),
+        };
       }
       case 'cooking_get_meal_plan': {
         const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
@@ -1474,8 +1542,46 @@ export async function executeToolCall(
     if (err instanceof TrainingPlanRevisionError) {
       return { success: false, error: err.message, code: err.code };
     }
+    if (err instanceof cookingChef.CookingRecipeDeleteConflictError) {
+      return {
+        success: false,
+        error: 'Recipe is used by an active meal plan',
+        code: 'COOKING_RECIPE_IN_USE',
+      };
+    }
+    const cookingInputError = cookingToolInputError(err);
+    if (cookingInputError) return cookingInputError;
     return { error: 'Tool execution failed' };
   }
+}
+
+function cookingToolInputError(err: unknown): { success: false; error: string; code: string } | null {
+  const message = err instanceof Error ? err.message : '';
+  const code = message.split(':', 1)[0] ?? '';
+  if (!code.startsWith('COOKING_RECIPE_INVALID')
+      && !code.startsWith('COOKING_MEAL_PLAN_INVALID')
+      && !code.startsWith('COOKING_PREFERENCE_INVALID')
+      && !code.startsWith('COOKING_SUBSTITUTION_INVALID')
+      && code !== 'COOKING_SUBSTITUTION_NOOP'
+      && code !== 'COOKING_SAFETY_BLOCKED'
+      && code !== 'COOKING_MEAL_PLAN_RECIPE_NOT_FOUND'
+      && code !== 'COOKING_SHOPPING_LIST_INVALID_WEEK_START'
+      && code !== 'COOKING_SHOPPING_LIST_INVALID_WEEK_DATE'
+      && !code.startsWith('COOKING_PANTRY_INVALID')) {
+    return null;
+  }
+  const error = code === 'COOKING_MEAL_PLAN_RECIPE_NOT_FOUND'
+    ? 'recipe_id must reference an active recipe in the current tenant scope'
+    : code === 'COOKING_SAFETY_BLOCKED'
+      ? 'Cooking item conflicts with a saved cooking safety preference'
+      : code === 'COOKING_SHOPPING_LIST_INVALID_WEEK_START'
+        ? 'week_start must be a valid Monday in YYYY-MM-DD format'
+        : code === 'COOKING_SHOPPING_LIST_INVALID_WEEK_DATE'
+          ? 'week_start must be a valid YYYY-MM-DD date'
+        : code === 'COOKING_PANTRY_INVALID_EXPIRY'
+          ? 'expires_at must be a valid YYYY-MM-DD date'
+          : message;
+  return { success: false, error, code };
 }
 
 /**

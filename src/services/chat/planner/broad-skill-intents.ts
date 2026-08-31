@@ -6,7 +6,7 @@ import { foldCalendarText } from '../../calendar-natural-language-parser';
 import { messageHasActionCandidate, selectRegistrySubsetForMessage } from '../registry';
 import { parseConnectionsActionStep } from '../../skills/connections/parser';
 import { parseContentActionStep } from '../../skills/content/parser';
-import { parseCookingActionStep } from '../../skills/cooking/parser';
+import { isCookingLegacyToolIntent, parseCookingActionStep } from '../../skills/cooking/parser';
 import { parseDecisionActionStep } from '../../skills/decision_center/parser';
 import { parseFinanceActionStep } from '../../skills/finance/parser';
 import { parseMailActionStep } from '../../skills/mail/parser';
@@ -59,7 +59,11 @@ export function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatAction
   consider(parseDecisionActionStep(input, folded), 0.77, ['decision_action_intent', 'deterministic_skill_parser']);
   consider(parseContentActionStep(input, folded), 0.78, ['content_action_intent', 'deterministic_skill_parser']);
   consider(parseMailActionStep(input, folded), 0.77, ['mail_action_intent', 'deterministic_skill_parser']);
-  consider(parseCookingActionStep(input, folded, now), 0.76, ['cooking_action_intent', 'deterministic_skill_parser']);
+  consider(
+    isCookingLegacyToolIntent(input.text) ? null : parseCookingActionStep(input, folded, now),
+    0.76,
+    ['cooking_action_intent', 'deterministic_skill_parser'],
+  );
   consider(parseFinanceActionStep(input, folded, now), 0.75, ['finance_action_intent', 'deterministic_skill_parser']);
   consider(parseConnectionsActionStep(input, folded), 0.74, ['connections_action_intent', 'deterministic_skill_parser']);
   consider(parseTrainingActionStep(input, folded), 0.72, ['training_action_intent', 'deterministic_skill_parser']);
@@ -70,6 +74,12 @@ export function parseBroadSkillActionIntent(input: ChatPlannerInput): ChatAction
     const best = candidates.reduce((a, b) => (b.score > a.score ? b : a));
     return buildPlanFromSteps(input, [best.step], best.routingSignals, best.confidence);
   }
+
+  // Cooking CRUD without an equivalent typed action belongs to the legacy
+  // tool path. Keep this gate after the other skill parsers so an explicit
+  // task, notification, or calendar command that merely mentions the pantry
+  // can still be claimed by its owning skill.
+  if (isCookingLegacyToolIntent(input.text)) return null;
 
   if (messageHasActionCandidate(input.text)) {
     const subset = selectRegistrySubsetForMessage(input.text);

@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 const mockGetCached = vi.fn(() => null);
 const mockSetCache = vi.fn();
 const mockComposeWeeklyPlan = vi.fn();
 const mockGetDecisionOverview = vi.fn(() => ({ items: [], handled: [] }));
+const mockGetUserTimezoneById = vi.fn(() => 'Europe/Lisbon');
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -19,7 +20,21 @@ vi.mock('../../src/services/decision-center', () => ({
   getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
 }));
 
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return {
+    ...actual,
+    getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+  };
+});
+
 describe('daily-brief-orchestrator', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     clearTenantScopeAnomaliesForTests();
     mockGetCached.mockReset();
@@ -27,6 +42,8 @@ describe('daily-brief-orchestrator', () => {
     mockComposeWeeklyPlan.mockReset();
     mockGetDecisionOverview.mockReset();
     mockGetDecisionOverview.mockReturnValue({ items: [], handled: [] });
+    mockGetUserTimezoneById.mockReset();
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
   });
 
   it('builds event-driven coordination from the selected day', async () => {
@@ -68,6 +85,11 @@ describe('daily-brief-orchestrator', () => {
               decisions: [],
             },
           ],
+          cooking: {
+            status: 'degraded',
+            headline: '1 saved meal withheld because it conflicts with current safety preferences.',
+            warningCodes: ['COOKING_SAVED_MEAL_ALLERGY_CONFLICT'],
+          },
           content: {
             status: 'scheduled',
             title: 'Capture + publishing day',
@@ -108,6 +130,11 @@ describe('daily-brief-orchestrator', () => {
     const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
     const result = await composeDailyBrief({ userId: 12, date: '2026-04-15', forceRefresh: true });
 
+    expect(result.day.cooking).toEqual({
+      status: 'degraded',
+      headline: '1 saved meal withheld because it conflicts with current safety preferences.',
+      warningCodes: ['COOKING_SAVED_MEAL_ALLERGY_CONFLICT'],
+    });
     expect(result.coordination.topPriority).toBe('Keep the day light and recoverable.');
     expect(result.coordination.executionOrder).toEqual(
       expect.arrayContaining([
@@ -189,6 +216,31 @@ describe('daily-brief-orchestrator', () => {
       limit: 30,
       handledLimit: 10,
     });
+  });
+
+  it('uses the user timezone for an implicit today and propagates it to the weekly plan', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
+    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+    mockComposeWeeklyPlan.mockResolvedValue({
+      degraded: false,
+      gated: { skills: [] },
+      garmin_stale: false,
+      creativeCopy: { headline: '', note: '' },
+      conflicts: [],
+      days: [],
+    });
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({ userId: 12, tenantId: 12, forceRefresh: true });
+
+    expect(result.date).toBe('2026-04-12');
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-06',
+      timezone: 'Pacific/Honolulu',
+    }));
   });
 
   it('fails closed in Portuguese and records an anomaly when tenant scope is invalid', async () => {

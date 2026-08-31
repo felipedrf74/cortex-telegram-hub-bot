@@ -16,6 +16,7 @@ import {
 export type CookingSafetySurface =
   | 'recipe'
   | 'meal_plan'
+  | 'shopping_list'
   | 'meal_plan_substitution'
   | 'legacy_domain_answer'
   | 'chat_core_v2_recipe'

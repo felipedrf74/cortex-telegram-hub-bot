@@ -60,6 +60,9 @@ export type ChatActionName =
   | 'cooking_meal_support'
   | 'cooking_grocery_list'
   | 'cooking_meal_plan'
+  | 'cooking_delete_recipe'
+  | 'cooking_delete_meal'
+  | 'cooking_delete_pantry_item'
   | 'cooking_substitute_ingredient'
   | 'cooking_fueling_support'
   | 'finance_summary'
@@ -178,6 +181,8 @@ export interface ChatActionDefinition {
   confirmationTarget?: {
     tool: string;
     argumentField: string;
+    /** Optional tool-field -> planner-argument mapping for composite targets. */
+    argumentFields?: Record<string, string>;
   };
   executionPolicy?: 'read_only' | 'idempotent_write' | 'preview_then_confirm' | 'blocked';
   executor: string;
