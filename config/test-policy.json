@@ -1708,7 +1708,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/api/routes/training-coach-v2.ts:797-802",
+            "pattern": "src/api/routes/training-coach-v2.ts:802-807",
             "anchor": "state: result.replayed ? 'replayed' : 'updated',",
             "behavior": "A travel PATCH returns the exact CAS-updated or replayed versioned window only after the service validates the fully merged durable state.",
             "replacementTest": "__tests__/api/training-coach-v2-routes.test.ts",
