@@ -221,24 +221,57 @@ export function extractCookingDeleteTarget(text: string, now: DateTime): Cooking
   };
 }
 
+const COOKING_DELETE_ARTICLES = new Set([
+  'the', 'my', 'a', 'o', 'minha', 'minhas', 'meu', 'meus', 'la', 'mi',
+]);
+
+function stripLeadingCookingDeleteTokens(
+  target: string,
+  isPrefix: (token: string) => boolean,
+): string {
+  const tokens = target.split(' ');
+  let firstTargetToken = 0;
+  while (firstTargetToken < tokens.length && isPrefix(tokens[firstTargetToken] ?? '')) {
+    firstTargetToken += 1;
+  }
+  return tokens.slice(firstTargetToken).join(' ');
+}
+
 function cookingDeleteCommandTarget(folded: string): 'recipe' | 'pantry' | 'meal' | null {
   const command = folded.match(
     /^(?:(?:please|por\s+favor)\s+)?(?:(?:can|could|would)\s+you\s+|(?:podes?|pode)\s+|(?:puedes?|puede)\s+)?(?:delete|remove|apaga[r]?|remove[r]?|elimina[r]?)\s+(.+)$/,
   );
   const target = command?.[1]?.trim();
   if (!target) return null;
-  if (/^(?:(?:the|my|a|o|a|minha?|meu|la|mi|saved|guardad[oa])\s+)*(?:recipe|receita|receta)\b/.test(target)) {
+  const recipeTarget = stripLeadingCookingDeleteTokens(
+    target,
+    (token) => COOKING_DELETE_ARTICLES.has(token) || /^(?:saved|guardado|guardada)$/.test(token),
+  );
+  if (/^(?:recipe|receita|receta)\b/.test(recipeTarget)) {
     return 'recipe';
   }
-  if (/^(?:(?:the|my|a|o|a|minha?|meu|la|mi)\s+)*(?:pantry(?:\s+item)?|despensa|item\s+(?:from|in)\s+(?:the\s+)?pantry|item\s*#?\s*\d+\s+(?:from|in)\s+(?:the\s+)?pantry)\b/.test(target)) {
+  const pantryTarget = stripLeadingCookingDeleteTokens(
+    target,
+    (token) => COOKING_DELETE_ARTICLES.has(token),
+  );
+  if (/^(?:pantry(?:\s+item)?|despensa|item\s+(?:from|in)\s+(?:the\s+)?pantry|item\s*#?\s*\d+\s+(?:from|in)\s+(?:the\s+)?pantry)\b/.test(pantryTarget)) {
     return 'pantry';
   }
   if (/\b(?:event|evento|meeting|reuniao|reunion|appointment|compromisso|cita)\b/.test(target)
     || /\b(?:from|in|on)\s+(?:my|the)?\s*(?:calendar|agenda)\b/.test(target)) {
     return null;
   }
-  const mealPrefix = /^(?:(?:the|my|a|o|a|minha?|meu|la|mi|planned|planead[oa])\s+)*(?:(?:today|tonight|tomorrow'?s?|hoje|amanha|hoy|manana|\d{4}-\d{2}-\d{2})\s+)*(?:breakfast|cafe\s+da\s+manha|pequeno[\s-]?almoco|desayuno|lunch|almoco|almuerzo|dinner|supper|jantar|cena|snack|lanche|merienda|ceia|meal|refeicao|comida)\b/;
-  return mealPrefix.test(target) ? 'meal' : null;
+  let mealTarget = stripLeadingCookingDeleteTokens(
+    target,
+    (token) => COOKING_DELETE_ARTICLES.has(token) || /^(?:planned|planeado|planeada)$/.test(token),
+  );
+  mealTarget = stripLeadingCookingDeleteTokens(
+    mealTarget,
+    (token) => /^(?:today|tonight|tomorrow'?s?|hoje|amanha|hoy|manana|\d{4}-\d{2}-\d{2})$/.test(token),
+  );
+  return /^(?:breakfast|cafe\s+da\s+manha|pequeno[\s-]?almoco|desayuno|lunch|almoco|almuerzo|dinner|supper|jantar|cena|snack|lanche|merienda|ceia|meal|refeicao|comida)\b/.test(mealTarget)
+    ? 'meal'
+    : null;
 }
 
 /** Cooking CRUD already has tenant-scoped, confirmation-aware legacy tools.

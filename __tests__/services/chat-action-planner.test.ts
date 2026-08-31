@@ -3264,6 +3264,34 @@ describe('ChatActionPlanner', () => {
     )).toBeNull();
   });
 
+  it('parses repeated Cooking delete modifiers without ambiguous regex backtracking', () => {
+    const repeatedArticles = 'a '.repeat(500);
+    expect(extractCookingDeleteTarget(
+      `Delete ${repeatedArticles}recipe 4`,
+      DateTime.fromISO(FROZEN_NOW),
+    )).toEqual({
+      action: 'cooking_delete_recipe',
+      args: { recipeId: 4 },
+      requiredArgsPresent: true,
+    });
+    expect(extractCookingDeleteTarget(
+      `Delete ${repeatedArticles}pantry item 9`,
+      DateTime.fromISO(FROZEN_NOW),
+    )).toEqual({
+      action: 'cooking_delete_pantry_item',
+      args: { itemId: 9 },
+      requiredArgsPresent: true,
+    });
+    expect(extractCookingDeleteTarget(
+      `Delete ${repeatedArticles}tomorrow dinner`,
+      DateTime.fromISO(FROZEN_NOW),
+    )).toEqual({
+      action: 'cooking_delete_meal',
+      args: { date: '2026-05-15', mealType: 'dinner' },
+      requiredArgsPresent: true,
+    });
+  });
+
   it('routes advertised Spanish Cooking writes through the deterministic preflight', () => {
     const expected = [
       ['Elimina receta 4', 'cooking_delete_recipe', { recipeId: 4 }],
