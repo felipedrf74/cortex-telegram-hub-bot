@@ -44,10 +44,16 @@ vi.mock('../../src/services/user-service', () => ({
   getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
 }));
 
-vi.mock('../../src/services/entitlement', () => ({
-  getEffectiveEntitlement: vi.fn(() => ({ plan: mockEffectivePlan })),
-  entitlementPlanToSkillTier: vi.fn((plan: string) => plan),
-}));
+vi.mock('../../src/services/entitlement', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/entitlement')>(
+    '../../src/services/entitlement',
+  );
+  return {
+    ...actual,
+    getEffectiveEntitlement: vi.fn(() => ({ plan: mockEffectivePlan })),
+    entitlementPlanToSkillTier: vi.fn((plan: string) => plan),
+  };
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {

@@ -20,9 +20,15 @@ vi.mock('../../src/services/decision-center', () => ({
   getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
-  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return {
+    ...actual,
+    getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+  };
+});
 
 describe('daily-brief-orchestrator', () => {
   afterEach(() => {

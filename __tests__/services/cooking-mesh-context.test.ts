@@ -63,13 +63,25 @@ vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
 }));
 
-vi.mock('../../src/services/cooking-preferences', () => ({
-  buildCookingPreferenceReadModel: (...args: unknown[]) => mockBuildCookingPreferenceReadModel(...args),
-}));
+vi.mock('../../src/services/cooking-preferences', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/cooking-preferences')>(
+    '../../src/services/cooking-preferences',
+  );
+  return {
+    ...actual,
+    buildCookingPreferenceReadModel: (...args: unknown[]) => mockBuildCookingPreferenceReadModel(...args),
+  };
+});
 
-vi.mock('../../src/services/user-service', () => ({
-  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
-}));
+vi.mock('../../src/services/user-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  );
+  return {
+    ...actual,
+    getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+  };
+});
 
 import { readCookingMeshContext } from '../../src/services/cross-agent-learning';
 
