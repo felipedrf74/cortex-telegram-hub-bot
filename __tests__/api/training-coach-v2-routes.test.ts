@@ -21,6 +21,7 @@ import path from 'path';
 
 let testDb: Database.Database;
 let flagState = true;
+const coachRateLimits = vi.hoisted(() => ({ read: 300, write: 60 }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -41,6 +42,10 @@ vi.mock('../../src/config', () => ({
     // F11: reflow resolves one scheduling zone even when the test athlete has
     // no users row, mirroring the production user-zone → app-zone fallback.
     app: { timezone: 'Europe/Lisbon' },
+    ios: {
+      get readRateLimit() { return coachRateLimits.read; },
+      get rateLimit() { return coachRateLimits.write; },
+    },
     coaching: {
       get periodizationV2Enabled() { return flagState; },
       ruleEnforcementEnabled: false,
@@ -63,6 +68,8 @@ let baseUrl: string;
 
 beforeEach(async () => {
   _resetRateLimiterForTests();
+  coachRateLimits.read = 300;
+  coachRateLimits.write = 60;
   testDb = createMigratedTestDatabase();
   setDbProvider(() => testDb);
   flagState = true;
@@ -136,6 +143,20 @@ async function req(
 }
 
 describe('coach v2 routes — feature flag gate', () => {
+  it('rate limits the analysis alias before lookup and charges one unit per request', async () => {
+    coachRateLimits.read = 2;
+
+    const alias = await req('GET', '/api/v1/training/coach/analysis?weekId=1');
+    const canonical = await req('GET', '/api/v1/training/plans/1/coach-analysis?weekIndex=0');
+    const blockedBeforeValidation = await req('GET', '/api/v1/training/coach/analysis?weekId=not-a-week');
+
+    expect(alias.status).toBe(200);
+    expect(alias.json?.data).toMatchObject({ planId: 1, weekId: 1, weekIndex: 0, weekNumber: 1 });
+    expect(canonical.status).toBe(200);
+    expect(blockedBeforeValidation.status).toBe(429);
+    expect(blockedBeforeValidation.json?.error?.code).toBe('RATE_LIMITED');
+  });
+
   it('rate limits flagged v2 coach routes before handler database work', async () => {
     for (let i = 0; i < 60; i++) {
       const result = await req('POST', '/api/v1/training/week/not-a-week/reflow', {});

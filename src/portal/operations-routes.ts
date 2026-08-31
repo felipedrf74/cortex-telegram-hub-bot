@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Express, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { logger } from '../utils/logger';
 import { getErrorTrends } from '../services/error-monitor';
 import { getErrorDistribution } from '../services/error-categorizer';
@@ -58,6 +60,28 @@ function portalActor(req: Request): string | undefined {
 }
 
 export function registerPortalOperationsRoutes(app: Express, deps: PortalOperationsRouteDeps = {}): void {
+  // The portal composition root already rate-limits every /api request. Keep
+  // these sensitive soak controls self-contained as well so a future direct
+  // mount cannot put authorization or metric storage ahead of abuse control.
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  const coachV2SoakRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 180,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many portal requests from this IP. Slow down.',
+          retryAfter,
+        },
+      });
+    },
+  });
   app.get('/api/errors', (_req: Request, res: Response) => {
     try {
       const trends = getErrorTrends();
@@ -164,7 +188,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
-  app.get('/api/training-coach-v2-soak', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/training-coach-v2-soak', coachV2SoakRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       res.json({
         ok: true,
@@ -182,7 +206,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
-  app.post('/api/training-coach-v2-soak/reviews', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/training-coach-v2-soak/reviews', coachV2SoakRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const tenantId = Number(req.body?.tenantId);
       const userId = Number(req.body?.userId);

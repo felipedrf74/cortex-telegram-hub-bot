@@ -659,7 +659,7 @@ export function mountCoachV2Routes(parent: Router): Router {
     if (planId === null) return;
     dispatchCoachV2Alias(v2, req, res, next, `/plans/${planId}/coach-policy`);
   });
-  v2.get('/coach/analysis', (req: Request, res: Response, next: NextFunction) => {
+  v2.get('/coach/analysis', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
     if (!v2EnabledOrShortCircuit(res)) return;
     const weekId = Number.parseInt(typeof req.query.weekId === 'string' ? req.query.weekId : '', 10);
     if (!Number.isSafeInteger(weekId) || weekId <= 0) {
@@ -671,7 +671,12 @@ export function mountCoachV2Routes(parent: Router): Router {
     const week = getDb().prepare('SELECT week_number FROM training_weeks WHERE id = ? AND plan_id = ?')
       .get(weekId, owned.planId) as { week_number: number } | undefined;
     const weekIndex = Math.max(0, Number(week?.week_number ?? 1) - 1);
-    dispatchCoachV2Alias(v2, req, res, next, `/plans/${owned.planId}/coach-analysis?weekIndex=${weekIndex}`);
+    // Call the shared handler directly after translating the convenience
+    // contract. Re-dispatching through the router would execute the same
+    // limiter twice for one request and make the alias consume two units.
+    req.params.planId = String(owned.planId);
+    req.query.weekIndex = String(weekIndex);
+    handleCoachAnalysis(req, res);
   });
   v2.post('/week/reflow/preview', (req: Request, res: Response, next: NextFunction) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -1499,7 +1504,7 @@ export function mountCoachV2Routes(parent: Router): Router {
   // + B7 taper + C7 aggregator + C8 scenario classifier. Production
   // caller for every remaining v2 service that the route layer
   // hadn't previously exercised — Codex P1 closure.
-  v2.get('/plans/:planId/coach-analysis', coachV2RateLimitMiddleware, (req: Request, res: Response) => {
+  function handleCoachAnalysis(req: Request, res: Response): void {
     if (!v2EnabledOrShortCircuit(res)) return;
     const rawPlanId = resolvePlanId(req, res);
     if (rawPlanId === null) return;
@@ -1760,7 +1765,9 @@ export function mountCoachV2Routes(parent: Router): Router {
       logger.error({ err, planId, weekIndex }, 'coach_analysis.failed');
       sendError(res, 'INTERNAL', 'Failed to build coach analysis.', 500);
     }
-  });
+  }
+
+  v2.get('/plans/:planId/coach-analysis', coachV2RateLimitMiddleware, handleCoachAnalysis);
 
   // Mount the sub-router at the root so route paths stay `/week/...`
   // and `/plans/...` (matching the plan v2.1 contract).

@@ -107,22 +107,23 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { registerPortalOperationsRoutes } from '../../src/portal/operations-routes';
 
-type Handler = (req: any, res: any) => unknown;
+type Handler = (req: any, res: any, next?: (err?: unknown) => void) => unknown;
 
 interface CapturedRoute {
   method: 'GET' | 'POST';
   path: string;
   handler: Handler;
+  handlers: Handler[];
 }
 
 function captureRoutes(): CapturedRoute[] {
   const routes: CapturedRoute[] = [];
   const app = {
     get(path: string, ...handlers: Handler[]) {
-      routes.push({ method: 'GET', path, handler: handlers[handlers.length - 1] });
+      routes.push({ method: 'GET', path, handler: handlers[handlers.length - 1], handlers });
     },
     post(path: string, ...handlers: Handler[]) {
-      routes.push({ method: 'POST', path, handler: handlers[handlers.length - 1] });
+      routes.push({ method: 'POST', path, handler: handlers[handlers.length - 1], handlers });
     },
   };
   registerPortalOperationsRoutes(app as any, {
@@ -201,6 +202,61 @@ describe('portal operations routes', () => {
       'POST /api/operator-alerts/:id/resolve',
       'POST /api/operator-alerts/:id/retry-delivery',
     ]);
+  });
+
+  it('rate limits both Coach V2 soak routes before admin authorization', async () => {
+    const previousLimit = process.env.PORTAL_API_RATE_LIMIT;
+    process.env.PORTAL_API_RATE_LIMIT = '2';
+    try {
+      const routes = captureRoutes();
+      const soakRoutes = routes.filter((route) => route.path.startsWith('/api/training-coach-v2-soak'));
+      expect(soakRoutes).toHaveLength(2);
+      for (const route of soakRoutes) {
+        expect(route.handlers).toHaveLength(3);
+        expect(route.handlers[1]).toBe(mockRequirePortalAdminToken);
+      }
+
+      const limiter = soakRoutes[0]!.handlers[0]!;
+      const buildResponse = () => ({
+        statusCode: 200,
+        body: undefined as unknown,
+        headers: {} as Record<string, string | number>,
+        setHeader(name: string, value: string | number) {
+          this.headers[name] = value;
+          return this;
+        },
+        status(code: number) {
+          this.statusCode = code;
+          return this;
+        },
+        json(body: unknown) {
+          this.body = body;
+          return this;
+        },
+      });
+      const request = {
+        headers: {},
+        ip: '198.51.100.42',
+        socket: { remoteAddress: '198.51.100.42' },
+      };
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const next = vi.fn();
+        await limiter(request, buildResponse(), next);
+        expect(next).toHaveBeenCalledOnce();
+      }
+      const blocked = buildResponse();
+      const blockedNext = vi.fn();
+      await limiter(request, blocked, blockedNext);
+      expect(blockedNext).not.toHaveBeenCalled();
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.body).toMatchObject({ error: { code: 'RATE_LIMITED', retryAfter: 60 } });
+      expect(blocked.headers['Retry-After']).toBe(60);
+      expect(mockRequirePortalAdminToken).not.toHaveBeenCalled();
+    } finally {
+      if (previousLimit === undefined) delete process.env.PORTAL_API_RATE_LIMIT;
+      else process.env.PORTAL_API_RATE_LIMIT = previousLimit;
+    }
   });
 
   it('returns aggregate Coach V2 soak gates and records scoped reviewed firings', () => {
