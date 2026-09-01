@@ -36,6 +36,7 @@ import {
   runDecisionMetricsRollupJob,
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 describe('buildDecisionDashboardSnapshot (T14)', () => {
   beforeEach(() => {
@@ -44,6 +45,7 @@ describe('buildDecisionDashboardSnapshot (T14)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -52,13 +54,15 @@ describe('buildDecisionDashboardSnapshot (T14)', () => {
   });
 
   it('composes release gate + today rollup + feedback + outcomes into one scoped snapshot', async () => {
+    const requestNow = new Date('2026-08-31T23:30:00.000Z'); // 2026-09-01 in Lisbon
+    const requestContext = { timezone: 'Europe/Lisbon', now: requestNow };
     const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 70, { tenantId: 70, dedupeKey: 'dash-1' }));
     await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 70, { tenantId: 70, dedupeKey: 'dash-2' }));
     dismissDecision(a.item!.decisionId, 70, 70, 'not_relevant');
 
     const lifecycleRowsBeforeSnapshot = (testDb.prepare('SELECT COUNT(*) AS n FROM decision_lifecycle_events')
       .get() as { n: number }).n;
-    const before = buildDecisionDashboardSnapshot(70, 70);
+    const before = buildDecisionDashboardSnapshot(70, 70, requestContext);
     const lifecycleRowsAfterSnapshot = (testDb.prepare('SELECT COUNT(*) AS n FROM decision_lifecycle_events')
       .get() as { n: number }).n;
     expect(lifecycleRowsAfterSnapshot).toBe(lifecycleRowsBeforeSnapshot);
@@ -69,9 +73,11 @@ describe('buildDecisionDashboardSnapshot (T14)', () => {
     expect(before.feedbackBySkill.find((s) => s.sourceSkill === 'training')?.dismissed).toBe(1);
     expect(before.outcomes.totalOutcomes).toBeGreaterThanOrEqual(1); // the dismissal is in the outcome ledger
 
-    runDecisionMetricsRollupJob();
-    const after = buildDecisionDashboardSnapshot(70, 70);
+    runDecisionMetricsRollupJob({ userId: 70, tenantId: 70, timezone: 'Europe/Lisbon', now: requestNow });
+    const after = buildDecisionDashboardSnapshot(70, 70, requestContext);
     expect(after.today).not.toBeNull(); // rollup populated today's '*' row
+    expect(after.generatedAt).toBe(requestNow.toISOString());
+    expect(after.today?.metricDate).toBe('2026-09-01');
     expect(after.today?.createdCount).toBe(2);
     expect(after.today?.dismissedCount).toBe(1);
 

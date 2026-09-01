@@ -45,7 +45,20 @@ export function parseDecisionActionStep(
         : 'decision_follow_up';
   const skill: ChatActionSkill = 'decision_center';
   const args: Record<string, unknown> = { decisionId };
-  if (action === 'decision_snooze') args.until = null;
+  if (action === 'decision_snooze') {
+    const explicitIso = input.text.match(/\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2}))\b/i)?.[1];
+    if (explicitIso) {
+      args.deferUntil = explicitIso;
+    } else if (/\b(?:next\s+week|proxima\s+semana|semana\s+que\s+vem|la\s+proxima\s+semana)\b/.test(folded)) {
+      args.followUp = 'next week';
+    } else {
+      // Retain the established clarification/default placeholder for legacy
+      // natural-language dates such as "Friday". Exact ISO values and the
+      // fixed next-week contract above never collapse to the one-hour fallback.
+      args.until = null;
+    }
+  }
+  if (action === 'decision_follow_up') args.followUp = 'next week';
   if (action === 'decision_choose') {
     // Phase 10 batch 51: ES form "opción B" / "la opción B" added. The
     // Spanish article "la" can sit between the verb and "opción".

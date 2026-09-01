@@ -38,7 +38,7 @@ export const pendingWorkCancelStage: ChatStage = {
       chatCoreV2RouteLocale, recordLegacyFallbackSample,
     } = preparedChatTurnCtx(ctx);
 
-    const cancelled = cancelAllPendingChatWork({
+    const cancelled = await cancelAllPendingChatWork({
       userId,
       tenantId,
       conversationId: scopedClientMessageId ?? chatRequestId,

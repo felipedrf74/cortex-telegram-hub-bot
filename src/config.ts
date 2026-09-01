@@ -6,6 +6,7 @@ import { resolveOllamaSmallOnlyRuntimeConfig } from './services/ollama-model-pol
 import { resolveOpenAIBatchProjectCredentials } from './services/openai-batch-project-config';
 import { isHistoricalStripeMonthlyPriceId } from './services/stripe-price-identity';
 import { isTrainingCoachV2Enabled } from './services/training-coach-v2-rollout';
+import { resolveDecisionCenterRewriteMode } from './services/decision-center/engine-selector';
 dotenv.config(contentLiveEvalDotenvOptions());
 
 // Invalid model overrides still fail startup when the signed manifest is
@@ -41,6 +42,7 @@ const trainingEnduranceCoherenceV2Raw = process.env.TRAINING_ENDURANCE_COHERENCE
 // enabling a misspelled configuration.
 const TRAINING_ENDURANCE_COHERENCE_V2_ENABLED = trainingEnduranceCoherenceV2Raw === undefined
   || trainingEnduranceCoherenceV2Raw === 'on';
+const DECISION_CENTER_REWRITE_MODE = resolveDecisionCenterRewriteMode(process.env);
 export type NotificationDeliveryMode = 'mock' | 'apns';
 type ContentWorkspaceRolloutConfigMode = 'off' | 'read_only' | 'recovery_only' | 'write';
 
@@ -150,6 +152,9 @@ function resolveMigrationsMode(): 'boot' | 'external' {
 export const config = {
   isStaging: IS_STAGING,
   isLiveProduction: IS_LIVE_PRODUCTION,
+  decisionCenter: {
+    rewriteMode: DECISION_CENTER_REWRITE_MODE,
+  },
   anthropic: {
     // April 9 2026 — Anthropic kill switch. The cost dashboard showed
     // $0.20/day still burning on Claude calls via fallback paths

@@ -83,10 +83,71 @@ describe('report-document-store: creation', () => {
     const reports = getRecentReports(1);
     expect(reports).toHaveLength(1);
     expect(reports[0].type).toBe('coach_briefing');
+    expect(reports[0].tenantId).toBe(1);
     expect(reports[0].title).toBe('Coach Report');
     expect(reports[0].documentJson.recommendations).toHaveLength(1);
     expect(reports[0].status).toBe('unread');
     expect(reports[0].sourceJob).toBe('garmin_coach');
+  });
+
+  it('replays a scoped scheduler dispatch without duplicating or replacing its report', () => {
+    const first = storeReport({
+      userId: 1,
+      type: 'morning_briefing',
+      title: 'Original briefing',
+      summary: 'Original summary',
+      documentJson: { version: 1 },
+      sourceJob: 'daily_briefing',
+      dispatchKey: 'morning_briefing:2026-08-31',
+    });
+    const replay = storeReport({
+      userId: 1,
+      type: 'morning_briefing',
+      title: 'Changed after crash',
+      summary: 'Changed summary',
+      documentJson: { version: 2 },
+      sourceJob: 'daily_briefing',
+      dispatchKey: 'morning_briefing:2026-08-31',
+    });
+
+    expect(replay).toBe(first);
+    expect(getRecentReports(1)).toHaveLength(1);
+    expect(getReportById(first, 1)).toMatchObject({
+      title: 'Original briefing',
+      summary: 'Original summary',
+      documentJson: { version: 1 },
+    });
+  });
+
+  it('binds scheduler replay identity to both tenant and user scope', () => {
+    const firstTenant = storeReport({
+      userId: 1,
+      tenantId: 10,
+      type: 'morning_briefing',
+      title: 'Tenant 10 briefing',
+      documentJson: { tenant: 10 },
+      dispatchKey: 'morning_briefing:2026-08-31',
+    });
+    const secondTenant = storeReport({
+      userId: 1,
+      tenantId: 20,
+      type: 'morning_briefing',
+      title: 'Tenant 20 briefing',
+      documentJson: { tenant: 20 },
+      dispatchKey: 'morning_briefing:2026-08-31',
+    });
+
+    expect(secondTenant).not.toBe(firstTenant);
+    expect(getReportById(firstTenant, 1, 10)).toMatchObject({ tenantId: 10 });
+    expect(getReportById(secondTenant, 1, 20)).toMatchObject({ tenantId: 20 });
+    expect(testDb.prepare(`
+      SELECT tenant_id AS tenantId, user_id AS userId, report_document_id AS reportId
+        FROM report_document_dispatch_receipts
+       ORDER BY tenant_id
+    `).all()).toEqual([
+      { tenantId: 10, userId: 1, reportId: firstTenant },
+      { tenantId: 20, userId: 1, reportId: secondTenant },
+    ]);
   });
 
   it('stores Decision Center briefing documents', () => {
@@ -134,6 +195,19 @@ describe('report-document-store: creation', () => {
         }),
       ]),
     );
+  });
+
+  it('fails closed when the explicit tenant scope is invalid', () => {
+    const id = storeReport({
+      userId: 1,
+      tenantId: 0,
+      type: 'morning_briefing',
+      title: 'Bad tenant',
+      documentJson: {},
+    });
+
+    expect(id).toBe(-1);
+    expect(testDb.prepare('SELECT COUNT(*) as count FROM report_documents').get()).toEqual({ count: 0 });
   });
 });
 
@@ -331,19 +405,17 @@ describe('report-document-store: push preferences', () => {
     );
   });
 
-  it('self-heals when push_preferences migration was missed', () => {
+  it('fails closed without running request-path DDL when push_preferences migration was missed', () => {
     testDb.exec('DROP TABLE IF EXISTS push_preferences');
 
-    expect(isPushEnabled(1, 'morning_briefing')).toBe(true);
-
-    setPushPreference(1, 'coach_briefing', false);
-    const row = testDb.prepare(
-      'SELECT enabled FROM push_preferences WHERE user_id = ? AND category = ?',
-    ).get(1, 'coach_briefing') as { enabled: number };
-
-    expect(row.enabled).toBe(0);
+    expect(isPushEnabled(1, 'morning_briefing')).toBe(false);
     const prefs = getPushPreferences(1);
     expect(prefs.find((pref) => pref.category === 'coach_briefing')?.enabled).toBe(false);
+    expect(() => setPushPreference(1, 'coach_briefing', false)).toThrow(/push_preferences/i);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+       WHERE type = 'table' AND name = 'push_preferences'
+    `).get()).toEqual({ count: 0 });
   });
 });
 
@@ -406,17 +478,54 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
     process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN = 'true';
     hasActivePushDeviceToken = true;
     const id = await storeAndPushReport({
-      userId: 1, type: 'morning_briefing', title: 'Brief',
+      userId: 1, tenantId: 77, type: 'morning_briefing', title: 'Brief',
       summary: 'summary', documentJson: {},
     });
     expect(id).toBeGreaterThan(0);
     expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
     expect(mockCreateNotificationIntent.mock.calls[0][0]).toMatchObject({
       userId: 1,
+      tenantId: 77,
       relatedEntityId: id,
       relatedEntityType: 'report_document',
       dedupeKey: `report:morning_briefing:${id}`,
     });
+  });
+
+  it('reuses the durable report and Decision proposal key after a scheduled crash replay', async () => {
+    const input = {
+      userId: 1,
+      tenantId: 77,
+      type: 'morning_briefing' as const,
+      title: 'Brief',
+      summary: 'summary',
+      documentJson: { date: '2026-08-31' },
+      sourceJob: 'daily_briefing',
+      dispatchKey: 'morning_briefing:2026-08-31',
+      requireNotificationIntent: true,
+    };
+    const first = await storeAndPushReport(input);
+    const replay = await storeAndPushReport({
+      ...input,
+      title: 'Changed after crash',
+      summary: 'changed',
+      documentJson: { date: '2026-08-31', changed: true },
+    });
+
+    expect(replay).toBe(first);
+    expect(getRecentReports(1, { tenantId: 77 })).toHaveLength(1);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(2);
+    const replayIntentIds = mockCreateNotificationIntent.mock.calls.map(([intent]) => intent.intentId);
+    expect(replayIntentIds[0]).toMatch(/^ni_report_[a-f0-9]{32}$/);
+    expect(new Set(replayIntentIds).size).toBe(1);
+    for (const [intent] of mockCreateNotificationIntent.mock.calls) {
+      expect(intent).toMatchObject({
+        tenantId: 77,
+        relatedEntityId: first,
+        title: 'Brief',
+        body: 'summary',
+      });
+    }
   });
 });
 

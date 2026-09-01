@@ -177,6 +177,8 @@ export const actionGatewayStage: ChatStage = {
           deeplink: `nexus://notifications/${pendingGuardConfirmation.id}`,
           expiresAt: pendingGuardConfirmation.expiresAt,
           dedupeKey: `chat:chat-core-v2-guard:${tenantId}:${userId}:${pendingGuardConfirmation.id}`,
+          idempotencyKey: `chat-guard:${tenantId}:${userId}:${pendingGuardConfirmation.id}`,
+          channel: 'chat',
           requiresUserAction: true,
           deliveryPolicy: 'in_app_only',
           privacyPolicy: 'standard',

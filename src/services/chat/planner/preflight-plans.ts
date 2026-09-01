@@ -152,9 +152,9 @@ export function buildAmbiguousActionClarificationPlan(input: ChatPlannerInput): 
   });
 }
 
-export function buildPendingCancellationPlan(input: ChatPlannerInput): ChatActionPlan | null {
+export async function buildPendingCancellationPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
   if (!isPendingChatWorkCancellationTurn(input.text)) return null;
-  const cancelled = cancelAllPendingChatWork({
+  const cancelled = await cancelAllPendingChatWork({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: input.conversationId,

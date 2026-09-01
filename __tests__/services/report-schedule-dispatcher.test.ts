@@ -36,9 +36,17 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { resolveDueReportTargets } from '../../src/services/report-schedule-dispatcher';
 import {
+  claimDueScheduledReportLeases,
+  claimDueScheduledReportLeaseBatch,
+  completeScheduledReportLease,
+  failScheduledReportLease,
+  getScheduledReportCompletionReceipt,
+} from '../../src/services/report-schedule-jobs';
+import {
   getOrCreateNotificationProfile,
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 // 2026-07-10 is a Friday. Lisbon runs UTC+1 (WEST) in July, so 06:00 local
 // = 05:00 UTC. All fixtures pin explicit UTC instants — no wall-clock reads.
@@ -53,6 +61,31 @@ describe('report-schedule-dispatcher', () => {
 
   beforeEach(() => {
     testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE report_schedule_ledger_scoped (
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        job_type TEXT NOT NULL,
+        fired_for_local_date TEXT NOT NULL,
+        fired_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (tenant_id, user_id, job_type, fired_for_local_date)
+      );
+      CREATE INDEX idx_report_schedule_ledger_scoped_fired_at
+        ON report_schedule_ledger_scoped(fired_at);
+      CREATE TABLE scheduled_report_completion_receipts (
+        receipt_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        report_job TEXT NOT NULL,
+        local_date TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        completed_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (user_id, tenant_id, report_job, local_date)
+      );
+    `);
+    initializeDecisionCenterSchemaForTests();
   });
 
   afterEach(() => {
@@ -303,5 +336,179 @@ describe('report-schedule-dispatcher', () => {
     // stale would not.
     expect(resolveDueReportTargets('weekly_review', [USER], utc('2026-07-11T12:00:00Z'))).toEqual([USER]);
     expect(resolveDueReportTargets('morning_briefing', [OTHER], utc(`${FRIDAY}T12:00:00Z`))).toEqual([]);
+  });
+
+  it('leases a due report and persists a scoped completion receipt', () => {
+    const target = { userId: 42, tenantId: 42 };
+    const first = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [target],
+      utc(`${FRIDAY}T05:02:00Z`),
+      {},
+      'report-worker-a',
+    );
+
+    expect(first).toHaveLength(1);
+    expect(first[0].jobRecord).toMatchObject({
+      userId: 42,
+      tenantId: 42,
+      status: 'processing',
+      attempts: 1,
+    });
+    expect(claimDueScheduledReportLeases(
+      'morning_briefing',
+      [target],
+      utc(`${FRIDAY}T05:07:00Z`),
+      {},
+      'report-worker-b',
+    )).toEqual([]);
+
+    expect(completeScheduledReportLease(first[0])).toBe(true);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS n FROM scheduled_report_completion_receipts
+    `).get()).toEqual({ n: 1 });
+    expect(getScheduledReportCompletionReceipt({
+      userId: 42,
+      tenantId: 42,
+      job: 'morning_briefing',
+      localDate: FRIDAY,
+    })).toMatchObject({
+      userId: 42,
+      tenantId: 42,
+      job: 'morning_briefing',
+      localDate: FRIDAY,
+      attempts: 1,
+      completedAt: expect.any(String),
+    });
+    expect(claimDueScheduledReportLeases(
+      'morning_briefing',
+      [target],
+      utc(`${FRIDAY}T05:12:00Z`),
+    )).toEqual([]);
+  });
+
+  it('rolls back job completion when its durable receipt cannot be written', () => {
+    const target = { userId: 42, tenantId: 42 };
+    const [lease] = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [target],
+      utc(`${FRIDAY}T05:02:00Z`),
+      {},
+      'report-worker-receipt-rollback',
+    );
+    testDb.exec('DROP TABLE scheduled_report_completion_receipts');
+
+    expect(() => completeScheduledReportLease(lease)).toThrow();
+    expect(testDb.prepare(`
+      SELECT status, completed_at AS completedAt
+        FROM background_jobs
+       WHERE job_id = ?
+    `).get(lease.jobRecord.jobId)).toEqual({
+      status: 'processing',
+      completedAt: null,
+    });
+  });
+
+  it('retries a failed report and reclaims an expired lease', () => {
+    const failedTarget = { userId: 42, tenantId: 42 };
+    const [failedLease] = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [failedTarget],
+      utc(`${FRIDAY}T05:02:00Z`),
+      {},
+      'report-worker-failure',
+    );
+    expect(failScheduledReportLease(failedLease, new Error('transient generation failure'))).toBe('failed');
+    expect(testDb.prepare(`
+      SELECT last_error AS lastError FROM background_jobs WHERE job_id = ?
+    `).get(failedLease.jobRecord.jobId)).toEqual({
+      lastError: 'Scheduled report generation failed (Error)',
+    });
+    testDb.prepare(`
+      UPDATE background_jobs SET not_before = datetime('now', '-1 second') WHERE job_id = ?
+    `).run(failedLease.jobRecord.jobId);
+
+    const retry = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [failedTarget],
+      utc(`${FRIDAY}T05:07:00Z`),
+      {},
+      'report-worker-retry',
+    );
+    expect(retry).toHaveLength(1);
+    expect(retry[0].jobRecord.attempts).toBe(2);
+    expect(completeScheduledReportLease(retry[0])).toBe(true);
+
+    const leaseTarget = { userId: 43, tenantId: 43 };
+    const [staleLease] = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [leaseTarget],
+      utc(`${FRIDAY}T05:02:00Z`),
+      {},
+      'report-worker-stale',
+    );
+    testDb.prepare(`
+      UPDATE background_jobs SET lease_expires_at = datetime('now', '-1 second') WHERE job_id = ?
+    `).run(staleLease.jobRecord.jobId);
+    const reclaimed = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [leaseTarget],
+      utc(`${FRIDAY}T05:07:00Z`),
+      {},
+      'report-worker-reclaimed',
+    );
+    expect(reclaimed).toHaveLength(1);
+    expect(reclaimed[0].jobRecord.attempts).toBe(2);
+    expect(reclaimed[0].jobRecord.fencingToken).not.toBe(staleLease.jobRecord.fencingToken);
+  });
+
+  it('keeps a durable failed report retryable after its schedule catch-up window closes', () => {
+    const target = { userId: 44, tenantId: 44 };
+    const [first] = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [target],
+      utc(`${FRIDAY}T05:02:00Z`),
+      {},
+      'report-worker-window-first',
+    );
+    expect(failScheduledReportLease(first, new Error('provider unavailable'))).toBe('failed');
+    testDb.prepare(`
+      UPDATE background_jobs SET not_before = datetime('now', '-1 second') WHERE job_id = ?
+    `).run(first.jobRecord.jobId);
+
+    // 12:00Z is well outside the daily two-hour catch-up window. The
+    // already-enqueued job remains retryable; only first-time enqueueing is
+    // constrained by the schedule window.
+    const retry = claimDueScheduledReportLeases(
+      'morning_briefing',
+      [target],
+      utc(`${FRIDAY}T12:00:00Z`),
+      {},
+      'report-worker-window-retry',
+    );
+    expect(retry).toHaveLength(1);
+    expect(retry[0].jobRecord).toMatchObject({
+      jobId: first.jobRecord.jobId,
+      attempts: 2,
+      status: 'processing',
+    });
+  });
+
+  it('reports partial fan-out failures while leasing healthy user jobs', () => {
+    const batch = claimDueScheduledReportLeaseBatch(
+      'morning_briefing',
+      [{ userId: 0, tenantId: 0 }, { userId: 42, tenantId: 42 }],
+      utc(`${FRIDAY}T05:02:00Z`),
+      {},
+      'report-worker-partial',
+    );
+
+    expect(batch.leases).toHaveLength(1);
+    expect(batch.leases[0].target).toEqual({ userId: 42, tenantId: 42 });
+    expect(batch.failures).toEqual([{
+      userId: 0,
+      tenantId: 0,
+      errorName: 'Error',
+    }]);
   });
 });

@@ -71,6 +71,7 @@ import {
   pruneStaleDeviceTokens,
   registerNotificationDeviceToken,
   releaseDueNotificationDeliveries,
+  resumeNotificationIntentDelivery,
   revokeNotificationDeviceToken,
   sanitizeNotificationDeliveryErrorCode,
   updateNotificationProfile,
@@ -161,6 +162,170 @@ describe('Secretary Notification Orchestrator', () => {
     const result = await createNotificationIntent(buildSkillNotificationFixtureIntent('finance', 1));
     expect(result.item).toBeNull();
     expect(result.decisionLog.decision).toBe('blocked_user_preferences');
+  });
+
+  it('resumes the exact committed intent without sending its canonical APNs attempt twice', async () => {
+    const created = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 902, {
+      tenantId: 902,
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Training plan needs a choice',
+      body: 'Review the plan choice in Nexus.',
+      relatedEntityId: 'training-exact-delivery-resume',
+      relatedEntityType: 'training_profile',
+      requiresUserAction: true,
+      dedupeKey: 'training:exact-delivery-resume',
+    }));
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    expect(created.item).not.toBeNull();
+
+    // Model a process exit after APNs acceptance and its durable attempt, but
+    // before the evaluation log/intent status became the completion receipt.
+    testDb.prepare('DELETE FROM notification_decision_logs WHERE intent_id = ?')
+      .run(created.intent.intentId);
+    testDb.prepare(`
+      UPDATE notification_center_items SET decision_log_id = NULL WHERE item_id = ?
+    `).run(created.item!.itemId);
+    testDb.prepare(`
+      UPDATE notification_intents SET status = 'pending' WHERE intent_id = ?
+    `).run(created.intent.intentId);
+
+    const resumed = await resumeNotificationIntentDelivery(created.intent.intentId, 902, 902);
+    const replayed = await resumeNotificationIntentDelivery(created.intent.intentId, 902, 902);
+
+    expect(resumed).toMatchObject({
+      intentId: created.intent.intentId,
+      notificationId: created.item!.itemId,
+      decision: 'sent_push',
+      replayed: false,
+    });
+    expect(replayed).toMatchObject({
+      decisionLogId: resumed.decisionLogId,
+      replayed: true,
+    });
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS n FROM notification_delivery_attempts
+       WHERE intent_id = ? AND notification_id = ?
+    `).get(created.intent.intentId, created.item!.itemId) as { n: number }).n).toBe(1);
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS n FROM notification_decision_logs
+       WHERE intent_id = ? AND user_id = 902 AND tenant_id = 902
+    `).get(created.intent.intentId) as { n: number }).n).toBe(1);
+  });
+
+  it('does not let an intervening duplicate receipt suppress canonical delivery resume', async () => {
+    const canonical = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 904, {
+      tenantId: 904,
+      intentId: 'ni-canonical-delivery-resume-904',
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Training plan needs a canonical choice',
+      body: 'Review the canonical training plan choice in Nexus.',
+      relatedEntityId: 'training-canonical-delivery-resume',
+      relatedEntityType: 'training_profile',
+      requiresUserAction: true,
+      dedupeKey: 'training:canonical-delivery-resume',
+    }));
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    expect(canonical.item).not.toBeNull();
+
+    // Model a committed proposal whose request process exits after APNs and its
+    // durable attempt, but before the canonical evaluation receipt is written.
+    testDb.prepare('DELETE FROM notification_decision_logs WHERE intent_id = ?')
+      .run(canonical.intent.intentId);
+    testDb.prepare('UPDATE notification_center_items SET decision_log_id = NULL WHERE item_id = ?')
+      .run(canonical.item!.itemId);
+    testDb.prepare("UPDATE notification_intents SET status = 'pending' WHERE intent_id = ?")
+      .run(canonical.intent.intentId);
+
+    const duplicate = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 904, {
+      tenantId: 904,
+      intentId: 'ni-duplicate-delivery-resume-904',
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Training plan needs a canonical choice',
+      body: 'Review the canonical training plan choice in Nexus.',
+      relatedEntityId: 'training-canonical-delivery-resume',
+      relatedEntityType: 'training_profile',
+      requiresUserAction: true,
+      dedupeKey: 'training:canonical-delivery-resume',
+    }));
+    expect(duplicate.decisionLog).toMatchObject({
+      notificationId: canonical.item!.itemId,
+      intentId: canonical.intent.intentId,
+      decision: 'deduped',
+    });
+
+    const resumed = await resumeNotificationIntentDelivery(canonical.intent.intentId, 904, 904);
+    const replayed = await resumeNotificationIntentDelivery(canonical.intent.intentId, 904, 904);
+
+    expect(resumed).toMatchObject({
+      intentId: canonical.intent.intentId,
+      notificationId: canonical.item!.itemId,
+      decision: 'sent_push',
+      replayed: false,
+    });
+    expect(replayed).toMatchObject({
+      decisionLogId: resumed.decisionLogId,
+      decision: 'sent_push',
+      replayed: true,
+    });
+    expect(resumed.decisionLogId).not.toBe(duplicate.decisionLog.decisionLogId);
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS n FROM notification_delivery_attempts
+       WHERE intent_id = ? AND notification_id = ?
+    `).get(canonical.intent.intentId, canonical.item!.itemId) as { n: number }).n).toBe(1);
+    expect(testDb.prepare(`
+      SELECT decision_log_id AS decisionLogId
+        FROM notification_center_items
+       WHERE item_id = ? AND user_id = 904 AND tenant_id = 904
+    `).get(canonical.item!.itemId)).toEqual({ decisionLogId: resumed.decisionLogId });
+  });
+
+  it('terminalizes an abandoned APNs claim as outcome-unknown without resending', async () => {
+    const created = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 903, {
+      tenantId: 903,
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Training plan needs review',
+      body: 'Review the current plan in Nexus.',
+      relatedEntityId: 'training-abandoned-delivery-claim',
+      relatedEntityType: 'training_profile',
+      requiresUserAction: true,
+      dedupeKey: 'training:abandoned-delivery-claim',
+    }));
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+
+    testDb.prepare('DELETE FROM notification_decision_logs WHERE intent_id = ?')
+      .run(created.intent.intentId);
+    testDb.prepare('UPDATE notification_center_items SET decision_log_id = NULL WHERE item_id = ?')
+      .run(created.item!.itemId);
+    testDb.prepare("UPDATE notification_intents SET status = 'pending' WHERE intent_id = ?")
+      .run(created.intent.intentId);
+    testDb.prepare(`
+      UPDATE notification_delivery_attempts
+         SET status = 'claimed', error_code = NULL, provider_response_code = NULL,
+             sent_at = NULL, created_at = '2026-05-07T11:00:00.000Z'
+       WHERE intent_id = ? AND notification_id = ?
+    `).run(created.intent.intentId, created.item!.itemId);
+
+    const resumed = await resumeNotificationIntentDelivery(created.intent.intentId, 903, 903);
+
+    expect(resumed).toMatchObject({
+      decision: 'apns_delivery_failed',
+      replayed: false,
+    });
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    expect(testDb.prepare(`
+      SELECT status, error_code AS errorCode
+        FROM notification_delivery_attempts
+       WHERE intent_id = ? AND notification_id = ?
+    `).get(created.intent.intentId, created.item!.itemId)).toEqual({
+      status: 'failed',
+      errorCode: 'apns_delivery_outcome_unknown',
+    });
   });
 
   it('defaults per-user report schedule preferences to null and persists explicit overrides', () => {
@@ -1596,6 +1761,47 @@ describe('Secretary Notification Orchestrator', () => {
         userId: 72,
         tenantId: 72,
         iosDestination: 'decision_center',
+      }),
+    }));
+  });
+
+  it('includes exact action versions only after atomic Decision metadata is committed', async () => {
+    testDb.exec(`
+      ALTER TABLE notification_center_items
+        ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE notification_intents
+        ADD COLUMN context_version TEXT;
+    `);
+    const contextVersion = 'ctx_atomic_apns_contract_v1';
+
+    const decision = await createNotificationIntent(buildSkillNotificationFixtureIntent('training', 721, {
+      type: 'decision_required',
+      priority: 'time_sensitive',
+      title: 'Training plan needs a current choice',
+      body: 'Review the current training plan choice.',
+      relatedEntityId: 'training-versioned-apns',
+      relatedEntityType: 'training_profile',
+      requiresUserAction: true,
+      dedupeKey: 'decision-versioned-apns',
+    }), {
+      atomicItemProposal: true,
+      onItemPersistedInTransaction: ({ intent }) => {
+        testDb.prepare(`
+          UPDATE notification_intents
+             SET context_version = ?
+           WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+        `).run(contextVersion, intent.intentId, intent.userId, intent.tenantId);
+      },
+    });
+
+    expect(mockSendPushNotification).toHaveBeenCalledWith(721, expect.objectContaining({
+      data: expect.objectContaining({
+        decisionId: decision.item!.itemId,
+        notificationUserId: 721,
+        userId: 721,
+        tenantId: 721,
+        recordVersion: 1,
+        contextVersion,
       }),
     }));
   });

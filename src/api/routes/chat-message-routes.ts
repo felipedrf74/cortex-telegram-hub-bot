@@ -39,6 +39,7 @@ import {
   findDecisionByRelatedEntity,
   performDecisionAction,
 } from '../../services/decision-center';
+import { resolveDecisionChoice } from '../../services/decision-center/action-resolution';
 import { createChatLatencyTracker } from '../../services/chat-answer-contract';
 import {
   normalizeChatMessageRequest,
@@ -266,11 +267,16 @@ export function registerChatMessageRoutes(
     }
 
     const decision = findDecisionByRelatedEntity(userId, tenantId, 'chat_confirmation', pending.id);
+    const decisionChoice = decision ? resolveDecisionChoice(decision, 'A') : null;
     if (isChatCoreV2GuardOnlyPendingConfirmation(pending)) {
-      const decisionResult = decision
-        ? await performDecisionAction(decision.decisionId, 'option_a', userId, tenantId, {
+      const decisionResult = decision && decisionChoice?.ok
+        ? await performDecisionAction(decision.decisionId, decisionChoice.value.actionId, userId, tenantId, {
           idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
             ?? `chat-core-v2-guard:${tenantId}:${userId}:${pending.id}`,
+          channel: 'chat',
+          payload: decisionChoice.value.payload,
+          ...(decision.recordVersion ? { expectedVersion: decision.recordVersion } : {}),
+          ...(decision.contextVersion ? { contextVersion: decision.contextVersion } : {}),
         })
         : null;
       const locale = resolveChatCoreV2RouteLocale(req, userId, pending.actionSummary);
@@ -338,10 +344,27 @@ export function registerChatMessageRoutes(
       return;
     }
 
-    const decisionResult = decision
-      ? await performDecisionAction(decision.decisionId, 'option_a', userId, tenantId, {
+    if (decision && (!decisionChoice || !decisionChoice.ok)) {
+      const errorCode = decisionChoice && !decisionChoice.ok
+        ? decisionChoice.code
+        : 'DECISION_CHOICE_NOT_AVAILABLE';
+      res.status(409).json({
+        error: {
+          code: errorCode,
+          message: 'The current decision no longer exposes the confirmed option. Refresh and review it again.',
+        },
+      });
+      return;
+    }
+
+    const decisionResult = decision && decisionChoice?.ok
+      ? await performDecisionAction(decision.decisionId, decisionChoice.value.actionId, userId, tenantId, {
         idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
           ?? `chat-confirm:${tenantId}:${userId}:${pending.id}`,
+        channel: 'chat',
+        payload: decisionChoice.value.payload,
+        ...(decision.recordVersion ? { expectedVersion: decision.recordVersion } : {}),
+        ...(decision.contextVersion ? { contextVersion: decision.contextVersion } : {}),
       })
       : null;
     const confirmedAction = await executeConfirmedChatActionRuns({

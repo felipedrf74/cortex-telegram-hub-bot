@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
-export const AGENT_JOB_MANIFEST_VERSION = '2026-08-23.1';
+export const AGENT_JOB_MANIFEST_VERSION = '2026-08-31.1';
 
 const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
 
@@ -163,6 +163,10 @@ export const JOB_POLICIES = Object.freeze({
   decision_handled_history_backfill: noProvider('decision-center', 'platform-tenant-scoped-rows'),
   decision_ledger_retention_prune: noProvider('decision-center', 'platform-retention'),
   decision_metrics_rollup: noProvider('decision-center', 'platform-daily-rollup'),
+  decision_rank_snapshot_backfill: noProvider('decision-center', 'bounded-platform-tenant-user-scopes', {
+    retryPolicy: 'next-scheduled-run-with-partial-failure-fatal',
+    outputPolicy: 'immutable-versioned-rank-snapshot-per-scope',
+  }),
   decision_recovery_notify: noProvider('decision-center', 'bounded-lifecycle-event-tenant-user', {
     retryPolicy: 'next-ten-minute-sweep-with-sixty-minute-lookback-and-event-dedupe',
     outputPolicy: 'event-deduped-tenant-scoped-recovery-notification',

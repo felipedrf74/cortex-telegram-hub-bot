@@ -118,9 +118,10 @@ function createLegacyDatabase(
       status TEXT NOT NULL DEFAULT 'pending'
     );
     -- Minimal predecessor-owned Training/report shapes required by additive
-    -- migrations after the governed 283 convergence boundary. The fixture
-    -- records the pre-283 prefix without replaying hundreds of historical
-    -- migrations, so these tables model the already-deployed schema.
+    -- Decision Center and Training migrations after the governed 283
+    -- convergence boundary. The fixture records the pre-283 prefix without
+    -- replaying hundreds of historical migrations, so these tables model the
+    -- already-deployed schema.
     CREATE TABLE travel_windows (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -156,6 +157,29 @@ function createLegacyDatabase(
       consent_scope TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE notification_center_items (
+      item_id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'unread'
+    );
+    CREATE TABLE notification_intents (
+      intent_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL
+    );
+    CREATE TABLE agent_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_agent TEXT NOT NULL,
+      signal_type TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL,
+      user_id INTEGER,
+      tenant_id INTEGER
+    );
     CREATE TABLE report_documents (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -183,6 +207,16 @@ function createLegacyDatabase(
       fired_for_local_date TEXT NOT NULL,
       fired_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, job_type, fired_for_local_date)
+    );
+    CREATE TABLE background_jobs (
+      job_id TEXT PRIMARY KEY,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER,
+      job_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT
     );
   `);
   if (environment === 'production') {
@@ -411,6 +445,7 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '303_training_coach_v2_contracts.sql' }),
         expect.objectContaining({ file: '304_training_coach_tenant_scope.sql' }),
         expect.objectContaining({ file: '305_training_coach_v2_soak_metrics.sql' }),
+        expect.objectContaining({ file: '306_decision_center_rewrite_foundation.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

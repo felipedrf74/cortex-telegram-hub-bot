@@ -159,6 +159,226 @@
     ],
     "cleanupMappings": [
       {
+        "test": "__tests__/api/chat-message-replay.test.ts",
+        "replacementTests": [
+          "__tests__/api/chat-message-replay.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/chat-pipeline/stages/decision-shortcut.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/chat-pipeline/stages/decision-shortcut.ts:63-66",
+            "anchor": "channel: 'chat',",
+            "behavior": "Chat confirmation resolves the current server option and forwards its payload plus current record and context versions into the canonical Decision Center command.",
+            "replacementTest": "__tests__/api/chat-message-replay.test.ts",
+            "ownerTestNamePattern": "pins the decision-confirmation shortcut family and stage order$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained replay suite replaces a call-count assertion with the stronger exact server-option, payload, channel, and version-bound command contract."
+      },
+      {
+        "test": "__tests__/api/decision-cursor.test.ts",
+        "replacementTests": [
+          "__tests__/api/decision-cursor.test.ts"
+        ],
+        "sources": [
+          "src/api/decision-cursor.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/decision-cursor.ts:83-83",
+            "anchor": "if (cursor && cursor.rankingVersion !== DECISION_RANKING_VERSION) {",
+            "behavior": "A ranking-version mismatch returns the typed stale-cursor conflict instead of silently restarting pagination at page one.",
+            "replacementTest": "__tests__/api/decision-cursor.test.ts",
+            "ownerTestNamePattern": "rejects a cursor minted under a different ranking version with a typed conflict$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained cursor suite replaces permissive null and page-one fallback assertions with typed malformed and stale cursor failures."
+      },
+      {
+        "test": "__tests__/api/plan-routes.test.ts",
+        "replacementTests": [
+          "__tests__/api/plan-routes.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/plan.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/plan.ts:167-167",
+            "anchor": "idempotencyKey: req.body?.idempotencyKey ?? headerIdempotencyKey,",
+            "behavior": "The recompute route delegates one scoped locale and timezone-bound idempotent request to the coherent planning snapshot owner.",
+            "replacementTest": "__tests__/api/plan-routes.test.ts",
+            "ownerTestNamePattern": "delegates validated idempotent week \\+ today recompute to one coherent snapshot owner$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained route suite removes direct dual-cache invalidation assertions and replaces them with the single coherent recompute service contract and typed idempotency failures."
+      },
+      {
+        "test": "__tests__/portal/portal-decision-center-routes.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-decision-center-routes.test.ts"
+        ],
+        "sources": [
+          "src/portal/decision-center-routes.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/portal/decision-center-routes.ts:386-392",
+            "anchor": "const { preferences } = updateDecisionPreferencesViaCommand({",
+            "behavior": "Portal preference mutations use the canonical scoped idempotent command contract and retain the portal channel in the receipt.",
+            "replacementTest": "__tests__/portal/portal-decision-center-routes.test.ts",
+            "ownerTestNamePattern": "updates portal Decision Center preferences through the canonical preferences service and audits it$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained portal suite replaces the legacy direct preference helper assertion with the canonical command envelope and audit contract."
+      },
+      {
+        "test": "__tests__/scripts/migration-cd-eligibility.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/migration-cd-eligibility.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/migration-cd-eligibility.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/migration-cd-eligibility.mjs:888-888",
+            "anchor": "const files = readDir(migrationsDir).filter((file) => MIGRATION_FILE.test(file)).sort();",
+            "behavior": "Release migration evidence inventories every canonical numbered migration in deterministic order before classification and digest binding.",
+            "replacementTest": "__tests__/scripts/migration-cd-eligibility.test.ts",
+            "ownerTestNamePattern": "covers every migration file, ordered, with byte digests$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained inventory test updates its exact corpus assertions for migration 306 while preserving ordered complete release evidence."
+      },
+      {
+        "test": "__tests__/services/decision-center-logic-v2.test.ts",
+        "replacementTests": [
+          "__tests__/services/decision-center-logic-v2.test.ts"
+        ],
+        "sources": [
+          "src/services/decision-center-logic-v2.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/decision-center-logic-v2.ts:491-499",
+            "anchor": "feasibility: protectedTimeBlocked ? 'blocked' : 'needs_enrichment',",
+            "behavior": "Secretary returns a blocked recommendation when only protected windows exist and no explicit override was supplied.",
+            "replacementTest": "__tests__/services/decision-center-logic-v2.test.ts",
+            "ownerTestNamePattern": "Secretary advisor blocks protected-only availability until the user explicitly overrides it$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained advisor suite removes a permissive protected-window alternative assertion and replaces it with hard exclusion plus explicit override coverage."
+      },
+      {
+        "test": "__tests__/services/notification-recovery-and-consent.test.ts",
+        "replacementTests": [
+          "__tests__/services/notification-recovery-and-consent.test.ts"
+        ],
+        "sources": [
+          "src/services/notification-orchestrator.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/notification-orchestrator.ts:5688-5688",
+            "anchor": "logger.debug({ err, intentId: intent.intentId }, 'priority shadow verdict not recorded');",
+            "behavior": "A normal request persists exactly one notification item while optional shadow instrumentation failure remains non-fatal and never repairs schema on the request path.",
+            "replacementTest": "__tests__/services/notification-recovery-and-consent.test.ts",
+            "ownerTestNamePattern": "keeps delivery safe without recreating a missing shadow table on the request path$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained recovery suite replaces request-path schema self-healing with a no-DDL guarantee while preserving the durable in-app item."
+      },
+      {
+        "test": "__tests__/services/product-learning.test.ts",
+        "replacementTests": [
+          "__tests__/services/product-learning.test.ts"
+        ],
+        "sources": [
+          "src/services/decision-center/command-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/decision-center/command-service.ts:2774-2774",
+            "anchor": "'DECISION_VERSION_CONFLICT',",
+            "behavior": "The product-learning approval action rejects a stale record version before mutation while accepting the exact current record and context versions.",
+            "replacementTest": "__tests__/services/product-learning.test.ts",
+            "ownerTestNamePattern": "creates the review receipt through the authenticated Decision Center action path$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained product-learning flow adds the now-required record and context versions, proves stale-version refusal, and continues to prove APNs refusal plus authenticated in-app execution."
+      },
+      {
+        "test": "__tests__/services/training-coach-v2-decision-activation.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-coach-v2-decision-activation.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-revision-activation.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-revision-activation.ts:545-545",
+            "anchor": "if (workout.executionDisposition?.state === 'DROPPED') {",
+            "behavior": "Activating an approved immutable Training revision projects a dropped future session as skipped and dropped with its reviewed reason code while leaving pre-approval projection unchanged.",
+            "replacementTest": "__tests__/services/training-coach-v2-decision-activation.test.ts",
+            "ownerTestNamePattern": "stages and activates an immutable child revision without mutating the active projection before approval$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained activation suite expands immutable revision coverage to prove the newly supported drop-session executor and reviewed reason-code projection."
+      },
+      {
+        "test": "__tests__/services/report-document-store.test.ts",
+        "replacementTests": [
+          "__tests__/services/report-document-store.test.ts"
+        ],
+        "sources": [
+          "src/services/report-document-store.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/report-document-store.ts:516-516",
+            "anchor": "return false;",
+            "behavior": "A missing push-preference schema fails closed instead of defaulting delivery on or creating the table from a request.",
+            "replacementTest": "__tests__/services/report-document-store.test.ts",
+            "ownerTestNamePattern": "fails closed without running request-path DDL when push_preferences migration was missed$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained report suite replaces push-preference request-path self-healing with an explicit fail-closed no-DDL contract."
+      },
+      {
+        "test": "__tests__/services/weekly-plan-orchestrator.test.ts",
+        "replacementTests": [
+          "__tests__/services/weekly-plan-orchestrator.test.ts"
+        ],
+        "sources": [
+          "src/services/weekly-plan-orchestrator.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/weekly-plan-orchestrator.ts:284-284",
+            "anchor": "if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {",
+            "behavior": "An explicitly invalid tenant scope returns a degraded empty plan before any cache, user, or mesh read can occur.",
+            "replacementTest": "__tests__/services/weekly-plan-orchestrator.test.ts",
+            "ownerTestNamePattern": "fails closed before cache or mesh reads when an explicit tenant is invalid$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained orchestrator suite replaces individual signal-dismiss assertions with scoped atomic reconciliation and adds a fail-closed tenant boundary."
+      },
+      {
         "test": "__tests__/services/local-inference-runtime-control.test.ts",
         "replacementTests": [
           "__tests__/services/local-inference-runtime-control.test.ts"
@@ -361,7 +581,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:219-219",
+            "pattern": "src/services/event-backbone-worker.ts:222-222",
             "anchor": "jobType: 'training_plan_calendar_sync'",
             "behavior": "The wildcard event router converts a Training calendar-sync request into the dedicated durable worker job without performing provider work itself.",
             "replacementTest": "__tests__/services/training-plan-calendar-sync-worker.test.ts",
@@ -839,7 +1059,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:196-196",
+            "pattern": "src/services/event-backbone-worker.ts:199-199",
             "anchor": "jobType: 'project_read_models'",
             "behavior": "Projectable Training revision events enqueue exactly one idempotent read-model projection job and no calendar worker job.",
             "replacementTest": "__tests__/services/training-plan-revision-outbox.test.ts",
@@ -1281,7 +1501,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/notification-contracts.ts:184-184",
+          "pattern": "src/services/notification-contracts.ts:187-187",
             "anchor": "return ['reconnect', 'open_detail'];",
             "behavior": "Sync-failure decisions stop advertising an unimplemented retry and instead expose an enabled navigation-only reconnect action.",
             "replacementTest": "__tests__/services/decision-center.test.ts",
@@ -1558,7 +1778,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/finance-tracker.ts:997-1001",
+            "pattern": "src/services/finance-tracker.ts:998-1004",
             "anchor": "financeTransactionAuditEvidence(transactionId, ['category', 'subcategory'])",
             "behavior": "Finance transaction updates emit only the transaction identity and changed-field names, never private before or after values.",
             "replacementTest": "__tests__/services/finance-tracker.test.ts",
@@ -1838,8 +2058,8 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/report-schedule-dispatcher.ts:219-220",
-            "anchor": "claim.run(target.userId, target.tenantId, job, candidateDay.toISODate())",
+            "pattern": "src/services/report-schedule-dispatcher.ts:239-240",
+            "anchor": "claim.run(schedule.userId, schedule.tenantId, job, schedule.localDate)",
             "behavior": "Scheduled reports claim independently for the same user in each explicit tenant while retaining at-most-once delivery per tenant-local day.",
             "replacementTest": "__tests__/services/report-schedule-dispatcher.test.ts",
             "ownerTestNamePattern": "claims the same user independently in two explicit tenant scopes$",

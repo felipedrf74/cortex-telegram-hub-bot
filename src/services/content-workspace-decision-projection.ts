@@ -106,6 +106,8 @@ export async function ensureContentWorkspaceReviewDecision(
     ],
     deeplink: `nexus://content/item/${item.id}?action=trust`,
     dedupeKey,
+    idempotencyKey: `content-review:${scope.tenantId}:${scope.userId}:${item.id}:v${item.workflowVersion}`,
+    channel: 'internal',
     requiresUserAction: true,
     decisionDeadline: item.deadlineAt,
     deliveryPolicy: 'in_app_only',

@@ -120,6 +120,14 @@ export interface TrainingPlanRevisionWorkout {
   scheduledEndAt?: string;
   scheduleTimeZone?: string;
   eventRole?: 'EVENT';
+  executionDisposition?: {
+    state: 'DROPPED';
+    reasonCode: string;
+  };
+  executionAdaptations?: Array<{
+    actionType: 'drop_session' | 'move_session' | 'scale_volume' | 'downgrade_intensity';
+    reasonCode: string;
+  }>;
   blocks: TrainingPlanWorkoutBlock[];
 }
 
@@ -257,7 +265,8 @@ export function countActiveWorkouts(
   const weeks = Array.isArray(document?.weeks) ? document.weeks : [];
   return weeks.reduce((count, week) => {
     const workouts = Array.isArray(week?.workouts) ? week.workouts : [];
-    return count + workouts.filter((workout) => workout?.sessionType !== 'rest').length;
+    return count + workouts.filter((workout) =>
+      workout?.sessionType !== 'rest' && workout?.executionDisposition?.state !== 'DROPPED').length;
   }, 0);
 }
 
@@ -491,6 +500,31 @@ export function validateTrainingPlanRevisionDocument(
   document: TrainingPlanRevisionDocument,
   options: TrainingPlanCandidateBuildOptions = {},
 ): TrainingPlanRevisionQualityCheck[] {
+  const invalidDisposition = Array.isArray(document?.weeks) && document.weeks.some((week) =>
+    Array.isArray(week?.workouts) && week.workouts.some((workout) => {
+    const disposition = workout.executionDisposition;
+    const adaptations = workout.executionAdaptations;
+    const allowedAdaptations = new Set(['drop_session', 'move_session', 'scale_volume', 'downgrade_intensity']);
+    return (disposition != null && (
+        disposition.state !== 'DROPPED'
+        || typeof disposition.reasonCode !== 'string'
+        || disposition.reasonCode.trim().length === 0
+        || disposition.reasonCode.length > 200
+      ))
+      || (adaptations != null && (
+        !Array.isArray(adaptations)
+        || adaptations.length === 0
+        || adaptations.length > 16
+        || adaptations.some((adaptation) =>
+          !allowedAdaptations.has(adaptation.actionType)
+          || typeof adaptation.reasonCode !== 'string'
+          || adaptation.reasonCode.trim().length === 0
+          || adaptation.reasonCode.length > 200)
+      ));
+  }));
+  if (invalidDisposition) {
+    throw new Error('TRAINING_REVISION_QUALITY_FAILED:EXECUTION_DISPOSITION_VALID');
+  }
   if (document.schemaVersion === TRAINING_TYPED_PLAN_REVISION_DOCUMENT_SCHEMA) {
     return [
       ...validateTrainingTypedPlanRevisionDocument(document),

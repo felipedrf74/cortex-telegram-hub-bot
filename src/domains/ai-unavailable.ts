@@ -232,11 +232,15 @@ async function buildSecretaryBusyFallback(language: string, userId: number, tena
   }
 }
 
-async function buildFinanceBusyFallback(language: string, userId: number): Promise<string | null> {
+async function buildFinanceBusyFallback(
+  language: string,
+  userId: number,
+  tenantId: number,
+): Promise<string | null> {
   try {
     const month = new Date().toISOString().slice(0, 7);
-    const summary = getMonthlySummary(userId, month);
-    const currency = getPreferredCurrencyForUser(userId);
+    const summary = getMonthlySummary(userId, month, { tenantId });
+    const currency = getPreferredCurrencyForUser(userId, { tenantId });
 
     if (summary.transactionCount === 0 && summary.totalIncome === 0 && summary.totalExpenses === 0) {
       return null;
@@ -340,7 +344,7 @@ export async function buildAITemporarilyBusyResponse(domain: DomainName, userId?
   }
 
   if (domain === 'finance' && hasValidUserScope) {
-    const financeFallback = await buildFinanceBusyFallback(language, userId);
+    const financeFallback = await buildFinanceBusyFallback(language, userId, scopedTenantId ?? userId);
     if (financeFallback) {
       return {
         text: financeFallback,

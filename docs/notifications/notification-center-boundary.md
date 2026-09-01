@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead (Felipe)
-Last verified: 2026-08-02
+Last verified: 2026-08-31
 Update policy: update when a producer moves between user notifications, inbox history, operator alerts, or legacy delivery.
 
 ## User Notification Center
@@ -109,6 +109,97 @@ Finance payment reminders that expose `mark_paid` are Decision Center
 reminders use the `reminder` category with `open_detail`, `snooze`, and
 `dismiss` only.
 
+## Decision Center Command And Delivery Boundary
+
+Decision Center is the cross-skill control layer for genuine choices,
+conflicts, approvals, recovery, and compact status. It does not own the full
+daily or weekly plan; Secretary/Plan remains authoritative for those
+projections. Every user-visible Decision mutation carries authenticated user
+and tenant scope, one stable idempotency key, current record/context versions
+when the operation is versioned, the originating channel, deterministic
+approval requirements, an executable registry entry, and exact read-back.
+REST, portal, chat, shortcuts, APNs, and the opted-in Secretary low-risk reflow
+must converge on that contract rather than granting authority from model or
+client copy.
+
+Decision proposal persistence is atomic with the notification intent, center
+item, Decision metadata, conflict/dedup disposition, lifecycle `created`
+entry, immutable rank snapshot, outbox events, and the existing
+`deliver_notification` background job. A failure rolls the proposal back
+before provider work. A persisted duplicate is retained as superseded audit
+state but suppresses its delivery job in the same transaction; only the
+canonical proposal may interrupt. Provider delivery begins only after commit
+and takes a deterministic durable attempt claim before APNs, so a request/job
+race cannot send the same intent twice.
+
+Decision APNs payloads include the exact decision id, authenticated user and
+tenant scope, `recordVersion`, and `contextVersion`. Missing or changed
+versions, high-risk actions, admin/human review, stale evidence, blocked
+dependencies, and any action outside the APNs truth table return an open-app
+disposition without executing. A replay may reconcile only an already-recorded
+scoped action/idempotency tuple; it cannot create fresh authority. Human-facing
+choice aliases such as `A`, `B`, `1`, and `2` are resolved against the current
+server option and its server-owned payload before execution.
+
+Decision GET paths perform read-only repository readiness assertions and pure
+projections. Schema creation and repair belong to governed migrations, never a
+request path. V2 cursor reads prefer immutable rank snapshots bound to user,
+tenant, filters, ranking version, ranking instant, and the full rank tuple.
+Valid legacy cursors retain their prior ordering contract; malformed or stale
+cursors fail with typed errors rather than silently restarting page one.
+
+`DECISION_CENTER_REWRITE_MODE` is the only engine selector. An absent value
+means `active`; `active` and `legacy` are the only accepted values, and any
+other value prevents startup. The legacy executor remains behind the same
+scope, version, approval, delivery, and read-back guards and is never run in
+parallel with the rewrite. Removing it requires a separate reviewed cleanup
+after seven healthy production days with no fallback selection, scope breach,
+unreconciled action attempt, stuck report lease, expired-signal leak, or
+attributable P0/P1 incident. This source contract does not claim that the
+production observation window has started or completed.
+
+## Planning And Scheduled-Report Boundary
+
+Secretary/Plan owns the full week and day. Every route fill and recompute
+captures user, tenant, IANA timezone, locale, local date, ISO week, and clock
+once, then passes that immutable context through mesh reads, ranking inputs,
+signal provenance, the weekly result, and the daily projection. Route-owned
+SWR is the sole cache for `/plan/week` and `/plan/today`; their composers are
+called in cache-bypass mode. `POST /plan/recompute` requires a stable
+idempotency key and uses a scoped leased receipt. An exact retry returns the
+stored weekly/daily response without invalidating or recomputing, altered key
+reuse returns 409, and the daily result is projected from the exact returned
+week with one shared snapshot id and generation instant.
+
+Mesh signal replacement is one transaction and persists deterministic signal
+identity plus versioned provenance. Reads exclude expired rows. Secretary task
+dates and calendar windows use the requested week and tenant, Finance tax and
+budget reads retain tenant scope, and time-relative Finance/Training/Cooking
+calculations use the request-captured instant. P1 is the strongest mesh
+priority; P4 is background and cannot displace P1/P2 work.
+Secretary candidate ranking excludes structured or explicitly labelled
+protected time entirely. A protected slot can enter the feasible set only
+when the planning context records an explicit user override; preference copy
+such as “afternoon focus” is not treated as override evidence.
+
+Scheduled reports enqueue into the existing background-job ledger before
+generation. A claimed job holds a renewable lease while generation, report
+storage, Decision proposal, and delivery intent complete. Successful fenced
+completion writes a scoped receipt; failures remain retryable until the
+canonical attempt policy terminates them. A per-user failure does not stop
+healthy users in the batch, but it makes the scheduler job observably degraded
+or failed. Stable report dispatch uses a separate receipt table, so an exact
+replay returns the original report without imposing a new uniqueness rule on
+the predecessor `report_documents` table.
+
+Migration `306_decision_center_rewrite_foundation.sql` owns immutable rank
+snapshots, first-class signal identity/provenance, report dispatch and
+scheduled-completion receipts, and leased planning-recompute receipts. Runtime
+readiness only asserts this schema; it never creates or repairs it on a request
+path. The report dispatch column is nullable on migration 304's tenant-scoped
+projection; the predecessor report table remains untouched so the previous
+binary can continue its old insert shape during a governed rollback.
+
 ## Operator And Admin Alert Planes
 
 Operator alerts, cost guardrails, registry cross-tenant alerts, Chat v2 readiness alerts, model-routing alerts, and human-review queues are operational/admin alert planes. They should not be counted in the user Notification Center, should not affect app badges, and should not be coerced into `NotificationIntentType`.
@@ -198,9 +289,10 @@ case where a setting or control did not do what it said.
 - **Per-type mute stops the push.** `decision_type_suppressions` is consulted
   in the delivery ladder, not only by the read filter, and the badge query
   applies the same predicate so the badge cannot count rows the list hides.
-  `security_account` is never suppressible. The suppression read fails
-  **closed** here (degrade to in-app) while the read filter fails **open**:
-  the durable item exists either way, so only the interrupt is at stake.
+  `security_account` is never suppressible. A policy-store read failure keeps
+  critical/policy-floored safety items visible and fails closed for lower-risk
+  cards and interrupts; unavailable policy state cannot silently override a
+  user's suppression choice.
 - **Queued deliveries re-check preferences.** The release sweep re-evaluates
   the skill gate, `pushEnabled`, delivery policy and per-type mute before
   sending, so turning push off drains the queue instead of flushing it. Digest

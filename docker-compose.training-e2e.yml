@@ -87,6 +87,15 @@ services:
       # production flag state (operator input).
       COACH_RULE_ENFORCEMENT: ${NEXUS_TRAINING_E2E_COACH_RULE_ENFORCEMENT:-off}
       COACH_PERIODIZATION_V2_ENABLED: ${NEXUS_TRAINING_E2E_COACH_PERIODIZATION_V2:-on}
+      # The fresh harness creates the owner first and the controlled iOS user
+      # second. Explicitly enroll that fixture account so the rewritten
+      # Decision Center can prove the real training:plan:write permission
+      # boundary instead of manufacturing a confirmation bypass.
+      TRAINING_PLAN_REVISION_V1_MODE_USER_2: "active"
+      TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_2: "true"
+      TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_2: "true"
+      TRAINING_ADAPTATION_V1_MODE_USER_2: "active"
+      TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: "training-e2e-revision-snapshot-key-20260830"
       TRAINING_SAFETY_GUARDRAILS_ENABLED: ${NEXUS_TRAINING_E2E_SAFETY_GUARDRAILS:-off}
       COACH_KERNEL_EQUIPMENT_AUTHORITY_ENABLED: ${NEXUS_TRAINING_E2E_EQUIPMENT_AUTHORITY:-off}
       COACH_KERNEL_EQUIPMENT_AUTHORITY_SHADOW_ENABLED: ${NEXUS_TRAINING_E2E_EQUIPMENT_AUTHORITY_SHADOW:-off}

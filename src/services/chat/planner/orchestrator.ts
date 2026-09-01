@@ -32,7 +32,7 @@ const PENDING_CONTINUATION_HELPERS: PendingContinuationHelpers = {
 };
 
 export async function buildChatActionPlan(input: ChatPlannerInput): Promise<ChatActionPlan | null> {
-  const cancellation = buildPendingCancellationPlan(input);
+  const cancellation = await buildPendingCancellationPlan(input);
   if (cancellation) return cancellation;
 
   // Publication requests must fail closed before a pending Content brief can

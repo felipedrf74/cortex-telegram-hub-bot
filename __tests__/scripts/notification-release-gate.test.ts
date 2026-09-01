@@ -45,12 +45,14 @@ import {
   runDecisionExpiryJob,
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 describe('notification release gate fixture', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
 
@@ -75,6 +77,44 @@ describe('notification release gate fixture', () => {
       genericMutatingActionSuccesses: 0,
       apnsMutatingActionsExposed: 0,
       staleSourceVisibleInInbox: 0,
+      unreconciledDeliveryAttempts: 0,
+      deliveryOutcomeUnknownAttempts: 0,
+      pass: true,
+    });
+  });
+
+  it('blocks release while a scoped APNs claim is unreconciled or has an unknown outcome', () => {
+    testDb.prepare(`
+      INSERT INTO notification_delivery_attempts (
+        attempt_id, notification_id, intent_id, user_id, tenant_id,
+        channel, provider, status, error_code, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'push', 'apns', ?, ?, ?)
+    `).run('nda_claimed', 'n_claimed', 'i_claimed', 91005, 91005, 'claimed', null, new Date().toISOString());
+    testDb.prepare(`
+      INSERT INTO notification_delivery_attempts (
+        attempt_id, notification_id, intent_id, user_id, tenant_id,
+        channel, provider, status, error_code, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'push', 'apns', ?, ?, ?)
+    `).run(
+      'nda_unknown',
+      'n_unknown',
+      'i_unknown',
+      91005,
+      91005,
+      'failed',
+      'apns_delivery_outcome_unknown',
+      new Date().toISOString(),
+    );
+
+    const failing = getDecisionReleaseGateStatus(91005, 91005);
+    expect(failing).toMatchObject({
+      unreconciledDeliveryAttempts: 1,
+      deliveryOutcomeUnknownAttempts: 1,
+      pass: false,
+    });
+    expect(getDecisionReleaseGateStatus(91006, 91006)).toMatchObject({
+      unreconciledDeliveryAttempts: 0,
+      deliveryOutcomeUnknownAttempts: 0,
       pass: true,
     });
   });

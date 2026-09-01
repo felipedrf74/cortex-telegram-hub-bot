@@ -44,6 +44,7 @@ import { withGoogleCategoryTags } from '../../src/services/google-calendar';
 import { setCacheSWR } from '../../src/services/cache-store';
 import { fetchTasks } from '../../src/api/routes/dashboard-data-fetchers';
 import { ensureDecisionCenterTables, getDecisionSummary } from '../../src/services/decision-center';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 import { getAppleHealthSleepAgendaEvents, getAppleHealthSleepSegments } from '../../src/services/health-sleep-agenda';
 import { buildHomeDayDial } from '../../src/services/home-day-dial';
 import {
@@ -654,6 +655,7 @@ describe('Home orchestration focus helpers', () => {
   });
 
   it('computes decision streak gamification from tenant-scoped daily rollups', () => {
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
     const today = DateTime.now().setZone('UTC').toISODate()!;
     const yesterday = DateTime.now().setZone('UTC').minus({ days: 1 }).toISODate()!;

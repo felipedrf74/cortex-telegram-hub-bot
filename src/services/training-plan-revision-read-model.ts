@@ -42,6 +42,8 @@ export interface TrainingPlanRevisionReviewReadModel {
       isStandalone: boolean;
       phaseKey: string | null;
       blocks: unknown[];
+      executionDisposition: { state: 'DROPPED'; reasonCode: string } | null;
+      executionAdaptations: Array<{ actionType: string; reasonCode: string }>;
       fallbackUsed: boolean;
       newlyPrescribable: boolean;
     }>;
@@ -133,6 +135,16 @@ function mapWorkout(
   const standalone = raw.isStandalone === true;
   const phaseKey = standalone ? null : nullableString(raw.phaseKey) ?? weekPhaseKey;
   const blocks = arrayValue(raw.blocks);
+  const rawDisposition = isRecord(raw.executionDisposition) ? raw.executionDisposition : null;
+  const executionDisposition = rawDisposition?.state === 'DROPPED' && stringValue(rawDisposition.reasonCode)
+    ? { state: 'DROPPED' as const, reasonCode: stringValue(rawDisposition.reasonCode) }
+    : null;
+  const executionAdaptations = arrayValue(raw.executionAdaptations).flatMap((adaptation) => {
+    if (!isRecord(adaptation)) return [];
+    const actionType = stringValue(adaptation.actionType);
+    const reasonCode = stringValue(adaptation.reasonCode);
+    return actionType && reasonCode ? [{ actionType, reasonCode }] : [];
+  });
   return {
     workoutKey: stringValue(raw.workoutKey) || `legacy-workout-${index + 1}`,
     sessionType: rawSessionType,
@@ -143,6 +155,8 @@ function mapWorkout(
     isStandalone: standalone,
     phaseKey,
     blocks,
+    executionDisposition,
+    executionAdaptations,
     fallbackUsed: !capability.canonical || blocks.length === 0,
     newlyPrescribable: capability.canonical,
   };

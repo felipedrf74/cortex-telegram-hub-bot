@@ -325,12 +325,15 @@ function buildChildDocument(
       scaleWorkout(workout, action.multiplier);
     } else if (action.type === 'downgrade_intensity') {
       downgradeWorkout(workout, action.targetCeiling);
+    } else if (action.type === 'drop_session') {
+      dropWorkout(workout, action.reasonCode);
     } else if (action.type === 'move_session') {
       if (document.m4) throw new Error('TRAINING_COACH_V2_REVISION_M4_MOVE_REQUIRES_CAPACITY_REVIEW');
       moveWorkout(workout, action.toDate);
     } else {
       throw new Error(`TRAINING_COACH_V2_REVISION_ACTION_UNSUPPORTED:${action.type}`);
     }
+    recordWorkoutAdaptation(workout, action.type, action.reasonCode);
     changedKeys.add(workoutKey);
   }
   return {
@@ -358,6 +361,32 @@ function resolveDocumentWeek(
     (row?.weekKey && entry.weekKey === row.weekKey) || entry.weekNumber === row?.weekNumber);
   if (!week) throw new Error('TRAINING_COACH_V2_REVISION_WEEK_MISSING');
   return week;
+}
+
+function recordWorkoutAdaptation(
+  workout: TrainingPlanRevisionWorkout,
+  actionType: 'drop_session' | 'move_session' | 'scale_volume' | 'downgrade_intensity',
+  reasonCode: string,
+): void {
+  const normalizedReason = reasonCode.trim();
+  if (!normalizedReason || normalizedReason.length > 200) {
+    throw new Error('TRAINING_COACH_V2_REVISION_ACTION_REASON_INVALID');
+  }
+  workout.executionAdaptations = [
+    ...(workout.executionAdaptations ?? []),
+    { actionType, reasonCode: normalizedReason },
+  ];
+}
+
+function dropWorkout(workout: TrainingPlanRevisionWorkout, reasonCode: string): void {
+  const normalizedReason = reasonCode.trim();
+  if (!normalizedReason || normalizedReason.length > 200) {
+    throw new Error('TRAINING_COACH_V2_REVISION_DROP_REASON_INVALID');
+  }
+  workout.executionDisposition = {
+    state: 'DROPPED',
+    reasonCode: normalizedReason,
+  };
 }
 
 function scaleWorkout(workout: TrainingPlanRevisionWorkout, multiplier: number): void {

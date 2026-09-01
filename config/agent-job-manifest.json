@@ -1,6 +1,6 @@
 {
   "schema": "nexus.agent-job-manifest.v3",
-  "version": "2026-08-23.1",
+  "version": "2026-08-31.1",
   "jobs": [
     {
       "id": "ai_credit_sweeper",
@@ -690,8 +690,8 @@
     },
     {
       "id": "decision_metrics_rollup",
-      "name": "Decision Metrics Daily Rollup",
-      "schedule": "15 0 * * *",
+      "name": "Decision Metrics Local-Day Rollup",
+      "schedule": "15 * * * *",
       "domain": "system",
       "lifecycle": "active",
       "policyOwner": "decision-center",
@@ -704,6 +704,30 @@
       "costPolicy": "no-model-provider-cost",
       "latencyPolicy": "callback-owned-no-model-budget",
       "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
+      "id": "decision_rank_snapshot_backfill",
+      "name": "Decision Rank Snapshot Backfill",
+      "schedule": "17,47 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "decision-center",
+      "jobVersion": "1.0.0",
+      "tenantScope": "bounded-platform-tenant-user-scopes",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run-with-partial-failure-fatal",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "immutable-versioned-rank-snapshot-per-scope",
       "notificationPolicy": "job-specific",
       "inputFingerprint": {
         "enforcement": "not-applicable-no-provider",

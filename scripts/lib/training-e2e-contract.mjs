@@ -6,14 +6,15 @@ import path from 'node:path';
 export const TRAINING_E2E_REQUIRED_LIFECYCLE_STEP_IDS = Object.freeze([
   'first_run_profile_blocker',
   'no_plan_home',
-  'plan_preview',
-  'plan_generate_activate',
+  'plan_candidate_review_activate',
   'today_plan_progress_read_models',
   'feedback_variants_and_repeated_skips',
   'proposal_first_fixture_reflow_activation',
   'stale_readiness_degraded',
   'calendar_sync_provider_safe',
-  'cancel_cleanup_and_no_plan_recovery',
+  'plan_read_model',
+  'revision_owned_legacy_reflow_guard',
+  'revision_owned_legacy_cancel_guard',
 ]);
 
 const TRAINING_E2E_REQUIRED_PROFILE_TYPES = Object.freeze([

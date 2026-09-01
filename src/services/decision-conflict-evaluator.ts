@@ -609,6 +609,14 @@ function dispositionFor(
       && findings.length > 0
       && findings.every((finding) => finding.severity === 'soft')
       && !findings.some((finding) => finding.class === 'approved_commitment')) return 'allow';
+  // Inherent impact (critical risk or irreversibility) is a confirmation
+  // requirement, not a permanent policy block. A current strong approval may
+  // satisfy it only when no independent finding remains unresolved.
+  if (input.confirmationApproved === true
+      && findings.length === 0
+      && (input.candidate.risk === 'critical' || input.candidate.reversibility === 'irreversible')) {
+    return 'allow';
+  }
   if (
     input.allowLowRiskAutoResolution === true
     && input.candidate.risk === 'low'

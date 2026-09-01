@@ -1,5 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { createHash } from 'node:crypto';
+
 /**
  * Intelligence Bus — shared signal system for the Content Agent Mesh.
  *
@@ -196,6 +198,8 @@ export interface AgentSignal {
   user_id: number | null;
   /** Tenant/workspace ID. Null means legacy platform-global/system signal. */
   tenant_id: number | null;
+  /** Privacy-safe identity of the signal meaning and scope. */
+  signal_identity: string | null;
   /** Strength/certainty metric (0.0–1.0). Higher = more reliable. (Migration 060) */
   confidence: number;
   /** Content format tag: 'reel', 'youtube', 'short', etc. (Migration 060) */
@@ -413,6 +417,66 @@ export function setScopeAnomalyReporter(fn: ((report: ScopeAnomalyReport) => voi
   _reportScopeAnomaly = fn;
 }
 
+/** One SQLite transaction for replacing a coherent group of governed signals. */
+export function runSignalWriteTransaction<T>(operation: () => T): T {
+  const d = db();
+  if (!d || typeof (d as any).transaction !== 'function') {
+    throw new Error('INTELLIGENCE_BUS_TRANSACTION_UNAVAILABLE');
+  }
+  return (d as any).transaction(operation)();
+}
+
+export interface GovernedSignalSetReconcileInput {
+  sourceAgent: string;
+  userId: number;
+  tenantId: number;
+  /** Signal rows produced by the current complete producer snapshot. */
+  keepSignalIds: readonly number[];
+}
+
+/**
+ * Retire every active row omitted from one producer's complete snapshot.
+ *
+ * Callers that also write replacement signals must wrap both operations in
+ * `runSignalWriteTransaction` so an incomplete producer run cannot publish a
+ * partial set or erase the last coherent set.
+ */
+export function reconcileGovernedSignalSet(input: GovernedSignalSetReconcileInput): number {
+  const sourceAgent = input.sourceAgent.trim();
+  if (!isAllowedSignalSourceAgent(sourceAgent)) {
+    throw new Error('INTELLIGENCE_BUS_INVALID_RECONCILE_SOURCE');
+  }
+  if (!hasValidScopedUserId(input.userId) || !hasValidTenantId(input.tenantId)) {
+    throw new Error('INTELLIGENCE_BUS_INVALID_RECONCILE_SCOPE');
+  }
+  const keepSignalIds = [...new Set(input.keepSignalIds)];
+  if (keepSignalIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('INTELLIGENCE_BUS_INVALID_RECONCILE_SIGNAL_ID');
+  }
+
+  const d = db();
+  if (!d) throw new Error('INTELLIGENCE_BUS_RECONCILE_UNAVAILABLE');
+  if (!tableHasColumn(d, 'agent_signals', 'tenant_id')) {
+    // Never broaden a tenant-scoped replacement when additive schema is not
+    // ready yet. The weekly planner will degrade and preserve existing rows.
+    throw new Error('INTELLIGENCE_BUS_RECONCILE_TENANT_SCOPE_UNAVAILABLE');
+  }
+
+  const keepClause = keepSignalIds.length > 0
+    ? `AND id NOT IN (${keepSignalIds.map(() => '?').join(', ')})`
+    : '';
+  const result = d.prepare(`
+    UPDATE agent_signals
+       SET status = 'dismissed'
+     WHERE source_agent = ?
+       AND tenant_id = ?
+       AND user_id = ?
+       AND status = 'active'
+       ${keepClause}
+  `).run(sourceAgent, input.tenantId, input.userId, ...keepSignalIds);
+  return (result as any).changes ?? 0;
+}
+
 function db(): DbLike | null {
   if (!_getDb) return null;
   try { return _getDb(); } catch { return null; }
@@ -611,6 +675,8 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
     const requiresUserScope = signalRequiresUserScope(signal.signal_type);
     const scopedUserId = hasValidScopedUserId(signal.user_id) ? signal.user_id : undefined;
     const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const hasSignalIdentityColumn = tableHasColumn(d, 'agent_signals', 'signal_identity');
+    const hasProvenanceColumn = tableHasColumn(d, 'agent_signals', 'provenance_json');
     const scopedTenantId = resolveSignalTenantId(scopedUserId, signal.tenant_id);
 
     if (requiresUserScope && (scopedUserId == null || scopedTenantId == null)) {
@@ -652,36 +718,40 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
       observedAt: new Date().toISOString(),
     };
     const persistedPayload = { ...signal.payload, _signalProvenance: provenance };
-
-    const result = hasTenantColumn ? d.prepare(`
-      INSERT INTO agent_signals
-        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id,
-         confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    const signalIdentity = createSignalIdentity({
+      sourceAgent: signal.source_agent,
+      signalType: signal.signal_type,
+      payload: signal.payload,
+      tenantId: normalizedTenantId ?? null,
+      userId: normalizedUserId,
+    });
+    const columns = [
+      'source_agent',
+      'signal_type',
+      'payload',
+      'priority',
+      'expires_at',
+    ];
+    const values: unknown[] = [
       signal.source_agent,
       signal.signal_type,
       JSON.stringify(persistedPayload),
       priority,
       expires_at,
-      normalizedTenantId,
-      normalizedUserId,
-      signal.confidence ?? 0.5,
-      signal.format_tag ?? null,
-      signal.pillar_tag ?? null,
-      signal.evidence_count ?? 1,
-      signal.meshPriority ?? null,
-    ) : d.prepare(`
-      INSERT INTO agent_signals
-        (source_agent, signal_type, payload, priority, expires_at, user_id,
-         confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      signal.source_agent,
-      signal.signal_type,
-      JSON.stringify(persistedPayload),
-      priority,
-      expires_at,
+    ];
+    if (hasTenantColumn) {
+      columns.push('tenant_id');
+      values.push(normalizedTenantId);
+    }
+    columns.push(
+      'user_id',
+      'confidence',
+      'format_tag',
+      'pillar_tag',
+      'evidence_count',
+      'mesh_priority',
+    );
+    values.push(
       normalizedUserId,
       signal.confidence ?? 0.5,
       signal.format_tag ?? null,
@@ -689,6 +759,18 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
       signal.evidence_count ?? 1,
       signal.meshPriority ?? null,
     );
+    if (hasSignalIdentityColumn) {
+      columns.push('signal_identity');
+      values.push(signalIdentity);
+    }
+    if (hasProvenanceColumn) {
+      columns.push('provenance_json');
+      values.push(JSON.stringify(provenance));
+    }
+    const result = d.prepare(`
+      INSERT INTO agent_signals (${columns.join(', ')})
+      VALUES (${columns.map(() => '?').join(', ')})
+    `).run(...values);
     const meshPriority = signal.meshPriority ?? null;
     if (meshPriority === 1) {
       if (_invalidatePlanningCaches) {
@@ -755,17 +837,25 @@ export function readSignals(
       scopeClauses.push(scopedUserId !== undefined ? 'AND (user_id IS NULL OR user_id = ?)' : 'AND user_id IS NULL');
       if (scopedUserId !== undefined) scopeParams.push(scopedUserId);
     }
-    // Time-window filter: only return signals created within maxAgeDays
-    const ageClause = maxAgeDays != null && maxAgeDays > 0
-      ? `AND created_at > datetime('now', '-${Math.floor(maxAgeDays)} days')`
-      : '';
-    const params: any[] = [...signalTypes];
+    // Capture one application clock value for the whole read. SQLite's
+    // `now` is independent from the injected/fake JavaScript clock used by
+    // request-scoped planning, which could otherwise make a freshly written
+    // signal appear expired during deterministic midnight/DST evaluation.
+    const readAt = new Date();
+    const readAtIso = readAt.toISOString();
+    const maxAgeCutoffIso = maxAgeDays != null && maxAgeDays > 0
+      ? new Date(readAt.getTime() - Math.floor(maxAgeDays) * 86_400_000).toISOString()
+      : null;
+    const ageClause = maxAgeCutoffIso ? 'AND created_at > ?' : '';
+    const params: any[] = [readAtIso, ...signalTypes];
     params.push(...scopeParams);
+    if (maxAgeCutoffIso) params.push(maxAgeCutoffIso);
     params.push(limit);
 
     const rows = d.prepare(`
       SELECT * FROM agent_signals
       WHERE status = 'active'
+        AND julianday(expires_at) > julianday(?)
         AND signal_type IN (${placeholders})
         ${scopeClauses.join('\n        ')}
         ${ageClause}
@@ -870,7 +960,7 @@ export function expireStaleSignals(): number {
       UPDATE agent_signals
       SET status = 'expired'
       WHERE status = 'active'
-        AND expires_at < datetime('now')
+        AND julianday(expires_at) <= julianday('now')
     `).run();
     return (result as any).changes ?? 0;
   } catch {
@@ -886,7 +976,7 @@ export function getActiveSignalCount(userId?: number, tenantId?: number): number
   if (!d) return 0;
   try {
     const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
-    const clauses = ["status = 'active'"];
+    const clauses = ["status = 'active'", "julianday(expires_at) > julianday('now')"];
     const params: any[] = [];
     if (hasTenantColumn) {
       const scopedTenantId = resolveSignalTenantId(userId, tenantId);
@@ -1007,6 +1097,13 @@ export function logAgentRun(
 function parseSignalRow(row: any): AgentSignal {
   const storedPayload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
   const { _signalProvenance, ...payload } = storedPayload ?? {};
+  const persistedProvenance = parsePersistedSignalProvenance(row.provenance_json)
+    ?? parsePersistedSignalProvenance(_signalProvenance)
+    ?? {
+      producerVersion: 'legacy-unknown',
+      source: 'runtime' as const,
+      observedAt: row.created_at,
+    };
   return {
     id: row.id,
     source_agent: row.source_agent,
@@ -1019,16 +1116,72 @@ function parseSignalRow(row: any): AgentSignal {
     expires_at: row.expires_at,
     user_id: row.user_id ?? null,
     tenant_id: row.tenant_id ?? null,
+    signal_identity: typeof row.signal_identity === 'string' && row.signal_identity.length > 0
+      ? row.signal_identity
+      : null,
     confidence: row.confidence ?? 0.5,
     format_tag: row.format_tag ?? null,
     pillar_tag: row.pillar_tag ?? null,
     evidence_count: row.evidence_count ?? 1,
-    provenance: _signalProvenance ?? {
-      producerVersion: 'legacy-unknown',
-      source: 'runtime',
-      observedAt: row.created_at,
-    },
+    provenance: persistedProvenance,
     meshPriority: row.mesh_priority ?? undefined,
+  };
+}
+
+function createSignalIdentity(input: {
+  sourceAgent: string;
+  signalType: SignalType;
+  payload: Record<string, any>;
+  tenantId: number | null;
+  userId: number | null;
+}): string {
+  const material = stableSignalStringify({
+    payload: input.payload,
+    scope: { tenantId: input.tenantId, userId: input.userId },
+    signalType: input.signalType,
+    sourceAgent: input.sourceAgent,
+  });
+  return `sig_${createHash('sha256').update(material).digest('hex')}`;
+}
+
+function stableSignalStringify(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? JSON.stringify(value) : 'null';
+  if (Array.isArray(value)) return `[${value.map(stableSignalStringify).join(',')}]`;
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).filter((key) => record[key] !== undefined).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableSignalStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(String(value));
+}
+
+function parsePersistedSignalProvenance(value: unknown): SignalProvenance | null {
+  let parsed = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (parsed == null || typeof parsed !== 'object') return null;
+  const candidate = parsed as Partial<SignalProvenance>;
+  if (
+    typeof candidate.producerVersion !== 'string'
+    || candidate.producerVersion.length === 0
+    || candidate.producerVersion.length > 128
+    || typeof candidate.source !== 'string'
+    || !SIGNAL_PROVENANCE_SOURCES.has(candidate.source as SignalProvenance['source'])
+    || !isValidIsoTimestamp(candidate.observedAt)
+  ) {
+    return null;
+  }
+  return {
+    producerVersion: candidate.producerVersion,
+    source: candidate.source as SignalProvenance['source'],
+    observedAt: candidate.observedAt,
   };
 }
 
@@ -1099,6 +1252,7 @@ export function readRankedSignals(
     const placeholders = signalTypes.map(() => '?').join(',');
     const clauses: string[] = [
       "status = 'active'",
+      "julianday(expires_at) > julianday('now')",
       `signal_type IN (${placeholders})`,
       `confidence >= ?`,
     ];

@@ -134,15 +134,15 @@ export const DECISION_CENTER_ACTIONS: ChatActionDefinition[] = [
       skill: 'decision_center',
       action: 'decision_snooze',
       readableIntents: ['decision snooze', 'snooze decision', 'adiar decisão'],
-      requiredFields: ['decisionId', 'until'],
-      optionalFields: [],
+      requiredFields: ['decisionId'],
+      optionalFields: ['until', 'deferUntil', 'followUp', 'minutes'],
       providerDependencies: ['nexus'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',
       executor: 'decisionCenter.snooze',
       verifier: 'local_read_back',
       typedSlotExtractors: [decisionChoiceSlotExtractor],
-      typedSlotValidators: [makeRequiredFieldsValidator(['decisionId', 'until'])],
+      typedSlotValidators: [makeRequiredFieldsValidator(['decisionId'])],
       supportedCards: STATUS_CARDS,
       examples: [
         {

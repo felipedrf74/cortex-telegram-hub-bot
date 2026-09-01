@@ -54,6 +54,7 @@ import {
   DECISION_OUTCOME_LEDGER_RETENTION_POLICY,
   dismissDecision,
   ensureDecisionCenterTables,
+  evaluateDecisionApnsActionRequest,
   evaluateDecisionEligibility,
   getDecisionItem,
   refreshDecisionItem,
@@ -86,10 +87,13 @@ import {
   getDecisionLifecycleEvents,
   getDecisionLifecycleEventWriteFailures,
   runDecisionMetricsRollupJob,
+  runDecisionRankSnapshotBackfillJob,
   getDecisionMetricsDaily,
+  decisionMetricsLocalDayWindow,
   getDecisionReleaseGateStatus,
   getDecisionActiveBreakdowns,
   recordDecisionItemExposures,
+  recordDecisionItemExposuresByIds,
   applyDecisionTypeSuppression,
   suppressDecisionType,
   unsuppressDecisionType,
@@ -106,6 +110,20 @@ import { buildNormalizedDecisionAction } from '../../src/services/decision-actio
 import { evaluateDecisionConflicts } from '../../src/services/decision-conflict-evaluator';
 import { decideContentWorkspaceReview } from '../../src/services/content-workspace-decision-adapter';
 import { transitionContentWorkspaceItem } from '../../src/services/content-workspace';
+import { ensureContentTenantScopeColumns } from '../../src/services/content-tenant-scope';
+import { contentWorkflowObjectIdForDecision } from '../../src/services/decision-center/repository';
+import { getDecisionRecord } from '../../src/services/decision-center/read-projection-ranking-service';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
+
+// Most cases in this compatibility suite characterize the preserved legacy
+// surface. Rewrite-authoritative cases delete this explicitly inside the test.
+beforeEach(() => {
+  process.env.DECISION_CENTER_REWRITE_MODE = 'legacy';
+});
+
+afterEach(() => {
+  delete process.env.DECISION_CENTER_REWRITE_MODE;
+});
 
 async function createContentApprovalDecision(userId: number, tenantId: number, dedupeKey: string) {
   const object = createCanonicalContentDecisionFixture(testDb, {
@@ -261,6 +279,7 @@ describe('Decision Center facade', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    process.env.DECISION_CENTER_REWRITE_MODE = 'legacy';
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
     delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     delete process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS;
@@ -269,12 +288,14 @@ describe('Decision Center facade', () => {
     delete process.env.TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED;
     ensureCanonicalContentDecisionFixtureSchema(testDb);
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
     ensureTrainingCommitmentFixtureTables();
   });
 
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_CENTER_REWRITE_MODE;
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
     delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     delete process.env.DECISION_CANDIDATE_REJECTION_COOLDOWN_DAYS;
@@ -338,6 +359,102 @@ describe('Decision Center facade', () => {
     expect(created.eligibility.classification).toBe('notification');
     expect(listDecisionItems(1, 1)).toHaveLength(0);
     expect(getDecisionSummary(1, 1).ctaLabel).toBe('All Clear');
+  });
+
+  it('replays proposal idempotency keys without creating another intent, item, or receipt', async () => {
+    const proposal = {
+      ...buildSkillDecisionFixtureIntent('training', 1, {
+        tenantId: 1,
+        relatedEntityId: 'proposal-replay-profile',
+        relatedEntityType: 'training_profile',
+        dedupeKey: 'training:proposal-replay',
+      }),
+      idempotencyKey: 'proposal-replay-key-1',
+    };
+
+    const first = await createDecisionIntent(proposal);
+    const second = await createDecisionIntent(proposal);
+
+    expect(first.item?.decisionId).toBeTruthy();
+    expect(second.item?.decisionId).toBe(first.item?.decisionId);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_intents
+       WHERE user_id = 1 AND tenant_id = 1 AND intent_id LIKE 'dci_%'
+    `).get()).toMatchObject({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_center_items
+       WHERE user_id = 1 AND tenant_id = 1 AND intent_id LIKE 'dci_%'
+    `).get()).toMatchObject({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM decision_lifecycle_events
+       WHERE user_id = 1 AND tenant_id = 1
+         AND event = 'mutation_receipt' AND action_id = 'create_intent'
+    `).get()).toMatchObject({ count: 1 });
+  });
+
+  it('rejects altered proposal reuse and never persists the raw idempotency key', async () => {
+    const proposal = {
+      ...buildSkillDecisionFixtureIntent('training', 2, {
+        tenantId: 2,
+        relatedEntityId: 'proposal-reuse-profile',
+        relatedEntityType: 'training_profile',
+        dedupeKey: 'training:proposal-reuse',
+      }),
+      idempotencyKey: 'private-proposal-key-2',
+    };
+    await createDecisionIntent(proposal);
+
+    await expect(createDecisionIntent({
+      ...proposal,
+      title: 'A different proposal under the same transport key',
+    })).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REUSED',
+      status: 409,
+    });
+
+    const stored = testDb.prepare(`
+      SELECT intents.intent_id AS intentId, receipts.metadata_json AS metadataJson
+        FROM notification_intents intents
+        JOIN decision_lifecycle_events receipts
+          ON receipts.user_id = intents.user_id
+         AND receipts.tenant_id = intents.tenant_id
+         AND receipts.event = 'mutation_receipt'
+         AND receipts.action_id = 'create_intent'
+       WHERE intents.user_id = 2 AND intents.tenant_id = 2
+       LIMIT 1
+    `).get() as { intentId: string; metadataJson: string };
+    expect(`${stored.intentId}:${stored.metadataJson}`).not.toContain('private-proposal-key-2');
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_intents WHERE user_id = 2 AND tenant_id = 2
+    `).get()).toMatchObject({ count: 1 });
+  });
+
+  it('scopes the same proposal idempotency key independently by user and tenant', async () => {
+    const first = await createDecisionIntent({
+      ...buildSkillDecisionFixtureIntent('training', 3, {
+        tenantId: 30,
+        relatedEntityId: 'scope-a-profile',
+        relatedEntityType: 'training_profile',
+        dedupeKey: 'training:proposal-scope:a',
+      }),
+      idempotencyKey: 'shared-proposal-key',
+    });
+    const second = await createDecisionIntent({
+      ...buildSkillDecisionFixtureIntent('training', 4, {
+        tenantId: 40,
+        relatedEntityId: 'scope-b-profile',
+        relatedEntityType: 'training_profile',
+        dedupeKey: 'training:proposal-scope:b',
+      }),
+      idempotencyKey: 'shared-proposal-key',
+    });
+
+    expect(first.item?.decisionId).toBeTruthy();
+    expect(second.item?.decisionId).toBeTruthy();
+    expect(first.item?.decisionId).not.toBe(second.item?.decisionId);
   });
 
   it('creates a bounded Home summary from scoped decision-worthy items only', async () => {
@@ -434,6 +551,29 @@ describe('Decision Center facade', () => {
     expect(filtered.openCount).toBe(unfiltered.openCount);
   });
 
+  it('reports total overview counts beyond the 100-item presentation page', async () => {
+    for (let index = 0; index < 101; index += 1) {
+      if (index === 55) {
+        testDb.prepare(`
+          DELETE FROM resource_budget_counters
+           WHERE tenant_id = 1 AND user_id = 1
+             AND budget_key = 'notification_intent_create:training'
+        `).run();
+      }
+      await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 1, {
+        relatedEntityId: `overview-pagination-${index}`,
+        relatedEntityType: 'training_profile',
+        dedupeKey: `training:overview-pagination-${index}`,
+      }));
+    }
+
+    const overview = getDecisionOverview(1, 1, { limit: 100, handledLimit: 0 });
+
+    expect(overview.items).toHaveLength(100);
+    expect(overview.count).toBe(101);
+    expect(overview.openCount).toBe(101);
+  }, 30_000);
+
   it('localizes Home Decision Center CTA labels from the user locale', async () => {
     ensureUserFixtureTable();
     testDb.prepare(`
@@ -457,6 +597,43 @@ describe('Decision Center facade', () => {
       dedupeKey: 'training:pt-summary-urgent',
     }));
     expect(getDecisionSummary(84, 84).ctaLabel).toBe('Decisão urgente');
+  });
+
+  it('uses the user local day for timeline sections and separates unresolved carryover', async () => {
+    vi.setSystemTime(new Date('2026-05-10T01:30:00.000Z'));
+    ensureUserFixtureTable();
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, language, timezone, status)
+      VALUES (846, 84600, 'Los Angeles Owner', 'en-US', 'America/Los_Angeles', 'active')
+    `).run();
+
+    const tomorrowLocal = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 846, {
+      priority: 'active',
+      dedupeKey: 'timeline-local-day',
+      decisionDeadline: '2026-05-10T08:00:00.000Z',
+    }));
+    expect(getDecisionItem(tomorrowLocal.item!.decisionId, 846, 846)).toMatchObject({
+      sectionKey: 'tomorrow',
+      timingLabel: 'Tomorrow',
+      isCarryover: false,
+    });
+
+    const carryover = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 846, {
+      priority: 'active',
+      dedupeKey: 'timeline-carryover',
+      decisionDeadline: null,
+      expiresAt: null,
+    }));
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET created_at = '2026-05-08T20:00:00.000Z'
+       WHERE item_id = ?
+    `).run(carryover.item!.decisionId);
+    expect(getDecisionItem(carryover.item!.decisionId, 846, 846)).toMatchObject({
+      sectionKey: 'today',
+      isCarryover: true,
+    });
+    expect(getDecisionSummary(846, 846).todayCount).toBe(0);
   });
 
   it('localizes the Home CTA for non-urgent schedule conflicts', async () => {
@@ -888,13 +1065,28 @@ describe('Decision Center facade', () => {
       providerSyncUpdatedAt: oldSync,
     }), staleSource.intent.intentId);
     const unsafeQuality = await emitFilterFixture('unsafe-quality', {
-      relatedEntityId: null,
-      relatedEntityType: null,
-      title: 'Decision details',
-      body: 'Review this decision.',
+      title: 'Review',
+      body: 'Decision details unavailable',
     });
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET title = 'Review', body = 'Decision details unavailable',
+             safe_body = 'Open Nexus to view details',
+             source_skill = 'chat', type = 'decision_required',
+             actions_json = ?
+       WHERE item_id = ?
+    `).run(JSON.stringify([
+      { id: 'choose_priority', label: 'Review', style: 'primary', mutating: true },
+    ]), unsafeQuality.item!.itemId);
+    testDb.prepare(`
+      UPDATE notification_intents
+         SET related_entity_id = NULL, related_entity_type = NULL,
+             decision_context_json = NULL, privacy_policy = 'standard'
+       WHERE intent_id = ?
+    `).run(unsafeQuality.intent.intentId);
 
     const items = listDecisionItems(userId, tenantId, { status: 'all', limit: 20 });
+    expect(items.map((item) => item.decisionId)).not.toContain(unsafeQuality.item!.itemId);
     expect(items.map((item) => item.decisionId)).toEqual([visible.item?.itemId]);
 
     for (const result of [systemAdmin, tenantAdmin, internalOnly, smokeContext, smokeDedupe, smokeEntity, staleSource, unsafeQuality]) {
@@ -1514,6 +1706,7 @@ describe('Decision Center facade', () => {
 
   it('executes legacy content notification decisions through their workflow object data', async () => {
     testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
+    ensureContentTenantScopeColumns(testDb);
     const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 22,
       tenantId: 22,
@@ -1541,17 +1734,94 @@ describe('Decision Center facade', () => {
     expect(result.verification.actualEffect.contentApprovalState).toBe('approved');
   });
 
-  it('supersedes stale content approval decisions whose source object is missing', async () => {
+  it('never resolves a legacy content notification across tenant scope', async () => {
+    testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
+    ensureContentTenantScopeColumns(testDb);
+    const object = createCanonicalContentDecisionFixture(testDb, {
+      userId: 22,
+      tenantId: 22,
+      objectType: 'script',
+      title: 'Tenant-private legacy notification draft',
+      editorialState: 'drafted',
+    });
+    const notification = testDb.prepare(`
+      INSERT INTO content_notifications (
+        user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
+        type, title, body, data
+      ) VALUES (?, ?, ?, 'user_private', 'active', 'script_ready',
+        'Content review', 'Ready for approval', ?)
+    `).run(22, 22, 22, JSON.stringify({ contentObjectId: object.id }));
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 22, {
+      tenantId: 34,
+      relatedEntityId: String(notification.lastInsertRowid),
+      relatedEntityType: 'content_notification',
+      dedupeKey: 'content:cross-tenant-legacy-notification-approval',
+    }));
+    expect(created.item).toBeNull();
+    const stored = testDb.prepare(`
+      SELECT item_id AS decisionId
+        FROM notification_center_items
+       WHERE user_id = 22
+         AND tenant_id = 34
+         AND dedupe_key = 'content:cross-tenant-legacy-notification-approval'
+    `).get() as { decisionId: string };
+    const record = getDecisionRecord(stored.decisionId, 22, 34);
+    expect(record).not.toBeNull();
+    expect(contentWorkflowObjectIdForDecision(record!)).toBeNull();
+
+    await expect(performDecisionAction(stored.decisionId, 'approve_script', 22, 34, {
+      idempotencyKey: 'cross-tenant-legacy-content-approval',
+    })).rejects.toMatchObject({
+      code: 'DECISION_CONTEXT_CHANGED',
+      status: 409,
+    });
+  });
+
+  it('keeps GETs write-free while the explicit job supersedes a stale content decision', async () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 23, {
       tenantId: 23,
       relatedEntityId: 'script-demo',
       relatedEntityType: 'content_script',
       dedupeKey: 'content:stale-script-demo',
     }));
+    expect(created.item).toBeNull();
+    const stored = testDb.prepare(`
+      SELECT item_id AS decisionId
+        FROM notification_center_items
+       WHERE user_id = 23 AND tenant_id = 23 AND dedupe_key = 'content:stale-script-demo'
+    `).get() as { decisionId: string };
+    const decisionId = stored.decisionId;
 
+    const before = {
+      status: (testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?')
+        .get(decisionId) as { status: string }).status,
+      lifecycle: (testDb.prepare('SELECT COUNT(*) AS count FROM decision_lifecycle_events WHERE decision_id = ?')
+        .get(decisionId) as { count: number }).count,
+      handled: (testDb.prepare('SELECT COUNT(*) AS count FROM handled_by_nexus_items WHERE decision_id = ?')
+        .get(decisionId) as { count: number }).count,
+      outcomes: (testDb.prepare('SELECT COUNT(*) AS count FROM decision_outcome_ledger WHERE decision_id = ?')
+        .get(decisionId) as { count: number }).count,
+    };
     expect(listDecisionItems(23, 23)).toHaveLength(0);
-    expect(getDecisionItem(created.item!.decisionId, 23, 23)?.status).toBe('superseded');
-    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 23, 23, {
+    expect(getDecisionItem(decisionId, 23, 23)).toBeNull();
+    expect(listDecisionItems(23, 23)).toHaveLength(0);
+    const afterReads = {
+      status: (testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?')
+        .get(decisionId) as { status: string }).status,
+      lifecycle: (testDb.prepare('SELECT COUNT(*) AS count FROM decision_lifecycle_events WHERE decision_id = ?')
+        .get(decisionId) as { count: number }).count,
+      handled: (testDb.prepare('SELECT COUNT(*) AS count FROM handled_by_nexus_items WHERE decision_id = ?')
+        .get(decisionId) as { count: number }).count,
+      outcomes: (testDb.prepare('SELECT COUNT(*) AS count FROM decision_outcome_ledger WHERE decision_id = ?')
+        .get(decisionId) as { count: number }).count,
+    };
+    expect(afterReads).toEqual(before);
+
+    expect(runDecisionSourceStateSupersessionJob({ userId: 23, tenantId: 23 }))
+      .toMatchObject({ supersededCount: 1 });
+    expect((testDb.prepare('SELECT status FROM notification_center_items WHERE item_id = ?')
+      .get(decisionId) as { status: string }).status).toBe('superseded');
+    await expect(performDecisionAction(decisionId, 'approve_script', 23, 23, {
       idempotencyKey: 'stale-content-approval',
     })).rejects.toMatchObject({ code: 'DECISION_SUPERSEDED' });
   });
@@ -1911,6 +2181,7 @@ describe('Decision Center facade', () => {
   });
 
   it('blocks known producer actions when authoritative domain state changes before execution', async () => {
+    delete process.env.DECISION_CENTER_REWRITE_MODE;
     process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'active';
     ensureFinanceFixtureTables();
     ensureCookingFixtureTables();
@@ -1971,6 +2242,12 @@ describe('Decision Center facade', () => {
         privacyPolicy: 'standard',
         dedupeKey: 'cooking:state-revalidation:609',
       });
+      const reviewedFinance = reviewDecision(finance.item!.decisionId, 607, 607, {
+        outcome: 'approve',
+        expectedVersion: finance.item!.recordVersion,
+        idempotencyKey: 'approve-finance-before-state-change',
+        strongConfirmationText: 'CONFIRM',
+      });
       testDb.prepare(`
         UPDATE finance_tax_events
            SET status = 'overdue', updated_at = '2026-05-10T10:01:00.000Z'
@@ -1993,12 +2270,18 @@ describe('Decision Center facade', () => {
 
       await expect(performDecisionAction(finance.item!.decisionId, 'mark_paid', 607, 607, {
         idempotencyKey: 'finance-stale-domain-state',
+        expectedVersion: reviewedFinance.recordVersion,
+        contextVersion: reviewedFinance.contextVersion,
       })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
       await expect(performDecisionAction(content.item!.decisionId, 'approve_script', 608, 608, {
         idempotencyKey: 'content-stale-domain-state',
+        expectedVersion: content.item!.recordVersion,
+        contextVersion: content.item!.contextVersion,
       })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
       await expect(performDecisionAction(cooking.item!.decisionId, 'add_meal', 609, 609, {
         idempotencyKey: 'cooking-stale-domain-state',
+        expectedVersion: cooking.item!.recordVersion,
+        contextVersion: cooking.item!.contextVersion,
         payload: { date: '2026-05-12', mealType: 'dinner', title: 'Original proposal' },
       })).rejects.toMatchObject({ code: 'DECISION_CONTEXT_CHANGED', status: 409 });
 
@@ -2066,7 +2349,8 @@ describe('Decision Center facade', () => {
     }
   });
 
-  it('executes Finance payment decisions through tax-event state and read-back verification', async () => {
+  it('requires strong approval unconditionally in the legacy fallback before a Finance payment mutation', async () => {
+    process.env.DECISION_CENTER_REWRITE_MODE = 'legacy';
     ensureFinanceFixtureTables();
     testDb.prepare(`
       INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
@@ -2080,8 +2364,22 @@ describe('Decision Center facade', () => {
       dedupeKey: 'finance:tax-payment',
     }));
 
+    await expect(performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
+      idempotencyKey: 'mark-tax-paid-without-approval',
+      expectedVersion: created.item!.recordVersion,
+      contextVersion: created.item!.contextVersion,
+    })).rejects.toMatchObject({ code: 'DECISION_STRONG_CONFIRMATION_REQUIRED' });
+
+    const reviewed = reviewDecision(created.item!.decisionId, 43, 43, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'approve-tax-payment',
+      strongConfirmationText: 'CONFIRM',
+    });
     const result = await performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
       idempotencyKey: 'mark-tax-paid',
+      expectedVersion: reviewed.recordVersion,
+      contextVersion: reviewed.contextVersion,
     });
 
     expect(result.status).toBe('succeeded');
@@ -2094,11 +2392,46 @@ describe('Decision Center facade', () => {
     expect(event.status).toBe('paid');
     expect(event.paid_at).toBeTruthy();
     expect(getDecisionLifecycleEvents(created.item!.decisionId, 43, 43)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        event: 'strong_confirmation_legacy_bypass',
-        reason: 'decision_flow_v1_enforcement_disabled',
-      }),
+      expect.objectContaining({ event: 'approved' }),
+      expect.objectContaining({ event: 'action_succeeded', actionId: 'mark_paid' }),
     ]));
+    expect(getDecisionLifecycleEvents(created.item!.decisionId, 43, 43))
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ event: 'strong_confirmation_legacy_bypass' })]));
+  });
+
+  it.each([
+    ['dismiss', 44, 'dismiss-finance'],
+    ['snooze', 45, 'snooze-finance'],
+  ] as const)('keeps low-risk Finance lifecycle action %s outside strong approval', async (actionId, userId, key) => {
+    delete process.env.DECISION_CENTER_REWRITE_MODE;
+    ensureFinanceFixtureTables();
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        tenant_id, user_id, month, gross_income, deductions,
+        taxable_income, tax_due, inss_due, status, darf_code
+      ) VALUES (?, ?, '2026-09', 5000, 0, 5000, 450, 0, 'pending', '0190')
+    `).run(userId, userId);
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', userId, {
+      type: 'decision_required',
+      requiresUserAction: true,
+      relatedEntityId: '2026-09',
+      relatedEntityType: 'finance_tax_event',
+      dedupeKey: `finance:lifecycle:${actionId}`,
+    }));
+
+    const result = await performDecisionAction(created.item!.decisionId, actionId, userId, userId, {
+      idempotencyKey: key,
+      expectedVersion: created.item!.recordVersion,
+      contextVersion: created.item!.contextVersion,
+      ...(actionId === 'snooze' ? { payload: { minutes: 60 } } : {}),
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.item.status).toBe(actionId === 'dismiss' ? 'dismissed' : 'snoozed');
+    expect(testDb.prepare(`
+      SELECT status FROM finance_tax_events
+       WHERE tenant_id = ? AND user_id = ? AND month = '2026-09'
+    `).get(userId, userId)).toEqual({ status: 'pending' });
   });
 
   it('does not let a Finance action payload retarget the reviewed tax event', async () => {
@@ -2132,6 +2465,7 @@ describe('Decision Center facade', () => {
   });
 
   it('rejects APNs finance payment mutations while allowing in-app confirmation', async () => {
+    delete process.env.DECISION_CENTER_REWRITE_MODE;
     ensureFinanceFixtureTables();
     testDb.prepare(`
       INSERT INTO finance_tax_events (tenant_id, user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, status, darf_code)
@@ -2148,9 +2482,16 @@ describe('Decision Center facade', () => {
     await expect(performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
       idempotencyKey: 'apns-mark-tax-paid',
       channel: 'apns',
+      expectedVersion: created.item!.recordVersion,
+      contextVersion: created.item!.contextVersion,
     })).rejects.toMatchObject({
       code: 'APNS_ACTION_NOT_ALLOWED',
       status: 409,
+      details: expect.objectContaining({
+        disposition: 'open_app',
+        execute: false,
+        reasonCode: 'action_review_required',
+      }),
     } satisfies Partial<DecisionActionError>);
 
     const pending = testDb.prepare('SELECT status, paid_at FROM finance_tax_events WHERE user_id = 43 AND month = ?').get('2026-06') as any;
@@ -2160,13 +2501,78 @@ describe('Decision Center facade', () => {
       .get(created.item!.decisionId) as { n: number }).n;
     expect(executionCount).toBe(0);
 
+    const reviewed = reviewDecision(created.item!.decisionId, 43, 43, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'review-in-app-tax-payment',
+      strongConfirmationText: 'CONFIRM',
+    });
     const result = await performDecisionAction(created.item!.decisionId, 'mark_paid', 43, 43, {
       idempotencyKey: 'in-app-mark-tax-paid',
+      expectedVersion: reviewed.recordVersion,
+      contextVersion: reviewed.contextVersion,
     });
     expect(result.status).toBe('succeeded');
     const paid = testDb.prepare('SELECT status, paid_at FROM finance_tax_events WHERE user_id = 43 AND month = ?').get('2026-06') as any;
     expect(paid.status).toBe('paid');
     expect(paid.paid_at).toBeTruthy();
+  });
+
+  it('executes only a current low-risk APNs lifecycle action and rejects stale versions before claiming', async () => {
+    delete process.env.DECISION_CENTER_REWRITE_MODE;
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 430, {
+      tenantId: 430,
+      title: 'Choose whether to revisit the current chat request',
+      body: 'The chat request is still open and can be dismissed or revisited later.',
+      dedupeKey: 'chat:apns-low-risk-dismiss',
+    }));
+    expect(created.item?.contextVersion).toMatch(/^ctx_notification_/);
+
+    const stale = evaluateDecisionApnsActionRequest({
+      decisionId: created.item!.decisionId,
+      actionId: 'dismiss',
+      userId: 430,
+      tenantId: 430,
+      recordVersion: created.item!.recordVersion + 1,
+      contextVersion: created.item!.contextVersion!,
+    });
+    expect(stale).toMatchObject({
+      disposition: 'open_app',
+      execute: false,
+      reasonCode: 'record_version_changed',
+    });
+
+    const result = await performDecisionAction(created.item!.decisionId, 'dismiss', 430, 430, {
+      idempotencyKey: 'apns-dismiss-current-v1',
+      channel: 'apns',
+      expectedVersion: created.item!.recordVersion,
+      contextVersion: created.item!.contextVersion,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.item.status).toBe('dismissed');
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_action_executions WHERE decision_id = ?
+    `).get(created.item!.decisionId) as { count: number }).count).toBe(1);
+    const execution = testDb.prepare(`
+      SELECT expected_effect_json AS expectedEffectJson
+        FROM decision_action_executions
+       WHERE decision_id = ? AND idempotency_key = 'apns-dismiss-current-v1'
+    `).get(created.item!.decisionId) as { expectedEffectJson: string };
+    expect(JSON.parse(execution.expectedEffectJson)).toMatchObject({
+      commandContract: {
+        schemaVersion: 'decision_mutation_command@1.0.0',
+        channel: 'apns',
+        recordVersion: created.item!.recordVersion,
+        contextVersion: created.item!.contextVersion,
+        scope: { userId: 430, tenantId: 430 },
+        approval: {
+          requiredLevel: 'user_confirmation',
+          evidence: { level: 'user_confirmation', actorUserId: 430 },
+        },
+        execution: { executorId: 'decision.dismiss', supportsIdempotency: true },
+        readback: { verifierId: 'decision.status', mode: 'versioned' },
+      },
+    });
   });
 
   it('executes Cooking meal decisions when a concrete meal slot payload is supplied', async () => {
@@ -2402,16 +2808,24 @@ describe('Decision Center facade', () => {
       SELECT status, decision_state AS decisionState
         FROM notification_center_items
        WHERE item_id = ? AND user_id = 454 AND tenant_id = 954
-    `).get(created.item!.decisionId)).toEqual({ status: 'unread', decisionState: null });
+    `).get(created.item!.decisionId)).toEqual({
+      status: 'unread',
+      decisionState: 'ready_for_review',
+    });
   });
 
   it('denies wrong-user decision list/detail/action access by scope', async () => {
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 4, {
       dedupeKey: 'content:scope',
     }));
+    expect(created.item).toBeNull();
+    const stored = testDb.prepare(`
+      SELECT item_id AS decisionId FROM notification_center_items
+       WHERE user_id = 4 AND tenant_id = 4 AND dedupe_key = 'content:scope'
+    `).get() as { decisionId: string };
 
     expect(listDecisionItems(5, 5)).toHaveLength(0);
-    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 5, 5, {
+    await expect(performDecisionAction(stored.decisionId, 'approve_script', 5, 5, {
       idempotencyKey: 'wrong-user-tap',
     }))
       .rejects.toThrow(/Decision not found/);
@@ -2652,7 +3066,23 @@ describe('Decision Center facade', () => {
       reasonCode: 'user_confirmed',
     });
     expect(replay.recordVersion).toBe(approved.recordVersion);
-    expect(getDecisionLifecycleEvents(created.item!.decisionId, 24, 24).filter((event) => event.event === 'approved')).toHaveLength(1);
+    const approvalEvents = getDecisionLifecycleEvents(created.item!.decisionId, 24, 24)
+      .filter((event) => event.event === 'approved');
+    expect(approvalEvents).toHaveLength(1);
+    expect(approvalEvents[0].metadata.commandContract).toMatchObject({
+      schemaVersion: 'decision_mutation_command@1.0.0',
+      operation: 'review',
+      actionId: 'review:approve',
+      scope: { userId: 24, tenantId: 24 },
+      idempotencyKey: 'review-attempt-1',
+      readback: { expectedState: { decisionState: 'approved' } },
+    });
+    expect(() => reviewDecision(created.item!.decisionId, 24, 24, {
+      outcome: 'reject',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'review-attempt-1',
+      reasonCode: 'changed_request',
+    })).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
   });
 
   it('does not expose or accept approval for a structured Secretary review-only preview', async () => {
@@ -2747,6 +3177,7 @@ describe('Decision Center facade', () => {
 
     const revised = reviseDecisionProposal(created.item!.decisionId, 25, 25, {
       expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'proposal-edit-1',
       recommendedStartAt: '2026-05-11T10:00:00.000Z',
       recommendedEndAt: '2026-05-11T11:30:00.000Z',
     });
@@ -2763,6 +3194,37 @@ describe('Decision Center facade', () => {
       findings: [],
     });
     expect(persisted.context_version).toBe(revised.contextVersion);
+    const replay = reviseDecisionProposal(created.item!.decisionId, 25, 25, {
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'proposal-edit-1',
+      recommendedStartAt: '2026-05-11T10:00:00.000Z',
+      recommendedEndAt: '2026-05-11T11:30:00.000Z',
+    });
+    expect(replay.recordVersion).toBe(revised.recordVersion);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE decision_id = ? AND event = 'revised'
+    `).get(created.item!.decisionId)).toEqual({ count: 1 });
+    const revisedEvent = getDecisionLifecycleEvents(created.item!.decisionId, 25, 25)
+      .find((event) => event.event === 'revised');
+    expect(revisedEvent?.metadata.commandContract).toMatchObject({
+      schemaVersion: 'decision_mutation_command@1.0.0',
+      operation: 'edit',
+      actionId: 'edit_proposal',
+      idempotencyKey: 'proposal-edit-1',
+      readback: {
+        expectedState: {
+          recommendedStartAt: '2026-05-11T10:00:00.000Z',
+          recommendedEndAt: '2026-05-11T11:30:00.000Z',
+        },
+      },
+    });
+    expect(() => reviseDecisionProposal(created.item!.decisionId, 25, 25, {
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'proposal-edit-1',
+      recommendedStartAt: '2026-05-11T12:00:00.000Z',
+      recommendedEndAt: '2026-05-11T13:00:00.000Z',
+    })).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
   });
 
   it('rejects proposal edits outside the Secretary reflow allowlist', async () => {
@@ -2795,6 +3257,7 @@ describe('Decision Center facade', () => {
     expect(created.item?.editableProposalFields).toEqual([]);
     expect(() => reviseDecisionProposal(created.item!.decisionId, 251, 251, {
       expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'proposal-edit-denied-1',
       recommendedStartAt: '2026-05-11T10:00:00.000Z',
       recommendedEndAt: '2026-05-11T11:00:00.000Z',
     })).toThrow(/not allowlisted/i);
@@ -2874,6 +3337,15 @@ describe('Decision Center facade', () => {
     }));
 
     expect(created.item).toMatchObject({ approvalLevel: 'strong_confirmation', reviewSupported: true });
+    expect(() => reviewDecision(created.item!.decisionId, 252, 252, {
+      outcome: 'defer',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'invalid-explicit-defer',
+      deferUntil: 'not-an-iso-instant',
+    })).toThrowError(expect.objectContaining({
+      code: 'DECISION_DEFER_UNTIL_INVALID',
+      status: 400,
+    }));
     expect(() => reviewDecision(created.item!.decisionId, 252, 252, {
       outcome: 'approve',
       expectedVersion: created.item!.recordVersion,
@@ -2981,6 +3453,8 @@ describe('Decision Center facade', () => {
     await performDecisionAction(created.item!.decisionId, 'approve_script', 33, 33, { idempotencyKey: 'action-once' });
     const duplicate = await performDecisionAction(created.item!.decisionId, 'approve_script', 33, 33, { idempotencyKey: 'action-once' });
     expect(duplicate.status).toBe('idempotent');
+    await expect(performDecisionAction(created.item!.decisionId, 'dismiss', 33, 33, { idempotencyKey: 'action-once' }))
+      .rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 });
     await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 33, 33, { idempotencyKey: 'action-twice' }))
       .rejects.toThrow(/already actioned/i);
   });
@@ -2995,6 +3469,50 @@ describe('Decision Center facade', () => {
     expect(dismissed.recordVersion).toBe(created.item!.recordVersion + 2);
     expect(() => dismissDecision(created.item!.decisionId, 34, 34, 'duplicate'))
       .toThrow(/no longer in a dismissible state/i);
+  });
+
+  it('resolves revisit timing once and replays the exact durable snooze result', async () => {
+    const nextWeek = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 35, {
+      dedupeKey: 'snooze-next-week-local-time',
+      decisionContext: { timezone: 'Europe/Lisbon' },
+    }));
+    const first = await performDecisionAction(nextWeek.item!.decisionId, 'snooze', 35, 35, {
+      idempotencyKey: 'snooze-next-week-1',
+      payload: { followUp: 'next week' },
+    });
+    expect(first.verification.actualEffect).toMatchObject({
+      decisionStatus: 'snoozed',
+      snoozedUntil: '2026-05-11T08:00:00.000Z',
+    });
+
+    const replay = await performDecisionAction(nextWeek.item!.decisionId, 'snooze', 35, 35, {
+      idempotencyKey: 'snooze-next-week-1',
+      payload: { followUp: 'next week' },
+    });
+    expect(replay.status).toBe('idempotent');
+    expect(replay.verification.actualEffect.snoozedUntil).toBe('2026-05-11T08:00:00.000Z');
+    await expect(performDecisionAction(nextWeek.item!.decisionId, 'snooze', 35, 35, {
+      idempotencyKey: 'snooze-next-week-1',
+      payload: { minutes: 30 },
+    })).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 });
+
+    const exact = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 36, {
+      dedupeKey: 'snooze-explicit-instant',
+      decisionContext: { timezone: 'America/Sao_Paulo' },
+    }));
+    const exactResult = await performDecisionAction(exact.item!.decisionId, 'snooze', 36, 36, {
+      idempotencyKey: 'snooze-exact-1',
+      payload: { deferUntil: '2026-05-13T09:45:00-03:00' },
+    });
+    expect(exactResult.verification.actualEffect.snoozedUntil).toBe('2026-05-13T12:45:00.000Z');
+
+    const invalid = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 37, {
+      dedupeKey: 'snooze-invalid-minutes',
+    }));
+    await expect(performDecisionAction(invalid.item!.decisionId, 'snooze', 37, 37, {
+      idempotencyKey: 'snooze-invalid-1',
+      payload: { minutes: Number.NaN },
+    })).rejects.toMatchObject({ code: 'DECISION_INVALID_MINUTES', status: 400 });
   });
 
   it('marks decisions failed when fresh read-back status does not match the expected effect', async () => {
@@ -3230,11 +3748,77 @@ describe('Decision Center facade', () => {
 
     expect(created.item).toBeNull();
     expect(created.eligibility.reasons).toContain('decision_flow_metadata_persistence_failed');
-    const retired = testDb.prepare(`
-      SELECT status, decision_state AS decisionState, actions_json AS actionsJson, requires_user_action AS requiresUserAction
-        FROM notification_center_items WHERE dedupe_key = 'fail-closed-flow-metadata'
-    `).get() as { status: string; decisionState: string; actionsJson: string; requiresUserAction: number };
-    expect(retired).toEqual({ status: 'failed', decisionState: 'blocked', actionsJson: '[]', requiresUserAction: 0 });
+    expect(testDb.prepare(`
+      SELECT item_id FROM notification_center_items
+       WHERE dedupe_key = 'fail-closed-flow-metadata'
+    `).get()).toBeUndefined();
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_intents
+       WHERE dedupe_key = 'fail-closed-flow-metadata'
+    `).get()).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_delivery_attempts
+       WHERE user_id = 403 AND tenant_id = 403
+    `).get()).toEqual({ count: 0 });
+    const backgroundJobsTable = testDb.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'background_jobs'
+    `).get();
+    if (backgroundJobsTable) {
+      expect(testDb.prepare(`
+        SELECT COUNT(*) AS count FROM background_jobs
+         WHERE user_id = 403 AND tenant_id = 403 AND job_type = 'deliver_notification'
+      `).get()).toEqual({ count: 0 });
+    }
+    const eventOutboxTable = testDb.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_outbox'
+    `).get();
+    if (eventOutboxTable) {
+      expect(testDb.prepare(`
+        SELECT COUNT(*) AS count FROM event_outbox
+         WHERE user_id = 403 AND tenant_id = 403
+      `).get()).toEqual({ count: 0 });
+    }
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events WHERE user_id = 403 AND tenant_id = 403
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it('keeps one canonical proposal and one delivery job across duplicate intent retries', async () => {
+    delete process.env.DECISION_CENTER_REWRITE_MODE;
+    const input = buildSkillDecisionFixtureIntent('chat', 404, {
+      tenantId: 904,
+      dedupeKey: 'canonical-duplicate-delivery-once',
+      deliveryPolicy: 'auto',
+    });
+
+    const first = await createDecisionIntent(input);
+    const duplicate = await createDecisionIntent(input);
+
+    expect(first.item).not.toBeNull();
+    expect(duplicate.item?.decisionId).toBe(first.item?.decisionId);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_center_items
+       WHERE user_id = 404 AND tenant_id = 904
+         AND dedupe_key = 'canonical-duplicate-delivery-once'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM background_jobs
+       WHERE user_id = 404 AND tenant_id = 904
+         AND job_type = 'deliver_notification'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM decision_lifecycle_events
+       WHERE user_id = 404 AND tenant_id = 904 AND event = 'created'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_delivery_attempts attempts
+        JOIN notification_intents intents ON intents.intent_id = attempts.intent_id
+       WHERE intents.user_id = 404 AND intents.tenant_id = 904
+    `).get()).toEqual({ count: 0 });
   });
 
   it('documents outcome ledger retention and aggregate-only admin reporting policy', () => {
@@ -3560,7 +4144,7 @@ describe('Decision Center facade', () => {
     }).not.toThrow();
   });
 
-  it('self-heals a partially applied Decision flow schema without dropping legacy data', () => {
+  it('fails closed on a partially applied Decision flow schema without mutating legacy data', () => {
     testDb.prepare(`
       INSERT INTO notification_center_items (
         item_id, intent_id, user_id, tenant_id, title, body, safe_body,
@@ -3575,23 +4159,32 @@ describe('Decision Center facade', () => {
       ALTER TABLE decision_action_executions DROP COLUMN recovery_json;
     `);
 
-    expect(() => ensureDecisionCenterTables()).not.toThrow();
+    let readinessError: unknown;
+    try {
+      ensureDecisionCenterTables();
+    } catch (error) {
+      readinessError = error;
+    }
+    expect(readinessError).toMatchObject({
+      code: 'DECISION_REPOSITORY_NOT_READY',
+      status: 500,
+    });
 
     expect(testDb.prepare(`
       SELECT title FROM notification_center_items WHERE item_id = 'partial-schema-item'
     `).get()).toEqual({ title: 'Retained decision' });
     expect(testDb.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'decision_flow_preferences'
-    `).get()).toEqual({ name: 'decision_flow_preferences' });
+    `).get()).toBeUndefined();
     expect(testDb.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'decision_conflict_evaluations'
-    `).get()).toEqual({ name: 'decision_conflict_evaluations' });
+    `).get()).toBeUndefined();
     const executionColumns = testDb.prepare('PRAGMA table_info(decision_action_executions)').all() as Array<{ name: string }>;
-    expect(executionColumns.map((column) => column.name)).toContain('recovery_json');
+    expect(executionColumns.map((column) => column.name)).not.toContain('recovery_json');
   });
 
   it('logs unexpected action failures without serializing original messages', () => {
-    const source = readFileSync('src/services/decision-center.ts', 'utf8');
+    const source = readFileSync('src/services/decision-center/command-service.ts', 'utf8');
     expect(source).toContain("'Decision action failed'");
     expect(source).toContain('logger.error');
     expect(source).toContain('originalCode');
@@ -3618,6 +4211,7 @@ describe('Decision Center expiry (A1)', () => {
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
     delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
 
@@ -3664,8 +4258,12 @@ describe('Decision Center expiry (A1)', () => {
   });
 
   it('uses materialized priority_score in the SQL window and refreshes missing scores', async () => {
-    const lowStored = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 57, { dedupeKey: 'rank-low-stored' }));
-    const highStored = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 57, { dedupeKey: 'rank-high-stored' }));
+    const lowStored = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 57, {
+      priority: 'passive', dedupeKey: 'rank-low-stored',
+    }));
+    const highStored = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 57, {
+      priority: 'critical', dedupeKey: 'rank-high-stored',
+    }));
     testDb.prepare('UPDATE notification_center_items SET priority_score = ? WHERE item_id = ?')
       .run(10, lowStored.item!.decisionId);
     testDb.prepare('UPDATE notification_center_items SET priority_score = ? WHERE item_id = ?')
@@ -3688,7 +4286,7 @@ describe('Decision Center expiry (A1)', () => {
       priority: 'critical',
       dedupeKey: 'rank-page-top',
     }));
-    const offPage = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 58, {
+    const offPage = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 58, {
       priority: 'active',
       dedupeKey: 'rank-page-off-page',
     }));
@@ -3715,16 +4313,33 @@ describe('Decision Center expiry (A1)', () => {
     expect(getDecisionLifecycleEvents(offPageId, 58, 58).map((event) => event.event)).not.toContain('surfaced');
   });
 
+  it('does not expose another user or tenant decision through an explicit exposure batch', async () => {
+    const owner = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 62, {
+      tenantId: 620,
+      priority: 'active',
+      dedupeKey: 'exposure-owner-only',
+    }));
+    const decisionId = owner.item!.decisionId;
+
+    expect(recordDecisionItemExposuresByIds([decisionId], 63, 630)).toEqual({ recordedCount: 0 });
+    expect(getDecisionLifecycleEvents(decisionId, 62, 620).map((event) => event.event))
+      .not.toContain('surfaced');
+
+    expect(recordDecisionItemExposuresByIds([decisionId], 62, 620)).toEqual({ recordedCount: 1 });
+    expect(getDecisionLifecycleEvents(decisionId, 62, 620).map((event) => event.event))
+      .toContain('surfaced');
+  });
+
   it('records summary exposure and priority only for rendered preview items', async () => {
     const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 59, {
       priority: 'critical',
       dedupeKey: 'summary-page-first',
     }));
-    const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 59, {
+    const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 59, {
       priority: 'time_sensitive',
       dedupeKey: 'summary-page-second',
     }));
-    const offPreview = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 59, {
+    const offPreview = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 59, {
       priority: 'active',
       dedupeKey: 'summary-page-off-preview',
     }));
@@ -3777,15 +4392,15 @@ describe('Decision Center expiry (A1)', () => {
       priority: 'critical',
       dedupeKey: 'overview-rendered-first',
     }));
-    const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 61, {
+    const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 61, {
       priority: 'time_sensitive',
       dedupeKey: 'overview-rendered-second',
     }));
-    const third = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 61, {
+    const third = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 61, {
       priority: 'active',
       dedupeKey: 'overview-rendered-third',
     }));
-    const wideOnly = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 61, {
+    const wideOnly = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 61, {
       priority: 'passive',
       dedupeKey: 'overview-wide-only',
     }));
@@ -3900,6 +4515,7 @@ describe('Decision Center quality-gate telemetry (C4)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
 
@@ -3955,6 +4571,7 @@ describe('Decision Center layered status (Foundation)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
     ensureTrainingCommitmentFixtureTables();
     ensureSecretaryAgendaFixtureTables();
@@ -4035,7 +4652,7 @@ describe('Decision Center layered status (Foundation)', () => {
     expect(computeActionEffectiveStatus(syncFailure, retry, { ...ctxOf({ safeFrontend: false }), reconnectAffordance: true }).effective).toBe('disabled_missing_details');
   });
 
-  it('keeps Notification Center and Decision Center action states aligned for unwired actions', async () => {
+  it('hides unwired actions from both Notification Center and Decision Center proposals', async () => {
     const created = await createDecisionIntent({
       userId: 88,
       tenantId: 88,
@@ -4060,23 +4677,14 @@ describe('Decision Center layered status (Foundation)', () => {
       },
       privacyPolicy: 'standard',
     });
-    expect(created.item?.actions.map((action) => action.id)).toContain('choose_priority');
+    expect(created.item?.actions.map((action) => action.id)).toEqual(['open_detail']);
 
     const notificationItem = listNotificationCenterItems(88, 88, { status: 'all' })[0];
     const decisionItem = getDecisionItem(created.item!.decisionId, 88, 88)!;
-    const notificationState = notificationItem.actionEffectiveStatuses?.find((state) => state.actionId === 'choose_priority');
-    const decisionState = decisionItem.actionEffectiveStatuses.find((state) => state.actionId === 'choose_priority');
-
-    expect(notificationState).toMatchObject({
-      actionId: 'choose_priority',
-      effective: 'disabled_not_implemented',
-      implemented: false,
-    });
-    expect(decisionState).toMatchObject({
-      actionId: 'choose_priority',
-      effective: 'disabled_not_implemented',
-      implemented: false,
-    });
+    expect(notificationItem.actions.map((action) => action.id)).toEqual(['open_detail']);
+    expect(notificationItem.actionEffectiveStatuses?.some((state) => state.actionId === 'choose_priority')).toBe(false);
+    expect(decisionItem.actions.map((action) => action.id)).toEqual(['open_detail']);
+    expect(decisionItem.actionEffectiveStatuses.some((state) => state.actionId === 'choose_priority')).toBe(false);
   });
 
   it('maps legacy status to lifecycle + action outcome', () => {
@@ -4271,11 +4879,44 @@ describe('Decision Center layered status (Foundation)', () => {
         idempotencyKey: 'approve-refresh-stable',
       });
 
-      const refreshed = refreshDecisionItem(created.item!.decisionId, 911, 911)!.item;
+      const refreshOptions = {
+        idempotencyKey: 'refresh-stable-journal-1',
+        expectedVersion: approved.recordVersion,
+        contextVersion: approved.contextVersion,
+        channel: 'rest',
+      } as const;
+      const first = refreshDecisionItem(created.item!.decisionId, 911, 911, refreshOptions)!;
+      const replay = refreshDecisionItem(created.item!.decisionId, 911, 911, refreshOptions)!;
+      const refreshed = first.item;
 
       expect(refreshed.decisionState).toBe('approved');
       expect(refreshed.recordVersion).toBe(approved.recordVersion);
       expect(refreshed.contextVersion).toBe(approved.contextVersion);
+      expect(replay.refreshedAt).toBe(first.refreshedAt);
+      expect(replay.item.recordVersion).toBe(first.item.recordVersion);
+      const receipts = testDb.prepare(`
+        SELECT metadata_json AS metadataJson
+          FROM decision_lifecycle_events
+         WHERE decision_id = ? AND user_id = 911 AND tenant_id = 911
+           AND event = 'verified' AND action_id = 'refresh'
+      `).all(created.item!.decisionId) as Array<{ metadataJson: string }>;
+      expect(receipts).toHaveLength(1);
+      expect(JSON.parse(receipts[0].metadataJson)).toMatchObject({
+        refreshedAt: first.refreshedAt,
+        commandContract: {
+          schemaVersion: 'decision_mutation_command@1.0.0',
+          operation: 'refresh',
+          idempotencyKey: 'refresh-stable-journal-1',
+          scope: { userId: 911, tenantId: 911 },
+          recordVersion: approved.recordVersion,
+          contextVersion: approved.contextVersion,
+          readback: { verifierId: 'decision.context_version' },
+        },
+      });
+      expect(() => refreshDecisionItem(created.item!.decisionId, 911, 911, {
+        ...refreshOptions,
+        expectedVersion: approved.recordVersion + 1,
+      })).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED' }));
     } finally {
       delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED_USER_911;
     }
@@ -4454,6 +5095,7 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -4478,6 +5120,40 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     const snoozeTarget = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 80, { dedupeKey: 'lc-snooze' }));
     snoozeDecision(snoozeTarget.item!.decisionId, 80, 80, 30);
     expect(getDecisionLifecycleEvents(snoozeTarget.item!.decisionId, 80, 80).map((e) => e.event)).toContain('snoozed');
+  });
+
+  it('records a versioned viewed command once across durable replay', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 805, {
+      tenantId: 1805,
+      dedupeKey: 'viewed-command-replay',
+    }));
+    const input = {
+      idempotencyKey: 'viewed-command-replay-1',
+      expectedVersion: created.item!.recordVersion,
+      channel: 'rest',
+    };
+
+    const first = markDecisionViewed(created.item!.decisionId, 805, 1805, input);
+    const replay = markDecisionViewed(created.item!.decisionId, 805, 1805, input);
+
+    expect(first.recordVersion).toBe(created.item!.recordVersion! + 1);
+    expect(replay.recordVersion).toBe(first.recordVersion);
+    const events = testDb.prepare(`
+      SELECT metadata_json AS metadataJson
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND event = 'viewed'
+    `).all(created.item!.decisionId) as Array<{ metadataJson: string }>;
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].metadataJson).commandContract).toMatchObject({
+      operation: 'mark_viewed',
+      idempotencyKey: 'viewed-command-replay-1',
+      scope: { userId: 805, tenantId: 1805 },
+      recordVersion: created.item!.recordVersion,
+    });
+    expect(() => markDecisionViewed(created.item!.decisionId, 805, 1805, {
+      ...input,
+      expectedVersion: first.recordVersion,
+    })).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
   });
 
   it('records action lifecycle (previewed + started + succeeded + verified) and expiry', async () => {
@@ -4575,6 +5251,58 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     expect(row2.dismissedCount).toBe(1);
   });
 
+  it.each([
+    { userId: 901, tenantId: 1901, timezone: 'Europe/Lisbon', localDate: '2026-03-29' },
+    { userId: 902, tenantId: 1902, timezone: 'America/Sao_Paulo', localDate: '2026-03-28' },
+    { userId: 903, tenantId: 1903, timezone: 'America/Los_Angeles', localDate: '2026-03-28' },
+  ])('rolls up the same instant into the account local day for $timezone', ({ userId, tenantId, timezone, localDate }) => {
+    testDb.prepare(`
+      INSERT INTO decision_lifecycle_events (
+        event_id, decision_id, user_id, tenant_id, event, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, 'created', '{}', '2026-03-29 00:30:00')
+    `).run(`local-day-${userId}`, `decision-${userId}`, userId, tenantId);
+
+    expect(runDecisionMetricsRollupJob({ userId, tenantId, timezone, date: localDate }))
+      .toEqual({ date: localDate, tenants: 1 });
+    expect(getDecisionMetricsDaily(tenantId, { userId, timezone, date: localDate }))
+      .toMatchObject({ metricDate: localDate, tenantId, createdCount: 1 });
+  });
+
+  it('does not let scoped users in one tenant overwrite each other\'s local-day metrics', () => {
+    for (const [eventId, userId] of [['tenant-user-a-1', 920], ['tenant-user-b-1', 921], ['tenant-user-b-2', 921]] as const) {
+      testDb.prepare(`
+        INSERT INTO decision_lifecycle_events (
+          event_id, decision_id, user_id, tenant_id, event, metadata_json, created_at
+        ) VALUES (?, ?, ?, 1920, 'created', '{}', '2026-03-29 10:00:00')
+      `).run(eventId, `decision-${eventId}`, userId);
+    }
+
+    runDecisionMetricsRollupJob({ userId: 920, tenantId: 1920, timezone: 'Europe/Lisbon', date: '2026-03-29' });
+    runDecisionMetricsRollupJob({ userId: 921, tenantId: 1920, timezone: 'Europe/Lisbon', date: '2026-03-29' });
+
+    expect(getDecisionMetricsDaily(1920, { userId: 920, timezone: 'Europe/Lisbon', date: '2026-03-29' }))
+      .toMatchObject({ createdCount: 1, sourceSkill: '*' });
+    expect(getDecisionMetricsDaily(1920, { userId: 921, timezone: 'Europe/Lisbon', date: '2026-03-29' }))
+      .toMatchObject({ createdCount: 2, sourceSkill: '*' });
+    expect(testDb.prepare(`
+      SELECT source_skill AS sourceSkill, created_count AS createdCount
+        FROM decision_metrics_daily
+       WHERE tenant_id = 1920 AND metric_date = '2026-03-29'
+       ORDER BY source_skill
+    `).all()).toEqual([
+      { sourceSkill: '@user:920:*', createdCount: 1 },
+      { sourceSkill: '@user:921:*', createdCount: 2 },
+    ]);
+  });
+
+  it('uses a 23-hour Lisbon DST window and a 25-hour Los Angeles fallback window', () => {
+    const lisbon = decisionMetricsLocalDayWindow({ date: '2026-03-29', timezone: 'Europe/Lisbon' });
+    const losAngeles = decisionMetricsLocalDayWindow({ date: '2026-11-01', timezone: 'America/Los_Angeles' });
+
+    expect(Date.parse(lisbon.endUtc) - Date.parse(lisbon.startUtc)).toBe(23 * 60 * 60 * 1000);
+    expect(Date.parse(losAngeles.endUtc) - Date.parse(losAngeles.startUtc)).toBe(25 * 60 * 60 * 1000);
+  });
+
   it('release-gate status: clean by default, fails on unswept expired rows, passes after the sweep', async () => {
     expect(getDecisionReleaseGateStatus(95, 95)).toEqual({
       expiredButVisible: 0,
@@ -4585,6 +5313,8 @@ describe('Decision Center lifecycle events (SI-4)', () => {
       genericMutatingActionSuccesses: 0,
       apnsMutatingActionsExposed: 0,
       staleSourceVisibleInInbox: 0,
+      unreconciledDeliveryAttempts: 0,
+      deliveryOutcomeUnknownAttempts: 0,
       pass: true,
     });
 
@@ -4697,6 +5427,7 @@ describe('Decision Center fatigue caps (C5)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -4803,6 +5534,7 @@ describe('runDecisionLedgerRetentionPruneJob (retention)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -4897,6 +5629,61 @@ describe('runDecisionLedgerRetentionPruneJob (retention)', () => {
   });
 });
 
+describe('Decision Center immutable rank snapshot backfill', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
+    ensureDecisionCenterTables();
+  });
+
+  afterEach(() => {
+    delete process.env.NOTIFICATION_DELIVERY_MODE;
+    testDb?.close();
+  });
+
+  it('advances bounded runs across only scopes missing a current snapshot', async () => {
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 701, {
+      tenantId: 1701,
+      dedupeKey: 'snapshot-backfill-a',
+    }));
+    await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', 702, {
+      tenantId: 1702,
+      dedupeKey: 'snapshot-backfill-b',
+    }));
+    testDb.exec(`
+      DELETE FROM decision_center_rank_snapshot_entries;
+      DELETE FROM decision_center_rank_snapshots;
+    `);
+
+    expect(runDecisionRankSnapshotBackfillJob({ limit: 1 })).toMatchObject({
+      inspectedScopes: 1,
+      materializedScopes: 1,
+      failedScopes: 0,
+    });
+    expect(runDecisionRankSnapshotBackfillJob({ limit: 1 })).toMatchObject({
+      inspectedScopes: 1,
+      materializedScopes: 1,
+      failedScopes: 0,
+    });
+    expect(runDecisionRankSnapshotBackfillJob({ limit: 1 })).toEqual({
+      inspectedScopes: 0,
+      materializedScopes: 0,
+      failedScopes: 0,
+      failures: [],
+    });
+    expect(testDb.prepare(`
+      SELECT user_id AS userId, tenant_id AS tenantId
+        FROM decision_center_rank_snapshots
+       ORDER BY tenant_id, user_id
+    `).all()).toEqual([
+      { userId: 701, tenantId: 1701 },
+      { userId: 702, tenantId: 1702 },
+    ]);
+  });
+});
+
 describe('Decision Center evidence-freshness gate (F2)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -4904,6 +5691,7 @@ describe('Decision Center evidence-freshness gate (F2)', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -4971,14 +5759,93 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
     delete process.env.NOTIFICATION_DELIVERY_MODE;
+    delete process.env.DECISION_CONFLICT_POLICY_V1_ENABLED;
     delete process.env.DECISION_SEMANTIC_DEDUP_ENABLED;
     delete process.env.DECISION_SEMANTIC_SUPERSEDE_ENABLED;
     vi.useRealTimers();
     testDb?.close();
+  });
+
+  it('persists an exact conflict-policy duplicate as superseded audit state and delivers only the canonical item', async () => {
+    process.env.DECISION_CONFLICT_POLICY_V1_ENABLED = 'active';
+    const normalizedAction = buildNormalizedDecisionAction({
+      intent: 'review_training_window',
+      targetEntities: [{ type: 'training_plan', id: 'plan-exact-duplicate', version: '1' }],
+      affectedResources: [{ type: 'training_state', id: 'primary' }],
+      requestedWindow: {
+        start: '2026-05-11T08:00:00.000Z',
+        end: '2026-05-11T09:00:00.000Z',
+        timezone: 'Europe/Lisbon',
+      },
+      preconditions: [],
+      expectedEffects: [{ type: 'review_required', targetRef: 'training_plan:plan-exact-duplicate' }],
+      prohibitedEffects: [],
+      dependencies: [],
+      exclusivityKeys: ['training_state:exact-duplicate'],
+      authorizationScope: ['decision_center:read'],
+      risk: 'low',
+      reversibility: 'reversible',
+      contextVersion: 'ctx_exact_duplicate',
+    });
+    const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, {
+      tenantId: 96,
+      relatedEntityId: 'plan-exact-duplicate',
+      relatedEntityType: 'training_plan',
+      dedupeKey: 'exact-conflict-policy:first',
+      decisionContext: { entityTitle: 'Training window', normalizedAction },
+    }));
+    expect(first.item).not.toBeNull();
+
+    const duplicate = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 96, {
+      tenantId: 96,
+      relatedEntityId: 'plan-exact-duplicate',
+      relatedEntityType: 'training_plan',
+      dedupeKey: 'exact-conflict-policy:second',
+      decisionContext: {
+        entityTitle: 'Training window replay',
+        normalizedAction,
+        conflictComparisons: [{
+          action: normalizedAction,
+          decisionId: first.item!.decisionId,
+          authority: 'optimization',
+          approved: false,
+          createdAt: first.item!.createdAt,
+        }],
+      },
+    }));
+
+    expect(duplicate.item?.decisionId).toBe(first.item!.decisionId);
+    expect(duplicate.eligibility).toMatchObject({ apnsEligible: false });
+    expect(duplicate.eligibility.reasons).toContain('conflict_policy:duplicate');
+    const candidate = testDb.prepare(`
+      SELECT items.item_id AS itemId, items.status
+        FROM notification_center_items items
+        JOIN notification_intents intents ON intents.intent_id = items.intent_id
+       WHERE items.user_id = 96 AND items.tenant_id = 96
+         AND intents.dedupe_key = 'exact-conflict-policy:second'
+    `).get() as { itemId: string; status: string };
+    expect(candidate.status).toBe('superseded');
+    expect(getDecisionLifecycleEvents(candidate.itemId, 96, 96).map((event) => event.event))
+      .toEqual(expect.arrayContaining(['created', 'superseded']));
+    expect(listDecisionDependencies(candidate.itemId, 96, 96)).toContainEqual(expect.objectContaining({
+      dependsOnDecisionId: first.item!.decisionId,
+      relationship: 'duplicate_of',
+    }));
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM background_jobs
+       WHERE user_id = 96 AND tenant_id = 96 AND job_type = 'deliver_notification'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_decision_logs
+       WHERE user_id = 96 AND tenant_id = 96 AND decision = 'deduped'
+    `).get()).toEqual({ count: 1 });
   });
 
   it('B3 hiding: same_recommendation collapses the new duplicate into the existing (returns existing, only one active)', async () => {
@@ -4994,6 +5861,27 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
     // exactly one active decision remains; the new row is superseded (hidden), the existing is still shown.
     expect(getDecisionItem(a.item!.decisionId, 90, 90)).not.toBeNull();
     expect(listDecisionItems(90, 90)).toHaveLength(1);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM background_jobs
+       WHERE user_id = 90 AND tenant_id = 90 AND job_type = 'deliver_notification'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_intents
+       WHERE user_id = 90 AND tenant_id = 90
+         AND dedupe_key IN ('train:plan:a', 'train:plan:b')
+    `).get()).toEqual({ count: 2 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_decision_logs
+       WHERE user_id = 90 AND tenant_id = 90 AND decision = 'deduped'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM notification_delivery_attempts
+       WHERE user_id = 90 AND tenant_id = 90
+    `).get()).toEqual({ count: 0 });
   });
 
   it('B3 hiding: newer_recommendation supersedes the OLDER same-recipe decision (different type, non-floored)', async () => {
@@ -5011,6 +5899,53 @@ describe('Decision Center B3 acting — conflict linking on create', () => {
     const activeIds = listDecisionItems(91, 91).map((d) => d.decisionId);
     expect(activeIds).not.toContain(older.item!.decisionId); // older no longer surfaces in the active list
     expect(activeIds).toContain(newer.item!.decisionId);     // the newer recommendation is surfaced
+  });
+
+  it('rolls back the whole proposal when atomic semantic linking fails', async () => {
+    const existing = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 95, {
+      tenantId: 95,
+      relatedEntityId: 'atomic-link-slot',
+      dedupeKey: 'atomic-link-existing',
+    }));
+    expect(existing.item).not.toBeNull();
+    process.env.DECISION_SEMANTIC_DEDUP_ENABLED = 'true';
+    testDb.exec(`
+      CREATE TRIGGER fail_atomic_decision_dependency
+      BEFORE INSERT ON decision_dependencies
+      BEGIN
+        SELECT RAISE(ABORT, 'forced dependency failure');
+      END;
+    `);
+
+    const failed = await createDecisionIntent(buildSkillDecisionFixtureIntent('cooking', 95, {
+      tenantId: 95,
+      type: 'decision_required',
+      relatedEntityId: 'atomic-link-slot',
+      dedupeKey: 'atomic-link-candidate',
+      requiresUserAction: true,
+    }));
+
+    expect(failed.item).toBeNull();
+    expect(failed.eligibility.reasons).toContain('decision_flow_metadata_persistence_failed');
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_intents
+       WHERE user_id = 95 AND tenant_id = 95
+         AND dedupe_key = 'atomic-link-candidate'
+    `).get()).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_center_items
+       WHERE user_id = 95 AND tenant_id = 95
+         AND dedupe_key = 'atomic-link-candidate'
+    `).get()).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM background_jobs
+       WHERE user_id = 95 AND tenant_id = 95
+         AND job_type = 'deliver_notification'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE user_id = 95 AND tenant_id = 95 AND event = 'created'
+    `).get()).toEqual({ count: 1 });
   });
 
   it('B3 hiding NEVER supersedes a DIFFERENT decision (different entity / different skill stay active)', async () => {
@@ -5140,6 +6075,7 @@ describe('Decision Center C3 type-suppression controls', () => {
     delete process.env.DECISION_TYPE_SUPPRESSION_ENABLED;
     delete process.env.DECISION_FEEDBACK_SUPPRESSION_ENABLED;
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -5307,13 +6243,15 @@ describe('Decision Center C3 type-suppression controls', () => {
     expect(rows[0].until).toBeNull(); // stale snooze timestamp cleared
   });
 
-  it('fails OPEN (shows all items) if the suppression-table read throws', async () => {
+  it('fails closed for low-risk items while retaining the safety floor if the suppression-table read throws', async () => {
     const cook = await cooking(208, 'fo');
     const item = getDecisionItem(cook.item!.decisionId, 208, 208)!;
+    const critical = await cooking(208, 'fo-critical', 'critical');
+    const criticalItem = getDecisionItem(critical.item!.decisionId, 208, 208)!;
     process.env.DECISION_TYPE_SUPPRESSION_ENABLED = 'true';
     suppressDecisionType(208, 208, 'cooking', 'decision_required', 'dont_show_type');
     testDb.exec('DROP TABLE decision_type_suppressions'); // simulate a transient read fault
-    // Presentation filter must not crash the queue — it returns the full set rather than hiding/erroring.
-    expect(applyDecisionTypeSuppression([item], 208, 208)).toHaveLength(1);
+    expect(applyDecisionTypeSuppression([item, criticalItem], 208, 208).map((candidate) => candidate.decisionId))
+      .toEqual([criticalItem.decisionId]);
   });
 });

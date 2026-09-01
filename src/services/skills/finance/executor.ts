@@ -15,7 +15,7 @@ export function executeFinanceSummaryStep(
   const month = String((step.args as any).month || DateTime.now().setZone(input.timezone).toFormat('yyyy-MM'));
   try {
     const summary = getMonthlySummary(input.userId, month, { tenantId: input.tenantId });
-    const currency = getPreferredCurrencyForUser(input.userId);
+    const currency = getPreferredCurrencyForUser(input.userId, { tenantId: input.tenantId });
     return { step, status: 'verified_success', result: { month, summary, currency } };
   } catch {
     return { step, status: 'failed', error: 'finance_summary_failed' };

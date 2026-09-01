@@ -26,12 +26,20 @@ export interface WeekWindow {
   weekEnd: string;
 }
 
-export function resolveWeekWindow(weekStart?: string, timezone?: string | null): WeekWindow {
+export function resolveWeekWindow(
+  weekStart?: string,
+  timezone?: string | null,
+  referenceNow?: string | null,
+): WeekWindow {
   const zone = resolveTrainingTimezone(timezone);
+  const parsedReference = referenceNow
+    ? DateTime.fromISO(referenceNow, { setZone: true }).setZone(zone)
+    : DateTime.invalid('missing request clock');
+  const requestNow = parsedReference.isValid ? parsedReference : DateTime.now().setZone(zone);
   const base = weekStart
     ? DateTime.fromISO(weekStart, { zone }).startOf('day')
-    : DateTime.now().setZone(zone).startOf('week');
-  const start = (base.isValid ? base : DateTime.now().setZone(zone)).startOf('week');
+    : requestNow.startOf('week');
+  const start = (base.isValid ? base : requestNow).startOf('week');
   const end = start.plus({ days: 6 }).endOf('day');
   return {
     start,

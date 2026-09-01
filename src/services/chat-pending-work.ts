@@ -9,8 +9,8 @@ import {
 import { clearPendingChatCoreV2CommandsForScope } from './chat-core-v2/pending-commands';
 import { cancelChatLegacyTimeoutContinuationsForScope } from './chat-legacy-timeout-continuation';
 import {
-  dismissDecision,
   findDecisionByRelatedEntity,
+  performDecisionAction,
 } from './decision-center';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
@@ -25,17 +25,17 @@ export interface CancelAllPendingChatWorkResult {
   errors?: Array<{ store: string; message: string }>;
 }
 
-export function cancelAllPendingChatWork(input: {
+export async function cancelAllPendingChatWork(input: {
   userId: number;
   tenantId: number;
   conversationId: string;
   nowIso?: string;
-}): CancelAllPendingChatWorkResult {
+}): Promise<CancelAllPendingChatWorkResult> {
   const now = input.nowIso ? new Date(input.nowIso) : new Date();
   const errors: Array<{ store: string; message: string }> = [];
-  const safe = <T>(store: string, fallback: T, fn: () => T): T => {
+  const safe = async <T>(store: string, fallback: T, fn: () => T | Promise<T>): Promise<T> => {
     try {
-      return fn();
+      return await fn();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errors.push({ store, message });
@@ -50,55 +50,55 @@ export function cancelAllPendingChatWork(input: {
     }
   };
 
-  const pendingConfirmation = safe(
+  const pendingConfirmation = await safe(
     'chat-pending-confirmations.get',
     null,
     () => getPendingChatConfirmation(input.userId, input.tenantId, now),
   );
-  const pendingActionIds = safe(
+  const pendingActionIds = await safe(
     'chat_pending_actions.list',
     [] as string[],
     () => listActiveChatPendingActionIds({ ...input, conversationId: null }),
   );
   let decisionDismissed = false;
   if (pendingConfirmation) {
-    decisionDismissed = safe(
+    decisionDismissed = await safe(
       'decision-center.dismiss',
       false,
       () => dismissChatConfirmationDecision(input, pendingConfirmation.id),
     ) || decisionDismissed;
   }
   for (const pendingActionId of pendingActionIds) {
-    decisionDismissed = safe(
+    decisionDismissed = await safe(
       'decision-center.dismiss',
       false,
       () => dismissChatConfirmationDecision(input, pendingActionId),
     ) || decisionDismissed;
   }
 
-  const chatPendingActions = safe('chat_pending_actions.cancel', 0, () => cancelPendingChatActions({
+  const chatPendingActions = await safe('chat_pending_actions.cancel', 0, () => cancelPendingChatActions({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: null,
     nowIso: input.nowIso,
   }));
-  const chatActionRuns = safe('chat_action_runs.cancel', 0, () => cancelPendingChatActionRuns({
+  const chatActionRuns = await safe('chat_action_runs.cancel', 0, () => cancelPendingChatActionRuns({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: null,
     nowIso: input.nowIso,
   }));
-  const chatPendingConfirmation = safe(
+  const chatPendingConfirmation = await safe(
     'chat-pending-confirmations.clear',
     false,
     () => clearPendingChatConfirmation(input.userId, input.tenantId),
   );
-  const chatCoreV2Commands = safe('chat_core_v2_pending_commands.clear', 0, () => clearPendingChatCoreV2CommandsForScope({
+  const chatCoreV2Commands = await safe('chat_core_v2_pending_commands.clear', 0, () => clearPendingChatCoreV2CommandsForScope({
     userId: input.userId,
     tenantId: input.tenantId,
     conversationId: null,
   }));
-  const chatBackgroundContinuations = safe(
+  const chatBackgroundContinuations = await safe(
     'chat_legacy_timeout_continuations.cancel',
     0,
     () => cancelChatLegacyTimeoutContinuationsForScope({
@@ -141,10 +141,10 @@ function listActiveChatPendingActionIds(input: {
   return rows.map((row) => String(row.id || '')).filter(Boolean);
 }
 
-function dismissChatConfirmationDecision(input: {
+async function dismissChatConfirmationDecision(input: {
   userId: number;
   tenantId: number;
-}, pendingId: string): boolean {
+}, pendingId: string): Promise<boolean> {
   const decision = findDecisionByRelatedEntity(
     input.userId,
     input.tenantId,
@@ -152,6 +152,18 @@ function dismissChatConfirmationDecision(input: {
     pendingId,
   );
   if (!decision) return false;
-  dismissDecision(decision.decisionId, input.userId, input.tenantId, 'not_relevant');
-  return true;
+  const result = await performDecisionAction(
+    decision.decisionId,
+    'dismiss',
+    input.userId,
+    input.tenantId,
+    {
+      idempotencyKey: `chat-cancel:${pendingId}`,
+      payload: { reason: 'not_relevant' },
+      channel: 'chat',
+      expectedVersion: decision.recordVersion,
+      contextVersion: decision.contextVersion,
+    },
+  );
+  return result.item.status === 'dismissed';
 }

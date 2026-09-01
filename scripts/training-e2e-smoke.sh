@@ -22,14 +22,21 @@ if [[ "$BASE_URL" == "http://127.0.0.1:8200" || "$BASE_URL" == "http://localhost
 fi
 
 curl -fsS "$BASE_URL/health" >/dev/null
-SNAPSHOT="$(curl -fsS \
-  -H "Authorization: Bearer ${NEXUS_TRAINING_E2E_PORTAL_READ_TOKEN}" \
-  "$BASE_URL/api/snapshot")"
+SNAPSHOT_PATH="$(mktemp)"
+cleanup() {
+  rm -f -- "$SNAPSHOT_PATH"
+}
+trap cleanup EXIT
 
-node - "$METADATA" "$SNAPSHOT" <<'NODE'
+curl -fsS \
+  -H "Authorization: Bearer ${NEXUS_TRAINING_E2E_PORTAL_READ_TOKEN}" \
+  --output "$SNAPSHOT_PATH" \
+  "$BASE_URL/api/snapshot"
+
+node - "$METADATA" "$SNAPSHOT_PATH" <<'NODE'
 const fs = require('fs');
 const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-const snapshot = JSON.parse(process.argv[3]);
+const snapshot = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 const summary = {
   runId: metadata.runId,
   composeProject: metadata.composeProject,

@@ -43,6 +43,7 @@ import {
   performDecisionAction,
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 import {
   createCanonicalContentDecisionFixture,
   ensureCanonicalContentDecisionFixtureSchema,
@@ -58,6 +59,7 @@ describe('Decision Center Command Bus equivalence', () => {
     delete process.env.DECISION_CENTER_COMMAND_BUS_ENABLED;
     ensureCanonicalContentDecisionFixtureSchema(testDb);
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
     testDb.exec(readFileSync('migrations/183_chat_core_v2_command_events.sql', 'utf8'));
   });
@@ -80,6 +82,7 @@ describe('Decision Center Command Bus equivalence', () => {
     }));
     const legacyResult = await performDecisionAction(legacy.item!.decisionId, 'dismiss', 70, 70, {
       idempotencyKey: 'dismiss-legacy',
+      expectedVersion: legacy.item!.recordVersion,
     });
 
     process.env.DECISION_CENTER_COMMAND_BUS_ENABLED = 'true';
@@ -93,6 +96,7 @@ describe('Decision Center Command Bus equivalence', () => {
     }));
     const busResult = await performDecisionAction(bus.item!.decisionId, 'dismiss', 71, 71, {
       idempotencyKey: 'dismiss-bus',
+      expectedVersion: bus.item!.recordVersion,
     });
 
     expect(legacyResult.status).toBe('succeeded');
@@ -162,6 +166,7 @@ describe('Decision Center Command Bus equivalence', () => {
     }));
     const legacyResult = await performDecisionAction(legacy.item!.decisionId, actionId, 72, 72, {
       idempotencyKey: `content-legacy-${actionId}`,
+      expectedVersion: legacy.item!.recordVersion,
     });
 
     process.env.DECISION_CENTER_COMMAND_BUS_ENABLED = 'true';
@@ -184,6 +189,7 @@ describe('Decision Center Command Bus equivalence', () => {
     }));
     const busResult = await performDecisionAction(bus.item!.decisionId, actionId, 73, 73, {
       idempotencyKey: `content-bus-${actionId}`,
+      expectedVersion: bus.item!.recordVersion,
     });
 
     expect(legacyResult.status).toBe('succeeded');
@@ -245,12 +251,14 @@ describe('Decision Center Command Bus equivalence', () => {
     const legacy = await fixture(75, 750, 'legacy');
     const legacyResult = await performDecisionAction(legacy.item!.decisionId, 'accept_chat_action_fix', 75, 750, {
       idempotencyKey: 'fixer-legacy',
+      expectedVersion: legacy.item!.recordVersion,
     });
 
     process.env.DECISION_CENTER_COMMAND_BUS_ENABLED = 'true';
     const bus = await fixture(76, 760, 'enabled');
     const busResult = await performDecisionAction(bus.item!.decisionId, 'accept_chat_action_fix', 76, 760, {
       idempotencyKey: 'fixer-bus',
+      expectedVersion: bus.item!.recordVersion,
     });
 
     expect(legacyResult.verification.actualEffect).toMatchObject({

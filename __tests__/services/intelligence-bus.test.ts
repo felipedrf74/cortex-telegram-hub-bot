@@ -6,9 +6,12 @@ import Database from 'better-sqlite3';
 import {
   dismissSignal,
   GovernedSignalWriteError,
+  getActiveSignalCount,
   getSignalLog,
   readSignals,
   readRankedSignals,
+  reconcileGovernedSignalSet,
+  runSignalWriteTransaction,
   setDbProvider,
   writeGovernedSignal,
 } from '../../src/services/intelligence-bus';
@@ -59,7 +62,9 @@ describe('intelligence bus tenant scope', () => {
         format_tag TEXT,
         pillar_tag TEXT,
         evidence_count INTEGER DEFAULT 1,
-        mesh_priority INTEGER
+        mesh_priority INTEGER,
+        signal_identity TEXT,
+        provenance_json TEXT
       );
     `);
     setDbProvider(() => testDb as any);
@@ -83,9 +88,15 @@ describe('intelligence bus tenant scope', () => {
     });
 
     expect(id).toBeGreaterThan(0);
-    const row = testDb.prepare('SELECT payload, confidence FROM agent_signals WHERE id = ?').get(id) as {
+    const row = testDb.prepare(`
+      SELECT payload, confidence, signal_identity, provenance_json
+        FROM agent_signals
+       WHERE id = ?
+    `).get(id) as {
       payload: string;
       confidence: number;
+      signal_identity: string;
+      provenance_json: string;
     };
     expect(JSON.parse(row.payload)._signalProvenance).toEqual({
       producerVersion: 'intelligence-bus-test.v1',
@@ -93,6 +104,123 @@ describe('intelligence bus tenant scope', () => {
       observedAt,
     });
     expect(row.confidence).toBe(0.8);
+    expect(row.signal_identity).toMatch(/^sig_[a-f0-9]{64}$/);
+    expect(JSON.parse(row.provenance_json)).toEqual({
+      producerVersion: 'intelligence-bus-test.v1',
+      source: 'runtime',
+      observedAt,
+    });
+  });
+
+  it('uses stable payload ordering while keeping signal identity scoped by tenant', () => {
+    const common = {
+      source_agent: 'test-agent',
+      signal_type: 'voice_pattern' as const,
+      user_id: 10,
+      confidence: 0.8,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      provenance: {
+        producerVersion: 'intelligence-bus-test.v1',
+        source: 'runtime' as const,
+        observedAt: new Date().toISOString(),
+      },
+    };
+    const first = writeGovernedSignal({
+      ...common,
+      tenant_id: 10,
+      payload: { b: 2, nested: { z: true, a: 'x' }, a: 1 },
+    });
+    const reordered = writeGovernedSignal({
+      ...common,
+      tenant_id: 10,
+      payload: { a: 1, nested: { a: 'x', z: true }, b: 2 },
+    });
+    const otherTenant = writeGovernedSignal({
+      ...common,
+      tenant_id: 20,
+      payload: { a: 1, nested: { a: 'x', z: true }, b: 2 },
+    });
+    const identities = testDb.prepare(`
+      SELECT id, signal_identity AS identity
+        FROM agent_signals
+       WHERE id IN (?, ?, ?)
+       ORDER BY id
+    `).all(first, reordered, otherTenant) as Array<{ id: number; identity: string }>;
+
+    expect(identities[0].identity).toBe(identities[1].identity);
+    expect(identities[2].identity).not.toBe(identities[0].identity);
+  });
+
+  it('rolls back a governed signal replacement as one transaction', () => {
+    const id = writeGovernedSignal({
+      source_agent: 'test-agent',
+      signal_type: 'voice_pattern',
+      payload: { pattern: 'original' },
+      user_id: 10,
+      tenant_id: 10,
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+      provenance: {
+        producerVersion: 'intelligence-bus-test.v1',
+        source: 'runtime',
+        observedAt: new Date().toISOString(),
+      },
+    });
+
+    expect(() => runSignalWriteTransaction(() => {
+      const replacementId = writeGovernedSignal({
+        source_agent: 'test-agent',
+        signal_type: 'voice_pattern',
+        payload: { pattern: 'replacement' },
+        user_id: 10,
+        tenant_id: 10,
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        provenance: {
+          producerVersion: 'intelligence-bus-test.v1',
+          source: 'runtime',
+          observedAt: new Date().toISOString(),
+        },
+      });
+      expect(reconcileGovernedSignalSet({
+        sourceAgent: 'test-agent',
+        userId: 10,
+        tenantId: 10,
+        keepSignalIds: [replacementId],
+      })).toBe(1);
+      throw new Error('simulate replacement failure');
+    })).toThrow('simulate replacement failure');
+
+    expect(testDb.prepare('SELECT id, status FROM agent_signals ORDER BY id').all()).toEqual([
+      { id, status: 'active' },
+    ]);
+  });
+
+  it('reconciles a complete producer set within the exact user and tenant scope', () => {
+    const keep = insertSignal({ userId: 10, tenantId: 10 });
+    const stale = insertSignal({ userId: 10, tenantId: 10 });
+    const otherUser = insertSignal({ userId: 20, tenantId: 10 });
+    const otherTenant = insertSignal({ userId: 10, tenantId: 20 });
+
+    expect(reconcileGovernedSignalSet({
+      sourceAgent: 'test',
+      userId: 10,
+      tenantId: 10,
+      keepSignalIds: [keep],
+    })).toBe(1);
+    expect(testDb.prepare('SELECT id, status FROM agent_signals ORDER BY id').all()).toEqual([
+      { id: keep, status: 'active' },
+      { id: stale, status: 'dismissed' },
+      { id: otherUser, status: 'active' },
+      { id: otherTenant, status: 'active' },
+    ]);
+
+    expect(reconcileGovernedSignalSet({
+      sourceAgent: 'test',
+      userId: 10,
+      tenantId: 10,
+      keepSignalIds: [],
+    })).toBe(1);
+    expect(testDb.prepare('SELECT status FROM agent_signals WHERE id = ?').get(keep))
+      .toEqual({ status: 'dismissed' });
   });
 
   it.each([
@@ -224,6 +352,25 @@ describe('intelligence bus tenant scope', () => {
     expect(readSignals('reader-b', ['voice_pattern'], 10, 20, undefined, 99)
       .map((signal) => signal.payload.owner)).toEqual(['b']);
     expect(readSignals('wrong-tenant', ['voice_pattern'], 10, 10, undefined, 100)).toEqual([]);
+  });
+
+  it('excludes expired active rows from flat, ranked, and count reads before cleanup runs', () => {
+    testDb.prepare(`
+      INSERT INTO agent_signals (
+        source_agent, signal_type, payload, priority, consumed_by, status,
+        expires_at, tenant_id, user_id, confidence, evidence_count
+      ) VALUES (
+        'test', 'voice_pattern', '{"owner":"expired"}', 'urgent', '[]', 'active',
+        ?, 10, 10, 1.0, 1
+      )
+    `).run(new Date(Date.now() - 60_000).toISOString());
+    insertSignal({ userId: 10, tenantId: 10, type: 'voice_pattern' });
+
+    expect(readSignals('flat', ['voice_pattern'], 10, 10, undefined, 10)
+      .map((signal) => signal.payload.owner)).not.toContain('expired');
+    expect(readRankedSignals('ranked', ['voice_pattern'], { userId: 10, tenantId: 10 })
+      .map((signal) => signal.payload.owner)).not.toContain('expired');
+    expect(getActiveSignalCount(10, 10)).toBe(1);
   });
 
   it('keeps the documented legacy user-as-tenant fallback when tenant is unavailable', () => {

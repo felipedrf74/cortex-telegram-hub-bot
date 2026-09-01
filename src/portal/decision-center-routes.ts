@@ -1,15 +1,17 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Express, Request, Response } from 'express';
+import { createHash } from 'node:crypto';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import {
   DecisionActionError,
   getDecisionItem,
+  getDecisionItemForCommand,
   getDecisionPreferences,
   getDecisionSummary,
   listDecisionItems,
   performDecisionAction,
-  updateDecisionPreferences,
+  updateDecisionPreferencesViaCommand,
   type DecisionApiItem,
   type DecisionUrgency,
 } from '../services/decision-center';
@@ -27,6 +29,57 @@ import { isDecisionDashboardEnabled } from '../services/runtime-flags';
 function parsePositiveInteger(value: unknown): number | null {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function stablePortalJson(value: unknown): string {
+  if (value === undefined) return '"__undefined__"';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stablePortalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stablePortalJson(record[key])}`).join(',')}}`;
+}
+
+function portalPreferenceMutationInput(body: unknown): {
+  patch: Record<string, unknown>;
+  idempotencyKey: string | null;
+} {
+  const record = body && typeof body === 'object' ? body as Record<string, unknown> : {};
+  const patch = Object.fromEntries(
+    Object.entries(record).filter(([key]) => key !== 'tenantId' && key !== 'idempotencyKey'),
+  );
+  if (record.idempotencyKey != null) {
+    if (typeof record.idempotencyKey !== 'string') return { patch, idempotencyKey: null };
+    const explicit = record.idempotencyKey.trim();
+    return {
+      patch,
+      idempotencyKey: explicit && explicit.length <= 200 ? explicit : null,
+    };
+  }
+  const digest = createHash('sha256').update(stablePortalJson(patch)).digest('hex');
+  return { patch, idempotencyKey: `legacy-portal-preferences:${digest}` };
+}
+
+function portalDecisionActionIdempotencyKey(input: {
+  body: unknown;
+  decisionId: string;
+  actionId: string;
+  expectedVersion: number;
+}): string | null {
+  const body = input.body && typeof input.body === 'object'
+    ? input.body as Record<string, unknown>
+    : {};
+  if (body.idempotencyKey != null) {
+    if (typeof body.idempotencyKey !== 'string') return null;
+    const explicit = body.idempotencyKey.trim();
+    return explicit && explicit.length <= 200 ? explicit : null;
+  }
+  const digest = createHash('sha256').update(stablePortalJson({
+    decisionId: input.decisionId,
+    actionId: input.actionId,
+    expectedVersion: input.expectedVersion,
+    payload: body.payload ?? {},
+  })).digest('hex');
+  return `legacy-portal-action:${digest}`;
 }
 
 function resolveTenantId(req: Request, userId: number): number | null {
@@ -325,7 +378,18 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
         sendForbiddenTenant(res);
         return;
       }
-      const preferences = updateDecisionPreferences(userId, tenantId, req.body ?? {});
+      const mutation = portalPreferenceMutationInput(req.body);
+      if (!mutation.idempotencyKey) {
+        sendBadRequest(res, 'IDEMPOTENCY_KEY_INVALID', 'idempotencyKey must be a non-empty string of at most 200 characters');
+        return;
+      }
+      const { preferences } = updateDecisionPreferencesViaCommand({
+        userId,
+        tenantId,
+        patch: mutation.patch,
+        idempotencyKey: mutation.idempotencyKey,
+        channel: 'portal',
+      });
       logPortalAdminMutation(req, userId, 'portal.decision_center.preferences', { tenantId });
       res.json({ ok: true, tenantId, preferences });
     } catch (err) {
@@ -346,14 +410,43 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
           sendForbiddenTenant(res);
           return;
         }
+        const decisionId = String(req.params.decisionId || '');
+        const current = getDecisionItemForCommand(decisionId, userId, tenantId);
+        if (!current) {
+          res.status(404).json({
+            ok: false,
+            error: { code: 'DECISION_NOT_FOUND', message: 'decision was not found for this user' },
+          });
+          return;
+        }
+        const suppliedVersion = Number.isSafeInteger(req.body?.expectedVersion)
+          ? req.body.expectedVersion
+          : Number.isSafeInteger(req.body?.recordVersion) ? req.body.recordVersion : undefined;
+        const actionId = String(req.body?.actionId || '');
+        const expectedVersion = suppliedVersion ?? current.recordVersion;
+        const idempotencyKey = portalDecisionActionIdempotencyKey({
+          body: req.body,
+          decisionId,
+          actionId,
+          expectedVersion,
+        });
+        if (!idempotencyKey) {
+          sendBadRequest(res, 'IDEMPOTENCY_KEY_INVALID', 'idempotencyKey must be a non-empty string of at most 200 characters');
+          return;
+        }
         const result = await performDecisionAction(
-          String(req.params.decisionId || ''),
-          String(req.body?.actionId || ''),
+          decisionId,
+          actionId,
           userId,
           tenantId,
           {
-            idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
+            idempotencyKey,
             payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
+            channel: 'portal',
+            expectedVersion,
+            contextVersion: typeof req.body?.contextVersion === 'string'
+              ? req.body.contextVersion
+              : current.contextVersion,
           },
         );
         logPortalAdminMutation(req, userId, 'portal.decision_center.action', {

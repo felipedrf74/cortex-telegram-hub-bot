@@ -187,6 +187,94 @@ describe('chat-action-run-store', () => {
       expect(done?.completed_at).toBe('2026-07-20T12:01:00.000Z');
     });
 
+    it('persists the exact replay command before a write leaves the process', () => {
+      const run = claim().row;
+      const command = {
+        schemaVersion: 1,
+        commandType: 'decision_mutation',
+        decisionId: 'decision-1',
+        actionId: 'dismiss',
+        idempotencyKey: 'stable-command',
+        payload: {},
+        expectedVersion: 4,
+        contextVersion: 'ctx-4',
+      };
+
+      const executing = updateChatActionRun(run.id, 'executing', {
+        request: command,
+        nowIso: NOW_ISO,
+      });
+
+      expect(JSON.parse(executing?.request_json ?? '{}')).toEqual(command);
+    });
+
+    it('does not let a stale reconciliation downgrade a successful run', () => {
+      const run = claim().row;
+      updateChatActionRun(run.id, 'executing', { nowIso: NOW_ISO });
+      updateChatActionRun(run.id, 'verified_success', {
+        expectedStatuses: ['executing'],
+        nowIso: '2026-07-20T12:01:00.000Z',
+      });
+
+      const staleFailure = updateChatActionRun(run.id, 'failed', {
+        expectedStatuses: ['verified_pending', 'executing'],
+        error: { code: 'late_timeout_failure' },
+        nowIso: '2026-07-20T12:02:00.000Z',
+      });
+
+      expect(staleFailure).toBeNull();
+      expect(getChatActionRun(run.id)?.status).toBe('verified_success');
+    });
+
+    it('fences timeout reconciliation writes to the attempt that owns request_json', () => {
+      const run = claim().row;
+      const attemptA = JSON.stringify({ commandType: 'decision_mutation', reconciliationAttemptId: 'attempt-a' });
+      const attemptB = JSON.stringify({ commandType: 'decision_mutation', reconciliationAttemptId: 'attempt-b' });
+      const initiallyExecuting = updateChatActionRun(run.id, 'executing', {
+        expectedStatuses: ['planned'],
+        nowIso: NOW_ISO,
+      });
+
+      const firstExecuting = updateChatActionRun(run.id, 'executing', {
+        request: JSON.parse(attemptA),
+        expectedStatuses: ['executing'],
+        expectedRequestJson: initiallyExecuting?.request_json,
+        nowIso: NOW_ISO,
+      });
+      expect(firstExecuting?.request_json).toBe(attemptA);
+
+      const pending = updateChatActionRun(run.id, 'verified_pending', {
+        expectedStatuses: ['executing'],
+        expectedRequestJson: attemptA,
+        nowIso: '2026-07-20T12:01:00.000Z',
+      });
+      expect(pending?.status).toBe('verified_pending');
+
+      const retry = updateChatActionRun(run.id, 'executing', {
+        request: JSON.parse(attemptB),
+        expectedStatuses: ['verified_pending'],
+        expectedRequestJson: attemptA,
+        nowIso: '2026-07-20T12:02:00.000Z',
+      });
+      expect(retry?.request_json).toBe(attemptB);
+
+      const staleFailure = updateChatActionRun(run.id, 'failed', {
+        expectedStatuses: ['verified_pending', 'executing'],
+        expectedRequestJson: attemptA,
+        error: { code: 'attempt_a_failed_late' },
+        nowIso: '2026-07-20T12:03:00.000Z',
+      });
+      expect(staleFailure).toBeNull();
+      expect(getChatActionRun(run.id)?.status).toBe('executing');
+
+      const retrySuccess = updateChatActionRun(run.id, 'verified_success', {
+        expectedStatuses: ['executing'],
+        expectedRequestJson: attemptB,
+        nowIso: '2026-07-20T12:04:00.000Z',
+      });
+      expect(retrySuccess?.status).toBe('verified_success');
+    });
+
     it('rejects late writes after a terminal failed/cancelled status', () => {
       const run = claim().row;
       updateChatActionRun(run.id, 'failed', { error: { message: 'boom' }, nowIso: NOW_ISO });

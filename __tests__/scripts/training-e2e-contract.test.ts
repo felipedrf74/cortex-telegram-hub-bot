@@ -38,14 +38,15 @@ const canonicalPersonaIds = TRAINING_PLAN_QUALITY_PERSONA_SCENARIOS.map((scenari
 const requiredLifecycleStepIds = [
   'first_run_profile_blocker',
   'no_plan_home',
-  'plan_preview',
-  'plan_generate_activate',
+  'plan_candidate_review_activate',
   'today_plan_progress_read_models',
   'feedback_variants_and_repeated_skips',
   'proposal_first_fixture_reflow_activation',
   'stale_readiness_degraded',
   'calendar_sync_provider_safe',
-  'cancel_cleanup_and_no_plan_recovery',
+  'plan_read_model',
+  'revision_owned_legacy_reflow_guard',
+  'revision_owned_legacy_cancel_guard',
 ] as const;
 
 describe('Training E2E calendar fixture horizon', () => {
@@ -699,11 +700,11 @@ describe('Training E2E executable contract', () => {
       ...complete,
       lifecycleEvidence: {
         ...complete.lifecycleEvidence,
-        steps: complete.lifecycleEvidence.steps.map((step) => step.step === 'plan_preview'
+        steps: complete.lifecycleEvidence.steps.map((step) => step.step === 'plan_candidate_review_activate'
           ? { ...step, status: 200 as any }
           : step),
       },
-    })).toThrow(/plan_preview did not pass/);
+    })).toThrow(/plan_candidate_review_activate did not pass/);
   });
 
   it('binds lifecycle evidence to the exact run, URL, source digest, and image identities', () => {

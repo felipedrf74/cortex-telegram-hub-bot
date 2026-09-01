@@ -387,7 +387,7 @@ describe('Decision Center Logic v2', () => {
     expect(advice.alternatives[0].startAt).toBe('2026-05-20T12:00:00.000Z');
   });
 
-  it('Secretary advisor penalizes protected slot metadata even when labels are generic', () => {
+  it('Secretary advisor excludes protected slot metadata even when labels are generic', () => {
     const advice = adviseSecretaryDecision({
       title: 'Focus block',
       currentStartAt: '2026-05-20T09:00:00.000Z',
@@ -399,7 +399,28 @@ describe('Decision Center Logic v2', () => {
     });
 
     expect(advice.recommendedStartAt).toBe('2026-05-20T15:00:00.000Z');
-    expect(advice.alternatives[0].tradeoff).toContain('touches a protected window');
+    expect(advice.alternatives).toEqual([]);
+  });
+
+  it('Secretary advisor blocks protected-only availability until the user explicitly overrides it', () => {
+    const input = {
+      title: 'Focus block',
+      currentStartAt: '2026-05-20T09:00:00.000Z',
+      currentEndAt: '2026-05-20T11:00:00.000Z',
+      availableSlots: [
+        { startAt: '2026-05-20T12:00:00.000Z', endAt: '2026-05-20T14:00:00.000Z', label: 'Slot A', classification: 'sleep' },
+      ],
+    };
+
+    const blocked = adviseSecretaryDecision(input);
+    expect(blocked.feasibility).toBe('blocked');
+    expect(blocked.recommendedStartAt).toBeNull();
+    expect(blocked.whyRules).toContain('Protected time is a hard exclusion unless the user explicitly overrides it.');
+
+    const overridden = adviseSecretaryDecision({ ...input, allowProtectedTimeOverride: true });
+    expect(overridden.feasibility).toBe('feasible');
+    expect(overridden.recommendedStartAt).toBe('2026-05-20T12:00:00.000Z');
+    expect(overridden.whyTradeoffs[0]).toContain('explicit user override');
   });
 
   it('formats decision windows with caller timezone and locale using cached Intl formatters', () => {

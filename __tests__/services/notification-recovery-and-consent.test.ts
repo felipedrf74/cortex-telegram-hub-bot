@@ -53,6 +53,7 @@ import {
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
 import { runDecisionRecoveryNotices } from '../../src/services/decision-recovery-notifier';
+import { logger } from '../../src/utils/logger';
 
 function createLifecycleTable(): void {
   testDb.exec(`
@@ -376,19 +377,24 @@ describe('priority model shadow scoring', () => {
       .toBe(decisionFor(withoutShadow.intent.intentId).decision);
   });
 
-  it('self-heals the shadow table and still delivers if it was missing', async () => {
+  it('keeps delivery safe without recreating a missing shadow table on the request path', async () => {
     process.env.NOTIFICATION_PRIORITY_SHADOW_SCORING_ENABLED = 'true';
     getOrCreateNotificationProfile(104, 104);
     testDb.exec('DROP TABLE notification_priority_shadow');
 
-    // ensureNotificationTables recreates it on the next intent, so a database
-    // that predates the migration recovers on its own rather than throwing
-    // inside the delivery path.
+    // Migrations own runtime schema. Shadow instrumentation must remain
+    // non-fatal, but a request is not allowed to run DDL to repair it.
     const result = await createNotificationIntent(anIntent(104));
     expect(decisionFor(result.intent.intentId).decision).toBeTruthy();
     expect(
       testDb.prepare('SELECT COUNT(*) AS c FROM notification_center_items WHERE user_id = 104').get(),
     ).toEqual({ c: 1 });
-    expect(shadowRows(104)).toHaveLength(1);
+    expect(testDb.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notification_priority_shadow'
+    `).get()).toBeUndefined();
+    expect(logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: result.intent.intentId }),
+      'priority shadow verdict not recorded',
+    );
   });
 });

@@ -20,15 +20,15 @@
  *   covers both the normal tick and restart catch-up. Downtime longer than
  *   the catch-up window skips that day rather than delivering a stale
  *   briefing hours late.
- * - At-most-once per user-local day via an INSERT OR IGNORE claim into
- *   report_schedule_ledger BEFORE generation. Claim-first means a failed
- *   generation is not retried that day (same as the old behavior where a
- *   user error skipped them for the run); the failure is logged.
+ * - The compatibility resolver can still claim the legacy fire ledger. New
+ *   scheduler callers use report-schedule-jobs, where generation is leased,
+ *   retryable, and acknowledged by a scoped completion receipt.
  */
 
 import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { config } from '../config';
+import { createDecisionPlanningContext } from './decision-planning-context';
 import { getNotificationProfileIfExists, type NotificationProfile } from './notification-orchestrator';
 import { getUserTimezoneById } from './user-service';
 import { logger } from '../utils/logger';
@@ -129,22 +129,14 @@ function preferredScheduleFor(
   }
 }
 
-// Idempotent DDL so fresh in-memory databases (tests, first boot before the
-// migration runner) can claim immediately; migration 225 owns the canonical
-// schema for existing databases.
-function ensureLedgerTable(db: ReturnType<typeof getDb>): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS report_schedule_ledger_scoped (
-      user_id INTEGER NOT NULL,
-      tenant_id INTEGER NOT NULL,
-      job_type TEXT NOT NULL,
-      fired_for_local_date TEXT NOT NULL,
-      fired_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (tenant_id, user_id, job_type, fired_for_local_date)
-    );
-    CREATE INDEX IF NOT EXISTS idx_report_schedule_ledger_scoped_fired_at
-      ON report_schedule_ledger_scoped(fired_at);
-  `);
+function assertLedgerTableReady(db: ReturnType<typeof getDb>): void {
+  // Migration 304 owns this schema. Runtime dispatch must never repair schema
+  // or run DDL on a request/job path; absence is a readiness failure.
+  db.prepare(`
+    SELECT user_id, tenant_id, job_type, fired_for_local_date, fired_at
+      FROM report_schedule_ledger_scoped
+     LIMIT 0
+  `).all();
 }
 
 export interface ResolveDueReportOptions<T> {
@@ -160,6 +152,64 @@ export interface ResolveDueReportOptions<T> {
   eligible?: (target: T) => boolean;
 }
 
+export interface DueReportSchedule {
+  userId: number;
+  tenantId: number;
+  localDate: string;
+  timezone: string;
+  capturedAt: string;
+}
+
+/** Resolve a due local-date without consuming either a ledger row or a job. */
+export function resolveDueReportSchedule<T extends { tenantId: number; userId?: number }>(
+  job: ScheduledReportJob,
+  target: T,
+  nowUtc: DateTime = DateTime.utc(),
+  options: ResolveDueReportOptions<T> = {},
+): DueReportSchedule | null {
+  const userId = target.userId ?? target.tenantId;
+  const profile = loadSchedulePreferences(userId, target.tenantId);
+  const zone = resolveZone(profile);
+  const schedule = preferredScheduleFor(job, profile);
+  const { hour, minute } = parseTimeOfDay(schedule.time, schedule.time);
+  const planningContext = createDecisionPlanningContext({
+    userId,
+    tenantId: target.tenantId,
+    timezone: zone,
+    locale: 'und',
+    now: nowUtc.toJSDate(),
+  });
+  const localNow = DateTime.fromISO(planningContext.nowUtc, { zone: 'utc' }).setZone(planningContext.timezone);
+  const windowMs = catchupWindowMs(job);
+
+  for (const dayOffset of [0, 1]) {
+    const candidateDay = localNow.minus({ days: dayOffset }).startOf('day');
+    if (schedule.day != null && candidateDay.weekday % 7 !== schedule.day) continue;
+    const instant = candidateDay.set({ hour, minute });
+    if (!instant.isValid) continue;
+    const ageMs = nowUtc.toMillis() - instant.toUTC().toMillis();
+    if (ageMs < 0 || ageMs > windowMs) continue;
+    if (options.eligible) {
+      let userEligible = true;
+      try {
+        userEligible = options.eligible(target);
+      } catch (err) {
+        logger.debug({ err, userId, tenantId: target.tenantId, job }, 'Report schedule eligibility check failed (treating as eligible)');
+      }
+      if (!userEligible) return null;
+    }
+    return {
+      userId,
+      tenantId: target.tenantId,
+      localDate: candidateDay.toISODate()!,
+      timezone: planningContext.timezone,
+      capturedAt: planningContext.nowUtc,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Filter `targets` down to the users due for `job` right now, claiming the
  * user-local date in the ledger as a side effect (at-most-once per day).
@@ -167,7 +217,7 @@ export interface ResolveDueReportOptions<T> {
  * Per-user failures are logged and skipped so one bad profile can never
  * stall the whole dispatch tick.
  */
-export function resolveDueReportTargets<T extends { tenantId: number; userId: number }>(
+export function resolveDueReportTargets<T extends { tenantId: number; userId?: number }>(
   job: ScheduledReportJob,
   targets: T[],
   nowUtc: DateTime = DateTime.utc(),
@@ -175,53 +225,21 @@ export function resolveDueReportTargets<T extends { tenantId: number; userId: nu
 ): T[] {
   if (targets.length === 0) return [];
   const db = getDb();
-  ensureLedgerTable(db);
+  assertLedgerTableReady(db);
   const claim = db.prepare(`
     INSERT OR IGNORE INTO report_schedule_ledger_scoped (user_id, tenant_id, job_type, fired_for_local_date)
     VALUES (?, ?, ?, ?)
   `);
-  const windowMs = catchupWindowMs(job);
   const due: T[] = [];
 
   for (const target of targets) {
     try {
-      const profile = loadSchedulePreferences(target.userId, target.tenantId);
-      const zone = resolveZone(profile);
-      const schedule = preferredScheduleFor(job, profile);
-      const { hour, minute } = parseTimeOfDay(schedule.time, schedule.time);
-      const localNow = nowUtc.setZone(zone);
-
-      // Candidate fire dates: today and yesterday in the user's zone. The
-      // yesterday candidate covers catch-up windows that cross local
-      // midnight (e.g. a 23:30 preference caught up at 00:30).
-      //
-      // DST contract (pinned by tests): a preference falling in a
-      // spring-forward gap fires at the first valid local time Luxon
-      // resolves the wall clock to; a fall-back ambiguous preference fires
-      // exactly once for that local date (the ledger claim absorbs the
-      // repeated hour).
-      for (const dayOffset of [0, 1]) {
-        const candidateDay = localNow.minus({ days: dayOffset }).startOf('day');
-        if (schedule.day != null && candidateDay.weekday % 7 !== schedule.day) continue;
-        const instant = candidateDay.set({ hour, minute });
-        if (!instant.isValid) continue;
-        const ageMs = nowUtc.toMillis() - instant.toUTC().toMillis();
-        if (ageMs < 0 || ageMs > windowMs) continue;
-        if (options.eligible) {
-          let userEligible = true;
-          try {
-            userEligible = options.eligible(target);
-          } catch (err) {
-            logger.debug({ err, userId: target.userId, tenantId: target.tenantId, job }, 'Report schedule eligibility check failed (treating as eligible)');
-          }
-          if (!userEligible) break; // due but ineligible — leave unclaimed for later ticks
-        }
-        const claimed = claim.run(target.userId, target.tenantId, job, candidateDay.toISODate());
-        if (Number(claimed.changes) === 1) due.push(target);
-        break; // at most one candidate per user per tick
-      }
+      const schedule = resolveDueReportSchedule(job, target, nowUtc, options);
+      if (!schedule) continue;
+      const claimed = claim.run(schedule.userId, schedule.tenantId, job, schedule.localDate);
+      if (Number(claimed.changes) === 1) due.push(target);
     } catch (err) {
-      logger.warn({ err, userId: target.userId, tenantId: target.tenantId, job }, 'Report schedule resolution failed for user (skipped this tick)');
+      logger.warn({ err, userId: target.userId ?? target.tenantId, tenantId: target.tenantId, job }, 'Report schedule resolution failed for user (skipped this tick)');
     }
   }
   return due;
@@ -240,7 +258,7 @@ export function releaseFreshReportScheduleClaim(
 ): boolean {
   try {
     const db = getDb();
-    ensureLedgerTable(db);
+    assertLedgerTableReady(db);
     const result = db.prepare(`
       DELETE FROM report_schedule_ledger_scoped
        WHERE rowid = (

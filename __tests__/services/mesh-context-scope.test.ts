@@ -215,6 +215,35 @@ describe('mesh context scope hardening', () => {
     expect(mockGetUpcomingTopicCount).toHaveBeenCalledWith(42, 14, 91);
   });
 
+  it('uses the request clock and timezone for Content local-week expiry', async () => {
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetUnreadNotifications.mockReturnValue([]);
+    mockGetContentDeskItems.mockReturnValue([]);
+    mockGetActiveContentPillars.mockReturnValue([]);
+    mockGetRankedContentSignals.mockReturnValue([]);
+    mockGetUpcomingTopicCount.mockReturnValue(1);
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      timezone: 'America/Los_Angeles',
+      referenceNow: '2026-04-13T06:30:00.000Z',
+    });
+
+    expect(context.weekStart).toBe('2026-04-06');
+    expect(context.weekEnd).toBe('2026-04-12');
+    expect(context.derivedSignals).toEqual([
+      expect.objectContaining({
+        signalType: 'publishing_commitment',
+        expiresAt: '2026-04-13T06:59:59.999Z',
+      }),
+    ]);
+  });
+
   it('uses exact empty content fallbacks when tenant-owned readers throw', async () => {
     mockGetFilmingRecommendation.mockResolvedValue(null);
     mockGetUnreadNotifications.mockImplementation(() => {

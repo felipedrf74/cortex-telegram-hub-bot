@@ -53,7 +53,7 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     expectedMutation: 'Dismiss the decision and keep the decision log.',
     successUi: 'Decision dismissed.',
     retryAvailable: false,
-    apnsActionAllowed: false,
+    apnsActionAllowed: true,
     highRiskConfirmationRequired: false,
   },
   reject_reflow: {
@@ -86,7 +86,7 @@ const ACTION_TRUTH_TABLE: Record<string, DecisionActionTruthTemplate> = {
     expectedMutation: 'Snooze the decision until a later window.',
     successUi: 'Decision snoozed.',
     retryAvailable: false,
-    apnsActionAllowed: false,
+    apnsActionAllowed: true,
     highRiskConfirmationRequired: false,
   },
   approve_script: {

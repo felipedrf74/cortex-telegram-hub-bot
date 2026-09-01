@@ -261,6 +261,28 @@ describe('decision-conflict-evaluator', () => {
     expect(result.reasonCodes).toContain('low_confidence_high_impact_requires_review');
   });
 
+  it('allows an inherently irreversible action only after current strong confirmation', () => {
+    const irreversible = buildNormalizedDecisionAction({
+      ...action({ risk: 'high' }),
+      reversibility: 'irreversible',
+      contextVersion: 'ctx_irreversible',
+    });
+
+    expect(evaluateDecisionConflicts({
+      candidate: irreversible,
+      authorizationAllowed: true,
+      entityVersionsMatch: true,
+      now: new Date('2026-07-10T12:00:00.000Z'),
+    }).disposition).toBe('needs_confirmation');
+    expect(evaluateDecisionConflicts({
+      candidate: irreversible,
+      authorizationAllowed: true,
+      entityVersionsMatch: true,
+      confirmationApproved: true,
+      now: new Date('2026-07-10T12:00:00.000Z'),
+    }).disposition).toBe('allow');
+  });
+
   it('uses deterministic authority, approval, freshness, risk, reversibility, and stable-id tie-breaks', () => {
     const candidate = action({ risk: 'low', contextVersion: 'ctx_new' });
     const result = evaluateDecisionConflicts({

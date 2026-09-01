@@ -8,6 +8,7 @@ import { getPendingTasks } from '../task-store/unified-task-store';
 import type { NormalizedTask } from '../task-store/types';
 import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from '../unified-calendar';
 import { getUnreadMailSummaryForUser } from '../unified-mail-pressure';
+import { getUserTimezoneById } from '../user-service';
 import { isValidTenantUserId } from '../tenant-scope-observability';
 import type { MeshSignalDraft, SecretaryMeshContext } from './types';
 import {
@@ -43,15 +44,19 @@ export async function readSecretaryMeshContext(opts: {
   tenantId?: number;
   weekStart?: string;
   timezone?: string;
+  /** Captured request-local date used for "today" when it falls in this week. */
+  referenceDate?: string;
 }): Promise<SecretaryMeshContext> {
-  if (!isValidTenantUserId(opts.userId)) {
+  const tenantId = opts.tenantId ?? opts.userId;
+  if (!isValidTenantUserId(opts.userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidMeshScope('read_secretary_mesh_context', opts.userId, opts.weekStart);
     return createEmptySecretaryMeshContext(opts);
   }
 
-  const window = resolveWeekWindow(opts.weekStart, opts.timezone);
-  const tenantId = opts.tenantId ?? opts.userId;
-  const timezone = window.start.zoneName ?? opts.timezone ?? 'UTC';
+  const timezone = opts.timezone ?? safely(() => getUserTimezoneById(opts.userId), 'UTC');
+  const window = resolveWeekWindow(opts.weekStart, timezone);
+  const resolvedTimezone = window.start.zoneName ?? 'UTC';
+  const capturedNowUtc = DateTime.utc();
   const [eventsResult, focusResult, mailPressureResult] = await Promise.allSettled([
     getEvents(window.start.toUTC().toISO()!, window.end.endOf('day').toUTC().toISO()!, opts.userId),
     opts.tenantId == null
@@ -64,16 +69,24 @@ export async function readSecretaryMeshContext(opts: {
   const focusBlock = focusResult.status === 'fulfilled' ? focusResult.value : null;
   const mailPressure = mailPressureResult.status === 'fulfilled' ? mailPressureResult.value : null;
   const pending = safely(() => getPendingTasks(opts.userId, tenantId), []);
-  const today = DateTime.now().setZone(timezone).toISODate()!;
-  const dueToday = pending.filter((task) => taskDueDateInZone(task.dueDate, timezone) === today);
-  const dueThisWeekStart = today > window.weekStart ? today : window.weekStart;
+  // Task projections must use the requested weekly snapshot, not SQLite's
+  // process-global `date('now')`. For an explicitly requested date within the
+  // week, that date owns "due today"; normalized callers pass the Monday.
+  const requestedDate = requestedDateWithinWindow(
+    opts.referenceDate,
+    opts.weekStart,
+    capturedNowUtc,
+    window,
+    resolvedTimezone,
+  );
+  const dueToday = pending.filter((task) => taskDueDateInZone(task.dueDate, resolvedTimezone) === requestedDate);
   const dueThisWeek = pending.filter((task) => {
-    const dueDate = taskDueDateInZone(task.dueDate, timezone);
-    return dueDate != null && dueDate >= dueThisWeekStart && dueDate <= window.weekEnd;
+    const date = taskDueDateInZone(task.dueDate, resolvedTimezone);
+    return date !== null && date >= requestedDate && date <= window.weekEnd;
   });
   const overdue = pending.filter((task) => {
-    const dueDate = taskDueDateInZone(task.dueDate, timezone);
-    return dueDate != null && dueDate < today;
+    const date = taskDueDateInZone(task.dueDate, resolvedTimezone);
+    return date !== null && date < requestedDate;
   });
   const writableCalendar = safely(() => hasWritableCalendarForUser(opts.userId), false);
 
@@ -204,13 +217,34 @@ export async function readSecretaryMeshContext(opts: {
   };
 }
 
-function taskDueDateInZone(value: string | null | undefined, timezone?: string): string | null {
-  const raw = String(value ?? '').trim();
+function requestedDateWithinWindow(
+  referenceDate: string | undefined,
+  requestedWeekDate: string | undefined,
+  capturedNowUtc: DateTime,
+  window: ReturnType<typeof resolveWeekWindow>,
+  timezone: string,
+): string {
+  for (const candidate of [
+    referenceDate,
+    capturedNowUtc.setZone(timezone).toISODate() ?? undefined,
+    requestedWeekDate,
+  ]) {
+    if (!candidate) continue;
+    const requested = DateTime.fromISO(candidate, { zone: timezone }).toISODate();
+    if (requested && requested >= window.weekStart && requested <= window.weekEnd) return requested;
+  }
+  return window.weekStart;
+}
+
+function taskDueDateInZone(value: string | null | undefined, timezone: string): string | null {
+  const raw = value?.trim();
   if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const parsed = DateTime.fromISO(raw, { setZone: true, zone: timezone ?? 'UTC' });
-  if (!parsed.isValid) return null;
-  return parsed.setZone(timezone ?? 'UTC').toISODate();
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+  const hasExplicitZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
+  const parsed = dateOnly || !hasExplicitZone
+    ? DateTime.fromISO(raw, { zone: timezone })
+    : DateTime.fromISO(raw, { setZone: true }).setZone(timezone);
+  return parsed.isValid ? parsed.toISODate() : null;
 }
 
 function summarizeMeetingCriticality(events: UnifiedCalendarEvent[], timezone: string): {

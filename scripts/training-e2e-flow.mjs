@@ -175,13 +175,14 @@ function seedTrainingProfile() {
   }
 }
 
-async function api(method, routePath, body, expectedStatuses = [200]) {
+async function api(method, routePath, body, expectedStatuses = [200], extraHeaders = {}) {
   const res = await fetch(`${apiBaseUrl}${routePath}`, {
     method,
     headers: {
       Authorization: `Bearer ${auth.accessToken}`,
       'Content-Type': 'application/json',
       'X-Language': 'en-US',
+      ...extraHeaders,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -296,6 +297,31 @@ function readPlanActivation(planId) {
   }
 }
 
+function readActiveProjectionForRevision(revisionId) {
+  const db = new Database(databasePath, { readonly: true });
+  try {
+    return db.prepare(`
+      SELECT refs.projection_plan_id AS planId,
+             refs.pointer_version AS pointerVersion,
+             plans.status,
+             plans.start_date AS startDate,
+             (SELECT COUNT(*) FROM training_weeks WHERE plan_id = refs.projection_plan_id) AS weekCount,
+             (SELECT COUNT(*) FROM training_sessions WHERE plan_id = refs.projection_plan_id) AS sessionCount
+        FROM training_active_plan_references refs
+        JOIN fitness_training_plans plans
+          ON plans.id = refs.projection_plan_id
+         AND plans.user_id = refs.user_id
+         AND plans.tenant_id = refs.tenant_id
+       WHERE refs.active_revision_id = ?
+         AND refs.user_id = ?
+         AND refs.tenant_id = ?
+       LIMIT 1
+    `).get(revisionId, userId, tenantId) ?? null;
+  } finally {
+    db.close();
+  }
+}
+
 function readPlanAgendaInvariant(planId, planWeeksPayload) {
   const db = new Database(databasePath, { readonly: true });
   try {
@@ -399,23 +425,25 @@ function trainingWeekDateRange(planStartDate, weekNumber) {
   };
 }
 
-function seedStaleReadiness() {
-  const db = new Database(databasePath);
+async function seedStaleReadiness() {
   const today = new Date().toISOString().slice(0, 10);
+  const synced = await api('POST', '/api/v1/health-data/sync', {
+    date: today,
+    hrvMs: 60,
+    totalSleepMinutes: 480,
+    deepSleepMinutes: 90,
+    remSleepMinutes: 120,
+    restingHeartRate: 52,
+  });
+  assert(Number(synced.payload?.typesUpserted ?? 0) >= 4, 'Apple Health fixture sync did not persist all readiness factors');
+  const db = new Database(databasePath);
   const staleAt = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
   try {
-    const insertHealth = db.prepare(`
-      INSERT OR REPLACE INTO apple_health_data
-        (user_id, data_type, date, data_json, source_name, created_at)
-      VALUES (?, ?, ?, ?, 'training_e2e', ?)
-    `);
-    insertHealth.run(userId, 'hrv', today, JSON.stringify({ value: 60 }), staleAt);
-    insertHealth.run(userId, 'sleep', today, JSON.stringify({
-      totalSleepSeconds: 28800,
-      deepSleepSeconds: 5400,
-      remSleepSeconds: 7200,
-    }), staleAt);
-    insertHealth.run(userId, 'resting_heart_rate', today, JSON.stringify({ value: 52 }), staleAt);
+    db.prepare(`
+      UPDATE apple_health_data
+         SET created_at = ?
+       WHERE user_id = ? AND date = ? AND source_name = 'ios_app'
+    `).run(staleAt, userId, today);
     db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`readiness:${tenantId}:${userId}`);
     db.prepare('DELETE FROM api_cache WHERE cache_key = ?').run(`coach-briefing:${tenantId}:${userId}`);
     db.prepare("DELETE FROM api_cache WHERE cache_key LIKE 'training-home:' || ? || ':' || ? || ':%'").run(tenantId, userId);
@@ -451,7 +479,7 @@ function cleanupTrainingE2EFixtures() {
       db.prepare('DELETE FROM travel_windows WHERE id = ? AND user_id = ? AND tenant_id = ?')
         .run(fixtureState.travelWindowId, userId, tenantId);
     }
-    db.prepare("DELETE FROM apple_health_data WHERE user_id = ? AND source_name = 'training_e2e'").run(userId);
+    db.prepare("DELETE FROM apple_health_data WHERE user_id = ? AND source_name IN ('training_e2e', 'ios_app')").run(userId);
     if (fixtureState.coachReportId !== null) {
       db.prepare("DELETE FROM report_documents_scoped WHERE id = ? AND tenant_id = ? AND user_id = ? AND source_job = 'training_e2e_fixture'")
         .run(fixtureState.coachReportId, tenantId, userId);
@@ -525,22 +553,20 @@ const evidence = {
   steps: [],
 };
 
-const planRequest = {
-  objective: 'Hybrid running and strength consistency',
-  durationWeeks: 2,
-  preferredTime: '07:00',
-  preferredCardioTime: '07:00',
-  preferredStrengthTime: '18:00',
-  sessionsPerWeek: 5,
-  runSessionsPerWeek: 3,
-  strengthSessionsPerWeek: 2,
-  startPolicy: 'today',
-  longWorkoutDay: 'Saturday',
-  goalMode: 'continuous',
-  trainingPriority: 'hybrid',
-  twoADayPreference: 'never',
-  calendarSource: null,
-  notes: 'Fixture-safe Training E2E smoke: no live calendar writes.',
+const revisionCandidateRequest = {
+  planMode: 'continuous',
+  goal: 'general_fitness',
+  discipline: 'strength',
+  horizonWeeks: 4,
+  profile: {
+    experienceLevel: 'novice',
+    sessionsPerWeek: 3,
+    sessionDurationMinutes: 45,
+    availableDays: ['monday', 'wednesday', 'friday'],
+    equipmentIds: [],
+    location: 'home',
+    preferences: ['Fixture-safe Training E2E: no live calendar writes.'],
+  },
 };
 
 let cleanupPlanId = null;
@@ -551,29 +577,28 @@ deleteTrainingProfilesForFirstRun();
 const firstRunBefore = readFirstRunPersistenceCounts();
 assert(
   Object.values(firstRunBefore).every((count) => count === 0),
-  `First-run fixture was not empty before preview: ${JSON.stringify(firstRunBefore)}`,
+  `First-run fixture was not empty before candidate validation: ${JSON.stringify(firstRunBefore)}`,
 );
-const firstRunPreview = await api('POST', '/api/v1/training/plan/preview', planRequest);
+const firstRunCandidate = await api(
+  'POST',
+  '/api/v1/training/plan/candidates',
+  { planMode: 'continuous' },
+  [400],
+  { 'Idempotency-Key': `training-e2e-first-run-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}` },
+);
 const firstRunAfter = readFirstRunPersistenceCounts();
-assert(firstRunPreview.payload?.data?.needsProfile === true, 'First-run preview did not block on the missing profile');
 assert(
-  firstRunPreview.payload?.data?.requiredQuestionnaireId === 'fitness',
-  `First-run preview requested ${firstRunPreview.payload?.data?.requiredQuestionnaireId ?? 'no questionnaire'} instead of fitness`,
-);
-assert(
-  Array.isArray(firstRunPreview.payload?.data?.missingFields)
-    && firstRunPreview.payload.data.missingFields.length > 0,
-  'First-run preview did not return actionable missingFields',
+  firstRunCandidate.payload?.error?.code === 'TRAINING_REVISION_PROFILE_REQUIRED',
+  `First-run candidate returned ${firstRunCandidate.payload?.error?.code ?? 'no error'} instead of TRAINING_REVISION_PROFILE_REQUIRED`,
 );
 assert(
   Object.values(firstRunAfter).every((count) => count === 0),
-  `First-run preview persisted plan state: ${JSON.stringify(firstRunAfter)}`,
+  `First-run candidate validation persisted plan state: ${JSON.stringify(firstRunAfter)}`,
 );
 evidence.steps.push({
   step: 'first_run_profile_blocker',
   status: 'pass',
-  questionnaireId: firstRunPreview.payload.data.requiredQuestionnaireId,
-  missingFields: firstRunPreview.payload.data.missingFields,
+  errorCode: firstRunCandidate.payload.error.code,
   persistenceBefore: firstRunBefore,
   persistenceAfter: firstRunAfter,
 });
@@ -594,50 +619,70 @@ evidence.steps.push({
   hasActivePlan: hasActivePlanBefore,
 });
 
-const preview = await api('POST', '/api/v1/training/plan/preview', planRequest);
-assert(preview.payload?.data?.status === 'preview', 'Plan preview did not return preview status');
-assert(!Array.isArray(preview.payload?.data?.blockers) || preview.payload.data.blockers.length === 0, 'Plan preview returned blockers');
-assert(
-  Array.isArray(preview.payload?.data?.trainingLearningPath?.weeklyPath)
-    && preview.payload.data.trainingLearningPath.weeklyPath.length > 0,
-  'Plan preview did not include a learning path',
+const candidate = await api(
+  'POST',
+  '/api/v1/training/plan/candidates',
+  revisionCandidateRequest,
+  [201],
+  { 'Idempotency-Key': `training-e2e-candidate-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}` },
 );
-assert(
-  Array.isArray(preview.payload?.data?.phaseRoadmap)
-    && preview.payload.data.phaseRoadmap.some((week) => typeof week.weeklyLearningFocus === 'string' && week.weeklyLearningFocus.length > 0),
-  'Plan preview roadmap did not include weekly learning focus',
-);
-evidence.steps.push({
-  step: 'plan_preview',
-  status: 'pass',
-  totalSessions: preview.payload.data.totalSessions,
-  lintStatus: preview.payload.data.planLint?.status,
-  fallbackTemplateUsed: preview.payload.data.fallbackTemplateUsed,
-  learningWeeks: preview.payload.data.trainingLearningPath.weeklyPath.length,
-});
+const candidateRevision = candidate.payload?.data?.candidateSet?.candidates?.[0];
+assert(typeof candidateRevision?.revisionId === 'string', 'Plan candidate did not return revisionId');
+assert(typeof candidateRevision?.decisionId === 'string', 'Plan candidate did not return Decision Center id');
+assert(candidateRevision?.lifecycleState === 'PENDING_REVIEW', 'Plan candidate was not pending review');
+assert(candidateRevision?.approvalState === 'PENDING', 'Plan candidate was not pending approval');
 
-const created = await api('POST', '/api/v1/training/plan/generate', {
-  ...planRequest,
-  idempotencyKey: `training-e2e-flow-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
-}, [201]);
-const planId = Number(created.payload?.data?.planId);
-assert(Number.isInteger(planId) && planId > 0, 'Plan create did not return planId');
+const candidateDecision = await api(
+  'GET',
+  `/api/v1/decisions/${encodeURIComponent(candidateRevision.decisionId)}`,
+);
+const candidateDecisionItem = candidateDecision.payload?.data?.item;
+assert(Number.isSafeInteger(candidateDecisionItem?.recordVersion), 'Plan candidate decision record version is missing');
+assert(typeof candidateDecisionItem?.contextVersion === 'string', 'Plan candidate decision context version is missing');
+const candidateApproval = await api(
+  'POST',
+  `/api/v1/decisions/${encodeURIComponent(candidateRevision.decisionId)}/review`,
+  {
+    outcome: 'approve',
+    idempotencyKey: `training-e2e-candidate-review-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
+    expectedVersion: candidateDecisionItem.recordVersion,
+    strongConfirmationText: 'CONFIRM',
+  },
+);
+const approvedCandidateDecisionItem = candidateApproval.payload?.data?.item;
+assert(approvedCandidateDecisionItem?.decisionState === 'approved', 'Decision Center did not strongly approve the plan candidate');
+assert(Number.isSafeInteger(approvedCandidateDecisionItem?.recordVersion), 'Approved plan candidate record version is missing');
+assert(typeof approvedCandidateDecisionItem?.contextVersion === 'string', 'Approved plan candidate context version is missing');
+const candidateActivation = await api(
+  'POST',
+  `/api/v1/decisions/${encodeURIComponent(candidateRevision.decisionId)}/actions`,
+  {
+    actionId: 'activate_training_plan_revision',
+    idempotencyKey: `training-e2e-candidate-activate-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
+    expectedVersion: approvedCandidateDecisionItem.recordVersion,
+    contextVersion: approvedCandidateDecisionItem.contextVersion,
+  },
+);
+assert(candidateActivation.payload?.data?.status === 'succeeded', 'Decision Center did not activate the plan candidate');
+const activeProjection = readActiveProjectionForRevision(candidateRevision.revisionId);
+const planId = Number(activeProjection?.planId);
+assert(Number.isInteger(planId) && planId > 0, 'Plan candidate activation did not persist a canonical planId');
 cleanupPlanId = planId;
-assert(created.payload?.data?.fallbackTemplateUsed !== true, 'Plan create used fallback template');
-assert(Number(created.payload?.data?.eventsCreated ?? 0) === 0, 'Fixture-safe plan create unexpectedly created calendar events');
-assert((created.payload?.data?.calendarSource ?? null) === null, 'Fixture-safe plan create reported a calendar source');
-assert(readTrainingPlanRowCount(planId) === 1, 'Generated plan was not persisted in the isolated database');
+assert(readTrainingPlanRowCount(planId) === 1, 'Activated candidate plan was not persisted in the isolated database');
 const activatedPlan = readPlanActivation(planId);
-assert(activatedPlan?.status === 'active', `Generated plan was not activated: ${activatedPlan?.status ?? 'missing'}`);
+assert(activatedPlan?.status === 'active', `Candidate plan was not activated: ${activatedPlan?.status ?? 'missing'}`);
+assert(Number(activeProjection?.sessionCount ?? 0) >= 6, 'Candidate activation did not persist enough sessions for the E2E flow');
 evidence.steps.push({
-  step: 'plan_generate_activate',
+  step: 'plan_candidate_review_activate',
   status: 'pass',
   planId,
+  revisionId: candidateRevision.revisionId,
+  decisionId: candidateRevision.decisionId,
   persistedStatus: activatedPlan.status,
-  totalSessions: created.payload.data.totalSessions,
-  eventsCreated: created.payload.data.eventsCreated,
-  calendarSource: created.payload.data.calendarSource ?? null,
-  lintStatus: created.payload.data.planLint?.status,
+  weekCount: activeProjection.weekCount,
+  totalSessions: activeProjection.sessionCount,
+  pointerVersion: activeProjection.pointerVersion,
+  activationStatus: candidateActivation.payload.data.status,
 });
 
 const calendarSync = await api('POST', '/api/v1/training/plan/sync-calendar', { calendarSource: null }, [200, 409, 503]);
@@ -675,18 +720,11 @@ assert(
   `Fixture-safe plan acquired provider state: ${JSON.stringify(isolationBeforeReflow)}`,
 );
 assert(
-  persistedSessions.length >= Math.min(6, Number(created.payload.data.totalSessions ?? 6)),
-  'Generated plan sessions were not persisted in the isolated database',
+  persistedSessions.length >= Math.min(6, Number(activeProjection.sessionCount ?? 6)),
+  'Activated candidate sessions were not persisted in the isolated database',
 );
 let sessions = persistedSessions.length >= 6 ? persistedSessions : sessionsFromPlan;
 assert(sessions.length >= 6, 'Expected at least six sessions for completion, feedback, skip, and reflow coverage');
-const [normalSessionId, easySessionId, hardPartialSessionId] = sessions.map((session) => session.id);
-const skipSessionIds = sessions
-  .slice(3)
-  .sort((a, b) => keySessionRank(a) - keySessionRank(b))
-  .slice(0, 3)
-  .map((session) => session.id);
-assert(skipSessionIds.length >= 3, 'Expected at least three remaining sessions for repeated skip coverage');
 evidence.steps.push({
   step: 'plan_read_model',
   status: 'pass',
@@ -750,7 +788,7 @@ assert(
 // path owns canonical Training cache invalidation, so this proves that an
 // already memoized readiness snapshot is evicted in the backend process
 // before the later read rather than bypassing production cache semantics.
-const staleFixture = seedStaleReadiness();
+const staleFixture = await seedStaleReadiness();
 const reflowIdempotencyKey = `training-e2e-reflow-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`;
 const reflowApply = await api('POST', `/api/v1/training/week/${reflowCandidate.weekId}/reflow`, {
   planId,
@@ -763,20 +801,27 @@ assert(reflowApply.payload?.data?.outcome === 'proposal_created', 'Fixture reflo
 assert(reflowApply.payload?.data?.adaptationId === null, 'Fixture proposal mutated the plan before approval');
 assert(typeof reflowApply.payload?.data?.proposalId === 'string', 'Fixture reflow proposal id is missing');
 assert(typeof reflowApply.payload?.data?.decisionId === 'string', 'Fixture reflow Decision Center id is missing');
-assert(
-  readSessionReflowState(planId, reflowCandidate.sessionId)?.intensityText !== 'cap@tempo',
-  'Fixture reflow proposal mutated the session before Decision Center approval',
-);
+const reflowStateBeforeApproval = readSessionReflowState(planId, reflowCandidate.sessionId);
 const decisionId = reflowApply.payload.data.decisionId;
 const decision = await api('GET', `/api/v1/decisions/${encodeURIComponent(decisionId)}`);
 const decisionItem = decision.payload?.data?.item;
 assert(Number.isSafeInteger(decisionItem?.recordVersion), 'Fixture reflow decision record version is missing');
 assert(typeof decisionItem?.contextVersion === 'string', 'Fixture reflow decision context version is missing');
+const approval = await api('POST', `/api/v1/decisions/${encodeURIComponent(decisionId)}/review`, {
+  outcome: 'approve',
+  idempotencyKey: `training-e2e-reflow-review-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
+  expectedVersion: decisionItem.recordVersion,
+  strongConfirmationText: 'CONFIRM',
+});
+const approvedDecisionItem = approval.payload?.data?.item;
+assert(approvedDecisionItem?.decisionState === 'approved', 'Decision Center did not record strong approval for fixture reflow');
+assert(Number.isSafeInteger(approvedDecisionItem?.recordVersion), 'Approved fixture reflow record version is missing');
+assert(typeof approvedDecisionItem?.contextVersion === 'string', 'Approved fixture reflow context version is missing');
 const activation = await api('POST', `/api/v1/decisions/${encodeURIComponent(decisionId)}/actions`, {
   actionId: 'activate_training_coach_v2_proposal',
   idempotencyKey: `training-e2e-reflow-approval-${env.NEXUS_TRAINING_E2E_RUN_ID}-${flowAttemptId}`,
-  expectedVersion: decisionItem.recordVersion,
-  contextVersion: decisionItem.contextVersion,
+  expectedVersion: approvedDecisionItem.recordVersion,
+  contextVersion: approvedDecisionItem.contextVersion,
 });
 assert(activation.payload?.data?.status === 'succeeded', 'Decision Center did not activate the fixture reflow');
 const reflowReplay = await api('POST', `/api/v1/training/week/${reflowCandidate.weekId}/reflow`, {
@@ -793,7 +838,10 @@ const candidateActionReasonCodes = reflowPreview.payload.data.actions
   .filter((action) => String(action?.sessionId) === String(reflowCandidate.sessionId))
   .map((action) => action?.reasonCode)
   .filter((reasonCode) => typeof reasonCode === 'string' && reasonCode.length > 0);
-assert(reflowReadback?.intensityText === 'cap@tempo', 'Fixture reflow mutation was not persisted');
+assert(
+  reflowReadback?.intensityText !== reflowStateBeforeApproval?.intensityText,
+  `Fixture typed reflow did not change intensity from ${reflowStateBeforeApproval?.intensityText ?? 'missing'}`,
+);
 assert(
   candidateActionReasonCodes.includes(reflowReadback?.scheduleReasonCode),
   `Fixture reflow rationale ${reflowReadback?.scheduleReasonCode ?? 'missing'} was not one of the executed action reasons: ${candidateActionReasonCodes.join(', ')}`,
@@ -823,14 +871,18 @@ evidence.steps.push({
 // targets again from durable state so feedback percentages are based on the
 // plan the athlete actually sees, not the pre-reflow DTO retained above.
 const refreshedSessions = readPersistedSessions(planId);
-const refreshedSessionById = new Map(refreshedSessions.map((session) => [String(session.id), session]));
-const normalSession = refreshedSessionById.get(String(normalSessionId));
-const easySession = refreshedSessionById.get(String(easySessionId));
-const hardPartialSession = refreshedSessionById.get(String(hardPartialSessionId));
-const skipSessions = skipSessionIds.map((sessionId) => refreshedSessionById.get(String(sessionId)));
+const actionableSessions = refreshedSessions.filter((session) =>
+  ['pending', 'scheduled', 'reflowed'].includes(String(session.status).toLowerCase()));
+const normalSession = actionableSessions[0];
+const easySession = actionableSessions[1];
+const hardPartialSession = actionableSessions[2];
+const skipSessions = actionableSessions
+  .slice(3)
+  .sort((a, b) => keySessionRank(a) - keySessionRank(b))
+  .slice(0, 3);
 assert(
-  normalSession && easySession && hardPartialSession && skipSessions.every(Boolean),
-  'Post-reflow durable session refresh lost a completion/skip target',
+  normalSession && easySession && hardPartialSession && skipSessions.length >= 3,
+  `Post-reflow durable state has only ${actionableSessions.length} actionable completion/skip targets`,
 );
 
 seedDegradedCoach();
@@ -992,35 +1044,37 @@ evidence.steps.push({
   loadSnapshotStatus: loadSnapshot.status,
 });
 
-const reflow = await api('POST', `/api/v1/training/sessions/${sessions[0].id}/reflow-preview`, { calendarSource: null }, [200, 400, 409, 503]);
+const reflow = await api('POST', `/api/v1/training/sessions/${sessions[0].id}/reflow-preview`, { calendarSource: null }, [409]);
 assert(
-  reflow.payload?.error?.code === 'NO_CALENDAR',
-  `Fixture-safe reflow preview did not fail closed with NO_CALENDAR: ${reflow.payload?.error?.code ?? 'none'}`,
+  reflow.payload?.error?.code === 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+  `Revision-owned legacy reflow preview returned ${reflow.payload?.error?.code ?? 'none'} instead of TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED`,
 );
 evidence.steps.push({
-  step: 'reflow_preview_provider_safe',
-  status: reflow.status,
-  code: reflow.payload?.error?.code ?? null,
+  step: 'revision_owned_legacy_reflow_guard',
+  status: 'pass',
+  httpStatus: reflow.status,
+  errorCode: reflow.payload?.error?.code ?? null,
 });
 
-const cancel = await api('POST', '/api/v1/training/plan/cancel', { planId });
+const cancel = await api('POST', '/api/v1/training/plan/cancel', { planId }, [409]);
 const remainingPlanRows = readTrainingPlanRowCount(planId);
-assert(cancel.payload?.data?.cancelled === true, 'Plan cancel did not report cancelled=true');
-assert(remainingPlanRows === 0, 'Cancelled plan still exists in the isolated database');
+assert(
+  cancel.payload?.error?.code === 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+  `Revision-owned cancel returned ${cancel.payload?.error?.code ?? 'no error'} instead of TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED`,
+);
+assert(remainingPlanRows === 1, 'Revision-owned cancel mutated the active plan');
 cleanupPlanId = null;
 const homeAfterCancel = await api('GET', '/api/v1/training/home');
-assert(
-  !homeAfterCancel.payload?.data?.activePlan,
-  'Home read model still reports an active plan after cancellation',
-);
 evidence.steps.push({
-  step: 'cancel_cleanup_and_no_plan_recovery',
+  step: 'revision_owned_legacy_cancel_guard',
   status: 'pass',
   httpStatus: cancel.status,
-  removedPlans: cancel.payload?.data?.removedPlans ?? null,
-  removedSessions: cancel.payload?.data?.removedSessions ?? null,
+  errorCode: cancel.payload.error.code,
   remainingPlanRows,
-  hasActivePlanAfterCancel: Boolean(homeAfterCancel.payload?.data?.activePlan),
+  homeReadStatus: homeAfterCancel.status,
+  hasActionableHomeSessionAfterBlockedCancel: Boolean(
+    homeAfterCancel.payload?.data?.activePlan || homeAfterCancel.payload?.data?.today?.session,
+  ),
 });
 
 // The lifecycle can be long enough for a worktree edit, container recreation,
@@ -1060,7 +1114,9 @@ console.log(JSON.stringify({
     try {
       if (readTrainingPlanRowCount(cleanupPlanId) > 0) {
         const cleanup = await api('POST', '/api/v1/training/plan/cancel', { planId: cleanupPlanId }, [200, 404, 409]);
-        if (cleanup.status !== 404 && cleanup.payload?.data?.cancelled !== true) {
+        const revisionGuarded = cleanup.status === 409
+          && cleanup.payload?.error?.code === 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED';
+        if (cleanup.status !== 404 && cleanup.payload?.data?.cancelled !== true && !revisionGuarded) {
           cleanupErrors.push(`plan ${cleanupPlanId} cleanup did not report cancelled=true`);
         }
       }

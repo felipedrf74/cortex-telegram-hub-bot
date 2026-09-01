@@ -15,8 +15,14 @@ import { isValidTenantUserId } from '../tenant-scope-observability';
 import type { FinanceMeshContext, MeshSignalDraft } from './types';
 import { endOfDayIso, reportInvalidMeshScope, resolveWeekWindow, roundTo, safely } from './mesh-common';
 
-export function createEmptyFinanceMeshContext(opts: { userId: number; tenantId?: number; weekStart?: string }): FinanceMeshContext {
-  const window = resolveWeekWindow(opts.weekStart);
+export function createEmptyFinanceMeshContext(opts: {
+  userId: number;
+  tenantId?: number;
+  weekStart?: string;
+  timezone?: string;
+  referenceNow?: string;
+}): FinanceMeshContext {
+  const window = resolveWeekWindow(opts.weekStart, opts.timezone, opts.referenceNow);
   const month = window.start.toFormat('yyyy-MM');
   const year = window.start.year;
   return {
@@ -86,16 +92,20 @@ export async function readFinanceMeshContext(opts: {
   userId: number;
   tenantId?: number;
   weekStart?: string;
+  timezone?: string;
+  /** One request-captured UTC instant for time-relative subscription signals. */
+  referenceNow?: string;
 }): Promise<FinanceMeshContext> {
-  if (!isValidTenantUserId(opts.userId)) {
+  const tenantId = opts.tenantId ?? opts.userId;
+  if (!isValidTenantUserId(opts.userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidMeshScope('read_finance_mesh_context', opts.userId, opts.weekStart);
     return createEmptyFinanceMeshContext(opts);
   }
 
-  const window = resolveWeekWindow(opts.weekStart);
+  const window = resolveWeekWindow(opts.weekStart, opts.timezone, opts.referenceNow);
   const month = window.start.toFormat('yyyy-MM');
   const year = window.start.year;
-  const monthlySummary = safely(() => getMonthlySummary(opts.userId, month, { tenantId: opts.tenantId }), {
+  const monthlySummary = safely(() => getMonthlySummary(opts.userId, month, { tenantId }), {
     month,
     currency: null,
     currencies: [],
@@ -106,8 +116,8 @@ export async function readFinanceMeshContext(opts: {
     netIncome: 0,
     transactionCount: 0,
   });
-  const preferredCurrency = getPreferredCurrencyForUser(opts.userId);
-  const budgetView = safely(() => getMonthlyBudgetView(opts.userId, month, { tenantId: opts.tenantId }), {
+  const preferredCurrency = getPreferredCurrencyForUser(opts.userId, { tenantId });
+  const budgetView = safely(() => getMonthlyBudgetView(opts.userId, month, { tenantId }), {
     month,
     basisCurrency: preferredCurrency,
     currencies: [preferredCurrency],
@@ -125,8 +135,8 @@ export async function readFinanceMeshContext(opts: {
     recurringExpenses: [],
     notes: [],
   });
-  const taxEvents = safely(() => getTaxEvents(opts.userId, { year, limit: 24 }), []);
-  const annualSummary = safely(() => getAnnualTaxSummary(opts.userId, year), {
+  const taxEvents = safely(() => getTaxEvents(opts.userId, { year, limit: 24, tenantId }), []);
+  const annualSummary = safely(() => getAnnualTaxSummary(opts.userId, year, { tenantId }), {
     year,
     totalGrossIncome: 0,
     totalDeductions: 0,
@@ -153,9 +163,20 @@ export async function readFinanceMeshContext(opts: {
 
   const remainingRatio = budgetView.projectedRemainingRatio ?? budgetView.currentRemainingRatio;
   const nearestPending = taxEvents.find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
-  const renewalDueSoon = subscription.currentPeriodEnd
-    ? DateTime.fromISO(subscription.currentPeriodEnd).diffNow('days').days <= 10
-    : false;
+  const parsedReferenceNow = opts.referenceNow
+    ? DateTime.fromISO(opts.referenceNow, { setZone: true })
+    : DateTime.utc();
+  const referenceNow = parsedReferenceNow.isValid ? parsedReferenceNow : DateTime.utc();
+  const parsedRenewalEnd = subscription.currentPeriodEnd
+    ? DateTime.fromISO(subscription.currentPeriodEnd, { setZone: true })
+    : null;
+  const renewalDays = parsedRenewalEnd?.isValid
+    ? parsedRenewalEnd.diff(referenceNow, 'days').days
+    : null;
+  const renewalDueSoon = subscription.isActive
+    && renewalDays != null
+    && renewalDays >= 0
+    && renewalDays <= 10;
   const budgetConstraints = remainingRatio != null
     ? deriveBudgetConstraints(remainingRatio, {
       renewalDueSoon,

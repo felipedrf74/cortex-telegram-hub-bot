@@ -739,6 +739,22 @@ describe('getAnnualTaxSummary', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('getMonthlyBudgetView', () => {
+  it('keeps preferred currency and empty-month budget basis tenant-scoped', () => {
+    addTransaction(1, '2024-05-01', 'income', 3000, {
+      tenantId: 11,
+      currency: 'EUR',
+    });
+    addTransaction(1, '2024-05-01', 'income', 4000, {
+      tenantId: 22,
+      currency: 'USD',
+    });
+
+    expect(getPreferredCurrencyForUser(1, { tenantId: 11 })).toBe('EUR');
+    expect(getPreferredCurrencyForUser(1, { tenantId: 22 })).toBe('USD');
+    expect(getMonthlyBudgetView(1, '2024-06', { tenantId: 11 }).basisCurrency).toBe('EUR');
+    expect(getMonthlyBudgetView(1, '2024-06', { tenantId: 22 }).basisCurrency).toBe('USD');
+  });
+
   it('marks mixed-currency months as provisional instead of inventing a fake budget ratio', () => {
     addTransaction(1, '2024-06-02', 'income', 3200, { currency: 'EUR' });
     addTransaction(1, '2024-06-05', 'expense', 187, { currency: 'EUR', description: 'Groceries' });

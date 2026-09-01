@@ -362,6 +362,45 @@ export interface NotificationEvaluationResult {
   } | null;
 }
 
+/**
+ * Optional durable proposal hook used by Decision Center. The callback runs
+ * inside the same SQLite transaction that inserts the inbox item and before
+ * any provider delivery can begin. Throwing rolls the item back.
+ */
+export interface NotificationIntentCreateOptions {
+  /**
+   * Persist the intent, outbox events, delivery job, center item, and durable
+   * proposal metadata as one commit. Decision Center enables this so neither a
+   * worker nor APNs can observe a partially-created proposal.
+   */
+  atomicItemProposal?: boolean;
+  onItemPersistedInTransaction?: (context: {
+    intent: NotificationIntentRecord;
+    item: NotificationCenterItem;
+    effectivePriority: NotificationPriority;
+  }) => void | {
+    /**
+     * The proposal was atomically folded into an existing canonical item.
+     * The new audit row remains durable, but it must never enqueue or attempt
+     * provider delivery.
+     */
+    suppressDelivery: true;
+    reason: string;
+  };
+}
+
+export class NotificationProposalCommitError extends Error {
+  readonly code = 'NOTIFICATION_PROPOSAL_COMMIT_FAILED';
+
+  constructor(
+    readonly intentId: string,
+    options?: { cause?: unknown },
+  ) {
+    super('Notification proposal did not commit before delivery.', options);
+    this.name = 'NotificationProposalCommitError';
+  }
+}
+
 export interface NotificationDeliveryObservabilityMetrics {
   userId: number;
   tenantId: number;
@@ -758,6 +797,17 @@ export function ensureNotificationTables(): void {
       flag_vector_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    -- Migration 063 owns this legacy iOS preference table in production.
+    -- Keep it in the explicit bootstrap helper as well so an isolated test or
+    -- recovery database created through ensureNotificationTables has the same
+    -- notification contract. Runtime request paths do not call this helper.
+    CREATE TABLE IF NOT EXISTS push_preferences (
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, category)
+    );
     CREATE INDEX IF NOT EXISTS idx_notification_engagement_scope_type_created
       ON notification_engagement_events(user_id, tenant_id, source_skill, type, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notification_engagement_event_type_created
@@ -782,9 +832,8 @@ export function ensureNotificationTables(): void {
     CREATE INDEX IF NOT EXISTS idx_notification_center_badge_actionable
       ON notification_center_items(user_id, tenant_id, status, requires_user_action, expires_at)
   `).run();
-  // Snooze release predicate. Created here rather than in migration 268
-  // because `snoozed_until` is an ensureColumn() self-heal, so it does not
-  // exist yet in a database built from migrations alone.
+  // Legacy explicit bootstrap compatibility. Production request paths never
+  // call this helper; migrations own both the column and this index.
   getDb().prepare(`
     CREATE INDEX IF NOT EXISTS idx_notification_center_snoozed_due
       ON notification_center_items(user_id, tenant_id, status, snoozed_until)
@@ -800,7 +849,6 @@ export function ensureNotificationTables(): void {
  */
 export function getNotificationProfileIfExists(userId: number, tenantId = userId): NotificationProfile | null {
   assertScope(userId, tenantId, 'get_notification_profile');
-  ensureNotificationTables();
   const row = getDb().prepare(`
     SELECT * FROM notification_profiles
     WHERE user_id = ? AND tenant_id = ?
@@ -823,7 +871,6 @@ function resolveInitialProfileTimezone(userId: number): string {
 
 export function getOrCreateNotificationProfile(userId: number, tenantId = userId): NotificationProfile {
   assertScope(userId, tenantId, 'get_notification_profile');
-  ensureNotificationTables();
   const db = getDb();
   const existing = getNotificationProfileIfExists(userId, tenantId);
   if (existing) return existing;
@@ -1154,15 +1201,19 @@ async function withUserEvaluationLock<T>(
 
 export function createNotificationIntent(
   input: NotificationIntentInput,
+  options: NotificationIntentCreateOptions = {},
 ): Promise<NotificationEvaluationResult> {
   return withUserEvaluationLock(
     Number(input.userId),
     Number(input.tenantId ?? input.userId),
-    () => runNotificationIntentEvaluation(input),
+    () => runNotificationIntentEvaluation(input, options),
   );
 }
 
-async function runNotificationIntentEvaluation(input: NotificationIntentInput): Promise<NotificationEvaluationResult> {
+async function runNotificationIntentEvaluation(
+  input: NotificationIntentInput,
+  options: NotificationIntentCreateOptions,
+): Promise<NotificationEvaluationResult> {
   const normalized = normalizeIntent(input);
   expireStaleNotificationIntents();
   const budget = consumeResourceBudget({
@@ -1179,8 +1230,16 @@ async function runNotificationIntentEvaluation(input: NotificationIntentInput): 
   if (existingDuplicate) return existingDuplicate;
 
   let intent: NotificationIntentRecord;
+  let precommittedItem: NotificationCenterItem | undefined;
+  let precommittedDecisionLog: NotificationDecisionLog | undefined;
   try {
-    intent = runOutboxTransaction((emitDomainEvent) => {
+    const profile = options.atomicItemProposal
+      ? getOrCreateNotificationProfile(normalized.userId, normalized.tenantId)
+      : null;
+    const shouldPersistItemAtomically = profile !== null
+      && profile.skillPreferences[normalized.sourceSkill]
+      && (profile.inAppEnabled || profile.portalEnabled || profile.pushEnabled);
+    const proposal = runOutboxTransaction((emitDomainEvent) => {
       const persisted = persistIntent(normalized);
       emitDomainEvent({
         tenantId: persisted.tenantId,
@@ -1202,25 +1261,75 @@ async function runNotificationIntentEvaluation(input: NotificationIntentInput): 
         idempotencyKey: `notification.intent.created:${persisted.tenantId}:${persisted.userId}:${persisted.intentId}`,
       });
       emitSourceSkillEventForIntent(persisted, emitDomainEvent);
-      enqueueJob({
-        tenantId: persisted.tenantId,
-        userId: persisted.userId,
-        jobType: 'deliver_notification',
-        payload: { intentId: persisted.intentId },
-        priority: persisted.priority === 'time_sensitive' || persisted.priority === 'critical' ? 10 : 50,
-        idempotencyKey: `deliver_notification:${persisted.intentId}`,
-      });
-      return persisted;
+      let item: NotificationCenterItem | undefined;
+      let proposalDisposition: { suppressDelivery: true; reason: string } | undefined;
+      if (shouldPersistItemAtomically) {
+        const effectivePriority = normalizePriorityForPolicy(persisted.priority, profile);
+        const safeBody = buildPrivacySafeBody(persisted, notificationCopyLanguage(persisted.userId));
+        item = persistCenterItem(persisted, effectivePriority, safeBody);
+        const callbackDisposition = options.onItemPersistedInTransaction?.({
+          intent: persisted,
+          item,
+          effectivePriority,
+        });
+        if (callbackDisposition) proposalDisposition = callbackDisposition;
+      }
+      let decisionLog: NotificationDecisionLog | undefined;
+      if (proposalDisposition?.suppressDelivery) {
+        decisionLog = persistDecisionLog({
+          intent: persisted,
+          notificationId: item?.itemId ?? null,
+          decision: 'deduped',
+          priority: item?.priority ?? persisted.priority,
+          reason: proposalDisposition.reason,
+          scheduledFor: null,
+          sentAt: null,
+          deliveryAttemptIds: [],
+        });
+        if (item) attachDecisionLog(item.itemId, decisionLog.decisionLogId);
+        markIntentStatus(persisted.intentId, 'deduped');
+      } else {
+        enqueueJob({
+          tenantId: persisted.tenantId,
+          userId: persisted.userId,
+          jobType: 'deliver_notification',
+          payload: { intentId: persisted.intentId },
+          priority: persisted.priority === 'time_sensitive' || persisted.priority === 'critical' ? 10 : 50,
+          idempotencyKey: `deliver_notification:${persisted.intentId}`,
+        });
+      }
+      return { intent: persisted, item, decisionLog };
     });
+    intent = proposal.intent;
+    precommittedItem = proposal.item;
+    precommittedDecisionLog = proposal.decisionLog;
   } catch (err) {
     if (isNotificationDedupeConstraintError(err)) {
       expireStaleNotificationIntents();
       const duplicate = resolveActiveDuplicateEvaluation(normalized);
       if (duplicate) return duplicate;
     }
+    if (options.atomicItemProposal && options.onItemPersistedInTransaction) {
+      throw new NotificationProposalCommitError(normalized.intentId, { cause: err });
+    }
     throw err;
   }
-  return evaluateNotificationIntent(intent.intentId, intent.userId, intent.tenantId);
+  if (precommittedDecisionLog) {
+    return {
+      intent: { ...intent, status: 'deduped' },
+      item: precommittedItem ?? null,
+      decisionLog: precommittedDecisionLog,
+      deliveryAttempts: [],
+      pushPayload: null,
+    };
+  }
+  return evaluateNotificationIntent(
+    intent.intentId,
+    intent.userId,
+    intent.tenantId,
+    options,
+    precommittedItem,
+  );
 }
 
 function emitSourceSkillEventForIntent(
@@ -1268,9 +1377,10 @@ export async function evaluateNotificationIntent(
   intentId: string,
   userId: number,
   tenantId = userId,
+  options: NotificationIntentCreateOptions = {},
+  precommittedItem?: NotificationCenterItem,
 ): Promise<NotificationEvaluationResult> {
   assertScope(userId, tenantId, 'evaluate_notification_intent', { intentId });
-  ensureNotificationTables();
   const db = getDb();
   const intentRow = db.prepare(`
     SELECT * FROM notification_intents
@@ -1318,7 +1428,7 @@ export async function evaluateNotificationIntent(
     return { intent: { ...intent, priority: effectivePriority, status: 'suppressed' }, item: null, decisionLog: log, deliveryAttempts: [], pushPayload: null };
   }
 
-  const duplicate = findActiveDuplicate(intent);
+  const duplicate = precommittedItem ? null : findActiveDuplicate(intent);
   if (duplicate) {
     const log = persistDecisionLog({
       intent,
@@ -1334,7 +1444,27 @@ export async function evaluateNotificationIntent(
     return { intent: { ...intent, priority: effectivePriority, status: 'deduped' }, item: duplicate, decisionLog: log, deliveryAttempts: [], pushPayload };
   }
 
-  const item = persistCenterItem(intent, effectivePriority, safeBody);
+  let item: NotificationCenterItem;
+  if (precommittedItem) {
+    item = precommittedItem;
+  } else {
+    try {
+      item = db.transaction(() => {
+      const persisted = persistCenterItem(intent, effectivePriority, safeBody);
+      options.onItemPersistedInTransaction?.({
+        intent,
+        item: persisted,
+        effectivePriority,
+      });
+      return persisted;
+      })();
+    } catch (cause) {
+      if (options.onItemPersistedInTransaction) {
+        throw new NotificationProposalCommitError(intent.intentId, { cause });
+      }
+      throw cause;
+    }
+  }
   // Denominator for every engagement rate. Recorded once the durable item
   // exists, BEFORE the delivery branches, so "surfaced but never pushed"
   // stays distinguishable from "never surfaced at all".
@@ -1487,6 +1617,90 @@ export async function evaluateNotificationIntent(
   };
 }
 
+export interface NotificationIntentDeliveryResumeResult {
+  intentId: string;
+  notificationId: string | null;
+  decisionLogId: string;
+  decision: NotificationDecision;
+  replayed: boolean;
+}
+
+/**
+ * Resume the exact intent named by a `deliver_notification` job.
+ *
+ * The proposal transaction commits the intent, canonical item, and this job
+ * before provider work begins. If the request process exits after that commit,
+ * the worker evaluates this exact row instead of merely sweeping previously
+ * scheduled digest/quiet-hour logs. A completed decision log is the durable
+ * replay receipt, so the request path and worker cannot evaluate the same
+ * intent twice even when they race.
+ */
+export function resumeNotificationIntentDelivery(
+  intentId: string,
+  userId: number,
+  tenantId = userId,
+): Promise<NotificationIntentDeliveryResumeResult> {
+  assertScope(userId, tenantId, 'resume_notification_intent_delivery', { intentId });
+  if (!intentId.trim()) throw new Error('deliver_notification job requires an intentId');
+  return withUserEvaluationLock(userId, tenantId, async () => {
+    const db = getDb();
+    const canonicalDecisionLogId = exactDecisionLogId({
+      intentId,
+      userId,
+      tenantId,
+    });
+    const existing = db.prepare(`
+      SELECT *
+        FROM notification_decision_logs
+       WHERE decision_log_id = ?
+         AND intent_id = ? AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(canonicalDecisionLogId, intentId, userId, tenantId) as any;
+    if (existing) {
+      const log = mapDecisionLog(existing);
+      if (log.notificationId) attachDecisionLog(log.notificationId, log.decisionLogId);
+      const status = log.decision === 'blocked_user_preferences' || log.decision === 'suppressed'
+        ? 'suppressed'
+        : log.decision === 'deduped'
+          ? 'deduped'
+          : 'evaluated';
+      markIntentStatus(intentId, status);
+      return {
+        intentId,
+        notificationId: log.notificationId,
+        decisionLogId: log.decisionLogId,
+        decision: log.decision,
+        replayed: true,
+      };
+    }
+
+    const itemRow = db.prepare(`
+      SELECT item_id AS itemId
+        FROM notification_center_items
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+       ORDER BY created_at ASC, rowid ASC
+       LIMIT 1
+    `).get(intentId, userId, tenantId) as { itemId: string } | undefined;
+    const precommittedItem = itemRow
+      ? getNotificationCenterItem(itemRow.itemId, userId, tenantId) ?? undefined
+      : undefined;
+    const evaluated = await evaluateNotificationIntent(
+      intentId,
+      userId,
+      tenantId,
+      {},
+      precommittedItem,
+    );
+    return {
+      intentId,
+      notificationId: evaluated.decisionLog.notificationId,
+      decisionLogId: evaluated.decisionLog.decisionLogId,
+      decision: evaluated.decisionLog.decision,
+      replayed: false,
+    };
+  });
+}
+
 // Engagement gate config: suppress daily-digest pushes after this many
 // consecutive unread digests (0 disables). Reading any digest resets the
 // streak naturally.
@@ -1518,7 +1732,6 @@ function hasUnreadDigestStreak(userId: number, tenantId: number, excludeItemId: 
 }
 
 export function expireStaleNotificationIntents(now = new Date()): number {
-  ensureNotificationTables();
   const db = getDb();
   const nowIso = now.toISOString();
   // The intent and active center-item unique dedupe indexes are status-based, so active expired
@@ -1566,7 +1779,6 @@ export async function releaseDueNotificationDeliveries(now = new Date()): Promis
 }
 
 async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<NotificationReleaseSweepSummary> {
-  ensureNotificationTables();
   expireStaleNotificationIntents(now);
   const db = getDb();
   const rows = db.prepare(`
@@ -1976,7 +2188,6 @@ export const NOTIFICATION_RETENTION_DAYS = {
  * something still waiting on the user. Only terminal rows age out.
  */
 export function pruneNotificationRetention(now = new Date()): NotificationRetentionSummary {
-  ensureNotificationTables();
   const db = getDb();
   const cutoff = (days: number): string =>
     new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -2120,7 +2331,6 @@ export function assembleDailyDigest(
 ): DailyDigestComposition {
   assertScope(userId, tenantId, 'assemble_daily_digest', { itemCount });
   const digestLang = notificationCopyLanguage(userId);
-  ensureNotificationTables();
 
   // A digest push may only ADVERTISE what it would be allowed to SEND.
   //
@@ -2318,7 +2528,6 @@ function queryUserFacingCenterItems(
   },
   limit: number,
 ): NotificationCenterItem[] {
-  ensureNotificationTables();
   const clauses = ['items.user_id = ?', 'items.tenant_id = ?'];
   const params: unknown[] = [userId, tenantId];
   if (opts.status && opts.status !== 'all') {
@@ -2524,7 +2733,6 @@ const BADGE_COUNT_CEILING = 5000;
 
 export function countUnreadNotificationCenterItems(userId: number, tenantId = userId): number {
   assertScope(userId, tenantId, 'count_unread_notification_center_items');
-  ensureNotificationTables();
   try {
     // Derived from the LIST, never from a parallel COUNT(*).
     //
@@ -2545,8 +2753,9 @@ export function countUnreadNotificationCenterItems(userId: number, tenantId = us
         && !NON_BADGE_NOTIFICATION_TYPES.includes(item.type))
       .length;
   } catch (err) {
-    // The suppression table is owned by decision-center and may not have
-    // self-healed yet in a fresh DB. A zero badge beats a thrown one.
+    // Schema readiness or the scoped projection can fail closed during
+    // startup/recovery. A zero badge is safer than surfacing another tenant's
+    // or an unfiltered count.
     logger.warn({ err, userId, tenantId }, 'badge count failed');
     return 0;
   }
@@ -2558,7 +2767,6 @@ export function listNotificationBridgeEntityIds(
   bridgePrefix: 'content' | 'report',
 ): number[] {
   assertScope(userId, tenantId, 'list_notification_bridge_entity_ids', { bridgePrefix });
-  ensureNotificationTables();
   const rows = getDb().prepare(`
     SELECT dedupe_key AS dedupeKey
       FROM notification_center_items
@@ -2611,7 +2819,6 @@ export function getAllNotificationCenterItemsForPortal(
   scope: PortalNotificationScope,
 ): NotificationCenterItem[] {
   assertScope(scope.userId, scope.tenantId, 'portal_list_notification_center_items');
-  ensureNotificationTables();
   const params: unknown[] = [scope.userId, scope.tenantId];
   params.push(Math.min(Math.max(limit, 1), 250));
   const rows = getDb().prepare(`
@@ -2637,7 +2844,6 @@ export function getNotificationProfileSummariesForPortal(
   updatedAt: string;
 }> {
   assertScope(scope.userId, scope.tenantId, 'portal_list_notification_profiles');
-  ensureNotificationTables();
   const params: unknown[] = [scope.userId, scope.tenantId];
   params.push(Math.min(Math.max(limit, 1), 250));
   const rows = getDb().prepare(`
@@ -2663,7 +2869,6 @@ export function getNotificationProfileSummariesForPortal(
 
 export function getNotificationCenterItem(itemId: string, userId: number, tenantId = userId): NotificationCenterItem | null {
   assertScope(userId, tenantId, 'get_notification_center_item', { itemId });
-  ensureNotificationTables();
   const row = getDb().prepare(`
     SELECT items.*, intents.intent_id AS intent_joined_intent_id,
            intents.related_entity_id AS intent_related_entity_id,
@@ -2685,7 +2890,6 @@ export function getNotificationCenterItem(itemId: string, userId: number, tenant
 
 export function markNotificationCenterItemRead(itemId: string, userId: number, tenantId = userId): NotificationCenterItem | null {
   assertScope(userId, tenantId, 'mark_notification_center_item_read', { itemId });
-  ensureNotificationTables();
   getDb().prepare(`
     UPDATE notification_center_items
     SET status = CASE WHEN status = 'unread' THEN 'read' ELSE status END,
@@ -2703,7 +2907,6 @@ export function markNotificationCenterItemRead(itemId: string, userId: number, t
 
 export function dismissNotificationCenterItem(itemId: string, userId: number, tenantId = userId): NotificationCenterItem | null {
   assertScope(userId, tenantId, 'dismiss_notification_center_item', { itemId });
-  ensureNotificationTables();
   getDb().prepare(`
     UPDATE notification_center_items
     SET status = 'dismissed', dismissed_at = datetime('now')
@@ -2745,7 +2948,6 @@ export function snoozeNotificationCenterItem(
   now = new Date(),
 ): NotificationCenterItem | null {
   assertScope(userId, tenantId, 'snooze_notification_center_item', { itemId });
-  ensureNotificationTables();
   const until = resolveSnoozeUntil(snoozedUntil, now);
   const db = getDb();
   db.transaction(() => {
@@ -2806,7 +3008,6 @@ export interface SnoozeReleaseSummary {
  * snoozed SNOOZE_MAX_COUNT times.
  */
 export async function releaseDueSnoozedNotifications(now = new Date()): Promise<SnoozeReleaseSummary> {
-  ensureNotificationTables();
   const db = getDb();
   const nowIso = now.toISOString();
   const rows = db.prepare(`
@@ -2905,6 +3106,7 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
         // preferences and quiet hours again at release time.
         persistDecisionLog({
           intent,
+          evaluationId: `snooze:${row.snooze_count}`,
           notificationId: row.item_id,
           decision: 'quiet_hours_delayed',
           priority: effectivePriority,
@@ -2937,7 +3139,13 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
         return;
       }
       if (plan?.interruptionLevel) payload.interruptionLevel = plan.interruptionLevel;
-      const attempt = await attemptPushDelivery(intent, row.item_id, payload, profile);
+      const attempt = await attemptPushDelivery(
+        intent,
+        row.item_id,
+        payload,
+        profile,
+        `snooze:${row.snooze_count}`,
+      );
       // Every other push in this service writes a decision log; this path did
       // not. That made snooze re-delivery invisible twice over: absent from the
       // audit trail, and uncounted by the interrupt budget, which sums
@@ -2953,6 +3161,7 @@ export async function releaseDueSnoozedNotifications(now = new Date()): Promise<
       // overriding the user's explicit request.
       persistDecisionLog({
         intent,
+        evaluationId: `snooze:${row.snooze_count}`,
         notificationId: row.item_id,
         decision: attempt.status === 'sent'
           ? 'sent_push'
@@ -2993,7 +3202,6 @@ export function performNotificationAction(
   opts: { snoozedUntil?: string | null } = {},
 ): { item: NotificationCenterItem; actionId: string; idempotent: boolean } {
   assertScope(userId, tenantId, 'perform_notification_action', { itemId, actionId });
-  ensureNotificationTables();
   const item = getNotificationCenterItem(itemId, userId, tenantId);
   if (!item) throw new Error('notification not found for authenticated user');
   if (item.expiresAt && Date.parse(item.expiresAt) <= Date.now()) {
@@ -3251,7 +3459,6 @@ export function registerNotificationDeviceToken(opts: {
   assertScope(opts.userId, tenantId, 'register_notification_device_token');
   const token = opts.token.trim();
   if (!token) throw new Error('device token required');
-  ensureNotificationTables();
 
   const tokenHash = hashToken(token);
   const tokenSuffix = token.slice(-8);
@@ -3372,7 +3579,6 @@ export function pruneStaleDeviceTokens(): number {
   const staleDays = Number.isFinite(parsed) && parsed >= 0 ? parsed : 90;
   if (staleDays === 0) return 0;
   try {
-    ensureNotificationTables();
     const result = getDb().prepare(`
       UPDATE notification_device_tokens
          SET revoked_at = datetime('now')
@@ -3392,7 +3598,6 @@ export function pruneStaleDeviceTokens(): number {
 
 export function revokeNotificationDeviceToken(tokenId: string, userId: number, tenantId = userId): boolean {
   assertScope(userId, tenantId, 'revoke_notification_device_token', { tokenId });
-  ensureNotificationTables();
   const db = getDb();
   const row = db.prepare(`
     SELECT * FROM notification_device_tokens
@@ -3419,7 +3624,6 @@ export function getNotificationDecisionLog(
   tenantId = userId,
 ): NotificationDecisionLog | null {
   assertScope(userId, tenantId, 'get_notification_decision_log', { decisionLogId });
-  ensureNotificationTables();
   const row = getDb().prepare(`
     SELECT * FROM notification_decision_logs
     WHERE decision_log_id = ? AND user_id = ? AND tenant_id = ?
@@ -3432,7 +3636,6 @@ export function getNotificationDeliveryObservabilityMetrics(
   tenantId = userId,
 ): NotificationDeliveryObservabilityMetrics {
   assertScope(userId, tenantId, 'get_notification_delivery_observability_metrics');
-  ensureNotificationTables();
   const decisionRows = getDb().prepare(`
     SELECT decision, reason, source_skill AS sourceSkill
       FROM notification_decision_logs
@@ -3488,7 +3691,6 @@ export function recordNotificationReliabilityEvent(input: NotificationReliabilit
     : null;
   const source = sanitizeReliabilityScalar(input.source, 80);
   const errorCode = sanitizeReliabilityScalar(input.errorCode, 120);
-  ensureNotificationTables();
   getDb().prepare(`
     INSERT INTO notification_reliability_events (
       event_id, user_id, tenant_id, event_type, badge_count, source, error_code, created_at
@@ -3510,7 +3712,6 @@ export function getNotificationReliabilityDashboard(
   opts: { expectedBadgeCount?: number; canonicalUnreadCount?: number } = {},
 ): NotificationReliabilityDashboard {
   assertScope(userId, tenantId, 'get_notification_reliability_dashboard');
-  ensureNotificationTables();
   const db = getDb();
   const delivery = getNotificationDeliveryObservabilityMetrics(userId, tenantId);
   const dedupe = db.prepare(`
@@ -4141,7 +4342,6 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
 }
 
 function persistIntent(intent: NotificationIntentRecord): NotificationIntentRecord {
-  ensureNotificationTables();
   getDb().prepare(`
     INSERT INTO notification_intents (
       intent_id, user_id, tenant_id, source_skill, type, priority, related_entity_id, related_entity_type,
@@ -4272,6 +4472,7 @@ async function attemptPushDelivery(
     interruptionLevel?: 'passive' | 'active' | 'time-sensitive';
   },
   profile: NotificationProfile,
+  deliveryIdentity = 'initial',
 ): Promise<PushDeliveryOutcome> {
   const expirationAt = notificationPushExpirationAt(intent);
   if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
@@ -4294,9 +4495,51 @@ async function attemptPushDelivery(
     return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'blocked_missing_credentials', null, 'apns_credentials_missing');
   }
 
+  // Claim the canonical provider attempt BEFORE the network call. The
+  // process-local evaluation lock protects one PM2 worker only; this durable
+  // primary-key claim protects request and job workers running in separate
+  // processes. A claimed-but-not-terminal row is deliberately not resent: its
+  // provider outcome is uncertain and must be reconciled, never guessed by a
+  // duplicate push.
+  const deliveryClaim = claimCanonicalPushDeliveryAttempt(intent, notificationId, deliveryIdentity);
+  if (deliveryClaim.replayed === true) return deliveryClaim.attempt;
+  if (deliveryClaim.replayed === 'pending') {
+    return waitForCanonicalPushDeliveryAttempt(intent, notificationId, deliveryClaim.attemptId);
+  }
+
   try {
     const isDecisionPush = isDecisionIntentForPush(intent);
     const contract = notificationContractForIntent(intent);
+    let decisionVersions: { recordVersion: number; contextVersion: string } | null = null;
+    if (isDecisionPush) {
+      try {
+        const row = getDb().prepare(`
+          SELECT items.record_version AS recordVersion,
+                 intents.context_version AS contextVersion
+            FROM notification_center_items items
+            JOIN notification_intents intents
+              ON intents.intent_id = items.intent_id
+             AND intents.user_id = items.user_id
+             AND intents.tenant_id = items.tenant_id
+           WHERE items.item_id = ? AND items.user_id = ? AND items.tenant_id = ?
+           LIMIT 1
+        `).get(notificationId, intent.userId, intent.tenantId) as {
+          recordVersion?: unknown;
+          contextVersion?: unknown;
+        } | undefined;
+        if (Number.isSafeInteger(Number(row?.recordVersion))
+            && Number(row?.recordVersion) > 0
+            && typeof row?.contextVersion === 'string'
+            && row.contextVersion.trim()) {
+          decisionVersions = {
+            recordVersion: Number(row.recordVersion),
+            contextVersion: row.contextVersion,
+          };
+        }
+      } catch (err) {
+        logger.warn({ err, intentId: intent.intentId }, 'Decision APNs versions unavailable; action will open the app');
+      }
+    }
     let badge: number | undefined;
     if (isDecisionPush) {
       try {
@@ -4316,6 +4559,8 @@ async function attemptPushDelivery(
         userId: intent.userId,
         tenantId: intent.tenantId,
         intentId: intent.intentId,
+        recordVersion: decisionVersions?.recordVersion,
+        contextVersion: decisionVersions?.contextVersion,
         sourceSkill: intent.sourceSkill,
         type: intent.type,
         iosDestination: contract.iosDestination,
@@ -4349,6 +4594,12 @@ async function attemptPushDelivery(
       markDeviceTokensUnregistered(intent.userId, intent.tenantId, result.unregistered);
     }
     if (result.sent > 0) {
+      const completedAttempt = completeCanonicalPushDeliveryAttempt(
+        deliveryClaim.attemptId,
+        'sent',
+        '2xx',
+        null,
+      );
       touchDeviceTokenActivity(intent.userId, intent.tenantId);
       // `last_pushed_at` is what lets a later digest tell "already interrupted
       // them about this" from "queued but never surfaced", so the brief can
@@ -4374,22 +4625,179 @@ async function attemptPushDelivery(
         priority: intent.priority,
         eventType: 'pushed',
       });
-      return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'sent', '2xx', null);
+      return completedAttempt;
     }
     if (result.unregistered.length > 0) {
-      return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', '410', 'apns_token_unregistered');
+      return completeCanonicalPushDeliveryAttempt(
+        deliveryClaim.attemptId,
+        'failed',
+        '410',
+        'apns_token_unregistered',
+      );
     }
     if (result.skipped > 0) {
       if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
-        return { attemptId: null, status: 'blocked_expired', sentAt: null };
+        return completeCanonicalPushDeliveryAttempt(
+          deliveryClaim.attemptId,
+          'failed',
+          null,
+          'apns_delivery_expired_after_claim',
+        );
       }
-      return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'blocked_missing_credentials', null, 'apns_credentials_missing');
+      return completeCanonicalPushDeliveryAttempt(
+        deliveryClaim.attemptId,
+        'blocked_missing_credentials',
+        null,
+        'apns_credentials_missing',
+      );
     }
-    return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', 'apns_rejected', 'apns_delivery_failed');
+    return completeCanonicalPushDeliveryAttempt(
+      deliveryClaim.attemptId,
+      'failed',
+      'apns_rejected',
+      'apns_delivery_failed',
+    );
   } catch (err) {
     logger.debug({ err, intentId: intent.intentId }, 'Notification orchestrator APNs delivery failed');
-    return persistDeliveryAttempt(intent, notificationId, 'push', 'apns', 'failed', null, 'apns_delivery_exception');
+    return completeCanonicalPushDeliveryAttempt(
+      deliveryClaim.attemptId,
+      'failed',
+      null,
+      'apns_delivery_exception',
+    );
   }
+}
+
+type CanonicalPushDeliveryClaim =
+  | { replayed: false; attemptId: string }
+  | { replayed: 'pending'; attemptId: string }
+  | { replayed: true; attempt: DeliveryAttempt };
+
+function canonicalPushDeliveryAttemptId(
+  intent: NotificationIntentRecord,
+  notificationId: string,
+  deliveryIdentity: string,
+): string {
+  return `nda_exact_${createHash('sha256').update(JSON.stringify({
+    intentId: intent.intentId,
+    notificationId,
+    userId: intent.userId,
+    tenantId: intent.tenantId,
+    channel: 'push',
+    provider: 'apns',
+    deliveryIdentity,
+  })).digest('hex')}`;
+}
+
+function claimCanonicalPushDeliveryAttempt(
+  intent: NotificationIntentRecord,
+  notificationId: string,
+  deliveryIdentity: string,
+): CanonicalPushDeliveryClaim {
+  const attemptId = canonicalPushDeliveryAttemptId(intent, notificationId, deliveryIdentity);
+  const inserted = getDb().prepare(`
+    INSERT OR IGNORE INTO notification_delivery_attempts (
+      attempt_id, notification_id, intent_id, user_id, tenant_id, channel, provider, status,
+      provider_response_code, error_code, created_at, sent_at
+    ) VALUES (?, ?, ?, ?, ?, 'push', 'apns', 'claimed', NULL, NULL, datetime('now'), NULL)
+  `).run(
+    attemptId,
+    notificationId,
+    intent.intentId,
+    intent.userId,
+    intent.tenantId,
+  );
+  if ((inserted.changes ?? 0) === 1) return { replayed: false, attemptId };
+
+  const row = getDb().prepare(`
+    SELECT * FROM notification_delivery_attempts
+     WHERE attempt_id = ? AND notification_id = ? AND intent_id = ?
+       AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(
+    attemptId,
+    notificationId,
+    intent.intentId,
+    intent.userId,
+    intent.tenantId,
+  ) as any;
+  if (!row) throw new Error('canonical notification delivery claim could not be read back');
+  if (row.status === 'claimed') {
+    // A process that died after claiming but before recording APNs outcome
+    // must never cause a resend. Once the bounded claim lease is stale,
+    // terminalize it as outcome-unknown so health checks can observe and
+    // reconcile it instead of leaving an immortal in-progress row.
+    getDb().prepare(`
+      UPDATE notification_delivery_attempts
+         SET status = 'failed', error_code = 'apns_delivery_outcome_unknown'
+       WHERE attempt_id = ? AND status = 'claimed'
+         AND datetime(created_at) <= datetime('now', '-15 minutes')
+    `).run(attemptId);
+    const reconciled = getDb().prepare(`
+      SELECT * FROM notification_delivery_attempts
+       WHERE attempt_id = ? AND notification_id = ? AND intent_id = ?
+         AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(
+      attemptId,
+      notificationId,
+      intent.intentId,
+      intent.userId,
+      intent.tenantId,
+    ) as any;
+    if (!reconciled) throw new Error('canonical notification delivery reconciliation receipt is missing');
+    if (reconciled.status === 'claimed') return { replayed: 'pending', attemptId };
+    return { replayed: true, attempt: mapDeliveryAttempt(reconciled) };
+  }
+  return { replayed: true, attempt: mapDeliveryAttempt(row) };
+}
+
+async function waitForCanonicalPushDeliveryAttempt(
+  intent: NotificationIntentRecord,
+  notificationId: string,
+  attemptId: string,
+): Promise<DeliveryAttempt> {
+  for (let poll = 0; poll < 30; poll += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    const row = getDb().prepare(`
+      SELECT * FROM notification_delivery_attempts
+       WHERE attempt_id = ? AND notification_id = ? AND intent_id = ?
+         AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(
+      attemptId,
+      notificationId,
+      intent.intentId,
+      intent.userId,
+      intent.tenantId,
+    ) as any;
+    if (!row) throw new Error('canonical notification delivery pending receipt is missing');
+    if (row.status !== 'claimed') return mapDeliveryAttempt(row);
+  }
+  throw new Error('canonical notification delivery provider outcome is still pending');
+}
+
+function completeCanonicalPushDeliveryAttempt(
+  attemptId: string,
+  status: DeliveryAttempt['status'],
+  providerResponseCode: string | null,
+  errorCode: string | null,
+): DeliveryAttempt {
+  const safeErrorCode = sanitizeNotificationDeliveryErrorCode(errorCode);
+  const sentAt = status === 'sent' ? new Date().toISOString() : null;
+  const updated = getDb().prepare(`
+    UPDATE notification_delivery_attempts
+       SET status = ?, provider_response_code = ?, error_code = ?, sent_at = ?
+     WHERE attempt_id = ? AND status = 'claimed'
+  `).run(status, providerResponseCode, safeErrorCode, sentAt, attemptId);
+  const row = getDb().prepare(`
+    SELECT * FROM notification_delivery_attempts WHERE attempt_id = ? LIMIT 1
+  `).get(attemptId) as any;
+  if (!row) throw new Error('canonical notification delivery receipt is missing');
+  if ((updated.changes ?? 0) === 0 && row.status === 'claimed') {
+    throw new Error('canonical notification delivery receipt did not reach a terminal state');
+  }
+  return mapDeliveryAttempt(row);
 }
 
 function persistDeliveryAttempt(
@@ -4442,6 +4850,8 @@ export function sanitizeNotificationDeliveryErrorCode(errorCode: string | null |
 
 function persistDecisionLog(input: {
   intent: NotificationIntentRecord;
+  /** Attempt identity may differ from the canonical deduped intent. */
+  evaluationId?: string;
   notificationId: string | null;
   decision: NotificationDecision;
   priority: NotificationPriority;
@@ -4450,9 +4860,18 @@ function persistDecisionLog(input: {
   sentAt: string | null;
   deliveryAttemptIds: string[];
 }): NotificationDecisionLog {
-  const decisionLogId = `ndl_${randomUUID()}`;
+  // One evaluation attempt has one receipt. Ordinary request/job replays use
+  // the canonical intent identity; a new deduped attempt supplies its own
+  // identity so observability records the collapse without duplicating intent
+  // or delivery state.
+  const decisionLogId = exactDecisionLogId({
+    intentId: input.intent.intentId,
+    evaluationId: input.evaluationId,
+    userId: input.intent.userId,
+    tenantId: input.intent.tenantId,
+  });
   getDb().prepare(`
-    INSERT INTO notification_decision_logs (
+    INSERT OR IGNORE INTO notification_decision_logs (
       decision_log_id, notification_id, intent_id, user_id, tenant_id, source_skill,
       source_entity_id, decision, priority, reason, dedupe_key, scheduled_for, sent_at,
       delivery_attempt_ids_json
@@ -4475,6 +4894,20 @@ function persistDecisionLog(input: {
   );
   const row = getDb().prepare('SELECT * FROM notification_decision_logs WHERE decision_log_id = ?').get(decisionLogId) as any;
   return mapDecisionLog(row);
+}
+
+function exactDecisionLogId(input: {
+  intentId: string;
+  evaluationId?: string;
+  userId: number;
+  tenantId: number;
+}): string {
+  return `ndl_exact_${createHash('sha256').update(JSON.stringify({
+    intentId: input.intentId,
+    evaluationId: input.evaluationId ?? input.intentId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  })).digest('hex')}`;
 }
 
 function attachDecisionLog(itemId: string, decisionLogId: string): void {
@@ -4504,7 +4937,6 @@ function markDecisionActionTaken(decisionLogId: string | null, actionId: string)
 }
 
 function resolveActiveDuplicateEvaluation(intent: NotificationIntentRecord): NotificationEvaluationResult | null {
-  ensureNotificationTables();
   const duplicate = findActiveDuplicate(intent);
   const persistedIntent = duplicate
     ? getIntentById(duplicate.intentId, intent.userId, intent.tenantId) ?? {
@@ -4526,6 +4958,7 @@ function resolveActiveDuplicateEvaluation(intent: NotificationIntentRecord): Not
   };
   const log = persistDecisionLog({
     intent: persistedIntent,
+    evaluationId: intent.intentId,
     notificationId: duplicate?.itemId ?? null,
     decision: 'deduped',
     priority: effectivePriority,
@@ -5152,7 +5585,6 @@ export interface NotificationEngagementEventInput {
  */
 export function recordNotificationEngagementEvent(input: NotificationEngagementEventInput): void {
   try {
-    ensureNotificationTables();
     getDb().prepare(`
       INSERT INTO notification_engagement_events (
         event_id, user_id, tenant_id, notification_id, intent_id,

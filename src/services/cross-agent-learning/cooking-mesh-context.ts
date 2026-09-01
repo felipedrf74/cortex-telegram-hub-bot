@@ -175,7 +175,7 @@ export async function readCookingMeshContext(opts: {
   const shoppingForecastSource = deriveShoppingForecastSource(safeShoppingList?.items ?? [], mealProfiles, meals.length);
   const aisleCount = new Set(shoppingForecastSource.items.map((item) => normalizeShoppingAisle(item.aisle)).filter(Boolean)).size;
   const estimatedSpendBrl = estimateShoppingSpendBrl(shoppingForecastSource.items);
-  const requestedCurrency = getPreferredCurrencyForUser(opts.userId);
+  const requestedCurrency = getPreferredCurrencyForUser(opts.userId, { tenantId });
   let preferredCurrency = requestedCurrency;
   let estimatedSpend = estimatedSpendBrl;
   try {

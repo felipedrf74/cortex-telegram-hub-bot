@@ -15,6 +15,7 @@ import {
   findDecisionByRelatedEntity,
   performDecisionAction,
 } from '../../../../services/decision-center';
+import { resolveDecisionChoice } from '../../../../services/decision-center/action-resolution';
 import { finalizeChatMessageResponse } from '../../chat-message-finalizer';
 import { rememberChatActiveDomain } from '../../chat-message-context';
 import {
@@ -49,10 +50,20 @@ export const decisionShortcutStage: ChatStage = {
       : null;
     if (!pending || !decision) return { kind: 'continue' };
 
+    // The shortcut is a presentation-level "accept the current proposal".
+    // Resolve it against the exact scoped server item so an alias never leaks
+    // into the executor and the option payload cannot be supplied by chat.
+    const resolution = resolveDecisionChoice(decision, 'A');
+    if (!resolution.ok) return { kind: 'continue' };
+
     recordChatStage(chatRequestId, 'decision_confirmation_shortcut');
-    const result = await performDecisionAction(decision.decisionId, 'option_a', userId, tenantId, {
+    const result = await performDecisionAction(decision.decisionId, resolution.value.actionId, userId, tenantId, {
       idempotencyKey: normalizeIdempotencyKey(req.body?.idempotencyKey)
-        ?? `chat-confirm:${tenantId}:${userId}:${pending.id}:${Date.now()}`,
+        ?? `chat-confirm:${tenantId}:${userId}:${pending.id}`,
+      channel: 'chat',
+      payload: resolution.value.payload,
+      ...(decision.recordVersion ? { expectedVersion: decision.recordVersion } : {}),
+      ...(decision.contextVersion ? { contextVersion: decision.contextVersion } : {}),
     });
     const confirmedAction = await executeConfirmedChatActionRuns({
       text: pending.actionSummary,

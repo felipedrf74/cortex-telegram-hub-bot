@@ -158,7 +158,10 @@ export function resolveNotificationContract(input: {
 
 function supportedActionsFor(sourceSkill: NotificationSourceSkill, type: NotificationIntentType): string[] {
   if (sourceSkill === 'secretary' && type === 'decision_required') {
-    return ['choose_priority', 'open_detail', 'dismiss'];
+    // A priority-choice writer does not exist yet. Keep this action out of the
+    // shared notification contract as well as the Decision projection so old
+    // notification clients cannot render a control that no runtime can honor.
+    return ['open_detail', 'dismiss'];
   }
   if (sourceSkill === 'finance' && type === 'decision_required') {
     return ['mark_paid', 'open_detail', 'dismiss'];

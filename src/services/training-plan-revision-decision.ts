@@ -192,6 +192,8 @@ export async function bindTrainingPlanRevisionDecision(input: {
     deeplink: `nexus://training/revision/${revision.revisionId}`,
     expiresAt,
     dedupeKey: `training-plan-revision:${revision.revisionId}`,
+    idempotencyKey: `training-revision:${input.scope.tenantId}:${input.scope.userId}:${revision.revisionId}:${revision.contentHash}`,
+    channel: 'internal',
     requiresUserAction: true,
     decisionDeadline: expiresAt,
     deliveryPolicy: 'in_app_only',

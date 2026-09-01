@@ -21,12 +21,11 @@
  * Idempotency: re-running this function on the same user while a
  * signal for the same weekly adherence snapshot is already active
  * is a no-op. Active rows from an older plan/week/session-count are
- * dismissed before a fresh signal is published, so the UI + coach
- * context see current plan truth instead of stale adherence copy.
+ * replaced in one transaction, so a rejected fresh write cannot retire the
+ * last valid signal observed by the UI or coaches.
  */
 
 import { DateTime } from 'luxon';
-import { dismissSignal, readSignals } from './intelligence-bus';
 import {
   computeWeeklyAdherence,
   type WeeklyAdherence,
@@ -81,6 +80,11 @@ type ActiveAdherenceSignal = {
   payload: Record<string, unknown>;
 };
 
+type ActivePlanDriftSignal = {
+  id: number;
+  payload: Record<string, unknown>;
+};
+
 function parseSignalPayload(raw: unknown): Record<string, unknown> {
   if (!raw) return {};
   if (typeof raw !== 'string') {
@@ -95,30 +99,26 @@ function parseSignalPayload(raw: unknown): Record<string, unknown> {
 }
 
 function readActiveAdherenceSignalsForUser(userId: number, tenantId: number): ActiveAdherenceSignal[] {
-  try {
-    const db = getDb();
-    const rows = db.prepare(`
-      SELECT id, signal_type, payload
-      FROM agent_signals
-      WHERE user_id = ? AND tenant_id = ?
-        AND status = 'active'
-        AND signal_type IN ('low_adherence', 'high_adherence')
-      ORDER BY created_at DESC, id DESC
-    `).all(userId, tenantId) as Array<{ id: number; signal_type: string; payload: unknown }>;
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, signal_type, payload
+    FROM agent_signals
+    WHERE user_id = ? AND tenant_id = ?
+      AND status = 'active'
+      AND julianday(expires_at) > julianday('now')
+      AND signal_type IN ('low_adherence', 'high_adherence')
+    ORDER BY created_at DESC, id DESC
+  `).all(userId, tenantId) as Array<{ id: number; signal_type: string; payload: unknown }>;
 
-    return rows
-      .filter((row): row is { id: number; signal_type: 'low_adherence' | 'high_adherence'; payload: unknown } =>
-        row.signal_type === 'low_adherence' || row.signal_type === 'high_adherence',
-      )
-      .map((row) => ({
-        id: row.id,
-        signal_type: row.signal_type,
-        payload: parseSignalPayload(row.payload),
-      }));
-  } catch (err) {
-    logger.warn({ err, userId, tenantId }, 'adherence active-signal lookup failed');
-    return [];
-  }
+  return rows
+    .filter((row): row is { id: number; signal_type: 'low_adherence' | 'high_adherence'; payload: unknown } =>
+      row.signal_type === 'low_adherence' || row.signal_type === 'high_adherence',
+    )
+    .map((row) => ({
+      id: row.id,
+      signal_type: row.signal_type,
+      payload: parseSignalPayload(row.payload),
+    }));
 }
 
 function sameIsoInstant(a: unknown, b: string): boolean {
@@ -150,8 +150,16 @@ function dismissStaleAdherenceSignals(
   keepId?: number,
 ): void {
   const stale = signals.filter((signal) => signal.id !== keepId);
+  const dismiss = getDb().prepare(`
+    UPDATE agent_signals
+       SET status = 'dismissed'
+     WHERE id = ?
+       AND user_id = ?
+       AND tenant_id = ?
+       AND status = 'active'
+  `);
   for (const signal of stale) {
-    dismissSignal(signal.id, userId, tenantId);
+    dismiss.run(signal.id, userId, tenantId);
   }
   if (stale.length > 0) {
     logger.info(
@@ -159,6 +167,137 @@ function dismissStaleAdherenceSignals(
       'stale adherence signals dismissed',
     );
   }
+}
+
+function clearAdherenceSignalsAtomically(userId: number, tenantId: number): void {
+  const db = getDb();
+  db.transaction(() => {
+    dismissStaleAdherenceSignals(
+      userId,
+      tenantId,
+      readActiveAdherenceSignalsForUser(userId, tenantId),
+    );
+  })();
+}
+
+function readActivePlanDriftSignalsForUser(userId: number, tenantId: number): ActivePlanDriftSignal[] {
+  const rows = getDb().prepare(`
+    SELECT id, payload
+    FROM agent_signals
+    WHERE user_id = ? AND tenant_id = ?
+      AND status = 'active'
+      AND julianday(expires_at) > julianday('now')
+      AND signal_type = 'plan_drift'
+    ORDER BY created_at DESC, id DESC
+  `).all(userId, tenantId) as Array<{ id: number; payload: unknown }>;
+
+  return rows.map((row) => ({ id: row.id, payload: parseSignalPayload(row.payload) }));
+}
+
+function dismissPlanDriftSignals(
+  userId: number,
+  tenantId: number,
+  signals: ActivePlanDriftSignal[],
+  keepId?: number,
+): void {
+  const dismiss = getDb().prepare(`
+    UPDATE agent_signals
+       SET status = 'dismissed'
+     WHERE id = ?
+       AND user_id = ?
+       AND tenant_id = ?
+       AND status = 'active'
+  `);
+  for (const signal of signals) {
+    if (signal.id !== keepId) dismiss.run(signal.id, userId, tenantId);
+  }
+}
+
+function clearPlanDriftSignalsAtomically(userId: number, tenantId: number): void {
+  const db = getDb();
+  db.transaction(() => {
+    dismissPlanDriftSignals(userId, tenantId, readActivePlanDriftSignalsForUser(userId, tenantId));
+  })();
+}
+
+function planDriftSignalMatchesSnapshot(
+  signal: ActivePlanDriftSignal,
+  snapshot: {
+    planSport: string;
+    dominantSport: SportKey;
+    driftPct: number;
+    sessionsInWindow: number;
+  },
+): boolean {
+  return signal.payload.plan_sport === snapshot.planSport
+    && signal.payload.dominant_sport === snapshot.dominantSport
+    && Number(signal.payload.drift_pct) === Math.round(snapshot.driftPct)
+    && Number(signal.payload.sessions_in_window) === snapshot.sessionsInWindow
+    && Number(signal.payload.window_weeks) === PLAN_DRIFT_WINDOW_WEEKS;
+}
+
+function replacePlanDriftSignalAtomically(input: {
+  userId: number;
+  tenantId: number;
+  planSport: string;
+  dominantSport: SportKey;
+  driftPct: number;
+  sessionsInWindow: number;
+}): 'published' | 'existing' {
+  const db = getDb();
+  return db.transaction(() => {
+    const activeSignals = readActivePlanDriftSignalsForUser(input.userId, input.tenantId);
+    const matchingSignal = activeSignals.find((signal) => planDriftSignalMatchesSnapshot(signal, input));
+    if (matchingSignal) {
+      dismissPlanDriftSignals(input.userId, input.tenantId, activeSignals, matchingSignal.id);
+      return 'existing' as const;
+    }
+
+    const replacementId = publishPlanDrift({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      planSport: input.planSport,
+      dominantSport: input.dominantSport,
+      driftPct: input.driftPct,
+      sessionsInWindow: input.sessionsInWindow,
+      windowWeeks: PLAN_DRIFT_WINDOW_WEEKS,
+    });
+    if (!Number.isInteger(replacementId) || replacementId <= 0) {
+      throw new Error('plan drift signal replacement was not persisted');
+    }
+    dismissPlanDriftSignals(input.userId, input.tenantId, activeSignals);
+    return 'published' as const;
+  })();
+}
+
+function replaceAdherenceSignalAtomically(input: {
+  userId: number;
+  tenantId: number;
+  targetType: 'low_adherence' | 'high_adherence';
+  adherence: WeeklyAdherence;
+  publish: () => number;
+}): 'published' | 'existing' {
+  const db = getDb();
+  return db.transaction(() => {
+    const activeSignals = readActiveAdherenceSignalsForUser(input.userId, input.tenantId);
+    const matchingSignal = activeSignals.find((signal) =>
+      signalMatchesAdherenceSnapshot(signal, input.targetType, input.adherence),
+    );
+    if (matchingSignal) {
+      dismissStaleAdherenceSignals(input.userId, input.tenantId, activeSignals, matchingSignal.id);
+      return 'existing' as const;
+    }
+
+    // Persist the replacement before retiring the old projection. A rejected
+    // governed write throws, and better-sqlite3 rolls the whole transaction
+    // back, leaving the last valid signal active.
+    const replacementId = input.publish();
+    if (!Number.isInteger(replacementId) || replacementId <= 0) {
+      throw new Error('adherence signal replacement was not persisted');
+    }
+    dismissStaleAdherenceSignals(input.userId, input.tenantId, activeSignals);
+    return 'published' as const;
+  })();
 }
 
 /**
@@ -177,11 +316,11 @@ export function publishAdherenceSignalsForUser(userId: number, tenantId: number,
   const adherence = computeWeeklyAdherence(userId, scopedTenantId, referenceDate);
 
   if (!adherence.hasActivePlan) {
-    dismissStaleAdherenceSignals(userId, scopedTenantId, readActiveAdherenceSignalsForUser(userId, scopedTenantId));
+    clearAdherenceSignalsAtomically(userId, scopedTenantId);
     return { adherence, action: 'skipped_no_plan' };
   }
   if (adherence.planned === 0) {
-    dismissStaleAdherenceSignals(userId, scopedTenantId, readActiveAdherenceSignalsForUser(userId, scopedTenantId));
+    clearAdherenceSignalsAtomically(userId, scopedTenantId);
     return { adherence, action: 'skipped_no_sessions' };
   }
 
@@ -191,76 +330,51 @@ export function publishAdherenceSignalsForUser(userId: number, tenantId: number,
     adherence.ratio >= 1.0 && adherence.planned >= HIGH_ADHERENCE_MIN_PLANNED;
 
   if (!isLow && !isHigh) {
-    dismissStaleAdherenceSignals(userId, scopedTenantId, readActiveAdherenceSignalsForUser(userId, scopedTenantId));
+    clearAdherenceSignalsAtomically(userId, scopedTenantId);
     return { adherence, action: 'skipped_neutral' };
   }
 
-  // ── Idempotency: skip if a matching signal already exists ──
-  //
-  // We use a dedicated 'adherence.orchestrator' consumer key so
-  // this read doesn't mark signals as consumed from the coaches'
-  // perspective — the sport coaches have their own readers.
   const targetType = isLow ? 'low_adherence' : 'high_adherence';
-  const activeSignals = readActiveAdherenceSignalsForUser(userId, scopedTenantId);
-  const matchingSignal = activeSignals.find((signal) =>
-    signalMatchesAdherenceSnapshot(signal, targetType, adherence),
-  );
-  if (matchingSignal) {
-    dismissStaleAdherenceSignals(userId, scopedTenantId, activeSignals, matchingSignal.id);
+  const replacement = replaceAdherenceSignalAtomically({
+    userId,
+    tenantId: scopedTenantId,
+    targetType,
+    adherence,
+    publish: () => isLow
+      ? publishLowAdherence({
+        userId,
+        tenantId: scopedTenantId,
+        completed: adherence.completed,
+        partial: adherence.partial,
+        planned: adherence.planned,
+        weekStart: adherence.weekStart,
+        weekEnd: adherence.weekEnd,
+        reason: adherence.skipped > 0
+          ? `${adherence.skipped} session(s) explicitly skipped`
+          : adherence.partial > 0
+            ? `${adherence.partial} session(s) partially completed`
+            : `${adherence.planned - adherence.completed} session(s) missed`,
+      })
+      : publishHighAdherence({
+        userId,
+        tenantId: scopedTenantId,
+        completed: adherence.completed,
+        partial: adherence.partial,
+        planned: adherence.planned,
+        weekStart: adherence.weekStart,
+        weekEnd: adherence.weekEnd,
+      }),
+  });
+
+  if (replacement === 'existing') {
     logger.debug(
-      { userId, tenantId: scopedTenantId, targetType, existingId: matchingSignal.id },
+      { userId, tenantId: scopedTenantId, targetType },
       'matching adherence signal already active — skipping duplicate publish',
     );
     return { adherence, action: 'skipped_existing' };
   }
-  dismissStaleAdherenceSignals(userId, scopedTenantId, activeSignals);
 
-  try {
-    const existing = readSignals(
-      'adherence.orchestrator',
-      [targetType],
-      5,
-      userId,
-      undefined,
-      scopedTenantId,
-    );
-    const stillMatching = existing.find((signal) =>
-      signal.signal_type === targetType
-      && signalMatchesAdherenceSnapshot({
-        id: signal.id,
-        signal_type: signal.signal_type,
-        payload: signal.payload,
-      }, targetType, adherence),
-    );
-    if (stillMatching) {
-      logger.debug(
-        { userId, tenantId: scopedTenantId, targetType, existingId: stillMatching.id },
-        'adherence signal already active — skipping duplicate publish',
-      );
-      return { adherence, action: 'skipped_existing' };
-    }
-  } catch (err) {
-    // If the read fails, fall through and publish anyway. Bus
-    // failures shouldn't silently drop signals.
-    logger.warn({ err, userId, tenantId: scopedTenantId }, 'adherence existing-check failed — publishing anyway');
-  }
-
-  // ── Publish ──
   if (isLow) {
-    publishLowAdherence({
-      userId,
-      tenantId: scopedTenantId,
-      completed: adherence.completed,
-      partial: adherence.partial,
-      planned: adherence.planned,
-      weekStart: adherence.weekStart,
-      weekEnd: adherence.weekEnd,
-      reason: adherence.skipped > 0
-        ? `${adherence.skipped} session(s) explicitly skipped`
-        : adherence.partial > 0
-          ? `${adherence.partial} session(s) partially completed`
-        : `${adherence.planned - adherence.completed} session(s) missed`,
-    });
     logger.info(
       { userId, tenantId: scopedTenantId, completed: adherence.completed, partial: adherence.partial, planned: adherence.planned, pct: adherence.percentage },
       'low_adherence signal published',
@@ -268,16 +382,6 @@ export function publishAdherenceSignalsForUser(userId: number, tenantId: number,
     return { adherence, action: 'published_low' };
   }
 
-  // isHigh
-  publishHighAdherence({
-    userId,
-    tenantId: scopedTenantId,
-    completed: adherence.completed,
-    partial: adherence.partial,
-    planned: adherence.planned,
-    weekStart: adherence.weekStart,
-    weekEnd: adherence.weekEnd,
-  });
   logger.info(
     { userId, tenantId: scopedTenantId, completed: adherence.completed, planned: adherence.planned },
     'high_adherence signal published',
@@ -460,10 +564,14 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
   };
 
   const rawPlanSport = getActivePlanSport(userId, scopedTenantId);
-  if (!rawPlanSport) return empty;
+  if (!rawPlanSport) {
+    clearPlanDriftSignalsAtomically(userId, scopedTenantId);
+    return empty;
+  }
 
   const normalized = normalizePlanSport(rawPlanSport);
   if (!normalized) {
+    clearPlanDriftSignalsAtomically(userId, scopedTenantId);
     return { ...empty, action: 'skipped_unknown_sport', planSport: rawPlanSport };
   }
 
@@ -478,6 +586,7 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
   const activeSessions = totalSessions - counts.other;
 
   if (activeSessions < PLAN_DRIFT_MIN_SESSIONS) {
+    clearPlanDriftSignalsAtomically(userId, scopedTenantId);
     return {
       action: 'skipped_not_enough_sessions',
       planSport: rawPlanSport,
@@ -500,6 +609,7 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
   // check is a one-liner insurance policy for future enum growth.
   const topEntry = sportEntries[0];
   if (!topEntry || topEntry[1] === 0) {
+    clearPlanDriftSignalsAtomically(userId, scopedTenantId);
     return {
       action: 'skipped_not_enough_sessions',
       planSport: rawPlanSport,
@@ -523,6 +633,7 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
     normalized === 'hybrid' && dominantPct >= PLAN_DRIFT_HYBRID_PCT;
 
   if (!isDriftingFromSinglePlan && !isDriftingFromHybrid) {
+    clearPlanDriftSignalsAtomically(userId, scopedTenantId);
     return {
       action: 'skipped_in_band',
       planSport: rawPlanSport,
@@ -535,6 +646,7 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
   // Single-sport drift also needs the dominant share to cross the
   // threshold — a single extra run shouldn't trip a gym→run drift.
   if (isDriftingFromSinglePlan && dominantPct < threshold) {
+    clearPlanDriftSignalsAtomically(userId, scopedTenantId);
     return {
       action: 'skipped_in_band',
       planSport: rawPlanSport,
@@ -544,28 +656,18 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
     };
   }
 
-  // ── Idempotency: skip if a plan_drift row already exists ──
-  //
-  // Note: `readSignals` swallows DB errors internally and returns []
-  // (intelligence-bus.ts ~line 277). That means on a bus read
-  // failure, we fall through to the publish path — which will
-  // potentially write duplicate rows. This is an accepted trade-off:
-  // dropping drift signals silently on transient failures is worse
-  // than writing an extra row we'd have skipped, and the adherence
-  // orchestrator takes the same approach. Do NOT wrap this in a
-  // try/catch expecting it to protect against throws — it can't.
-  const existing = readSignals(
-    'adherence.orchestrator',
-    ['plan_drift'],
-    5,
+  const replacement = replacePlanDriftSignalAtomically({
     userId,
-    undefined,
-    scopedTenantId,
-  );
-  if (existing.length > 0) {
+    tenantId: scopedTenantId,
+    planSport: rawPlanSport,
+    dominantSport,
+    driftPct: dominantPct * 100,
+    sessionsInWindow: totalSessions,
+  });
+  if (replacement === 'existing') {
     logger.debug(
-      { userId, tenantId: scopedTenantId, existingIds: existing.map((s) => s.id) },
-      'plan_drift already active — skipping duplicate publish',
+      { userId, tenantId: scopedTenantId },
+      'matching plan_drift snapshot already active — skipping duplicate publish',
     );
     return {
       action: 'skipped_existing',
@@ -576,16 +678,6 @@ export function publishPlanDriftSignalForUser(userId: number, tenantId: number):
     };
   }
 
-  // ── Publish ──
-  publishPlanDrift({
-    userId,
-    tenantId: scopedTenantId,
-    planSport: rawPlanSport,
-    dominantSport,
-    driftPct: dominantPct * 100,
-    sessionsInWindow: totalSessions,
-    windowWeeks: PLAN_DRIFT_WINDOW_WEEKS,
-  });
   logger.info(
     {
       userId,

@@ -7,8 +7,12 @@ import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
 import { config } from '../../config';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
-import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
+import {
+  PlanningRecomputeError,
+  recomputePlanningSnapshot,
+} from '../../services/planning-recompute-service';
 import { getUserLanguageById, getUserTimezoneById } from '../../services/user-service';
+import { createDecisionPlanningContext } from '../../services/decision-planning-context';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from '../../services/entitlement';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { timedAsync, type RouteTiming } from '../route-timing';
@@ -21,26 +25,58 @@ const PLAN_TODAY_SWR_STALE_SECONDS = 300;
 const PLAN_WEEK_TTL_SECONDS = 120;
 const PLAN_WEEK_SWR_STALE_SECONDS = 600;
 
+interface ValidatedPlanDate {
+  valid: boolean;
+  value?: string;
+}
+
 export function planRoutes(): Router {
   const router = Router();
 
   router.get('/week', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
+    const validatedWeekStart = validateOptionalPlanDate(res, req.query.weekStart, 'weekStart', true);
+    if (!validatedWeekStart.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
-    const language = resolvePlanLanguage(req, userId);
-    const timezone = resolvePlanTimezone(userId);
-    const cacheKey = planWeekRouteCacheKey(userId, tenantId, weekStart, language, timezone);
+    const weekStart = validatedWeekStart.value;
 
     try {
+      const language = resolvePlanLanguage(req, userId);
+      const timezone = resolvePlanTimezone(userId);
+      const planningContext = createDecisionPlanningContext({
+        userId,
+        tenantId,
+        timezone,
+        locale: language,
+      });
+      const capturedWeekStart = weekStart ?? DateTime.fromISO(
+        planningContext.localDate,
+        { zone: planningContext.timezone },
+      ).startOf('week').toISODate()!;
+      const cacheKey = planWeekRouteCacheKey(
+        userId,
+        tenantId,
+        capturedWeekStart,
+        planningContext.locale,
+        planningContext.timezone,
+        planningContext.localDate,
+      );
       const timings: RouteTiming[] = [];
       await handleCachedRoute<Awaited<ReturnType<typeof composeWeeklyPlan>>>({
         cacheKey,
         ttlSeconds: PLAN_WEEK_TTL_SECONDS,
         staleSeconds: PLAN_WEEK_SWR_STALE_SECONDS,
         refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
-        fetchFresh: () => timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({ userId, tenantId, weekStart, timezone })),
+        fetchFresh: () => timedAsync(timings, 'weekly_plan', () => composeWeeklyPlan({
+          userId,
+          tenantId,
+          weekStart: capturedWeekStart,
+          timezone: planningContext.timezone,
+          forceRefresh: true,
+          cacheMode: 'bypass',
+          planningContext,
+        })),
         send: (data, meta) => {
           sendConditionalApiSuccess(res, req, data, {
             cached: meta.cached,
@@ -56,20 +92,45 @@ export function planRoutes(): Router {
   router.get('/today', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
+    const validatedDate = validateOptionalPlanDate(res, req.query.date, 'date');
+    if (!validatedDate.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const date = typeof req.query.date === 'string' ? req.query.date : undefined;
-    const language = resolvePlanLanguage(req, userId);
-    const timezone = resolvePlanTimezone(userId);
-    const cacheKey = planTodayRouteCacheKey(userId, tenantId, date, language, timezone);
+    const date = validatedDate.value;
 
     try {
+      const language = resolvePlanLanguage(req, userId);
+      const timezone = resolvePlanTimezone(userId);
+      const planningContext = createDecisionPlanningContext({
+        userId,
+        tenantId,
+        timezone,
+        locale: language,
+      });
+      const capturedDate = date ?? planningContext.localDate;
+      const cacheKey = planTodayRouteCacheKey(
+        userId,
+        tenantId,
+        capturedDate,
+        planningContext.locale,
+        planningContext.timezone,
+        planningContext.localDate,
+      );
       const timings: RouteTiming[] = [];
       await handleCachedRoute<Awaited<ReturnType<typeof composeDailyBrief>>>({
         cacheKey,
         ttlSeconds: PLAN_TODAY_TTL_SECONDS,
         staleSeconds: PLAN_TODAY_SWR_STALE_SECONDS,
         refreshContext: { source: 'plan_route', operation: 'plan_swr_refresh', userId },
-        fetchFresh: () => timedAsync(timings, 'daily_brief', () => composeDailyBrief({ userId, tenantId, date, language, timezone })),
+        fetchFresh: () => timedAsync(timings, 'daily_brief', () => composeDailyBrief({
+          userId,
+          tenantId,
+          date: capturedDate,
+          language: planningContext.locale,
+          timezone: planningContext.timezone,
+          forceRefresh: true,
+          cacheMode: 'bypass',
+          planningContext,
+        })),
         send: (data, meta) => {
           sendConditionalApiSuccess(res, req, data, {
             cached: meta.cached,
@@ -88,18 +149,31 @@ export function planRoutes(): Router {
       weekStart: req.body?.weekStart ?? null,
       date: req.body?.date ?? null,
     })) return;
+    const validatedWeekStart = validateOptionalPlanDate(res, req.body?.weekStart, 'weekStart', true);
+    if (!validatedWeekStart.valid) return;
+    const validatedDate = validateOptionalPlanDate(res, req.body?.date, 'date');
+    if (!validatedDate.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const weekStart = typeof req.body?.weekStart === 'string' ? req.body.weekStart : undefined;
-    const date = typeof req.body?.date === 'string' ? req.body.date : undefined;
-    const timezone = resolvePlanTimezone(userId);
-
-    invalidatePlanningCaches(userId);
+    const headerIdempotencyKey = req.header?.('idempotency-key');
 
     try {
-      const week = await composeWeeklyPlan({ userId, tenantId, weekStart, timezone, forceRefresh: true, syncSignals: true });
-      const today = await composeDailyBrief({ userId, tenantId, date, timezone, forceRefresh: true });
-      res.json(apiSuccess({ week, today }));
+      const timezone = resolvePlanTimezone(userId);
+      const locale = resolvePlanLanguage(req, userId);
+      const result = await recomputePlanningSnapshot({
+        userId,
+        tenantId,
+        timezone,
+        locale,
+        idempotencyKey: req.body?.idempotencyKey ?? headerIdempotencyKey,
+        weekStart: validatedWeekStart.value,
+        date: validatedDate.value,
+      });
+      res.json(apiSuccess(result));
     } catch (err: any) {
+      if (err instanceof PlanningRecomputeError) {
+        sendError(res, err.code, err.message, err.status);
+        return;
+      }
       sendInternalError(res, 'Unable to recompute the plan right now.');
     }
   });
@@ -107,9 +181,10 @@ export function planRoutes(): Router {
   router.get('/week/explain', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
+    const validatedWeekStart = validateOptionalPlanDate(res, req.query.weekStart, 'weekStart', true);
+    if (!validatedWeekStart.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
-    const timezone = resolvePlanTimezone(userId);
+    const weekStart = validatedWeekStart.value;
     const effectiveTier = entitlementPlanToSkillTier(getEffectiveEntitlement(userId).plan);
 
     if (!['max', 'owner'].includes(effectiveTier)) {
@@ -120,7 +195,16 @@ export function planRoutes(): Router {
     }
 
     try {
-      const data = await composeWeeklyPlan({ userId, tenantId, weekStart, timezone });
+      const timezone = resolvePlanTimezone(userId);
+      const locale = resolvePlanLanguage(req, userId);
+      const planningContext = createDecisionPlanningContext({ userId, tenantId, timezone, locale });
+      const data = await composeWeeklyPlan({
+        userId,
+        tenantId,
+        weekStart,
+        timezone: planningContext.timezone,
+        planningContext,
+      });
       res.json(apiSuccess({
         explanation: buildWeeklyExplanation(data),
         degraded: data.degraded,
@@ -134,6 +218,44 @@ export function planRoutes(): Router {
   });
 
   return router;
+}
+
+function validateOptionalPlanDate(
+  res: Response,
+  rawValue: unknown,
+  field: 'date' | 'weekStart',
+  requireMonday = false,
+): ValidatedPlanDate {
+  if (rawValue == null) return { valid: true };
+
+  const code = field === 'weekStart' ? 'PLAN_WEEK_START_INVALID' : 'PLAN_DATE_INVALID';
+  const label = field === 'weekStart' ? 'weekStart' : 'date';
+  if (typeof rawValue !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) {
+    sendError(res, code, `${label} must be an exact YYYY-MM-DD calendar date.`, 400, {
+      field,
+      reason: 'invalid_iso_date',
+    });
+    return { valid: false };
+  }
+
+  const parsed = DateTime.fromISO(rawValue, { zone: 'UTC' });
+  if (!parsed.isValid || parsed.toISODate() !== rawValue) {
+    sendError(res, code, `${label} must be a real YYYY-MM-DD calendar date.`, 400, {
+      field,
+      reason: 'invalid_calendar_date',
+    });
+    return { valid: false };
+  }
+
+  if (requireMonday && parsed.weekday !== 1) {
+    sendError(res, code, 'weekStart must be a Monday.', 400, {
+      field,
+      reason: 'monday_required',
+    });
+    return { valid: false };
+  }
+
+  return { valid: true, value: rawValue };
 }
 
 function resolvePlanLanguage(req: Request, userId: number): string {
@@ -153,8 +275,9 @@ function planTodayRouteCacheKey(
   date: string | undefined,
   language: string,
   timezone: string,
+  fallbackLocalDate?: string,
 ): string {
-  const targetDate = resolveDateKey(date, timezone);
+  const targetDate = resolveDateKey(date, timezone, fallbackLocalDate);
   return routeCacheKey('plan', 'today', 'u', userId, 'tenant', tenantId, targetDate, 'tz', timezone, 'route', languageBucket(language));
 }
 
@@ -164,24 +287,35 @@ function planWeekRouteCacheKey(
   weekStart: string | undefined,
   language: string,
   timezone: string,
+  fallbackLocalDate?: string,
 ): string {
-  const targetWeek = resolveWeekKey(weekStart, timezone);
+  const targetWeek = resolveWeekKey(weekStart, timezone, fallbackLocalDate);
   return routeCacheKey('plan', 'week', 'u', userId, 'tenant', tenantId, targetWeek, 'tz', timezone, 'route', languageBucket(language));
 }
 
-function resolveDateKey(date: string | undefined, zone: string): string {
+function resolveDateKey(date: string | undefined, zone: string, fallbackLocalDate?: string): string {
   if (date) {
     const parsed = DateTime.fromISO(date, { zone });
     if (parsed.isValid) return parsed.toISODate()!;
   }
-  return DateTime.now().setZone(zone).toISODate()!;
+  const capturedFallback = DateTime.fromISO(fallbackLocalDate ?? '', { zone });
+  return (capturedFallback.isValid ? capturedFallback : DateTime.now().setZone(zone)).toISODate()!;
 }
 
-function resolveWeekKey(weekStart: string | undefined, zone: string): string {
+function resolveWeekKey(
+  weekStart: string | undefined,
+  zone: string,
+  fallbackLocalDate?: string,
+): string {
   const parsed = weekStart
     ? DateTime.fromISO(weekStart, { zone })
-    : DateTime.now().setZone(zone);
-  const base = parsed.isValid ? parsed : DateTime.now().setZone(zone);
+    : DateTime.fromISO(fallbackLocalDate ?? '', { zone });
+  const capturedFallback = DateTime.fromISO(fallbackLocalDate ?? '', { zone });
+  const base = parsed.isValid
+    ? parsed
+    : capturedFallback.isValid
+      ? capturedFallback
+      : DateTime.now().setZone(zone);
   return base.startOf('week').toISODate()!;
 }
 

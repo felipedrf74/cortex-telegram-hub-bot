@@ -79,6 +79,7 @@ import {
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import { ensureDecisionCenterTables, getDecisionItem, getDecisionOverview, performDecisionAction } from '../../src/services/decision-center';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep, ChatStepExecutionResult } from '../../src/services/chat/types';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 const step: ChatPlanStep = {
   stepId: 'step_1',
@@ -140,6 +141,7 @@ describe('chat action retry policy and fixer worker', () => {
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
     ensureBackgroundJobTables(testDb);
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
     aiMocks.eligibility = {
       allowed: true,
@@ -236,6 +238,8 @@ describe('chat action retry policy and fixer worker', () => {
 
     const actionResult = await performDecisionAction(fixerItem!.itemId, 'accept_chat_action_fix', 9050, 850, {
       idempotencyKey: 'accept-fixer-correction',
+      expectedVersion: fixerItem!.recordVersion,
+      contextVersion: fixerItem!.contextVersion ?? undefined,
     });
     expect(actionResult.status).toBe('succeeded');
 

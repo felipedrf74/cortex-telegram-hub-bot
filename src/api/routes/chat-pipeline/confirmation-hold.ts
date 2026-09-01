@@ -83,6 +83,8 @@ export async function attachPlannerNeedsConfirmationHold(input: {
     deeplink: `nexus://notifications/${pendingConfirmation.id}`,
     expiresAt: pendingConfirmation.expiresAt,
     dedupeKey: `chat:action-confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
+    idempotencyKey: `chat-confirmation:${tenantId}:${userId}:${pendingConfirmation.id}`,
+    channel: 'chat',
     requiresUserAction: true,
     deliveryPolicy: 'in_app_only',
     privacyPolicy: 'standard',

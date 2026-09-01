@@ -66,10 +66,14 @@ import { expireStaleSignals } from './intelligence-bus';
 import { sweepExpiredStructuredHealthData } from './health-data-lifecycle';
 import { isTrainingCoachV2Enabled } from './training-coach-v2-rollout';
 import { seedBooksIfEmpty } from '../commands/books';
+import type { ResolveDueReportOptions, ScheduledReportJob } from './report-schedule-dispatcher';
 import {
-  releaseFreshReportScheduleClaim,
-  resolveDueReportTargets,
-} from './report-schedule-dispatcher';
+  claimDueScheduledReportLeaseBatch,
+  completeScheduledReportLease,
+  failScheduledReportLease,
+  startScheduledReportLeaseHeartbeat,
+  type ScheduledReportLease,
+} from './report-schedule-jobs';
 import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
@@ -100,7 +104,9 @@ import {
   runDecisionExpiryJob,
   runDecisionHandledHistoryBackfillJob,
   runDecisionLedgerRetentionPruneJob,
+  listHandledByNexusItems,
   runDecisionMetricsRollupJob,
+  runDecisionRankSnapshotBackfillJob,
   runDecisionSourceStateSupersessionJob,
 } from './decision-center';
 import { runTaskLedgerRetentionJob } from './task-store/task-ledger-retention';
@@ -131,7 +137,16 @@ import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-p
 import { applyAutoRevertDecision } from './chat-core-v2/auto-revert-executor';
 import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
 import { expireOldNexusPointCredits } from './nexus-points';
-import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, getWeeksForPlan } from './training-plans';
+import {
+  computeAdjustmentRecommendation,
+  getActivePlan,
+  getActivePlans,
+  getCurrentWeek,
+  getSessionsForWeek,
+  getWeeklyAdherence,
+  getWeeksForPlan,
+  updateWeekAdjustment,
+} from './training-plans';
 import {
   bindTrainingCoachV2ProposalDecision,
   createTrainingCoachV2Proposal,
@@ -168,6 +183,96 @@ function getActiveTrainingTargets(): ActiveTrainingTarget[] {
   }));
 }
 
+export interface ScheduledReportTargetResult {
+  /** Report was delivered, but its content had explicitly reported data gaps. */
+  degraded?: boolean;
+}
+
+export class ScheduledReportFanOutError extends Error {
+  constructor(
+    readonly job: ScheduledReportJob,
+    readonly failedTargets: number,
+    readonly degradedTargets: number,
+  ) {
+    super(`Scheduled report fan-out incomplete (${job}; failed=${failedTargets}; degraded=${degradedTargets})`);
+    this.name = 'ScheduledReportFanOutError';
+  }
+}
+
+/**
+ * Drain every healthy per-user lease before reporting a partial fan-out.
+ * A failed target remains retryable in background_jobs; a degraded but
+ * delivered target receives its completion receipt and makes the parent cron
+ * fail observably without duplicating that user's report on the next tick.
+ */
+export async function executeScheduledReportLeaseBatch<T extends { tenantId: number; userId?: number }>(
+  job: ScheduledReportJob,
+  targets: T[],
+  execution: Pick<ScheduledJobExecutionContext, 'assertLeaseActive'>,
+  execute: (lease: ScheduledReportLease<T>) => Promise<ScheduledReportTargetResult | void>,
+  options: ResolveDueReportOptions<T> = {},
+): Promise<void | 'skipped'> {
+  const batch = claimDueScheduledReportLeaseBatch(job, targets, DateTime.utc(), options);
+  let failedTargets = batch.failures.length;
+  let degradedTargets = 0;
+  let completedTargets = 0;
+  // Every claimed row starts heartbeating immediately so a later lease in a
+  // fan-out batch cannot expire while an earlier user's report is generated.
+  const heartbeats = new Map(batch.leases.map((lease) => [
+    lease.jobRecord.jobId,
+    startScheduledReportLeaseHeartbeat(lease),
+  ]));
+
+  try {
+    for (const lease of batch.leases) {
+      const heartbeat = heartbeats.get(lease.jobRecord.jobId)!;
+      try {
+        heartbeat.assertActive();
+        execution.assertLeaseActive();
+        const result = await execute(lease);
+        heartbeat.assertActive();
+        execution.assertLeaseActive();
+        if (!completeScheduledReportLease(lease)) {
+          throw new Error('SCHEDULED_REPORT_COMPLETION_NOT_WRITTEN');
+        }
+        completedTargets += 1;
+        if (result?.degraded) {
+          degradedTargets += 1;
+          logger.warn({
+            job,
+            userId: lease.schedule.userId,
+            tenantId: lease.schedule.tenantId,
+          }, 'Scheduled report completed with degraded source data');
+        }
+      } catch (error) {
+        failedTargets += 1;
+        let retryStatus: string = 'lease_error';
+        try {
+          retryStatus = failScheduledReportLease(lease, error);
+        } catch (leaseError) {
+          retryStatus = safeErrorName(leaseError);
+        }
+        logger.error({
+          errorName: safeErrorName(error),
+          job,
+          retryStatus,
+          userId: lease.schedule.userId,
+          tenantId: lease.schedule.tenantId,
+        }, 'Scheduled report failed for user; continuing remaining leases');
+      } finally {
+        heartbeat.stop();
+      }
+    }
+  } finally {
+    for (const heartbeat of heartbeats.values()) heartbeat.stop();
+  }
+
+  if (failedTargets > 0 || degradedTargets > 0) {
+    throw new ScheduledReportFanOutError(job, failedTargets, degradedTargets);
+  }
+  if (completedTargets === 0) return 'skipped';
+}
+
 function registerJob(
   id: string,
   name: string,
@@ -183,6 +288,52 @@ let remindersJobInFlight = false;
 
 export function decisionMetricsRollupDateForScheduler(now = new Date(), timezone = config.app.timezone): string {
   return DateTime.fromJSDate(now).setZone(timezone).minus({ days: 1 }).toISODate() ?? '1970-01-01';
+}
+
+export interface DecisionMetricsRollupFanOutSummary {
+  scopes: number;
+  rollups: number;
+  failedScopes: number;
+}
+
+/**
+ * Refresh each active account's current local-day row and, just after that
+ * account crosses midnight, finalize its previous day too. The hourly job is
+ * idempotent and keeps the dashboard's "today" row current without mixing two
+ * users that happen to share a tenant or the scheduler's timezone.
+ */
+export function runDecisionMetricsRollupForActiveUsers(
+  at = new Date(),
+  targets: readonly ActiveUserTarget[] = getActiveUserTargets(),
+): DecisionMetricsRollupFanOutSummary {
+  let rollups = 0;
+  let failedScopes = 0;
+  for (const target of targets) {
+    const userId = target.userId ?? target.tenantId;
+    const tenantId = target.tenantId;
+    try {
+      const timezone = getUserTimezoneById(userId) || config.app.timezone;
+      const local = DateTime.fromJSDate(at).setZone(timezone);
+      if (!local.isValid) throw new Error('active user has an invalid metrics timezone');
+      const currentDate = local.toISODate();
+      if (!currentDate) throw new Error('active user local metrics date is unavailable');
+      const dates = local.hour === 0
+        ? [currentDate, local.minus({ days: 1 }).toISODate()].filter((date): date is string => Boolean(date))
+        : [currentDate];
+      for (const date of dates) {
+        runDecisionMetricsRollupJob({ userId, tenantId, timezone, date, now: at });
+        rollups += 1;
+      }
+    } catch (error) {
+      failedScopes += 1;
+      logger.error({
+        errorName: error instanceof Error ? error.name : typeof error,
+        userId,
+        tenantId,
+      }, 'Decision metrics rollup failed for active scope');
+    }
+  }
+  return { scopes: targets.length, rollups, failedScopes };
 }
 
 /**
@@ -619,16 +770,18 @@ function buildTrainingSectionForSessions(sessions: any[]): string {
   return trainingSection;
 }
 
-export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
+export async function buildEndOfDaySummaryForUser(userId: number, tenantId = userId): Promise<{
   message: string;
   summary: string;
   documentJson: Record<string, any>;
 } | null> {
   const taskProvider = getTaskProviderForUser(userId);
-  const pendingResult = await runWithContext({ source: 'cron:end_of_day', userId }, async () =>
+  const pendingResult = await runWithContext({ source: 'cron:end_of_day', userId, tenantId }, async () =>
     taskProvider.getAllPendingTasks(),
   );
-  if (!pendingResult.success) return null;
+  if (!pendingResult.success) {
+    throw new Error('END_OF_DAY_TASK_SOURCE_UNAVAILABLE');
+  }
 
   const tasks = pendingResult.data;
   const todayStart = new Date(startOfDay()).getTime();
@@ -643,20 +796,29 @@ export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
   const overdue = tasks.filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
 
   let trainingSection = '';
+  const degradationReasons: string[] = [];
   try {
-    const tp = require('./training-plans');
-    const plans = tp.getActivePlans?.(userId, userId) || [];
-    const plan = plans[0] || tp.getActivePlan(userId, userId);
+    const plans = getActivePlans(userId, tenantId) || [];
+    const plan = plans[0] || getActivePlan(userId, tenantId);
     if (plan) {
-      const week = tp.getCurrentWeek(plan.id);
+      const week = getCurrentWeek(plan.id);
       if (week) {
-        const sessions = tp.getSessionsForWeek(week.id);
+        const sessions = getSessionsForWeek(week.id);
         trainingSection = buildTrainingSectionForSessions(sessions);
       }
     }
-  } catch { /* training not available — non-fatal */ }
+  } catch (error) {
+    degradationReasons.push('training_source_unavailable');
+    logger.warn({ errorName: safeErrorName(error), userId, tenantId }, 'End-of-day Training source unavailable');
+  }
 
   if (dueToday.length === 0 && overdue.length === 0 && !trainingSection) {
+    if (degradationReasons.includes('training_source_unavailable')) {
+      // There is no usable report to receipt as delivered. Keep the leased
+      // job retryable instead of turning a missing Training read into a green
+      // no-op completion.
+      throw new Error('END_OF_DAY_TRAINING_SOURCE_UNAVAILABLE');
+    }
     return null;
   }
 
@@ -698,11 +860,14 @@ export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
       dueToday: dueToday.map((t: TodoTask) => ({ id: t.id, title: t.title, importance: t.importance })),
       overdue: overdue.map((t: TodoTask) => ({ id: t.id, title: t.title, importance: t.importance })),
       trainingSummary: trainingSection ? trainingSection.trim() : null,
+      degradationReasons,
     },
   };
 }
 
 export type ScheduledDailyBriefingData = DailyBriefingData & {
+  /** Stable, privacy-safe source-health codes used by scheduler telemetry. */
+  sourceDegradationReasons?: string[];
   /** Canonical Cooking slice from `/plan/today`, stored only in the authenticated report document. */
   planToday?: {
     date: string;
@@ -736,6 +901,7 @@ export async function buildDailyBriefingDataForUser(
     reminders: [],
     unreadEmails: 0,
     yesterdayCompleted: 0,
+    sourceDegradationReasons: [],
   };
 
   if (hasConnectedCalendarForUser(userId)) {
@@ -753,6 +919,7 @@ export async function buildDailyBriefingDataForUser(
         data.training = `${training.summary} at ${formatTimeInZone(training.start, userTimezone)}`;
       }
     } catch (err) {
+      data.sourceDegradationReasons!.push('calendar_source_unavailable');
       logger.error({ err, userId }, 'Failed to fetch events for briefing');
     }
   }
@@ -798,12 +965,17 @@ export async function buildDailyBriefingDataForUser(
       if (allOverdue.length > MAX_OVERDUE_DISPLAY) {
         data.overdueExtra = allOverdue.length - MAX_OVERDUE_DISPLAY;
       }
+    } else {
+      data.sourceDegradationReasons!.push('task_pending_source_unavailable');
     }
 
     if (yesterdayResult.success) {
       data.yesterdayCompleted = yesterdayResult.data.length;
+    } else {
+      data.sourceDegradationReasons!.push('task_completion_source_unavailable');
     }
   } catch (err) {
+    data.sourceDegradationReasons!.push('task_source_unavailable');
     logger.error({ err, userId }, 'Failed to fetch tasks for briefing');
   }
 
@@ -817,6 +989,7 @@ export async function buildDailyBriefingDataForUser(
     try {
       data.unreadEmails = await getUnreadCountForUser(userId);
     } catch (err) {
+      data.sourceDegradationReasons!.push('mail_source_unavailable');
       logger.warn({ err, userId }, 'Daily briefing: failed to fetch Outlook unread count');
     }
   }
@@ -853,6 +1026,7 @@ export async function buildDailyBriefingDataForUser(
   } catch (err) {
     // The legacy briefing remains deliverable if planning reads fail. This
     // additive document field never changes notification copy or policy.
+    data.sourceDegradationReasons!.push('planning_source_unavailable');
     logger.warn({ err, userId, tenantId }, 'Daily briefing: canonical Cooking day unavailable');
   }
 
@@ -891,9 +1065,12 @@ function formatTimeInZone(value: string, timezone: string): string {
  * Fails soft: a weekly review that loses this section is worth far more than
  * one that fails to build.
  */
-function handledByNexusThisWeek(userId: number, tenantId = userId): { count: number; highlights: string[] } {
+function handledByNexusThisWeek(userId: number, tenantId = userId): {
+  count: number;
+  highlights: string[];
+  degradationReason: string | null;
+} {
   try {
-    const { listHandledByNexusItems } = require('./decision-center');
     const weekStart = now().startOf('week').toISO();
     const items = (listHandledByNexusItems(userId, tenantId, 25) as Array<{ title: string; createdAt: string }>)
       .filter((item) => !weekStart || item.createdAt >= weekStart);
@@ -902,10 +1079,15 @@ function handledByNexusThisWeek(userId: number, tenantId = userId): { count: num
       // Three is enough to make the point; a full list turns a retrospective
       // into a second inbox.
       highlights: items.slice(0, 3).map((item) => item.title),
+      degradationReason: null,
     };
   } catch (err) {
-    logger.warn({ err, userId }, 'weekly review: handled-by-Nexus section unavailable');
-    return { count: 0, highlights: [] };
+    logger.warn({ errorName: safeErrorName(err), userId, tenantId }, 'weekly review: handled-by-Nexus section unavailable');
+    return {
+      count: 0,
+      highlights: [],
+      degradationReason: 'decision_history_source_unavailable',
+    };
   }
 }
 
@@ -914,6 +1096,7 @@ export async function buildWeeklyReviewPayloadForUser(userId: number, tenantId =
   summary: string;
   documentJson: Record<string, any>;
 }> {
+  const degradationReasons: string[] = [];
   let message = `<b>📊 Week in Review</b>\n`;
   message += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
@@ -927,16 +1110,19 @@ export async function buildWeeklyReviewPayloadForUser(userId: number, tenantId =
         taskProvider.getAllPendingTasks(),
       ]),
     )).catch((err: unknown) => {
+      degradationReasons.push('task_source_unavailable');
       logger.error({ err, userId }, 'Failed to fetch task data for weekly review');
       return null;
     }),
     hasConnectedCalendarForUser(userId)
       ? getEvents(startOfWeek(), endOfWeek(), userId).catch((err) => {
+          degradationReasons.push('calendar_source_unavailable');
           logger.warn({ err, userId }, 'Weekly review: failed to fetch calendar events');
           return [] as any[];
         })
       : Promise.resolve([] as any[]),
     composeWeeklyPlan({ userId, tenantId, weekStart }).catch((err) => {
+      degradationReasons.push('planning_source_unavailable');
       logger.warn({ err, userId, tenantId }, 'Weekly review: canonical Cooking plan unavailable');
       return null;
     }),
@@ -944,6 +1130,8 @@ export async function buildWeeklyReviewPayloadForUser(userId: number, tenantId =
 
   if (todoData) {
     const [completedResult, pendingResult] = todoData;
+    if (!completedResult.success) degradationReasons.push('task_completion_source_unavailable');
+    if (!pendingResult.success) degradationReasons.push('task_pending_source_unavailable');
     const completedCount = completedResult.success ? completedResult.data.length : 0;
     message += `✅ Completed: ${completedCount} tasks\n`;
 
@@ -980,6 +1168,7 @@ export async function buildWeeklyReviewPayloadForUser(userId: number, tenantId =
   // the handled-by-Nexus ledger is already written on every auto-resolved
   // decision and, until now, was read only by the Decision Center overview.
   const handled = handledByNexusThisWeek(userId, tenantId);
+  if (handled.degradationReason) degradationReasons.push(handled.degradationReason);
   if (handled.count > 0) {
     message += `\n🤖 Handled without you: ${handled.count}\n`;
     for (const line of handled.highlights) message += `- ${escapeHtml(line)}\n`;
@@ -992,6 +1181,7 @@ export async function buildWeeklyReviewPayloadForUser(userId: number, tenantId =
     handledByNexusCount: handled.count,
     handledByNexusHighlights: handled.highlights,
     cooking: cookingPlan ? weeklyCookingReviewProjection(cookingPlan) : null,
+    degradationReasons: Array.from(new Set(degradationReasons)),
   };
   if (todoData) {
     const [completedResult, pendingResult] = todoData;
@@ -1416,6 +1606,8 @@ async function emitSecretaryOwnedCalendarConflictDecisions(
         deeplink: `nexus://secretary/conflict/${plan.agenda.agendaItemId}`,
         expiresAt: plan.expiresAt,
         dedupeKey: `secretary:calendar-conflict-preview:${plan.agenda.agendaItemId}:${plan.contextVersion}`,
+        idempotencyKey: `scheduler-calendar-conflict:${target.tenantId}:${plan.agenda.agendaItemId}:${plan.contextVersion}`,
+        channel: 'automation',
         requiresUserAction: true,
         decisionDeadline: plan.deadlineAt,
         decisionContext: {
@@ -1669,9 +1861,10 @@ export function startScheduler(): void {
   registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
   registerJob('decision_source_supersession', 'Decision Source Supersession', '*/15 * * * *', 'system');
   registerJob('decision_daily_attention', 'Decision Daily Attention Materialization', '12 * * * *', 'system');
+  registerJob('decision_rank_snapshot_backfill', 'Decision Rank Snapshot Backfill', '17,47 * * * *', 'system');
   registerJob('decision_handled_history_backfill', 'Decision Handled History Backfill', '22,52 * * * *', 'system');
   registerJob('decision_expiry', 'Decision Expiry Sweep', '*/10 * * * *', 'system');
-  registerJob('decision_metrics_rollup', 'Decision Metrics Daily Rollup', '15 0 * * *', 'system');
+  registerJob('decision_metrics_rollup', 'Decision Metrics Local-Day Rollup', '15 * * * *', 'system');
   registerJob('decision_ledger_retention_prune', 'Decision Ledger Retention Prune', '40 4 * * *', 'system');
   registerJob('task_ledger_retention', 'Task Ledger Retention Prune', '50 4 * * *', 'system');
   registerJob('chat_action_plan_expiry', 'Chat Action Plan Expiry', '*/2 * * * *', 'system');
@@ -1858,16 +2051,16 @@ export function startScheduler(): void {
   // Per-user schedule (migration 225): a 5-minute dispatch tick fires each
   // user at their preferred end-of-day time in their own timezone (default
   // 21:00). Idle ticks return 'skipped' so job_history stays quiet.
-  cron.schedule('*/5 * * * *', wrapJob('end_of_day', async () => {
-    const due = resolveDueReportTargets('end_of_day', getActiveUserTargets());
-    if (due.length === 0) return 'skipped';
-    for (const target of due) {
-      try {
-        await runEndOfDaySummaryForTarget(target);
-      } catch (err) {
-        logger.error({ err, userId: target.tenantId }, 'End-of-day summary failed for user; continuing');
-      }
-    }
+  cron.schedule('*/5 * * * *', wrapJob('end_of_day', async (execution) => {
+    return executeScheduledReportLeaseBatch(
+      'end_of_day',
+      getActiveUserTargets(),
+      execution,
+      async (lease) => runEndOfDaySummaryForTarget(lease.target, {
+        dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
+        requireNotificationIntent: true,
+      }),
+    );
   }), { timezone: tz });
 
   // ── Daily briefing (configurable time) ─────────────────────────────
@@ -1881,17 +2074,17 @@ export function startScheduler(): void {
   // briefing. Removed to leave a single, deep-linkable push per run.
   // Per-user schedule (migration 225): default remains TODO_DIGEST_TIME
   // until a user picks their own morning time.
-  cron.schedule('*/5 * * * *', wrapJob('daily_briefing', async () => {
+  cron.schedule('*/5 * * * *', wrapJob('daily_briefing', async (execution) => {
     if (!config.todo.digestEnabled) return 'skipped';
-    const due = resolveDueReportTargets('morning_briefing', getActiveUserTargets());
-    if (due.length === 0) return 'skipped';
-    for (const target of due) {
-      try {
-        await sendDailyBriefingForTarget(target);
-      } catch (err) {
-        logger.error({ err, userId: target.tenantId }, 'Morning briefing failed for user; continuing');
-      }
-    }
+    return executeScheduledReportLeaseBatch(
+      'morning_briefing',
+      getActiveUserTargets(),
+      execution,
+      async (lease) => sendDailyBriefingForTarget(lease.target, {
+        dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
+        requireNotificationIntent: true,
+      }),
+    );
   }), { timezone: tz });
 
   // ── Weekly review (Friday 17:00) ───────────────────────────────────
@@ -1901,16 +2094,16 @@ export function startScheduler(): void {
   // that used to live here has been removed.
   // Per-user schedule (migration 225): default remains Friday 17:00; the
   // profile can move both the day (cron 0=Sun..6=Sat) and the time.
-  cron.schedule('*/5 * * * *', wrapJob('weekly_review', async () => {
-    const due = resolveDueReportTargets('weekly_review', getActiveUserTargets());
-    if (due.length === 0) return 'skipped';
-    for (const target of due) {
-      try {
-        await sendWeeklyReviewForTarget(target);
-      } catch (err) {
-        logger.error({ err, userId: target.tenantId }, 'Weekly review failed for user; continuing');
-      }
-    }
+  cron.schedule('*/5 * * * *', wrapJob('weekly_review', async (execution) => {
+    return executeScheduledReportLeaseBatch(
+      'weekly_review',
+      getActiveUserTargets(),
+      execution,
+      async (lease) => sendWeeklyReviewForTarget(lease.target, {
+        dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
+        requireNotificationIntent: true,
+      }),
+    );
   }), { timezone: tz });
 
   // ── Shared list task notifications (every 5 min) ───────────────────
@@ -2814,42 +3007,48 @@ export function startScheduler(): void {
     // Per-user schedule (migration 225): default remains GARMIN_COACH_TIME
     // until a user picks their own coach time. Garmin pre-auth runs only on
     // ticks where at least one user is actually due.
-    cron.schedule('*/5 * * * *', wrapJob('garmin_coach', async () => {
-      // Eligibility runs BEFORE the ledger claim: a user with no health data
-      // yet is left unclaimed and re-checked on
+    cron.schedule('*/5 * * * *', wrapJob('garmin_coach', async (execution) => {
+      // Eligibility runs BEFORE the durable job is enqueued: a user with no
+      // health data yet is left unclaimed and re-checked on
       // every tick inside the catch-up window, so a late Apple Health sync
-      // still gets that day's briefing instead of losing it to a consumed
-      // claim (QA finding 3). The same gates remain inside
+      // still gets that day's briefing. The same gates remain inside
       // sendCoachBriefingForTarget as the backstop for manual triggers.
-      const due = resolveDueReportTargets('coach_briefing', getActiveTrainingTargets(), undefined, {
-        eligible: (target) =>
-          hasPaidCoachBriefingEntitlement(target.userId)
-          && hasActiveCoachWorkoutPlan(target.userId, target.tenantId)
-          && hasCoachableHealthDataForUser(target.userId),
-      });
-      if (due.length === 0) return 'skipped';
-      if (isGarminConfigured()) {
-        logger.info('Coach briefing dispatch — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
-        // Silent mode: cron has no interactive user to answer an MFA
-        // code, so the recovery path must skip full re-login. If tokens
-        // are too stale even for OAuth2 refresh, the briefing runs with
-        // data gaps (logged as a warning) and the next user-initiated
-        // call will recover interactively. Fixes the daily Garmin
-        // passcode email that was landing in Felipe's inbox.
-        const authed = await garminEnsureAuth({ silent: true });
-        if (!authed) {
-          logger.warn('Coach briefing: Garmin session unrecoverable in silent mode — proceeding with whatever cached/partial data the briefing can assemble');
-        }
-      } else {
-        logger.info('Coach briefing dispatch without global Garmin; users with Apple Health or other wearable data can still receive scoped briefings');
-      }
-      for (const target of due) {
-        try {
-          await runScheduledCoachBriefingForTarget(target);
-        } catch (err) {
-          logger.error({ errorName: safeErrorName(err) }, 'Coach briefing failed for user; continuing');
-        }
-      }
+      let preAuthenticated = false;
+      return executeScheduledReportLeaseBatch(
+        'coach_briefing',
+        getActiveTrainingTargets(),
+        execution,
+        async (lease) => {
+          if (!preAuthenticated) {
+            preAuthenticated = true;
+            if (isGarminConfigured()) {
+              logger.info('Coach briefing dispatch — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
+              const authed = await garminEnsureAuth({ silent: true });
+              if (!authed) {
+                logger.warn('Coach briefing: Garmin session unrecoverable in silent mode — proceeding with whatever cached/partial data the briefing can assemble');
+              }
+            } else {
+              logger.info('Coach briefing dispatch without global Garmin; users with Apple Health or other wearable data can still receive scoped briefings');
+            }
+          }
+          const outcome = await runScheduledCoachBriefingForTarget(lease.target, {
+            dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
+            requireNotificationIntent: true,
+          });
+          if (outcome.output?.status === 'deferred' || outcome.status === 'skipped_overlap') {
+            throw new Error('SCHEDULED_COACH_REPORT_RETRY_REQUIRED');
+          }
+          return { degraded: (outcome.output?.errors ?? 0) > 0 };
+        },
+        {
+          eligible: (target) => {
+            const userId = target.userId ?? target.tenantId;
+            return hasPaidCoachBriefingEntitlement(userId)
+              && hasActiveCoachWorkoutPlan(userId, target.tenantId)
+              && hasCoachableHealthDataForUser(userId);
+          },
+        },
+      );
     }), { timezone: tz });
   }
 
@@ -3457,21 +3656,45 @@ export function startScheduler(): void {
     let materialized = 0;
     let failed = 0;
     for (const target of getActiveUserTargets()) {
-      const result = await materializeDecisionCenterDailyAttention({
-        userId: target.tenantId,
-        tenantId: target.tenantId,
-      });
-      if (result.status === 'materialized') materialized += 1;
-      if (result.status === 'failed') failed += 1;
+      try {
+        const result = await materializeDecisionCenterDailyAttention({
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+        });
+        if (result.status === 'materialized') materialized += 1;
+        if (result.status === 'failed') failed += 1;
+      } catch (error) {
+        failed += 1;
+        logger.error({
+          errorName: error instanceof Error ? error.name : typeof error,
+          userId: target.tenantId,
+          tenantId: target.tenantId,
+        }, 'Decision daily attention materialization failed for scope');
+      }
     }
     if (materialized === 0 && failed === 0) return 'skipped';
     logger.info({ materialized, failed }, 'Decision daily attention materialization completed');
+    if (failed > 0) {
+      throw new Error(`Decision daily attention failed for ${failed} active scope(s)`);
+    }
+  }), { timezone: tz });
+
+  cron.schedule('17,47 * * * *', wrapJob('decision_rank_snapshot_backfill', async () => {
+    const result = runDecisionRankSnapshotBackfillJob({ limit: 500 });
+    if (result.materializedScopes === 0 && result.failedScopes === 0) return 'skipped';
+    logger.info(result, 'Decision rank snapshot backfill completed');
+    if (result.failedScopes > 0) {
+      throw new Error(`Decision rank snapshot backfill failed for ${result.failedScopes} scope(s)`);
+    }
   }), { timezone: tz });
 
   cron.schedule('22,52 * * * *', wrapJob('decision_handled_history_backfill', async () => {
     const result = runDecisionHandledHistoryBackfillJob({ limit: 100 });
     if (result.backfilled === 0 && result.failed === 0) return 'skipped';
     logger.info(result, 'Decision handled-history backfill completed');
+    if (result.failed > 0) {
+      throw new Error(`Decision handled-history backfill failed for ${result.failed} decision(s)`);
+    }
   }), { timezone: tz });
 
   cron.schedule('7,37 * * * *', wrapJob('decision_center_smoke_cleanup', async () => {
@@ -3486,10 +3709,13 @@ export function startScheduler(): void {
     logger.info(result, 'Decision expiry sweep completed');
   }), { timezone: tz });
 
-  cron.schedule('15 0 * * *', wrapJob('decision_metrics_rollup', async () => {
-    const yesterday = decisionMetricsRollupDateForScheduler(new Date(), tz);
-    const result = runDecisionMetricsRollupJob({ date: yesterday });
-    logger.info(result, 'Decision metrics daily rollup completed');
+  cron.schedule('15 * * * *', wrapJob('decision_metrics_rollup', async () => {
+    const result = runDecisionMetricsRollupForActiveUsers(new Date());
+    if (result.rollups === 0 && result.failedScopes === 0) return 'skipped';
+    logger.info(result, 'Decision metrics local-day rollup completed');
+    if (result.failedScopes > 0) {
+      throw new Error(`Decision metrics rollup failed for ${result.failedScopes} active scope(s)`);
+    }
   }), { timezone: tz });
 
   cron.schedule('40 4 * * *', wrapJob('decision_ledger_retention_prune', async () => {
@@ -3497,7 +3723,8 @@ export function startScheduler(): void {
     if (result.outcomeLedgerPruned === 0
         && result.qualityGateEventsPruned === 0
         && result.conflictEvaluationsPruned === 0
-        && result.terminalExclusivityClaimsPruned === 0) return 'skipped';
+        && result.terminalExclusivityClaimsPruned === 0
+        && result.rankSnapshotsPruned === 0) return 'skipped';
     logger.info(result, 'Decision ledger retention prune completed');
   }), { timezone: tz });
 
@@ -3744,37 +3971,44 @@ export interface CoachBriefingDispatchResult {
   errors: number;
 }
 
+export interface ScheduledReportPersistenceOptions {
+  dispatchKey?: string;
+  requireNotificationIntent?: boolean;
+}
+
 export async function sendCoachBriefingForTarget(
   target: ActiveTrainingTarget,
-  options: { runId?: string | null } = {},
+  options: { runId?: string | null } & ScheduledReportPersistenceOptions = {},
 ): Promise<CoachBriefingDispatchResult> {
+  const userId = target.userId;
+  const coachScopeKey = `${target.tenantId}:${userId}`;
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
   // calendar fetches). The serialized daily/monthly budget reservation wraps
   // the provider boundary below.
-  if (!hasPaidCoachBriefingEntitlement(target.userId)) {
+  if (!hasPaidCoachBriefingEntitlement(userId)) {
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  if (!hasActiveCoachWorkoutPlan(target.userId, target.tenantId)) {
+  if (!hasActiveCoachWorkoutPlan(userId, target.tenantId)) {
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  if (!hasCoachableHealthDataForUser(target.userId)) {
+  if (!hasCoachableHealthDataForUser(userId)) {
     logger.debug('[scheduler] coach briefing skipped: no health data source for user');
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
   const coachOptions = {
     tenantId: target.tenantId,
-    meteringUserId: target.userId,
+    meteringUserId: userId,
     garminSilent: true,
     budgetRequestSource: 'automation' as const,
     budgetJobName: 'garmin_coach',
     ...(options.runId ? { budgetRunId: options.runId } : {}),
   };
-  return runWithCoachBriefingAccountAdmissions(target.userId, coachOptions, async (abortSignal) => (
-    runWithContext({ source: 'cron:garmin_coach', userId: target.userId, tenantId: target.tenantId }, async () => {
+  return runWithCoachBriefingAccountAdmissions(userId, coachOptions, async (abortSignal) => (
+    runWithContext({ source: 'cron:garmin_coach', userId, tenantId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.userId, {
+        result = await generateCoachBriefing(userId, {
           ...coachOptions,
           abortSignal,
         });
@@ -3782,18 +4016,11 @@ export async function sendCoachBriefingForTarget(
         if (err instanceof AiBudgetError) {
           // No report/state writes occur on deferral, so the latest valid
           // Coach report remains the durable read model.
-          const lockUnavailable = err.decision.internalReason === 'lock_unavailable';
-          if (lockUnavailable) {
-            // The report dispatcher claimed this local date before starting
-            // the job. Transient lock contention must release only that fresh
-            // claim so the next scheduler tick can retry the same report.
-            releaseFreshReportScheduleClaim(target.userId, 'coach_briefing', 10, target.tenantId);
-          }
           const resetKey = err.decision.unblocksAt?.replace(/[^0-9]/g, '').slice(0, 12)
             || new Date().toISOString().slice(0, 10);
           try {
             await createNotificationIntent({
-              userId: target.userId,
+              userId,
               tenantId: target.tenantId,
               sourceSkill: 'training',
               type: 'insight',
@@ -3808,7 +4035,7 @@ export async function sendCoachBriefingForTarget(
                   : 'Your next Coach report will resume when the daily AI allowance resets.',
               deeplink: 'nexus://training/coach',
               expiresAt: err.decision.unblocksAt,
-              dedupeKey: `training:coach_budget:${target.tenantId}:${target.userId}:${err.decision.code}:${resetKey}`,
+              dedupeKey: `training:coach_budget:${coachScopeKey}:${err.decision.code}:${resetKey}`,
               privacyPolicy: 'health',
             });
           } catch (notificationErr) {
@@ -3832,29 +4059,29 @@ export async function sendCoachBriefingForTarget(
       // the correct tenant-scoped coach state.
       if (result.recommendations.length > 0) {
         setLastCoachState(
-          target.userId,
+          userId,
           result.recommendations,
           result.message.substring(0, 500),
           target.tenantId,
         );
       }
 
-      addToConversation(target.userId, 'triathlon', 'assistant', result.message, target.tenantId);
-      setLastActiveDomain(target.userId, 'triathlon', target.tenantId);
+      addToConversation(userId, 'triathlon', 'assistant', result.message, target.tenantId);
+      setLastActiveDomain(userId, 'triathlon', target.tenantId);
 
       // Durable report + APNs push for the native app.
       try {
         let readinessData: any = null;
         try {
           const { calculateReadiness } = require('./readiness-scorer');
-          readinessData = await calculateReadiness(target.userId, {
+          readinessData = await calculateReadiness(userId, {
             tenantId: target.tenantId,
             garminSilent: true,
           });
         } catch { /* non-fatal */ }
 
         await storeAndPushReport({
-          userId: target.userId,
+          userId,
           tenantId: target.tenantId,
           type: 'coach_briefing' as const,
           title: '🏋️ Coach Report',
@@ -3879,8 +4106,11 @@ export async function sendCoachBriefingForTarget(
           },
           sourceJob: 'garmin_coach',
           pushCategory: 'coach_briefing',
+          dispatchKey: options.dispatchKey,
+          requireNotificationIntent: options.requireNotificationIntent,
         });
       } catch (err) {
+        if (options.requireNotificationIntent) throw err;
         logger.debug({ errorName: safeErrorName(err) }, 'Failed to store coach report (non-fatal)');
       }
 
@@ -3910,27 +4140,30 @@ class CoachBriefingDispatchError extends Error {
 
 function scheduledCoachBriefingAdapter(
   target: ActiveTrainingTarget,
+  options: ScheduledReportPersistenceOptions = {},
 ): GovernedAgentJobAdapter<{ tenantId: number; userId: number }, CoachBriefingDispatchResult> {
+  const userId = target.userId;
   return {
     jobId: 'garmin_coach',
     providerRouting: 'gemini-primary-openai-fallback-anthropic-gated-last-resort',
     prepare: () => ({
       kind: 'ready',
-      input: { tenantId: target.tenantId, userId: target.userId },
+      input: { tenantId: target.tenantId, userId },
       fingerprintMaterial: {
         tenantId: target.tenantId,
-        userId: target.userId,
-        gate: 'report_schedule_ledger_scoped',
+        userId,
+        gate: 'scheduled_report_background_job',
+        dispatchKey: options.dispatchKey ?? 'manual',
       },
     }),
     async execute({ runId }) {
-      const result = await sendCoachBriefingForTarget(target, { runId });
+      const result = await sendCoachBriefingForTarget(target, { runId, ...options });
       if (result.status === 'failed') throw new CoachBriefingDispatchError(result);
       return result;
     },
     validateOutput(output, input) {
       if (input.tenantId !== target.tenantId
-          || input.userId !== target.userId
+          || input.userId !== userId
           || !['generated', 'skipped', 'deferred'].includes(output.status)
           || !Number.isSafeInteger(output.recommendations)
           || output.recommendations < 0
@@ -3945,10 +4178,12 @@ function scheduledCoachBriefingAdapter(
 
 export async function runScheduledCoachBriefingForTarget(
   target: ActiveTrainingTarget,
+  options: ScheduledReportPersistenceOptions = {},
 ): Promise<AgentJobOutcome<CoachBriefingDispatchResult>> {
+  const userId = target.userId;
   return runGovernedAgentJob(
-    scheduledCoachBriefingAdapter(target),
-    { tenantId: target.tenantId, userId: target.userId },
+    scheduledCoachBriefingAdapter(target, options),
+    { tenantId: target.tenantId, userId },
   );
 }
 
@@ -3958,28 +4193,42 @@ export async function sendCoachBriefings(): Promise<void> {
   }
 }
 
-export async function runEndOfDaySummaryForTarget(target: ActiveUserTarget): Promise<void> {
+export async function runEndOfDaySummaryForTarget(
+  target: ActiveUserTarget,
+  options: ScheduledReportPersistenceOptions = {},
+): Promise<ScheduledReportTargetResult> {
   const userId = target.userId ?? target.tenantId;
-  const report = await buildEndOfDaySummaryForUser(userId);
-  if (!report) return;
+  const report = await buildEndOfDaySummaryForUser(userId, target.tenantId);
+  if (!report) return { degraded: false };
 
   // Store durable evening report
   try {
     await storeAndPushReport({
       userId,
+      tenantId: target.tenantId,
       type: 'evening_summary' as const,
       title: 'End-of-day summary',
       summary: report.summary,
       documentJson: report.documentJson,
       sourceJob: 'end_of_day',
       pushCategory: 'evening_summary',
+      dispatchKey: options.dispatchKey,
+      requireNotificationIntent: options.requireNotificationIntent,
     });
   } catch (err) {
+    if (options.requireNotificationIntent) throw err;
     logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
   }
+  return {
+    degraded: Array.isArray(report.documentJson.degradationReasons)
+      && report.documentJson.degradationReasons.length > 0,
+  };
 }
 
-export async function sendDailyBriefingForTarget(target: ActiveUserTarget): Promise<void> {
+export async function sendDailyBriefingForTarget(
+  target: ActiveUserTarget,
+  options: ScheduledReportPersistenceOptions = {},
+): Promise<ScheduledReportTargetResult> {
   const userId = target.userId ?? target.tenantId;
   const data = await buildDailyBriefingDataForUser(userId, target.tenantId);
 
@@ -3987,21 +4236,29 @@ export async function sendDailyBriefingForTarget(target: ActiveUserTarget): Prom
   try {
     await storeAndPushReport({
       userId,
+      tenantId: target.tenantId,
       type: 'morning_briefing' as const,
       title: `☀️ ${data.date}`,
       summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
       documentJson: data,
       sourceJob: 'daily_briefing',
       pushCategory: 'morning_briefing',
+      dispatchKey: options.dispatchKey,
+      requireNotificationIntent: options.requireNotificationIntent,
     });
   } catch (err) {
+    if (options.requireNotificationIntent) throw err;
     logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
   }
+  return {
+    degraded: data.planToday?.degraded === true
+      || (data.sourceDegradationReasons?.length ?? 0) > 0,
+  };
 }
 
 // Loops every active user regardless of per-user schedule — used by the
 // portal manual trigger and tests. Scheduled delivery goes through the
-// report-schedule dispatcher, which calls the ForTarget variant per due user.
+// leased report scheduler, which calls the ForTarget variant per due user.
 export async function sendDailyBriefing(): Promise<void> {
   for (const target of getActiveUserTargets()) {
     await sendDailyBriefingForTarget(target);
@@ -4013,23 +4270,35 @@ function isChatCoreV2AutoRevertEvalCronEnabled(env: NodeJS.ProcessEnv = process.
   return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'no';
 }
 
-export async function sendWeeklyReviewForTarget(target: ActiveUserTarget): Promise<void> {
+export async function sendWeeklyReviewForTarget(
+  target: ActiveUserTarget,
+  options: ScheduledReportPersistenceOptions = {},
+): Promise<ScheduledReportTargetResult> {
   const userId = target.userId ?? target.tenantId;
   const payload = await buildWeeklyReviewPayloadForUser(userId, target.tenantId);
   // Store durable report + push
   try {
     await storeAndPushReport({
       userId,
+      tenantId: target.tenantId,
       type: 'weekly_review' as const,
       title: '📊 Week in Review',
       summary: payload.summary,
       documentJson: payload.documentJson,
       sourceJob: 'weekly_review',
       pushCategory: 'weekly_review',
+      dispatchKey: options.dispatchKey,
+      requireNotificationIntent: options.requireNotificationIntent,
     });
   } catch (err) {
+    if (options.requireNotificationIntent) throw err;
     logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
   }
+  return {
+    degraded: payload.documentJson.cooking == null
+      || payload.documentJson.cooking.degraded === true
+      || (payload.documentJson.degradationReasons?.length ?? 0) > 0,
+  };
 }
 
 async function sendWeeklyReview(): Promise<void> {

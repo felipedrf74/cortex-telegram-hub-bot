@@ -362,11 +362,9 @@ export function publishHighAdherence(opts: {
  * before generating their next prescription so they can decide
  * whether to nudge the user back to balance or pivot the plan.
  *
- * Idempotency is the caller's responsibility: the adherence
- * orchestrator in `adherence-signals.ts` checks for an existing
- * active `plan_drift` row before publishing a new one, so a user
- * who opens the training tab 20 times in an hour still only gets
- * one drift signal on the bus.
+ * Idempotency and snapshot replacement are the caller's responsibility.
+ * The adherence orchestrator performs the insert and stale-row retirement
+ * in one transaction.
  */
 export function publishPlanDrift(opts: {
   userId: number;

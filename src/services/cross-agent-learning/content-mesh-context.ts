@@ -15,8 +15,13 @@ import { isValidTenantUserId } from '../tenant-scope-observability';
 import type { ContentMeshContext, MeshSignalDraft } from './types';
 import { endOfDayIso, reportInvalidMeshScope, resolveWeekWindow, safely, safelyAsync } from './mesh-common';
 
-export function createEmptyContentMeshContext(opts: { userId: number; weekStart?: string }): ContentMeshContext {
-  const window = resolveWeekWindow(opts.weekStart);
+export function createEmptyContentMeshContext(opts: {
+  userId: number;
+  weekStart?: string;
+  timezone?: string;
+  referenceNow?: string;
+}): ContentMeshContext {
+  const window = resolveWeekWindow(opts.weekStart, opts.timezone, opts.referenceNow);
   return {
     userId: opts.userId,
     weekStart: window.weekStart,
@@ -41,13 +46,16 @@ export async function readContentMeshContext(opts: {
   userId: number;
   tenantId?: number;
   weekStart?: string;
+  timezone?: string;
+  /** One request-captured UTC instant for implicit week resolution. */
+  referenceNow?: string;
 }): Promise<ContentMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_content_mesh_context', opts.userId, opts.weekStart);
     return createEmptyContentMeshContext(opts);
   }
 
-  const window = resolveWeekWindow(opts.weekStart);
+  const window = resolveWeekWindow(opts.weekStart, opts.timezone, opts.referenceNow);
 
   const [filmingResult] = await Promise.allSettled([
     getFilmingRecommendation(opts.userId, undefined, opts.tenantId),

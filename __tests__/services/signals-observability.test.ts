@@ -371,14 +371,11 @@ describe('buildActiveSignalsResponse — expired signals', () => {
   afterEach(() => testDb?.close());
 
   it('does not return signals that have passed their expires_at', () => {
-    // Insert a signal directly with an expires_at in the past so the
-    // `status = 'active' AND ...` filter in the SQL query excludes it.
-    // (The bus filters on status, not on expires_at directly, but
-    // `expireStaleSignals` flips status to 'expired' — simulate by
-    // setting status='expired' outright.)
+    // Expiry filtering is a read invariant. The hourly cleanup job may not
+    // have flipped the row's lifecycle status yet.
     testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, user_id, status)
-      VALUES ('test', 'low_sleep', '{"score":40}', 'urgent', datetime('now', '-1 hour'), 7001, 'expired')
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id, status)
+      VALUES ('test', 'low_sleep', '{"score":40}', 'urgent', datetime('now', '-1 hour'), 7001, 7001, 'active')
     `).run();
 
     const res = buildActiveSignalsResponse(7001);

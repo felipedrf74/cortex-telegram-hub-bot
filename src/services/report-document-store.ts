@@ -18,6 +18,7 @@
  */
 
 import { getDb } from './database';
+import { createHash } from 'node:crypto';
 import { logger } from '../utils/logger';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
@@ -49,7 +50,7 @@ export function isReportType(value: unknown): value is ReportType {
 export interface ReportDocument {
   id: number;
   userId: number;
-  tenantId: number | null;
+  tenantId: number;
   type: ReportType;
   title: string;
   summary: string | null;
@@ -87,12 +88,15 @@ function reportInvalidReportScope(
  */
 export function storeReport(opts: {
   userId: number;
+  /** Canonical tenant scope. Legacy/manual callers default to the user's own tenant. */
   tenantId?: number;
   type: ReportType;
   title: string;
   summary?: string;
   documentJson: Record<string, any>;
   sourceJob?: string;
+  /** Stable scheduler-owned key for crash-safe report replay. */
+  dispatchKey?: string;
 }): number {
   const tenantId = opts.tenantId ?? opts.userId;
   if (!isValidTenantUserId(opts.userId) || !isValidTenantUserId(tenantId)) {
@@ -111,19 +115,55 @@ export function storeReport(opts: {
   }
 
   const db = getDb();
-  const result = db.prepare(`
-    INSERT INTO report_documents_scoped (tenant_id, user_id, type, title, summary, document_json, source_job)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    tenantId,
-    opts.userId,
-    opts.type,
-    opts.title,
-    opts.summary ?? null,
-    JSON.stringify(opts.documentJson),
-    opts.sourceJob ?? null,
-  );
-  const id = Number(result.lastInsertRowid);
+  const dispatchKey = normalizeDispatchKey(opts.dispatchKey);
+  const insertReport = () => Number(db.prepare(`
+      INSERT INTO report_documents_scoped (
+        tenant_id, user_id, type, title, summary, document_json, source_job, dispatch_key
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      tenantId,
+      opts.userId,
+      opts.type,
+      opts.title,
+      opts.summary ?? null,
+      JSON.stringify(opts.documentJson),
+      opts.sourceJob ?? null,
+      dispatchKey,
+    ).lastInsertRowid);
+  if (!dispatchKey) {
+    const id = insertReport();
+    logger.info({ reportId: id, type: opts.type, userId: opts.userId }, 'Report document stored');
+    return id;
+  }
+  const stored = db.transaction(() => {
+    const existing = db.prepare(`
+      SELECT reports.id
+        FROM report_document_dispatch_receipts receipts
+        JOIN report_documents_scoped reports ON reports.id = receipts.report_document_id
+       WHERE receipts.tenant_id = ?
+         AND receipts.user_id = ?
+         AND receipts.report_type = ?
+         AND receipts.dispatch_key = ?
+         AND reports.tenant_id = receipts.tenant_id
+         AND reports.user_id = receipts.user_id
+         AND reports.type = receipts.report_type
+       LIMIT 1
+    `).get(tenantId, opts.userId, opts.type, dispatchKey) as { id: number } | undefined;
+    if (existing) return { id: existing.id, replayed: true };
+    const id = insertReport();
+    const receipt = db.prepare(`
+      INSERT INTO report_document_dispatch_receipts (
+        tenant_id, user_id, report_type, dispatch_key, report_document_id
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(tenantId, opts.userId, opts.type, dispatchKey, id);
+    if (receipt.changes !== 1) throw new Error('REPORT_DOCUMENT_DISPATCH_RECEIPT_NOT_WRITTEN');
+    return { id, replayed: false };
+  }).immediate();
+  const id = stored.id;
+  if (stored.replayed) {
+    logger.info({ reportId: id, type: opts.type, userId: opts.userId }, 'Report document replayed');
+    return id;
+  }
   logger.info({ reportId: id, type: opts.type, userId: opts.userId, tenantId }, 'Report document stored');
   return id;
 }
@@ -134,6 +174,7 @@ export function storeReport(opts: {
  */
 export async function storeAndPushReport(opts: {
   userId: number;
+  /** Canonical tenant scope. Legacy/manual callers default to the user's own tenant. */
   tenantId?: number;
   type: ReportType;
   title: string;
@@ -141,6 +182,10 @@ export async function storeAndPushReport(opts: {
   documentJson: Record<string, any>;
   sourceJob?: string;
   pushCategory?: string;
+  /** Stable scheduler-owned key reused by the report and Decision proposal. */
+  dispatchKey?: string;
+  /** Scheduled delivery fails and retries if its durable proposal cannot be created. */
+  requireNotificationIntent?: boolean;
 }): Promise<number> {
   const tenantId = opts.tenantId ?? opts.userId;
   const id = storeReport(opts);
@@ -149,7 +194,9 @@ export async function storeAndPushReport(opts: {
   }
 
   // Check push preferences before sending
-  if (!isPushEnabled(opts.userId, opts.pushCategory || opts.type)) {
+  const stored = getReportById(id, opts.userId, tenantId);
+  if (!stored) throw new Error('REPORT_DOCUMENT_READBACK_MISSING');
+  if (!isPushEnabled(opts.userId, opts.pushCategory || stored.type)) {
     logger.debug({ userId: opts.userId, type: opts.type }, 'Push suppressed by user preference');
     return id;
   }
@@ -173,23 +220,32 @@ export async function storeAndPushReport(opts: {
     }
 
     await createNotificationIntent({
+      ...(opts.dispatchKey ? {
+        intentId: `ni_report_${createHash('sha256').update(JSON.stringify({
+          userId: opts.userId,
+          tenantId: stored.tenantId,
+          type: stored.type,
+          dispatchKey: opts.dispatchKey,
+        })).digest('hex').slice(0, 32)}`,
+      } : {}),
       userId: opts.userId,
-      tenantId,
-      sourceSkill: mapReportTypeToSourceSkill(opts.type),
-      type: mapReportTypeToIntentType(opts.type),
-      priority: mapReportTypeToPriority(opts.type),
+      tenantId: stored.tenantId,
+      sourceSkill: mapReportTypeToSourceSkill(stored.type),
+      type: mapReportTypeToIntentType(stored.type),
+      priority: mapReportTypeToPriority(stored.type),
       relatedEntityId: id,
       relatedEntityType: 'report_document',
-      title: opts.title,
-      body: opts.summary || 'New report available',
-      sensitiveBody: opts.summary || null,
+      title: stored.title,
+      body: stored.summary || 'New report available',
+      sensitiveBody: stored.summary || null,
       actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
       deeplink: `nexus://notifications/report-${id}`,
-      dedupeKey: `report:${opts.type}:${id}`,
-      deliveryPolicy: opts.type === 'weekly_review' ? 'digest_only' : 'auto',
-      privacyPolicy: opts.type === 'coach_briefing' || opts.type === 'coach_phase' ? 'health' : 'standard',
+      dedupeKey: `report:${stored.type}:${id}`,
+      deliveryPolicy: stored.type === 'weekly_review' ? 'digest_only' : 'auto',
+      privacyPolicy: stored.type === 'coach_briefing' || stored.type === 'coach_phase' ? 'health' : 'standard',
     });
   } catch (err) {
+    if (opts.requireNotificationIntent) throw err;
     logger.debug({ err, reportId: id }, 'Notification intent for report skipped (non-fatal)');
   }
 
@@ -396,9 +452,14 @@ export function deleteReportsByType(
 
   const db = getDb();
   const placeholders = types.map(() => '?').join(',');
-  const result = db.prepare(
-    `DELETE FROM report_documents_scoped WHERE tenant_id = ? AND user_id = ? AND type IN (${placeholders})`,
-  ).run(tenantId, userId, ...types);
+  const result = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM report_document_dispatch_receipts WHERE tenant_id = ? AND user_id = ? AND report_type IN (${placeholders})`,
+    ).run(tenantId, userId, ...types);
+    return db.prepare(
+      `DELETE FROM report_documents_scoped WHERE tenant_id = ? AND user_id = ? AND type IN (${placeholders})`,
+    ).run(tenantId, userId, ...types);
+  }).immediate();
 
   if (result.changes > 0) {
     logger.info(
@@ -431,19 +492,6 @@ const DEFAULT_CATEGORIES = [
   'coach_briefing', 'content_updates', 'reminders',
 ];
 
-function ensurePushPreferencesTable(): void {
-  const db = getDb();
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS push_preferences (
-      user_id INTEGER NOT NULL,
-      category TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, category)
-    )
-  `);
-}
-
 /**
  * Check if push is enabled for a user+category.
  * Default: enabled (if no row exists, treat as enabled).
@@ -458,14 +506,14 @@ export function isPushEnabled(userId: number, category: string): boolean {
 
   const db = getDb();
   try {
-    ensurePushPreferencesTable();
     const row = db.prepare(
       'SELECT enabled FROM push_preferences WHERE user_id = ? AND category = ?',
     ).get(userId, category) as { enabled: number } | undefined;
     // No row = default enabled
     return row ? row.enabled === 1 : true;
-  } catch {
-    return true; // Default enabled on table-not-found
+  } catch (error) {
+    logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, 'Push preference read failed closed');
+    return false;
   }
 }
 
@@ -481,7 +529,6 @@ export function getPushPreferences(userId: number): Array<{ category: string; en
 
   const db = getDb();
   try {
-    ensurePushPreferencesTable();
     const rows = db.prepare(
       'SELECT category, enabled FROM push_preferences WHERE user_id = ?',
     ).all(userId) as Array<{ category: string; enabled: number }>;
@@ -492,8 +539,9 @@ export function getPushPreferences(userId: number): Array<{ category: string; en
       category: cat,
       enabled: existing.get(cat) ?? true,
     }));
-  } catch {
-    return DEFAULT_CATEGORIES.map(cat => ({ category: cat, enabled: true }));
+  } catch (error) {
+    logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, 'Push preferences read failed closed');
+    return DEFAULT_CATEGORIES.map(cat => ({ category: cat, enabled: false }));
   }
 }
 
@@ -514,7 +562,6 @@ export function setPushPreference(
   }
 
   const db = getDb();
-  ensurePushPreferencesTable();
   db.prepare(`
     INSERT INTO push_preferences (user_id, category, enabled, updated_at)
     VALUES (?, ?, ?, datetime('now'))
@@ -530,7 +577,7 @@ function mapReport(row: any): ReportDocument {
   return {
     id: row.id,
     userId: row.user_id,
-    tenantId: typeof row.tenant_id === 'number' ? row.tenant_id : null,
+    tenantId: Number(row.tenant_id),
     type: row.type,
     title: row.title,
     summary: row.summary,
@@ -554,6 +601,15 @@ function safeParseJSON(val: any, fallback: any): any {
   if (val === null || val === undefined) return fallback;
   if (typeof val !== 'string') return val;
   try { return JSON.parse(val); } catch { return fallback; }
+}
+
+function normalizeDispatchKey(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9._:-]{1,180}$/.test(normalized)) {
+    throw new Error('REPORT_DOCUMENT_DISPATCH_KEY_INVALID');
+  }
+  return normalized;
 }
 
 function mapReportTypeToSourceSkill(type: ReportType): import('./notification-orchestrator').NotificationSourceSkill {

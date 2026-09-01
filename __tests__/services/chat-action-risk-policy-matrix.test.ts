@@ -393,8 +393,29 @@ describe('high-risk action confirmation behavior', () => {
     expect(snooze.step).toMatchObject({ skill: 'decision_center', action: 'decision_snooze', requiredArgsPresent: true });
     expect(snooze.plan?.requiresConfirmation).toBe(true);
 
+    const exactSnooze = firstStep('Snooze decision dec_123 until 2026-09-07T09:00:00+01:00');
+    expect(exactSnooze.step).toMatchObject({
+      skill: 'decision_center',
+      action: 'decision_snooze',
+      requiredArgsPresent: true,
+      args: { deferUntil: '2026-09-07T09:00:00+01:00' },
+    });
+
+    const nextWeekSnooze = firstStep('Snooze decision dec_123 until next week');
+    expect(nextWeekSnooze.step).toMatchObject({
+      skill: 'decision_center',
+      action: 'decision_snooze',
+      requiredArgsPresent: true,
+      args: { followUp: 'next week' },
+    });
+
     const followUp = firstStep('Follow up on decision dec_123');
-    expect(followUp.step).toMatchObject({ skill: 'decision_center', action: 'decision_follow_up', requiredArgsPresent: true });
+    expect(followUp.step).toMatchObject({
+      skill: 'decision_center',
+      action: 'decision_follow_up',
+      requiredArgsPresent: true,
+      args: { followUp: 'next week' },
+    });
     expect(followUp.plan?.requiresConfirmation).toBe(true);
   });
 });

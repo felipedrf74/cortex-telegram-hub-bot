@@ -18,13 +18,18 @@ const mockUpdateNotificationProfile = vi.fn();
 const mockRegisterNotificationDeviceToken = vi.fn();
 const mockRevokeNotificationDeviceToken = vi.fn();
 const mockGetNotificationDecisionLog = vi.fn();
+const mockGetNotificationCenterItem = vi.fn();
 const mockGetNotificationReliabilityDashboard = vi.fn();
 const mockMarkNotificationCenterItemRead = vi.fn();
 const mockDismissNotificationCenterItem = vi.fn();
 const mockPerformNotificationAction = vi.fn();
 const mockRecordNotificationReliabilityEvent = vi.fn();
 const mockGetDecisionItem = vi.fn();
+const mockGetDecisionItemForCommand = vi.fn();
+const mockMarkDecisionViewed = vi.fn();
 const mockPerformDecisionAction = vi.fn();
+const mockEvaluateDecisionApnsActionRequest = vi.fn();
+const mockIsDecisionActionAttemptReplay = vi.fn();
 const mockIsConnected = vi.fn();
 const mockGetUnreadEmailsForUser = vi.fn();
 const mockReadOutlookEmailForUser = vi.fn();
@@ -93,6 +98,7 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
   registerNotificationDeviceToken: (...args: unknown[]) => mockRegisterNotificationDeviceToken(...args),
   revokeNotificationDeviceToken: (...args: unknown[]) => mockRevokeNotificationDeviceToken(...args),
   getNotificationDecisionLog: (...args: unknown[]) => mockGetNotificationDecisionLog(...args),
+  getNotificationCenterItem: (...args: unknown[]) => mockGetNotificationCenterItem(...args),
   getNotificationReliabilityDashboard: (...args: unknown[]) => mockGetNotificationReliabilityDashboard(...args),
   markNotificationCenterItemRead: (...args: unknown[]) => mockMarkNotificationCenterItemRead(...args),
   dismissNotificationCenterItem: (...args: unknown[]) => mockDismissNotificationCenterItem(...args),
@@ -102,7 +108,11 @@ vi.mock('../../src/services/notification-orchestrator', () => ({
 
 vi.mock('../../src/services/decision-center', () => ({
   DecisionActionError: decisionCenterMockTypes.DecisionActionError,
+  evaluateDecisionApnsActionRequest: (...args: unknown[]) => mockEvaluateDecisionApnsActionRequest(...args),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
+  getDecisionItemForCommand: (...args: unknown[]) => mockGetDecisionItemForCommand(...args),
+  isDecisionActionAttemptReplay: (...args: unknown[]) => mockIsDecisionActionAttemptReplay(...args),
+  markDecisionViewed: (...args: unknown[]) => mockMarkDecisionViewed(...args),
   performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
 }));
 
@@ -269,13 +279,18 @@ describe('Notification inbox routes', () => {
     mockRegisterNotificationDeviceToken.mockReset();
     mockRevokeNotificationDeviceToken.mockReset();
     mockGetNotificationDecisionLog.mockReset();
+    mockGetNotificationCenterItem.mockReset();
     mockGetNotificationReliabilityDashboard.mockReset();
     mockMarkNotificationCenterItemRead.mockReset();
     mockDismissNotificationCenterItem.mockReset();
     mockPerformNotificationAction.mockReset();
     mockRecordNotificationReliabilityEvent.mockReset();
     mockGetDecisionItem.mockReset();
+    mockGetDecisionItemForCommand.mockReset();
+    mockMarkDecisionViewed.mockReset();
     mockPerformDecisionAction.mockReset();
+    mockEvaluateDecisionApnsActionRequest.mockReset();
+    mockIsDecisionActionAttemptReplay.mockReset();
     mockIsConnected.mockReset();
     mockGetUnreadEmailsForUser.mockReset();
     mockReadOutlookEmailForUser.mockReset();
@@ -311,6 +326,7 @@ describe('Notification inbox routes', () => {
       },
     });
     mockUpdateNotificationProfile.mockImplementation((_userId, _tenantId, patch) => ({ ...patch }));
+    mockIsDecisionActionAttemptReplay.mockReturnValue(false);
     mockRegisterNotificationDeviceToken.mockReturnValue({
       tokenId: 'dt_test',
       platform: 'ios',
@@ -321,7 +337,9 @@ describe('Notification inbox routes', () => {
     });
     mockRevokeNotificationDeviceToken.mockReturnValue(true);
     mockGetNotificationDecisionLog.mockReturnValue(null);
+    mockGetNotificationCenterItem.mockReturnValue(null);
     mockGetDecisionItem.mockReturnValue(null);
+    mockGetDecisionItemForCommand.mockReturnValue(null);
     mockIsConnected.mockReturnValue(false);
     mockGetUnreadEmailsForUser.mockResolvedValue({ count: 0, emails: [] });
     mockReadOutlookEmailForUser.mockResolvedValue(null);
@@ -738,6 +756,7 @@ describe('Notification inbox routes', () => {
     };
     mockMarkNotificationCenterItemRead.mockReturnValue(item);
     mockDismissNotificationCenterItem.mockReturnValue({ ...item, status: 'dismissed' });
+    mockGetNotificationCenterItem.mockReturnValue(item);
     mockPerformNotificationAction.mockReturnValue({
       actionId: 'open_detail',
       idempotent: false,
@@ -755,8 +774,306 @@ describe('Notification inbox routes', () => {
     ]);
   });
 
+  it('routes legacy notification read and dismiss paths through Decision commands', async () => {
+    const centerItem = {
+      itemId: 'nc_decision_legacy',
+      intentId: 'ni_decision_legacy',
+      decisionLogId: 'ndl_decision_legacy',
+      userId: 7,
+      tenantId: 17,
+      title: 'Decision',
+      body: 'Open Nexus.',
+      safeBody: 'Open Nexus.',
+      sourceSkill: 'secretary',
+      type: 'decision_required',
+      priority: 'active',
+      status: 'read',
+      deeplink: 'nexus://decisions/nc_decision_legacy',
+      actions: [{ id: 'dismiss', label: 'Dismiss' }],
+      dedupeKey: 'decision-legacy',
+      createdAt: '2026-05-07T10:00:00.000Z',
+      expiresAt: null,
+    };
+    mockGetDecisionItemForCommand.mockReturnValue({
+      decisionId: centerItem.itemId,
+      recordVersion: 4,
+      contextVersion: 'ctx_4',
+      status: 'unread',
+    });
+    mockMarkDecisionViewed.mockReturnValue({
+      decisionId: centerItem.itemId,
+      recordVersion: 5,
+      contextVersion: 'ctx_4',
+      status: 'read',
+    });
+    mockPerformDecisionAction.mockResolvedValue({
+      actionId: 'dismiss',
+      status: 'succeeded',
+      idempotent: false,
+      item: { decisionId: centerItem.itemId, status: 'dismissed' },
+      verification: { readBackOk: true },
+    });
+    mockGetNotificationCenterItem.mockReturnValue(centerItem);
+
+    const read = await dispatch('PATCH', `/${centerItem.itemId}/read`, {}, 7, {
+      idempotencyKey: 'legacy-read-1',
+      recordVersion: 4,
+    }, {}, 17);
+    expect(read.statusCode).toBe(200);
+    expect(mockMarkDecisionViewed).toHaveBeenCalledWith(centerItem.itemId, 7, 17, {
+      idempotencyKey: 'legacy-read-1',
+      expectedVersion: 4,
+      channel: 'rest',
+    });
+    expect(mockMarkNotificationCenterItemRead).not.toHaveBeenCalled();
+
+    const dismiss = await dispatch('PATCH', `/${centerItem.itemId}/dismiss`, {}, 7, {
+      idempotencyKey: 'legacy-dismiss-1',
+      recordVersion: 4,
+      contextVersion: 'ctx_4',
+      reason: 'not_relevant',
+    }, {}, 17);
+    expect(dismiss.statusCode).toBe(200);
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith(centerItem.itemId, 'dismiss', 7, 17, {
+      idempotencyKey: 'legacy-dismiss-1',
+      payload: { reason: 'not_relevant' },
+      channel: 'rest',
+      expectedVersion: 4,
+      contextVersion: 'ctx_4',
+    });
+    expect(mockDismissNotificationCenterItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['PATCH', '/nc_decision_legacy/read', { idempotencyKey: ' ' }],
+    ['PATCH', '/nc_decision_legacy/dismiss', { idempotencyKey: 42 }],
+    ['POST', '/nc_decision_legacy/actions', { actionId: 'dismiss', idempotencyKey: 'x'.repeat(201) }],
+  ] as const)('rejects an explicitly malformed Decision idempotency key on %s %s', async (method, path, body) => {
+    mockGetNotificationCenterItem.mockReturnValue({
+      itemId: 'nc_decision_legacy',
+      requiresUserAction: true,
+      deeplink: 'nexus://decisions/nc_decision_legacy',
+    });
+    mockGetDecisionItemForCommand.mockReturnValue({
+      decisionId: 'nc_decision_legacy',
+      recordVersion: 4,
+      contextVersion: 'ctx_4',
+      status: 'unread',
+    });
+
+    const response = await dispatch(method, path, {}, 7, body, {}, 17);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(mockMarkDecisionViewed).not.toHaveBeenCalled();
+    expect(mockPerformDecisionAction).not.toHaveBeenCalled();
+  });
+
   it('forwards decision notification actions through the canonical Decision API path', async () => {
+    mockGetNotificationCenterItem.mockReturnValue({
+      itemId: 'nc_decision',
+      requiresUserAction: true,
+      deeplink: 'nexus://decisions/nc_decision',
+    });
     mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockGetDecisionItemForCommand.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockEvaluateDecisionApnsActionRequest.mockReturnValue({
+      disposition: 'execute',
+      execute: true,
+      reasonCode: 'execute_low_risk_current_action',
+      decisionId: 'nc_decision',
+      actionId: 'dismiss',
+      recordVersion: 3,
+      contextVersion: 'ctx_3',
+    });
+    mockPerformDecisionAction.mockResolvedValue({
+      actionId: 'dismiss',
+      status: 'succeeded',
+      idempotent: false,
+      item: { decisionId: 'nc_decision', status: 'actioned' },
+      verification: { readBackOk: true },
+    });
+
+    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
+      actionId: 'dismiss',
+      idempotencyKey: 'tap-decision-1',
+      payload: { source: 'notification' },
+      channel: 'apns',
+      recordVersion: 3,
+      contextVersion: 'ctx_3',
+    });
+
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data.status).toBe('succeeded');
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith(
+      'nc_decision',
+      'dismiss',
+      7,
+      7,
+      {
+        idempotencyKey: 'tap-decision-1',
+        payload: { source: 'notification' },
+        channel: 'apns',
+        expectedVersion: 3,
+        contextVersion: 'ctx_3',
+      },
+    );
+    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
+  });
+
+  it('opens the app without executing when an APNs decision action lacks current versions', async () => {
+    mockGetNotificationCenterItem.mockReturnValue({
+      itemId: 'nc_decision',
+      requiresUserAction: true,
+      deeplink: 'nexus://decisions/nc_decision',
+    });
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      status: 'unread',
+      recordVersion: 8,
+      contextVersion: 'ctx_current_8',
+    });
+    mockGetDecisionItemForCommand.mockReturnValue({
+      decisionId: 'nc_decision',
+      status: 'unread',
+      recordVersion: 8,
+      contextVersion: 'ctx_current_8',
+    });
+    mockEvaluateDecisionApnsActionRequest.mockReturnValue({
+      disposition: 'open_app',
+      execute: false,
+      reasonCode: 'request_record_version_missing',
+      decisionId: 'nc_decision',
+      actionId: 'dismiss',
+      recordVersion: null,
+      contextVersion: null,
+    });
+
+    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
+      actionId: 'dismiss',
+      idempotencyKey: 'tap-decision-missing-version',
+      channel: 'apns',
+    });
+
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data).toMatchObject({
+      disposition: 'open_app',
+      execute: false,
+      reasonCode: 'request_record_version_missing',
+      deeplink: 'nexus://decisions/nc_decision',
+    });
+    expect(mockEvaluateDecisionApnsActionRequest).toHaveBeenCalledWith({
+      decisionId: 'nc_decision',
+      actionId: 'dismiss',
+      userId: 7,
+      tenantId: 7,
+      recordVersion: null,
+      contextVersion: null,
+    });
+    expect(mockPerformDecisionAction).not.toHaveBeenCalled();
+    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
+  });
+
+  it('applies fail-closed APNs policy even when the notification projection is not marked actionable', async () => {
+    mockGetNotificationCenterItem.mockReturnValue({
+      itemId: 'nc_decision_projection_drift',
+      requiresUserAction: false,
+      deeplink: 'nexus://decisions/nc_decision_projection_drift',
+    });
+    mockGetDecisionItemForCommand.mockReturnValue({
+      decisionId: 'nc_decision_projection_drift',
+      status: 'unread',
+      recordVersion: 9,
+      contextVersion: 'ctx_current_9',
+    });
+    mockEvaluateDecisionApnsActionRequest.mockReturnValue({
+      disposition: 'open_app',
+      execute: false,
+      reasonCode: 'request_context_version_missing',
+      decisionId: 'nc_decision_projection_drift',
+      actionId: 'dismiss',
+      recordVersion: 9,
+      contextVersion: null,
+    });
+
+    const action = await dispatch('POST', '/nc_decision_projection_drift/actions', {}, 7, {
+      actionId: 'dismiss',
+      idempotencyKey: 'tap-projection-drift',
+      channel: 'apns',
+      recordVersion: 9,
+    });
+
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data).toMatchObject({
+      disposition: 'open_app',
+      execute: false,
+      reasonCode: 'request_context_version_missing',
+    });
+    expect(mockEvaluateDecisionApnsActionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      recordVersion: 9,
+      contextVersion: null,
+    }));
+    expect(mockPerformDecisionAction).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a recorded APNs replay before re-running current-state authorization', async () => {
+    mockGetNotificationCenterItem.mockReturnValue({
+      itemId: 'nc_decision_replay',
+      requiresUserAction: true,
+      deeplink: 'nexus://decisions/nc_decision_replay',
+    });
+    mockGetDecisionItemForCommand.mockReturnValue({
+      decisionId: 'nc_decision_replay',
+      itemId: 'nc_decision_replay',
+      status: 'actioned',
+      recordVersion: 6,
+      contextVersion: 'ctx_6',
+    });
+    mockIsDecisionActionAttemptReplay.mockReturnValue(true);
+    mockPerformDecisionAction.mockResolvedValue({
+      actionId: 'dismiss',
+      status: 'idempotent',
+      idempotent: true,
+      item: { decisionId: 'nc_decision_replay', status: 'actioned' },
+      verification: { readBackOk: true },
+    });
+
+    const action = await dispatch('POST', '/nc_decision_replay/actions', {}, 7, {
+      actionId: 'dismiss',
+      idempotencyKey: 'apns-replay-after-crash',
+      channel: 'apns',
+      recordVersion: 5,
+      contextVersion: 'ctx_5',
+    });
+
+    expect(action.statusCode).toBe(200);
+    expect(action.body.data).toMatchObject({ status: 'idempotent', idempotent: true });
+    expect(mockIsDecisionActionAttemptReplay).toHaveBeenCalledWith({
+      decisionId: 'nc_decision_replay',
+      actionId: 'dismiss',
+      userId: 7,
+      tenantId: 7,
+      idempotencyKey: 'apns-replay-after-crash',
+    });
+    expect(mockEvaluateDecisionApnsActionRequest).not.toHaveBeenCalled();
+    expect(mockPerformDecisionAction).toHaveBeenCalled();
+  });
+
+  it('derives a stable replay key for an old notification decision action client', async () => {
+    mockGetDecisionItem.mockReturnValue({
+      decisionId: 'nc_decision',
+      itemId: 'nc_decision',
+      status: 'unread',
+    });
+    mockGetDecisionItemForCommand.mockReturnValue({
       decisionId: 'nc_decision',
       itemId: 'nc_decision',
       status: 'unread',
@@ -771,45 +1088,18 @@ describe('Notification inbox routes', () => {
 
     const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
       actionId: 'approve_script',
-      idempotencyKey: 'tap-decision-1',
-      payload: { source: 'notification' },
-      channel: 'apns',
     });
 
     expect(action.statusCode).toBe(200);
-    expect(action.body.data.status).toBe('succeeded');
     expect(mockPerformDecisionAction).toHaveBeenCalledWith(
       'nc_decision',
       'approve_script',
       7,
       7,
-      {
-        idempotencyKey: 'tap-decision-1',
-        payload: { source: 'notification' },
-        channel: 'apns',
-      },
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^legacy-notification-action:[a-f0-9]{32}$/),
+      }),
     );
-    expect(mockPerformNotificationAction).not.toHaveBeenCalled();
-  });
-
-  it('preserves Decision API error semantics on the legacy notification action route', async () => {
-    mockGetDecisionItem.mockReturnValue({
-      decisionId: 'nc_decision',
-      itemId: 'nc_decision',
-      status: 'unread',
-    });
-    mockPerformDecisionAction.mockRejectedValue(new DecisionActionError(
-      'IDEMPOTENCY_KEY_REQUIRED',
-      'Decision actions require an idempotency key',
-      400,
-    ));
-
-    const action = await dispatch('POST', '/nc_decision/actions', {}, 7, {
-      actionId: 'approve_script',
-    });
-
-    expect(action.statusCode).toBe(400);
-    expect(action.body.error.code).toBe('IDEMPOTENCY_KEY_REQUIRED');
     expect(mockPerformNotificationAction).not.toHaveBeenCalled();
   });
 

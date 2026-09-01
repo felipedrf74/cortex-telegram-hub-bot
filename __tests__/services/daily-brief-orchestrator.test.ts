@@ -6,6 +6,7 @@ const mockSetCache = vi.fn();
 const mockComposeWeeklyPlan = vi.fn();
 const mockGetDecisionOverview = vi.fn(() => ({ items: [], handled: [] }));
 const mockGetUserTimezoneById = vi.fn(() => 'Europe/Lisbon');
+const mockGetUserLanguageById = vi.fn(() => 'en');
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -27,6 +28,7 @@ vi.mock('../../src/services/user-service', async () => {
   return {
     ...actual,
     getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+    getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
   };
 });
 
@@ -44,6 +46,8 @@ describe('daily-brief-orchestrator', () => {
     mockGetDecisionOverview.mockReturnValue({ items: [], handled: [] });
     mockGetUserTimezoneById.mockReset();
     mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mockGetUserLanguageById.mockReset();
+    mockGetUserLanguageById.mockReturnValue('en');
   });
 
   it('builds event-driven coordination from the selected day', async () => {
@@ -309,6 +313,29 @@ describe('daily-brief-orchestrator', () => {
       reason: 'invalid_user_scope',
       userId: 0,
       details: { date: '2026-04-15' },
+    });
+  });
+
+  it('fails closed before cache or user-owned reads for an explicitly invalid tenant', async () => {
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 12,
+      tenantId: 0,
+      date: '2026-04-15',
+      language: 'en-US',
+      forceRefresh: true,
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.day.headline).toContain('tenant scope is invalid');
+    expect(mockGetCached).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(mockGetUserTimezoneById).not.toHaveBeenCalled();
+    expect(mockGetUserLanguageById).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      operation: 'compose_daily_brief_tenant_scope',
+      userId: 12,
+      details: { tenantId: 0, date: '2026-04-15' },
     });
   });
 

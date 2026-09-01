@@ -542,6 +542,31 @@ function applyAdaptationCompatibilityProjection(
         409,
       );
     }
+    if (workout.executionDisposition?.state === 'DROPPED') {
+      const dropped = db.prepare(`
+        UPDATE training_sessions
+           SET status = 'skipped', schedule_status = 'dropped',
+               schedule_reason_code = ?, source_revision_id = ?, updated_at = datetime('now')
+         WHERE id = ? AND plan_id = ? AND tenant_id = ?
+           AND source_revision_id = ?
+           AND lower(status) NOT IN ('completed', 'partial', 'skipped', 'cancelled', 'canceled')
+      `).run(
+        workout.executionDisposition.reasonCode,
+        proposedRevisionId,
+        session.id,
+        planId,
+        scope.tenantId,
+        sourceRevisionId,
+      );
+      if (dropped.changes !== 1) {
+        throw new TrainingPlanRevisionError(
+          'TRAINING_ADAPTATION_PROJECTION_SESSION_CONFLICT',
+          'A future projection session changed during adaptation activation.',
+          409,
+        );
+      }
+      continue;
+    }
     const exercises = workout.blocks.flatMap((block) => block.exercises ?? []).map((exercise) => ({
       exerciseId: exercise.exerciseId,
       name: exercise.name,
@@ -554,11 +579,13 @@ function applyAdaptationCompatibilityProjection(
     }));
     const primaryPrescription = workout.blocks.find((block) => block.blockType === 'PRIMARY_WORK')?.prescription
       ?? workout.blocks[0]?.prescription;
+    const adaptationReasonCode = workout.executionAdaptations?.at(-1)?.reasonCode ?? null;
     const sessionUpdate = db.prepare(`
       UPDATE training_sessions
          SET day_of_week = ?, session_type = ?, title = ?, description = ?,
              description_json = ?, exercises_json = ?, duration_minutes = ?,
-             intensity_text = ?, session_shape_hash = ?, source_revision_id = ?
+             intensity_text = ?, schedule_reason_code = COALESCE(?, schedule_reason_code),
+             session_shape_hash = ?, source_revision_id = ?
        WHERE id = ? AND plan_id = ? AND tenant_id = ?
          AND source_revision_id = ?
          AND lower(status) NOT IN ('completed', 'partial', 'skipped', 'cancelled', 'canceled')
@@ -566,7 +593,7 @@ function applyAdaptationCompatibilityProjection(
       capitalize(workout.dayOfWeek), workout.sessionType, workout.title, workout.objective,
       JSON.stringify({ schemaVersion: 'training-workout-blocks.v1', blocks: workout.blocks }),
       JSON.stringify(exercises), workout.plannedDurationMinutes,
-      intensityText(primaryPrescription, workout.sessionType), stableSessionShape(workout),
+      intensityText(primaryPrescription, workout.sessionType), adaptationReasonCode, stableSessionShape(workout),
       proposedRevisionId, session.id, planId, scope.tenantId, sourceRevisionId,
     );
     if (sessionUpdate.changes !== 1) {
