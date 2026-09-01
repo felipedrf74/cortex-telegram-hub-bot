@@ -948,20 +948,29 @@ async function assertBackendRoutes(baseUrl: string, manifest: SmokeManifest, aut
     throw new Error('detail payload leaked a raw source trace marker');
   }
 
+  const apiActionDetail = await getData<any>(
+    `${baseUrl}/api/v1/decisions/${manifest.decisions.apiAction}`,
+    headers,
+  );
+  const apiActionItem = apiActionDetail.item ?? apiActionDetail;
+  if (!Number.isInteger(apiActionItem.recordVersion) || apiActionItem.recordVersion < 1) {
+    throw new Error('backend action preflight did not expose a valid record version');
+  }
   const idempotencyKey = `backend-preflight-${manifest.decisions.apiAction}`;
-  const firstAction = await postData<any>(`${baseUrl}/api/v1/decisions/${manifest.decisions.apiAction}/actions`, headers, {
+  const actionRequest = {
     actionId: 'dismiss',
     idempotencyKey,
     payload: { reason: 'already_handled' },
-  });
+    expectedVersion: apiActionItem.recordVersion,
+    ...(typeof apiActionItem.contextVersion === 'string' && apiActionItem.contextVersion
+      ? { contextVersion: apiActionItem.contextVersion }
+      : {}),
+  };
+  const firstAction = await postData<any>(`${baseUrl}/api/v1/decisions/${manifest.decisions.apiAction}/actions`, headers, actionRequest);
   if (firstAction.status !== 'succeeded') {
     throw new Error(`expected first backend action to succeed, got ${firstAction.status}`);
   }
-  const replay = await postData<any>(`${baseUrl}/api/v1/decisions/${manifest.decisions.apiAction}/actions`, headers, {
-    actionId: 'dismiss',
-    idempotencyKey,
-    payload: { reason: 'already_handled' },
-  });
+  const replay = await postData<any>(`${baseUrl}/api/v1/decisions/${manifest.decisions.apiAction}/actions`, headers, actionRequest);
   if (replay.status !== 'idempotent' || replay.idempotent !== true) {
     throw new Error('backend action replay did not return the idempotent result');
   }

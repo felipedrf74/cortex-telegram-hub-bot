@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Response } from 'express';
+import { createHash } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
@@ -39,6 +40,7 @@ import {
   countUnreadNotificationCenterItems,
   createNotificationIntent,
   dismissNotificationCenterItem,
+  getNotificationCenterItem,
   getNotificationDecisionLog,
   getNotificationReliabilityDashboard,
   getOrCreateNotificationProfile,
@@ -60,12 +62,50 @@ import {
   type NotificationProfile,
   type NotificationSourceSkill,
 } from '../../services/notification-orchestrator';
-import { DecisionActionError, getDecisionItem, performDecisionAction } from '../../services/decision-center';
+import {
+  DecisionActionError,
+  evaluateDecisionApnsActionRequest,
+  getDecisionItemForCommand,
+  isDecisionActionAttemptReplay,
+  markDecisionViewed,
+  performDecisionAction,
+} from '../../services/decision-center';
 
 type InboxItemKind = 'notification' | 'report' | 'email' | 'task' | 'event';
 type InboxAction = 'open_content' | 'open_report' | 'view_email' | 'open_tasks' | 'view_event';
 type InboxPriority = 'high' | 'medium' | 'low';
 type InboxStatus = 'ready' | 'degraded' | 'unavailable';
+
+function stableDecisionMutationJson(value: unknown): string {
+  if (value === undefined) return '"__undefined__"';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableDecisionMutationJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableDecisionMutationJson(record[key])}`).join(',')}}`;
+}
+
+function legacyNotificationDecisionIdempotencyKey(input: {
+  body: unknown;
+  decisionId: string;
+  actionId: string;
+  recordVersion: number | null;
+}): string | null {
+  const body = input.body && typeof input.body === 'object'
+    ? input.body as Record<string, unknown>
+    : {};
+  if (body.idempotencyKey != null) {
+    if (typeof body.idempotencyKey !== 'string') return null;
+    const explicit = body.idempotencyKey.trim();
+    return explicit && explicit.length <= 200 ? explicit : null;
+  }
+  const digest = createHash('sha256').update(stableDecisionMutationJson({
+    decisionId: input.decisionId,
+    actionId: input.actionId,
+    recordVersion: input.recordVersion,
+    payload: body.payload ?? {},
+  })).digest('hex').slice(0, 32);
+  return `legacy-notification-action:${digest}`;
+}
 
 const INBOX_CACHE_TTL = 45;
 const INBOX_SWR_STALE = 300;
@@ -1216,7 +1256,37 @@ export function notificationRoutes(): Router {
     const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_center_mark_read')) return;
     const tenantId = routeTenantId(authReq, userId);
-    const item = markNotificationCenterItemRead(String(req.params.id || ''), userId, tenantId);
+    const itemId = String(req.params.id || '');
+    try {
+      const decision = getDecisionItemForCommand(itemId, userId, tenantId);
+      if (decision) {
+        const suppliedVersion = Number.isSafeInteger(req.body?.recordVersion) ? req.body.recordVersion : undefined;
+        const idempotencyKey = legacyNotificationDecisionIdempotencyKey({
+          body: req.body,
+          decisionId: itemId,
+          actionId: 'mark_viewed',
+          recordVersion: suppliedVersion ?? decision.recordVersion ?? null,
+        });
+        if (!idempotencyKey) {
+          sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+          return;
+        }
+        markDecisionViewed(itemId, userId, tenantId, {
+          idempotencyKey,
+          expectedVersion: suppliedVersion ?? decision.recordVersion,
+          channel: 'rest',
+        });
+      } else {
+        markNotificationCenterItemRead(itemId, userId, tenantId);
+      }
+    } catch (err) {
+      if (err instanceof DecisionActionError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      throw err;
+    }
+    const item = getNotificationCenterItem(itemId, userId, tenantId);
     if (!item) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
@@ -1230,7 +1300,41 @@ export function notificationRoutes(): Router {
     const { userId } = authReq;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_center_dismiss')) return;
     const tenantId = routeTenantId(authReq, userId);
-    const item = dismissNotificationCenterItem(String(req.params.id || ''), userId, tenantId);
+    const itemId = String(req.params.id || '');
+    try {
+      const decision = getDecisionItemForCommand(itemId, userId, tenantId);
+      if (decision) {
+        const suppliedVersion = Number.isSafeInteger(req.body?.recordVersion) ? req.body.recordVersion : undefined;
+        const idempotencyKey = legacyNotificationDecisionIdempotencyKey({
+          body: req.body,
+          decisionId: itemId,
+          actionId: 'dismiss',
+          recordVersion: suppliedVersion ?? decision.recordVersion ?? null,
+        });
+        if (!idempotencyKey) {
+          sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+          return;
+        }
+        await performDecisionAction(itemId, 'dismiss', userId, tenantId, {
+          idempotencyKey,
+          payload: typeof req.body?.reason === 'string' ? { reason: req.body.reason } : {},
+          channel: 'rest',
+          expectedVersion: suppliedVersion ?? decision.recordVersion,
+          contextVersion: typeof req.body?.contextVersion === 'string'
+            ? req.body.contextVersion
+            : decision.contextVersion,
+        });
+      } else {
+        dismissNotificationCenterItem(itemId, userId, tenantId);
+      }
+    } catch (err) {
+      if (err instanceof DecisionActionError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      throw err;
+    }
+    const item = getNotificationCenterItem(itemId, userId, tenantId);
     if (!item) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
       return;
@@ -1247,12 +1351,69 @@ export function notificationRoutes(): Router {
     const itemId = String(req.params.id || '');
     const actionId = String(req.body?.actionId || '');
     try {
-      const decision = getDecisionItem(itemId, userId, tenantId);
+      const channel = typeof req.body?.channel === 'string' ? req.body.channel : undefined;
+      const centerItem = getNotificationCenterItem(itemId, userId, tenantId);
+      const decision = getDecisionItemForCommand(itemId, userId, tenantId);
+      const suppliedVersion = decision
+        ? (Number.isSafeInteger(req.body?.recordVersion)
+            ? req.body.recordVersion as number
+            : null)
+        : null;
+      const suppliedContextVersion = decision && typeof req.body?.contextVersion === 'string'
+        && req.body.contextVersion.trim()
+        ? req.body.contextVersion
+        : null;
+      const commandVersion = channel === 'apns'
+        ? suppliedVersion
+        : suppliedVersion ?? decision?.recordVersion ?? null;
+      const commandContextVersion = channel === 'apns'
+        ? suppliedContextVersion
+        : suppliedContextVersion ?? decision?.contextVersion ?? null;
+      const idempotencyKey = decision
+        ? legacyNotificationDecisionIdempotencyKey({
+            body: req.body,
+            decisionId: itemId,
+            actionId,
+            recordVersion: commandVersion,
+          })
+        : null;
+      if (decision && !idempotencyKey) {
+        sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+        return;
+      }
+      const isApnsReplay = channel === 'apns' && decision && idempotencyKey
+        ? isDecisionActionAttemptReplay({
+            decisionId: itemId,
+            actionId,
+            userId,
+            tenantId,
+            idempotencyKey,
+          })
+        : false;
+      if (channel === 'apns' && decision && !isApnsReplay) {
+        const policy = evaluateDecisionApnsActionRequest({
+          decisionId: itemId,
+          actionId,
+          userId,
+          tenantId,
+          recordVersion: suppliedVersion,
+          contextVersion: suppliedContextVersion,
+        });
+        if (!policy.execute) {
+          sendSuccess(res, {
+            ...policy,
+            deeplink: centerItem?.deeplink ?? `nexus://decisions/${encodeURIComponent(itemId)}`,
+          });
+          return;
+        }
+      }
       if (decision) {
         const result = await performDecisionAction(itemId, actionId, userId, tenantId, {
-          idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
+          idempotencyKey: idempotencyKey!,
           payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
-          channel: typeof req.body?.channel === 'string' ? req.body.channel : undefined,
+          channel,
+          expectedVersion: commandVersion ?? undefined,
+          contextVersion: commandContextVersion ?? undefined,
         });
         invalidateNotificationInboxCaches(userId, tenantId);
         sendSuccess(res, result);

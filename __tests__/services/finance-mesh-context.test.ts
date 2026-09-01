@@ -133,7 +133,18 @@ describe('readFinanceMeshContext', () => {
       },
     ]);
 
-    const context = await readFinanceMeshContext({ userId: 42, weekStart: '2026-04-13' });
+    const context = await readFinanceMeshContext({
+      userId: 42,
+      tenantId: 84,
+      weekStart: '2026-04-13',
+      referenceNow: '2026-04-13T12:00:00.000Z',
+    });
+
+    expect(mockGetMonthlySummary).toHaveBeenCalledWith(42, '2026-04', { tenantId: 84 });
+    expect(mockGetMonthlyBudgetView).toHaveBeenCalledWith(42, '2026-04', { tenantId: 84 });
+    expect(mockGetPreferredCurrencyForUser).toHaveBeenCalledWith(42, { tenantId: 84 });
+    expect(mockGetTaxEvents).toHaveBeenCalledWith(42, { year: 2026, limit: 24, tenantId: 84 });
+    expect(mockGetAnnualTaxSummary).toHaveBeenCalledWith(42, 2026, { tenantId: 84 });
 
     const budget = context.derivedSignals.find((signal) => signal.signalType === 'budget_remaining');
 
@@ -146,6 +157,93 @@ describe('readFinanceMeshContext', () => {
       supplementMode: 'pause_new',
       subscriptionMode: 'review_now',
     });
+  });
+
+  it('uses the request-captured instant for time-relative renewal signals', async () => {
+    mockGetMonthlySummary.mockReturnValue({
+      month: '2026-04',
+      currency: 'EUR',
+      currencies: ['EUR'],
+      mixedCurrency: false,
+      totalIncome: 0,
+      totalExpenses: 0,
+      totalDeductions: 0,
+      netIncome: 0,
+      transactionCount: 0,
+    });
+    const context = await readFinanceMeshContext({
+      userId: 42,
+      tenantId: 84,
+      weekStart: '2026-04-13',
+      referenceNow: '2026-04-13T12:00:00.000Z',
+    });
+
+    expect(context.derivedSignals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        signalType: 'subscription_renewal_due',
+        payload: expect.objectContaining({ currentPeriodEnd: '2026-04-22T00:00:00.000Z' }),
+      }),
+    ]));
+  });
+
+  it('uses the request timezone and clock for an implicit local planning week', async () => {
+    mockGetMonthlySummary.mockReturnValue({
+      month: '2026-04',
+      currency: 'EUR',
+      currencies: ['EUR'],
+      mixedCurrency: false,
+      totalIncome: 0,
+      totalExpenses: 0,
+      totalDeductions: 0,
+      netIncome: 0,
+      transactionCount: 0,
+    });
+
+    const context = await readFinanceMeshContext({
+      userId: 42,
+      tenantId: 84,
+      timezone: 'America/Los_Angeles',
+      referenceNow: '2026-04-13T06:30:00.000Z',
+    });
+
+    expect(context.weekStart).toBe('2026-04-06');
+    expect(context.weekEnd).toBe('2026-04-12');
+    expect(context.derivedSignals[0]?.expiresAt).toBe('2026-04-13T06:59:59.999Z');
+  });
+
+  it('does not publish a renewal signal after the subscription period has expired', async () => {
+    mockGetMonthlySummary.mockReturnValue({
+      month: '2026-04',
+      currency: 'EUR',
+      currencies: ['EUR'],
+      mixedCurrency: false,
+      totalIncome: 0,
+      totalExpenses: 0,
+      totalDeductions: 0,
+      netIncome: 0,
+      transactionCount: 0,
+    });
+    mockGetSubscriptionStatus.mockReturnValue({
+      plan: 'pro',
+      period: 'monthly',
+      status: 'active',
+      provider: 'stripe',
+      currentPeriodEnd: '2026-04-12T23:59:59.000Z',
+      cancelAtPeriodEnd: false,
+      isActive: true,
+      isPro: true,
+    });
+
+    const context = await readFinanceMeshContext({
+      userId: 42,
+      tenantId: 84,
+      weekStart: '2026-04-13',
+      referenceNow: '2026-04-13T12:00:00.000Z',
+    });
+
+    expect(context.derivedSignals).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ signalType: 'subscription_renewal_due' }),
+    ]));
   });
 
   it('publishes normal budget modes for healthier months', async () => {
@@ -176,7 +274,11 @@ describe('readFinanceMeshContext', () => {
       notes: [],
     });
 
-    const context = await readFinanceMeshContext({ userId: 42, weekStart: '2026-04-13' });
+    const context = await readFinanceMeshContext({
+      userId: 42,
+      weekStart: '2026-04-13',
+      referenceNow: '2026-04-13T12:00:00.000Z',
+    });
 
     const budget = context.derivedSignals.find((signal) => signal.signalType === 'budget_remaining');
 
@@ -269,5 +371,14 @@ describe('readFinanceMeshContext', () => {
       contentSpendMode: 'lean',
       supplementMode: 'essentials_only',
     });
+  });
+
+  it('fails closed before finance reads when tenant scope is invalid', async () => {
+    const context = await readFinanceMeshContext({ userId: 42, tenantId: 0, weekStart: '2026-04-13' });
+
+    expect(context).toEqual(expect.objectContaining({ userId: 42, taxEvents: [], derivedSignals: [] }));
+    expect(mockGetMonthlySummary).not.toHaveBeenCalled();
+    expect(mockGetTaxEvents).not.toHaveBeenCalled();
+    expect(mockGetAnnualTaxSummary).not.toHaveBeenCalled();
   });
 });

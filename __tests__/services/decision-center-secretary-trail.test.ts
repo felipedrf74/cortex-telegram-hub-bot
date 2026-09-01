@@ -57,6 +57,7 @@ import {
   getDecisionItem,
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 import {
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
@@ -71,6 +72,7 @@ function ensureFixtureTables(): void {
   testDb.exec(readFileSync('migrations/098_secretary_decision_explanation.sql', 'utf8'));
   testDb.exec('ALTER TABLE secretary_agenda_items ADD COLUMN reasoning_trail_json TEXT');
   ensureNotificationTables();
+  initializeDecisionCenterSchemaForTests();
   ensureDecisionCenterTables();
   for (const id of [USER_A, USER_B]) {
     testDb.prepare(`
@@ -144,11 +146,15 @@ describe('C2: Decision Center sourceTrace.reasoningTrail', () => {
   });
 
   it('omits reasoningTrail for decisions NOT anchored on a Secretary agenda item', async () => {
-    // Content decision — no agenda item, so no trail field.
-    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', USER_A, {
-      relatedEntityId: 'content-obj-1',
-      relatedEntityType: 'content_workflow_object',
-      dedupeKey: 'content:c2-no-trail',
+    // Chat decision — no agenda item, so no trail field. A real chat anchor
+    // keeps the fixture valid under the rewrite's default-on quality gate.
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('chat', USER_A, {
+      relatedEntityId: 'chat-thread-c2-no-trail',
+      relatedEntityType: 'chat_thread',
+      title: 'Choose the next step for the current chat request',
+      body: 'The current chat request has two viable paths and needs your selection.',
+      actionButtons: [{ id: 'open_detail', label: 'Compare paths', style: 'primary' }],
+      dedupeKey: 'chat:c2-no-trail',
     }));
     expect(created.item).not.toBeNull();
     const apiItem = getDecisionItem(created.item!.decisionId, USER_A, USER_A);

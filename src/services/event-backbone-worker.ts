@@ -12,7 +12,10 @@ import { processPendingEvents, type EventHandler } from './event-outbox';
 import { projectSummaryReadModelsForUser } from './app-summary-read-models';
 import { recordProductDecision } from './product-decision-log';
 import { syncContentTopicSecretaryArtifactsById } from './content-topic-secretary-sync';
-import { releaseDueNotificationDeliveries } from './notification-orchestrator';
+import {
+  releaseDueNotificationDeliveries,
+  resumeNotificationIntentDelivery,
+} from './notification-orchestrator';
 import { recordTrainingLearningObservation } from './product-learning';
 import { logger } from '../utils/logger';
 import {
@@ -314,10 +317,15 @@ export const defaultJobHandlers: JobHandler[] = [
     jobType: 'deliver_notification',
     idempotent: true,
     async handle(job) {
+      const intentId = typeof job.payload?.intentId === 'string' ? job.payload.intentId.trim() : '';
+      if (!job.userId || !intentId) {
+        throw new Error('deliver_notification job requires scoped userId and intentId');
+      }
+      const exact = await resumeNotificationIntentDelivery(intentId, job.userId, job.tenantId);
       const sweep = await releaseDueNotificationDeliveries();
       // Spread: the sweep summary is a named interface without an index
       // signature, and recordProductDecision takes Record<string, unknown>.
-      const result = { ...sweep };
+      const result = { exact, ...sweep };
       if (job.userId) {
         recordProductDecision({
           tenantId: job.tenantId,

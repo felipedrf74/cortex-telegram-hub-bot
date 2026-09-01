@@ -38,7 +38,12 @@ import { assertTransition } from './task-sync-transitions';
 import { resolveTaskSyncIssue } from './task-sync-issues';
 import { buildTaskSyncedSnapshot } from './task-sync-snapshot';
 import { computeContentHash } from './unified-task-store';
-import { importanceToPriority, normalizeStoredTaskPriority, sameImportanceBucket } from './task-priority';
+import {
+  importanceToPriority,
+  normalizeStoredTaskPriority,
+  priorityToImportance,
+  sameImportanceBucket,
+} from './task-priority';
 import { extractLinkProviderVersion } from './task-mutation-sync-worker';
 import {
   getOfflineTaskById,
@@ -219,9 +224,8 @@ function normalizeTheirsImportance(value: unknown): 'low' | 'normal' | 'high' {
   if (asString === 'low') return 'low';
   if (asString === 'high' || asString === 'urgent' || asString === 'important') return 'high';
   const asNumber = Number(value);
-  if (Number.isFinite(asNumber)) {
-    if (asNumber >= 3) return 'high';
-    if (asNumber === 1) return 'low';
+  if (Number.isInteger(asNumber) && asNumber >= 0 && asNumber <= 4) {
+    return priorityToImportance(asNumber);
   }
   return 'normal';
 }

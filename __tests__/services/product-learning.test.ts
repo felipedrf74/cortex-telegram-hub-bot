@@ -251,7 +251,12 @@ describe('governed product learning', () => {
           'approve_product_learning_case',
           42,
           42,
-          { idempotencyKey: 'reject-apns-learning-approval', channel: 'apns' },
+          {
+            idempotencyKey: 'reject-apns-learning-approval',
+            channel: 'apns',
+            expectedVersion: created.item!.recordVersion,
+            contextVersion: created.item!.contextVersion,
+          },
         )).rejects.toMatchObject({ code: 'APNS_ACTION_NOT_ALLOWED' });
 
         const action = await performDecisionAction(
@@ -259,7 +264,11 @@ describe('governed product learning', () => {
           'approve_product_learning_case',
           42,
           42,
-          { idempotencyKey: 'approve-learning-case' },
+          {
+            idempotencyKey: 'approve-learning-case',
+            expectedVersion: created.item!.recordVersion,
+            contextVersion: created.item!.contextVersion,
+          },
         );
         expect(action).toMatchObject({
           status: 'succeeded',
@@ -288,7 +297,11 @@ describe('governed product learning', () => {
           'approve_product_learning_case',
           42,
           42,
-          { idempotencyKey: 'approve-learning-case' },
+          {
+            idempotencyKey: 'approve-learning-case',
+            expectedVersion: created.item!.recordVersion,
+            contextVersion: created.item!.contextVersion,
+          },
         );
         expect(replay).toMatchObject({ status: 'idempotent', idempotent: true });
       });

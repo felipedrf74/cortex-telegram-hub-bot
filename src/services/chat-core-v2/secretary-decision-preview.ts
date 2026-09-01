@@ -195,6 +195,8 @@ export async function createSecretaryDecisionPreview(
       expiresAt: reviewExpiresAt,
       decisionDeadline: reviewExpiresAt,
       dedupeKey: `secretary:structured-preview:${action.candidateFingerprint}:${action.contextVersion}`,
+      idempotencyKey: `secretary-preview:${input.tenantId}:${input.userId}:${action.candidateFingerprint}:${action.contextVersion}`,
+      channel: 'chat',
       requiresUserAction: true,
       deliveryPolicy: 'in_app_only',
       quietHoursPolicy: 'respect',

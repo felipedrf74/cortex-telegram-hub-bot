@@ -382,7 +382,7 @@ export function financeRoutes(): Router {
     try {
       const summary = getMonthlySummary(userId, month, { tenantId });
       const budgetView = getMonthlyBudgetView(userId, month, { tenantId });
-      const preferredCurrency = getPreferredCurrencyForUser(userId);
+      const preferredCurrency = getPreferredCurrencyForUser(userId, { tenantId });
 
       // Precompute the Portugal tax estimate so the iOS KPI card can show it
       // without a second round-trip. Uses the same sourced ruleset the backend
@@ -528,6 +528,8 @@ export function financeRoutes(): Router {
             ],
             deeplink: `nexus://finance/reminder/${encodeURIComponent(String(month))}`,
             dedupeKey: `finance:tax-event:${userId}:${month}`,
+            idempotencyKey: `finance-tax:${tenantId}:${userId}:${event.id}:${event.updated_at}`,
+            channel: 'rest',
             requiresUserAction: true,
             decisionDeadline,
             decisionContext: {

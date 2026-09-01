@@ -3,21 +3,20 @@
 /**
  * Decision Center keyset cursor pagination (API v2). Pure — no DB/env.
  *
- * Ranking is recomputed live per request (no persisted ranking column yet), so the cursor is a
- * SELF-CONSISTENT in-memory keyset over the already-ranked list rather than a DB keyset. The sort key is a
+ * Compatibility cursor for pre-snapshot API v2 clients. The sort key is a
  * total order: priorityScore DESC, then createdAt DESC, then decisionId ASC (decisionId is the unique PK, so
  * ties are impossible). We key on item.priorityScore (the field projected onto DecisionCardSummary) — NOT
  * prioritySnapshot.priorityScore — so the client can reason about ordering from the card; do not "fix" this
  * to the snapshot score without also changing the card, or cursor/card ordering will disagree.
  *
- * The cursor embeds DECISION_RANKING_VERSION; if a client's cursor was minted under a different ranking
- * version we IGNORE it and restart at page 1 (deterministic) rather than silently skip/dup. When the
- * persisted-snapshot work (task #37) lands, switch the key to the persisted (tier, score, created_at, id)
- * column so cursors survive re-ranking across requests.
+ * A malformed or stale cursor is a typed client error. Silently restarting at
+ * page one duplicates already-seen decisions and is never safe recovery.
  */
 
 import type { DecisionApiItem } from '../services/decision-center';
 import { DECISION_RANKING_VERSION } from '../services/decision-center';
+import { decodeDecisionCursorToken } from '../services/decision-center/cursor';
+import { DecisionCenterError } from '../services/decision-center/errors';
 
 export interface DecisionCursorKey {
   priorityScore: number;
@@ -52,21 +51,27 @@ export function encodeDecisionCursor(item: DecisionApiItem): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
 
-/** Decode an opaque cursor. Returns null on ANY malformed / oversized / wrong-shape input — never throws. */
-export function decodeDecisionCursor(raw: string): DecisionCursorKey | null {
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 512) return null;
-  try {
-    const obj = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if (typeof obj.ps !== 'number' || typeof obj.ca !== 'string' || typeof obj.id !== 'string' || typeof obj.rv !== 'number') return null;
-    return { priorityScore: obj.ps, createdAt: obj.ca, decisionId: obj.id, rankingVersion: obj.rv };
-  } catch {
-    return null;
-  }
+/** Decode an opaque legacy or snapshot tuple without silent fallback. */
+export function decodeDecisionCursor(raw: string): DecisionCursorKey {
+  const decoded = decodeDecisionCursorToken(raw);
+  return decoded.kind === 'legacy'
+    ? {
+        priorityScore: decoded.priorityScore,
+        createdAt: decoded.createdAt,
+        decisionId: decoded.decisionId,
+        rankingVersion: decoded.rankingVersion,
+      }
+    : {
+        priorityScore: decoded.rank.priorityScore,
+        createdAt: decoded.rank.createdAt,
+        decisionId: decoded.rank.decisionId,
+        rankingVersion: decoded.rankingVersion,
+      };
 }
 
 /**
  * Page a keyset-sorted list. Strictly-after semantics: with a cursor, drop every item <= the cursor tuple.
- * A ranking-version mismatch ignores the cursor (restart at page 1). nextCursor is omitted (null) when there
+ * A ranking-version mismatch returns a typed conflict. nextCursor is omitted (null) when there
  * is no further page. pageSize is clamped to [1, 100].
  */
 export function paginateDecisions(
@@ -75,7 +80,15 @@ export function paginateDecisions(
   pageSize: number,
 ): { page: DecisionApiItem[]; nextCursor: string | null } {
   const size = Math.max(1, Math.min(Math.floor(pageSize) || 1, 100));
-  const effectiveCursor = cursor && cursor.rankingVersion === DECISION_RANKING_VERSION ? cursor : null;
+  if (cursor && cursor.rankingVersion !== DECISION_RANKING_VERSION) {
+    throw new DecisionCenterError(
+      'DECISION_CURSOR_STALE',
+      'Decision cursor ranking policy is stale.',
+      409,
+      { reason: 'ranking_version' },
+    );
+  }
+  const effectiveCursor = cursor;
   let start = 0;
   if (effectiveCursor) {
     const idx = sorted.findIndex((item) => compareDecisionCursor(keyOf(item), effectiveCursor) > 0);

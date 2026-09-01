@@ -480,6 +480,8 @@ async function createChatFixerDecision(
     ],
     deeplink: `nexus://decision-center/${encodeURIComponent(job.jobId)}`,
     dedupeKey: `chat-action-fixer:${payload.tenantId}:${payload.userId}:${payload.messageId}:${payload.sourceSkill}:${payload.action}`,
+    idempotencyKey: `chat-action-fixer:${payload.tenantId}:${payload.userId}:${job.jobId}`,
+    channel: 'internal',
     requiresUserAction: true,
     deliveryPolicy: 'in_app_only',
     privacyPolicy: 'private_content',

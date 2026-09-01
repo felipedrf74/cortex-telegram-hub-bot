@@ -629,7 +629,7 @@ function readJobStatus(jobId: string, db: Database.Database): JobStatus | null {
   return row?.status ?? null;
 }
 
-function startJobLeaseHeartbeat(
+export function startJobLeaseHeartbeat(
   job: JobLeaseIdentity,
   db: Database.Database,
   requestedIntervalMs?: number,

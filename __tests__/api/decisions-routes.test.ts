@@ -9,6 +9,9 @@ const mockRecordDecisionItemExposuresByIds = vi.fn();
 const mockDecisionRefreshSupportedForDecision = vi.fn();
 const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
+const mockGetDecisionItemForCommand = vi.fn();
+const mockEvaluateDecisionApnsActionRequest = vi.fn();
+const mockIsDecisionActionAttemptReplay = vi.fn();
 const mockPerformDecisionAction = vi.fn();
 const mockReviewDecision = vi.fn();
 const mockReviseDecisionProposal = vi.fn();
@@ -21,7 +24,7 @@ const mockSnoozeDecision = vi.fn();
 const mockDismissDecision = vi.fn();
 const mockMarkDecisionViewed = vi.fn();
 const mockGetDecisionPreferences = vi.fn();
-const mockUpdateDecisionPreferences = vi.fn();
+const mockUpdateDecisionPreferencesViaCommand = vi.fn();
 const mockCountOpenUrgentDecisionsForUser = vi.fn();
 const mockRegisterNotificationDeviceToken = vi.fn();
 const mockRevokeNotificationDeviceToken = vi.fn();
@@ -30,6 +33,7 @@ const mockListDecisionTypeSuppressions = vi.fn();
 const mockSuppressDecisionType = vi.fn();
 const mockUnsuppressDecisionType = vi.fn();
 const mockMaterializeDecisionCenterDailyAttention = vi.fn();
+const mockReadDecisionRankSnapshotPage = vi.fn();
 const mockCaptureError = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/decision-center', () => ({
@@ -58,6 +62,9 @@ vi.mock('../../src/services/decision-center', () => ({
   listDecisionDependencies: vi.fn(),
   runDecisionSourceStateSupersessionJob: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
+  getDecisionItemForCommand: (...args: unknown[]) => mockGetDecisionItemForCommand(...args),
+  evaluateDecisionApnsActionRequest: (...args: unknown[]) => mockEvaluateDecisionApnsActionRequest(...args),
+  isDecisionActionAttemptReplay: (...args: unknown[]) => mockIsDecisionActionAttemptReplay(...args),
   performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
   reviewDecision: (...args: unknown[]) => mockReviewDecision(...args),
   reviseDecisionProposal: (...args: unknown[]) => mockReviseDecisionProposal(...args),
@@ -72,7 +79,7 @@ vi.mock('../../src/services/decision-center', () => ({
   dismissDecision: (...args: unknown[]) => mockDismissDecision(...args),
   markDecisionViewed: (...args: unknown[]) => mockMarkDecisionViewed(...args),
   getDecisionPreferences: (...args: unknown[]) => mockGetDecisionPreferences(...args),
-  updateDecisionPreferences: (...args: unknown[]) => mockUpdateDecisionPreferences(...args),
+  updateDecisionPreferencesViaCommand: (...args: unknown[]) => mockUpdateDecisionPreferencesViaCommand(...args),
   applyDecisionTypeSuppression: (...args: unknown[]) => mockApplyDecisionTypeSuppression(...args),
   listDecisionTypeSuppressions: (...args: unknown[]) => mockListDecisionTypeSuppressions(...args),
   suppressDecisionType: (...args: unknown[]) => mockSuppressDecisionType(...args),
@@ -96,6 +103,17 @@ vi.mock('../../src/services/decision-center-daily-attention', () => ({
   materializeDecisionCenterDailyAttention: (...args: unknown[]) => mockMaterializeDecisionCenterDailyAttention(...args),
 }));
 
+vi.mock('../../src/services/decision-center/rank-snapshot-service', () => ({
+  readDecisionRankSnapshotPageFromCurrentDatabase: (...args: unknown[]) => mockReadDecisionRankSnapshotPage(...args),
+}));
+
+vi.mock('../../src/services/decision-center/command-receipts', () => ({
+  executeDecisionMutationWithReceipt: (_command: unknown, mutate: () => unknown) => ({
+    result: mutate(),
+    idempotent: false,
+  }),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -114,6 +132,7 @@ vi.mock('../../src/services/error-monitor', () => ({
 
 import { decisionRoutes, deviceTokenRoutes } from '../../src/api/routes/decisions';
 import { DecisionActionError } from '../../src/services/decision-center';
+import { decodeDecisionCursorToken } from '../../src/services/decision-center/cursor';
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 
@@ -214,6 +233,9 @@ describe('Decision routes', () => {
     mockDecisionRefreshSupportedForDecision.mockReset();
     mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
+    mockGetDecisionItemForCommand.mockReset();
+    mockEvaluateDecisionApnsActionRequest.mockReset();
+    mockIsDecisionActionAttemptReplay.mockReset();
     mockPerformDecisionAction.mockReset();
     mockReviewDecision.mockReset();
     mockReviseDecisionProposal.mockReset();
@@ -224,7 +246,7 @@ describe('Decision routes', () => {
     mockDismissDecision.mockReset();
     mockMarkDecisionViewed.mockReset();
     mockGetDecisionPreferences.mockReset();
-    mockUpdateDecisionPreferences.mockReset();
+    mockUpdateDecisionPreferencesViaCommand.mockReset();
     mockRegisterNotificationDeviceToken.mockReset();
     mockRevokeNotificationDeviceToken.mockReset();
     mockApplyDecisionTypeSuppression.mockReset();
@@ -232,10 +254,12 @@ describe('Decision routes', () => {
     mockSuppressDecisionType.mockReset();
     mockUnsuppressDecisionType.mockReset();
     mockMaterializeDecisionCenterDailyAttention.mockReset();
+    mockReadDecisionRankSnapshotPage.mockReset();
     mockCaptureError.mockReset();
     mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
     mockDecisionRefreshSupportedForDecision.mockReturnValue(true);
     mockRecordDecisionItemExposuresByIds.mockReturnValue({ recordedCount: 0 });
+    mockIsDecisionActionAttemptReplay.mockReturnValue(false);
 
     // Type-suppression is a presentation post-filter; by default it passes the list through unchanged
     // (flag OFF semantics) so the existing list assertions stay byte-identical.
@@ -249,6 +273,13 @@ describe('Decision routes', () => {
       counts: { pending: 0, overdue: 0, dueToday: 0, highPriority: 0 },
       dedupeKey: null,
       decisionId: null,
+    });
+    mockReadDecisionRankSnapshotPage.mockImplementation((input: { cursorRaw?: string }) => {
+      if (input.cursorRaw === undefined) return { kind: 'unavailable' };
+      const cursor = decodeDecisionCursorToken(input.cursorRaw);
+      return cursor.kind === 'legacy'
+        ? { kind: 'legacy', cursor }
+        : { kind: 'snapshot', snapshotId: cursor.snapshotId, rankingAsOf: cursor.rankingAsOf, rankingVersion: cursor.rankingVersion, cards: [], nextCursor: null };
     });
 
     mockGetDecisionSummary.mockReturnValue({ openCount: 1, urgentCount: 0, todayCount: 1, ctaLabel: '1 Decision', previewItems: [], badgeCount: 1 });
@@ -273,6 +304,8 @@ describe('Decision routes', () => {
       effectiveStatus: 'needs_action',
       decisionKind: 'action_proposal',
       actionability: 'confirmation_required',
+      recordVersion: 4,
+      contextVersion: 'ctx-current-4',
       analysis: {
         whyNow: 'The schedule conflict is today.',
         costOfDelay: 'Waiting will remove the safe option.',
@@ -280,6 +313,7 @@ describe('Decision routes', () => {
       recommendedAction: { id: 'open_detail', label: 'Review decision', style: 'primary' },
       alternativeActions: [{ id: 'dismiss', label: 'Dismiss', style: 'secondary' }],
     });
+    mockGetDecisionItemForCommand.mockImplementation((...args: unknown[]) => mockGetDecisionItem(...args));
     mockPerformDecisionAction.mockResolvedValue({ actionId: 'open_detail', idempotent: false, status: 'succeeded', item: { decisionId: 'nc_1', status: 'read' } });
     mockReviewDecision.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'approved' });
     mockReviseDecisionProposal.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'ready_for_review' });
@@ -297,7 +331,10 @@ describe('Decision routes', () => {
     mockDismissDecision.mockReturnValue({ decisionId: 'nc_1', status: 'dismissed' });
     mockMarkDecisionViewed.mockReturnValue({ decisionId: 'nc_1', status: 'read' });
     mockGetDecisionPreferences.mockReturnValue({ decisionPreferences: { pushEnabled: true } });
-    mockUpdateDecisionPreferences.mockReturnValue({ profile: { pushEnabled: true } });
+    mockUpdateDecisionPreferencesViaCommand.mockReturnValue({
+      preferences: { profile: { pushEnabled: true } },
+      idempotent: false,
+    });
     mockRegisterNotificationDeviceToken.mockReturnValue({ tokenId: 'dt_1', platform: 'ios', environment: 'sandbox', tokenSuffix: '12345678', deviceId: 'iphone-test', lastSeenAt: 'now' });
     mockRevokeNotificationDeviceToken.mockReturnValue(true);
   });
@@ -348,11 +385,11 @@ describe('Decision routes', () => {
     expect(detailV2.body.data.item.recommendedAction).toMatchObject({ id: 'open_detail', label: 'Review decision' });
     delete process.env.DECISION_API_V2_ENABLED;
 
-    const action = await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1', channel: 'apns' });
+    const action = await dispatch(router, 'POST', '/nc_1/actions', {}, { actionId: 'open_detail', idempotencyKey: 'tap-1', channel: 'rest' });
     expect(action.statusCode).toBe(200);
     expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'open_detail', 7, 7, expect.objectContaining({
       idempotencyKey: 'tap-1',
-      channel: 'apns',
+      channel: 'rest',
     }));
 
     const review = await dispatch(router, 'POST', '/nc_1/review', {}, {
@@ -367,11 +404,15 @@ describe('Decision routes', () => {
 
     const revised = await dispatch(router, 'PATCH', '/nc_1/proposal', {}, {
       expectedVersion: 1,
+      idempotencyKey: 'proposal-edit-1',
       recommendedStartAt: '2026-05-20T10:00:00.000Z',
       recommendedEndAt: '2026-05-20T11:00:00.000Z',
     });
     expect(revised.statusCode).toBe(200);
-    expect(mockReviseDecisionProposal).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({ expectedVersion: 1 }));
+    expect(mockReviseDecisionProposal).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({
+      expectedVersion: 1,
+      idempotencyKey: 'proposal-edit-1',
+    }));
 
     const history = await dispatch(router, 'GET', '/nc_1/history');
     expect(history.statusCode).toBe(200);
@@ -465,11 +506,106 @@ describe('Decision routes', () => {
     expect(response.body.data.items).toHaveLength(2);
     expect(response.body.data.nextCursor).toEqual(expect.any(String));
     expect(mockListDecisionItems).toHaveBeenCalledWith(7, 7, expect.objectContaining({
-      limit: 500,
-      maxLimit: 500,
+      limit: 50_000,
+      maxLimit: 50_000,
       recordExposure: false,
     }));
     expect(mockRecordDecisionItemExposures).not.toHaveBeenCalled();
+  });
+
+  it('paginates every fallback card beyond item 500 while rank snapshots are unavailable', async () => {
+    const router = decisionRoutes();
+    process.env.DECISION_API_V2_ENABLED = 'true';
+    mockListDecisionItems.mockReturnValue(Array.from({ length: 525 }, (_, index) => ({
+      decisionId: `nc_${String(index).padStart(4, '0')}`,
+      status: 'unread',
+      priorityScore: 10_000 - index,
+      createdAt: new Date(Date.UTC(2026, 4, 19, 10, 0, 0) - index * 1_000).toISOString(),
+      alternativeActions: [],
+      analysis: {},
+    })));
+
+    let cursor: string | undefined;
+    const seenIds = new Set<string>();
+    do {
+      const response = await dispatch(
+        router,
+        'GET',
+        '/',
+        { pageSize: '100', ...(cursor ? { cursor } : {}) },
+        {},
+        { 'x-nexus-api-version': 'v2' },
+      );
+      expect(response.statusCode).toBe(200);
+      for (const item of response.body.data.items) seenIds.add(item.decisionId);
+      cursor = response.body.data.nextCursor;
+    } while (cursor);
+
+    expect(seenIds.size).toBe(525);
+    expect(mockListDecisionItems).toHaveBeenCalledTimes(6);
+    expect(mockListDecisionItems).toHaveBeenLastCalledWith(7, 7, expect.objectContaining({
+      limit: 50_000,
+      maxLimit: 50_000,
+      recordExposure: false,
+    }));
+  });
+
+  it('serves immutable v2 snapshot cards without invoking the live Decision list read', async () => {
+    const router = decisionRoutes();
+    process.env.DECISION_API_V2_ENABLED = 'true';
+    mockListDecisionItems.mockClear();
+    mockReadDecisionRankSnapshotPage.mockReturnValue({
+      kind: 'snapshot',
+      snapshotId: 'dcrs_1',
+      rankingAsOf: '2026-05-19T10:00:00.000Z',
+      rankingVersion: 1,
+      cards: [{ decisionId: 'nc_snapshot', status: 'unread', schemaVersion: 'decision-center.v2' }],
+      nextCursor: 'snapshot-cursor',
+    });
+
+    const response = await dispatch(router, 'GET', '/', { pageSize: '20' }, {}, { 'x-nexus-api-version': 'v2' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({
+      snapshotId: 'dcrs_1',
+      rankingAsOf: '2026-05-19T10:00:00.000Z',
+      rankingVersion: 1,
+      nextCursor: 'snapshot-cursor',
+      count: 1,
+      openCount: 1,
+    });
+    expect(response.body.data.items).toEqual([
+      { decisionId: 'nc_snapshot', status: 'unread', schemaVersion: 'decision-center.v2' },
+    ]);
+    expect(mockListDecisionItems).not.toHaveBeenCalled();
+  });
+
+  it('returns typed errors for malformed and stale v2 cursors instead of restarting page one', async () => {
+    const router = decisionRoutes();
+    process.env.DECISION_API_V2_ENABLED = 'true';
+    mockListDecisionItems.mockReturnValue([
+      { decisionId: 'nc_1', status: 'unread', priorityScore: 90, createdAt: '2026-05-19T10:00:00.000Z', alternativeActions: [], analysis: {} },
+    ]);
+
+    const malformed = await dispatch(router, 'GET', '/', {
+      pageSize: '2',
+      cursor: 'not-base64-$$$',
+    }, {}, { 'x-nexus-api-version': 'v2' });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.body.error.code).toBe('DECISION_CURSOR_MALFORMED');
+
+    const staleToken = Buffer.from(JSON.stringify({
+      ps: 90,
+      ca: '2026-05-19T10:00:00.000Z',
+      id: 'nc_1',
+      rv: 999,
+    })).toString('base64url');
+    const stale = await dispatch(router, 'GET', '/', {
+      pageSize: '2',
+      cursor: staleToken,
+    }, {}, { 'x-nexus-api-version': 'v2' });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body.error.code).toBe('DECISION_CURSOR_STALE');
   });
 
   it('records only explicit authenticated card exposures and validates the bounded ID list', async () => {
@@ -514,10 +650,181 @@ describe('Decision routes', () => {
     expect(mockNotificationCacheInvalidation.invalidateNotificationInboxCaches).toHaveBeenCalledWith(7, 17);
   });
 
-  it('passes expectedVersion to snooze and maps refresh DecisionActionError responses', async () => {
+  it('forwards a scoped stable idempotency key for internal Decision proposals', async () => {
+    const router = decisionRoutes();
+    process.env.INTERNAL_API_SECRET = 'secret';
+    mockCreateDecisionIntent.mockResolvedValue({
+      item: { decisionId: 'nc_created' },
+      eligibility: { classification: 'decision' },
+    });
+
+    const response = await dispatch(router, 'POST', '/intents', {}, {
+      idempotencyKey: 'producer-proposal-1',
+      intentId: 'caller-visible-intent',
+      userId: 999,
+      tenantId: 999,
+      sourceSkill: 'secretary',
+      type: 'conflict_detected',
+    }, { 'x-internal-secret': 'secret' }, { tenantId: 17 });
+
+    expect(response.statusCode).toBe(201);
+    expect(mockCreateDecisionIntent).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'producer-proposal-1',
+      intentId: 'caller-visible-intent',
+      proposalRequestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      userId: 7,
+      tenantId: 17,
+    }));
+  });
+
+  it('rejects malformed proposal idempotency keys before calling the service', async () => {
+    const router = decisionRoutes();
+    process.env.INTERNAL_API_SECRET = 'secret';
+
+    const response = await dispatch(router, 'POST', '/intents', {}, {
+      idempotencyKey: '   ',
+      sourceSkill: 'secretary',
+    }, { 'x-internal-secret': 'secret' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(mockCreateDecisionIntent).not.toHaveBeenCalled();
+  });
+
+  it('keeps fixture replay fingerprints stable across server-generated defaults', async () => {
+    const router = decisionRoutes();
+    process.env.INTERNAL_API_SECRET = 'secret';
+    mockBuildSkillDecisionFixtureIntent
+      .mockReturnValueOnce({
+        sourceSkill: 'secretary', userId: 7, tenantId: 7,
+        decisionDeadline: '2026-08-31T10:00:00.000Z',
+      })
+      .mockReturnValueOnce({
+        sourceSkill: 'secretary', userId: 7, tenantId: 7,
+        decisionDeadline: '2026-08-31T10:00:01.000Z',
+      });
+    mockCreateDecisionIntent.mockResolvedValue({
+      item: { decisionId: 'nc_fixture' },
+      eligibility: { classification: 'decision' },
+    });
+
+    await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {
+      idempotencyKey: 'fixture-replay-1',
+    }, { 'x-internal-secret': 'secret' });
+    await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {
+      idempotencyKey: 'fixture-replay-1',
+    }, { 'x-internal-secret': 'secret' });
+
+    const first = mockCreateDecisionIntent.mock.calls[0]?.[0] as Record<string, unknown>;
+    const second = mockCreateDecisionIntent.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(first.decisionDeadline).not.toBe(second.decisionDeadline);
+    expect(first.proposalRequestFingerprint).toBe(second.proposalRequestFingerprint);
+  });
+
+  it('binds viewed acknowledgements to an idempotency key and optional record version', async () => {
+    const router = decisionRoutes();
+    const response = await dispatch(router, 'PATCH', '/nc_1/viewed', {}, {
+      idempotencyKey: 'view-journal-1',
+      expectedVersion: 4,
+    }, {}, { tenantId: 17 });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockMarkDecisionViewed).toHaveBeenCalledWith('nc_1', 7, 17, {
+      idempotencyKey: 'view-journal-1',
+      expectedVersion: 4,
+      channel: 'rest',
+    });
+  });
+
+  it('derives version-bound replay keys for old review and proposal clients', async () => {
+    const router = decisionRoutes();
+
+    expect((await dispatch(router, 'POST', '/nc_1/review', {}, {
+      outcome: 'reject',
+      expectedVersion: 3,
+    })).statusCode).toBe(200);
+    expect(mockReviewDecision).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^legacy-rest:review:reject:nc_1:v3:[a-f0-9]{24}$/),
+    }));
+
+    expect((await dispatch(router, 'PATCH', '/nc_1/proposal', {}, {
+      expectedVersion: 3,
+      recommendedStartAt: '2026-05-20T10:00:00.000Z',
+      recommendedEndAt: '2026-05-20T11:00:00.000Z',
+    })).statusCode).toBe(200);
+    expect(mockReviseDecisionProposal).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^legacy-rest:edit_proposal:nc_1:v3:[a-f0-9]{24}$/),
+    }));
+
+    expect((await dispatch(router, 'POST', '/nc_1/actions', {}, {
+      actionId: 'open_detail',
+      expectedVersion: 3,
+    })).statusCode).toBe(200);
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith(
+      'nc_1',
+      'open_detail',
+      7,
+      7,
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^legacy-rest:open_detail:nc_1:v3:[a-f0-9]{24}$/),
+      }),
+    );
+  });
+
+  it('reconciles an existing APNs ledger attempt before applying fresh-action policy', async () => {
+    const router = decisionRoutes();
+    mockIsDecisionActionAttemptReplay.mockReturnValueOnce(true);
+    mockPerformDecisionAction.mockResolvedValueOnce({
+      actionId: 'accept_reflow',
+      idempotent: true,
+      status: 'idempotent',
+      item: { decisionId: 'nc_1', status: 'actioned', recordVersion: 5 },
+    });
+
+    const response = await dispatch(router, 'POST', '/nc_1/actions', {}, {
+      actionId: 'accept_reflow',
+      idempotencyKey: 'apns-outcome-unknown-1',
+      expectedVersion: 4,
+      contextVersion: 'ctx-current-4',
+      channel: 'apns',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockEvaluateDecisionApnsActionRequest).not.toHaveBeenCalled();
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith(
+      'nc_1',
+      'accept_reflow',
+      7,
+      7,
+      expect.objectContaining({ idempotencyKey: 'apns-outcome-unknown-1', channel: 'apns' }),
+    );
+  });
+
+  it('routes snooze through the idempotent command contract and maps refresh errors', async () => {
     const router = decisionRoutes();
     await dispatch(router, 'PATCH', '/nc_1/snooze', {}, { minutes: 30, expectedVersion: 4 }, {}, { tenantId: 17 });
-    expect(mockSnoozeDecision).toHaveBeenCalledWith('nc_1', 7, 17, 30, 4);
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'snooze', 7, 17, {
+      idempotencyKey: expect.stringMatching(/^legacy-rest:snooze:nc_1:v4:[a-f0-9]{24}$/),
+      expectedVersion: 4,
+      contextVersion: undefined,
+      channel: 'rest',
+      payload: { minutes: 30 },
+    });
+
+    mockPerformDecisionAction.mockClear();
+    await dispatch(router, 'PATCH', '/nc_1/snooze', {}, {
+      deferUntil: '2026-09-07T09:00:00+01:00',
+      expectedVersion: 4,
+      idempotencyKey: 'journal-snooze-1',
+    }, {}, { tenantId: 17 });
+    expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'snooze', 7, 17, expect.objectContaining({
+      idempotencyKey: 'journal-snooze-1',
+      payload: { deferUntil: '2026-09-07T09:00:00+01:00' },
+    }));
+
+    const invalid = await dispatch(router, 'PATCH', '/nc_1/snooze', {}, { minutes: '30' }, {}, { tenantId: 17 });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body.error.code).toBe('VALIDATION');
 
     process.env.DECISION_REFRESH_ENABLED_USER_7 = 'true';
     mockRefreshDecisionItem.mockImplementationOnce(() => {
@@ -530,6 +837,12 @@ describe('Decision routes', () => {
       const response = await dispatch(router, 'POST', '/nc_1/refresh', {}, {}, {}, { tenantId: 17 });
       expect(response.statusCode).toBe(409);
       expect(mockDecisionRefreshSupportedForDecision).toHaveBeenCalledWith('nc_1', 7, 17);
+      expect(mockRefreshDecisionItem).toHaveBeenCalledWith('nc_1', 7, 17, {
+        idempotencyKey: expect.stringMatching(/^legacy-rest:refresh:nc_1:v4:[a-f0-9]{24}$/),
+        expectedVersion: 4,
+        contextVersion: 'ctx-current-4',
+        channel: 'rest',
+      });
       expect(response.body.error).toMatchObject({
         code: 'DECISION_VERSION_CONFLICT',
         details: {
@@ -540,6 +853,21 @@ describe('Decision routes', () => {
     } finally {
       delete process.env.DECISION_REFRESH_ENABLED_USER_7;
     }
+  });
+
+  it('maps unexpected decision service failures to a privacy-safe 500', async () => {
+    const router = decisionRoutes();
+    mockPerformDecisionAction.mockRejectedValueOnce(new Error('database password should not escape'));
+
+    const response = await dispatch(router, 'POST', '/nc_1/actions', {}, {
+      actionId: 'open_detail',
+      idempotencyKey: 'tap-internal-error',
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body.error.code).toBe('INVALID_DECISION_ACTION');
+    expect(response.body.error.message).toBe('Decision Center could not complete the request.');
+    expect(JSON.stringify(response.body)).not.toContain('password');
   });
 
   it('validates overview pagination before calling the service', async () => {
@@ -586,7 +914,7 @@ describe('Decision routes', () => {
     const rejected = await dispatch(router, 'POST', '/intents/fixtures/secretary');
     expect(rejected.statusCode).toBe(403);
 
-    mockBuildSkillDecisionFixtureIntent.mockReturnValue({ sourceSkill: 'secretary' });
+    mockBuildSkillDecisionFixtureIntent.mockReturnValue({ sourceSkill: 'secretary', userId: 7, tenantId: 7 });
     mockCreateDecisionIntent.mockResolvedValue({ item: { decisionId: 'nc_fixture' }, eligibility: { classification: 'decision' } });
     const accepted = await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {
       userId: 999,
@@ -594,6 +922,12 @@ describe('Decision routes', () => {
     }, { 'x-internal-secret': 'secret' });
     expect(accepted.statusCode).toBe(201);
     expect(mockBuildSkillDecisionFixtureIntent).toHaveBeenCalledWith('secretary', 7, expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+    }));
+    expect(mockCreateDecisionIntent).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^legacy-rest:create_fixture_intent:secretary:/),
+      proposalRequestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       userId: 7,
       tenantId: 7,
     }));

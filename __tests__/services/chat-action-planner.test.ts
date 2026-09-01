@@ -1536,7 +1536,7 @@ describe('ChatActionPlanner', () => {
     expect(getPendingChatConfirmation(baseInput.userId, baseInput.tenantId, new Date(FROZEN_NOW))).toBeNull();
   });
 
-  it('reports DB-backed pending-store failures while clearing in-memory confirmations', () => {
+  it('reports DB-backed pending-store failures while clearing in-memory confirmations', async () => {
     trackPendingChatConfirmation({
       userId: baseInput.userId,
       tenantId: baseInput.tenantId,
@@ -1550,7 +1550,7 @@ describe('ChatActionPlanner', () => {
     testDb.exec('DROP TABLE chat_pending_actions');
     testDb.exec('DROP TABLE chat_action_runs');
 
-    const cancelled = cancelAllPendingChatWork({
+    const cancelled = await cancelAllPendingChatWork({
       userId: baseInput.userId,
       tenantId: baseInput.tenantId,
       conversationId: baseInput.conversationId,

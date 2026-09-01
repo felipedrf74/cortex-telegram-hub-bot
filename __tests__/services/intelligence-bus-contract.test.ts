@@ -696,6 +696,7 @@ describe('intelligence-bus direct contract without native database workers', () 
       expires_at: '2026-07-26T10:00:00.000Z',
       user_id: 42,
       tenant_id: 42,
+      signal_identity: null,
       confidence: 0.8,
       format_tag: 'youtube',
       pillar_tag: 'engineering',
@@ -713,24 +714,25 @@ describe('intelligence-bus direct contract without native database workers', () 
       sql: normalizeSql(`
         SELECT * FROM agent_signals
         WHERE status = 'active'
+          AND julianday(expires_at) > julianday(?)
           AND signal_type IN (?,?)
           AND (tenant_id IS NULL OR tenant_id = ?)
           AND (user_id IS NULL OR user_id = ?)
-          AND created_at > datetime('now', '-2 days')
+          AND created_at > ?
         ORDER BY
           CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
           created_at DESC
         LIMIT ?
       `),
-      args: ['voice_pattern', 'low_sleep', 99, 42, 5],
+      args: [NOW.toISOString(), 'voice_pattern', 'low_sleep', 99, 42, '2026-07-23T12:00:00.000Z', 5],
     }]);
   });
 
   it.each([
-    ['tenant global', true, undefined, 99, ['voice_pattern', 99, 4], 'AND (tenant_id IS NULL OR tenant_id = ?) AND user_id IS NULL'],
-    ['platform global', true, undefined, undefined, ['voice_pattern', 4], 'AND tenant_id IS NULL AND user_id IS NULL'],
-    ['legacy user', false, 42, undefined, ['voice_pattern', 42, 4], 'AND (user_id IS NULL OR user_id = ?)'],
-    ['legacy global', false, undefined, undefined, ['voice_pattern', 4], 'AND user_id IS NULL'],
+    ['tenant global', true, undefined, 99, [NOW.toISOString(), 'voice_pattern', 99, 4], 'AND (tenant_id IS NULL OR tenant_id = ?) AND user_id IS NULL'],
+    ['platform global', true, undefined, undefined, [NOW.toISOString(), 'voice_pattern', 4], 'AND tenant_id IS NULL AND user_id IS NULL'],
+    ['legacy user', false, 42, undefined, [NOW.toISOString(), 'voice_pattern', 42, 4], 'AND (user_id IS NULL OR user_id = ?)'],
+    ['legacy global', false, undefined, undefined, [NOW.toISOString(), 'voice_pattern', 4], 'AND user_id IS NULL'],
   ] as const)('builds the exact read scope for %s', (_label, tenantColumn, userId, tenantId, args, sqlFragment) => {
     database.tenantColumn = tenantColumn;
     database.selectedRows = [];
@@ -860,17 +862,17 @@ describe('intelligence-bus direct contract without native database workers', () 
         UPDATE agent_signals
         SET status = 'expired'
         WHERE status = 'active'
-          AND expires_at < datetime('now')
+          AND julianday(expires_at) <= julianday('now')
       `),
       args: [],
     });
 
     const cases: Array<[boolean, number | undefined, number | undefined, unknown[], string]> = [
-      [true, 42, 99, [99, 42], "status = 'active' AND tenant_id = ? AND (user_id IS NULL OR user_id = ?)"],
-      [true, undefined, 99, [99], "status = 'active' AND tenant_id = ? AND user_id IS NULL"],
-      [true, undefined, undefined, [], "status = 'active' AND tenant_id IS NULL AND user_id IS NULL"],
-      [false, 42, undefined, [42], "status = 'active' AND (user_id IS NULL OR user_id = ?)"],
-      [false, undefined, undefined, [], "status = 'active' AND user_id IS NULL"],
+      [true, 42, 99, [99, 42], "status = 'active' AND julianday(expires_at) > julianday('now') AND tenant_id = ? AND (user_id IS NULL OR user_id = ?)"],
+      [true, undefined, 99, [99], "status = 'active' AND julianday(expires_at) > julianday('now') AND tenant_id = ? AND user_id IS NULL"],
+      [true, undefined, undefined, [], "status = 'active' AND julianday(expires_at) > julianday('now') AND tenant_id IS NULL AND user_id IS NULL"],
+      [false, 42, undefined, [42], "status = 'active' AND julianday(expires_at) > julianday('now') AND (user_id IS NULL OR user_id = ?)"],
+      [false, undefined, undefined, [], "status = 'active' AND julianday(expires_at) > julianday('now') AND user_id IS NULL"],
     ];
     for (const [tenantColumn, userId, tenantId, args, whereClause] of cases) {
       database.calls = [];
@@ -1025,7 +1027,7 @@ describe('intelligence-bus direct contract without native database workers', () 
       kind: 'all',
       sql: normalizeSql(`
         SELECT * FROM agent_signals
-        WHERE status = 'active' AND signal_type IN (?) AND confidence >= ? AND tenant_id = ? AND (user_id IS NULL OR user_id = ?) AND (pillar_tag IS NULL OR pillar_tag = ?) AND (format_tag IS NULL OR format_tag = ?)
+        WHERE status = 'active' AND julianday(expires_at) > julianday('now') AND signal_type IN (?) AND confidence >= ? AND tenant_id = ? AND (user_id IS NULL OR user_id = ?) AND (pillar_tag IS NULL OR pillar_tag = ?) AND (format_tag IS NULL OR format_tag = ?)
         ORDER BY confidence DESC, created_at DESC
         LIMIT ?
       `),

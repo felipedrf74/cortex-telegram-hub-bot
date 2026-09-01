@@ -11597,13 +11597,13 @@ paths:
       operationId: "postPlanRecompute"
       tags:
         - "plan"
-      summary: "Invalidate planning caches and force-recompute both the weekly plan and today's brief"
+      summary: "Idempotently recompute one coherent weekly plan and daily brief snapshot"
       description: |-
         Source: src/api/routes/plan.ts:85 (mounted src/api/router.ts:405)
 
-        Request body (evidenced fields): { weekStart?: string, date?: string } — both optional ISO dates; omitted or invalid values resolve in the authenticated user's timezone, with the app timezone used only as a fallback
+        Request body: { idempotencyKey: string, weekStart?: string, date?: string }. Dates must be exact YYYY-MM-DD values; weekStart must be a Monday and date must fall within that week. Omitted dates resolve from one captured clock in the authenticated user's timezone, with the app timezone used only as a fallback. The Idempotency-Key header is accepted as a compatibility fallback when the body field is absent.
 
-        Notes: Calls invalidatePlanningCaches then composeWeeklyPlan/composeDailyBrief with forceRefresh:true (syncSignals:true for the week). No AI budget gate — recompute is token-zero.
+        Notes: A scoped leased receipt makes exact retries return the stored result without invalidation or orchestration. Reusing a key for a different normalized request returns 409. First execution invalidates the user's planning caches, composes the week once with signal sync, and projects today from that exact week. snapshot, week.planningSnapshot, and today.planningSnapshot share one snapshotId and generatedAt. No AI budget gate — recompute is token-zero.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/plan.ts:85 (mounted src/api/router.ts:405)"
       requestBody:
@@ -11612,14 +11612,32 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: { weekStart?: string, date?: string } — both optional ISO dates; omitted or invalid values resolve in the authenticated user's timezone, with app timezone as fallback. Route validation code is authoritative for exact shapes."
+              required:
+                - "idempotencyKey"
+              properties:
+                idempotencyKey:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 200
+                weekStart:
+                  type: "string"
+                  format: "date"
+                  description: "Monday starting the requested ISO week."
+                date:
+                  type: "string"
+                  format: "date"
+                  description: "Daily projection date; must fall within weekStart when both are supplied."
       responses:
         "200":
-          description: "apiSuccess { week: WeeklyPlanResponse including weekStart/weekEnd/summary and per-day cooking source state, today: DailyBrief including day.cooking {status, headline, warningCodes} } (Standard success envelope unless noted.)"
+          description: "apiSuccess { snapshot: PlanningSnapshotIdentity, week: WeeklyPlanResponse, today: DailyBrief }. All three identities share snapshotId/generatedAt; today is projected from the returned week."
+        "400":
+          description: "Error envelope. Stable code(s): PLANNING_RECOMPUTE_INVALID, PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "409":
+          description: "Error envelope. Stable code(s): PLANNING_RECOMPUTE_IDEMPOTENCY_REUSED, PLANNING_RECOMPUTE_IN_PROGRESS."
         "500":
-          description: "Error envelope. Stable code(s): INTERNAL."
+          description: "Error envelope. Stable code(s): PLANNING_RECOMPUTE_RECEIPT_INVALID, INTERNAL."
         "4XX":
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
@@ -11633,7 +11651,7 @@ paths:
       description: |-
         Source: src/api/routes/plan.ts:56 (mounted src/api/router.ts:405)
 
-        Notes: SWR cache TTL 60s/stale 300s; language from x-language header else stored preference. Implicit date selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. day.cooking distinguishes ready, empty, degraded, unavailable, and gated state through status/headline/warningCodes so missing or unsafe Cooking context is never rendered as an ordinary empty plan. Unconditionally registered.
+        Notes: Route-owned SWR cache TTL 60s/stale 300s; the underlying composer cache is bypassed for route fills so there is one cache owner. Language comes from x-language header else stored preference. Implicit date selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. day.cooking distinguishes ready, empty, degraded, unavailable, and gated state through status/headline/warningCodes so missing or unsafe Cooking context is never rendered as an ordinary empty plan. Unconditionally registered.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/plan.ts:56 (mounted src/api/router.ts:405)"
       parameters:
@@ -11645,7 +11663,7 @@ paths:
           description: "ISO date; defaults to today in the authenticated user's timezone (app timezone is fallback only)"
       responses:
         "200":
-          description: "apiSuccess with DailyBriefResponse: date, generatedAt, degraded, gated, garmin_stale, conflicts, creativeCopy, day, coordination. day.cooking exposes {status: ready|empty|degraded|unavailable|gated, headline, warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
+          description: "apiSuccess with DailyBriefResponse: date, generatedAt, optional planningSnapshot, degraded, gated, garmin_stale, conflicts, creativeCopy, day, coordination. day.cooking exposes {status: ready|empty|degraded|unavailable|gated, headline, warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11663,7 +11681,7 @@ paths:
       description: |-
         Source: src/api/routes/plan.ts:27 (mounted src/api/router.ts:405)
 
-        Notes: Mount is unconditional (router.ts:135). Skills the user is not entitled to appear as gated sections in the payload rather than a route-level 403. Token-zero: creativeCopy is template strings (weekly-plan-orchestrator.ts:1969); degraded=true suppresses copy when the user is over the daily AI cap or when required source health is degraded, but no model call happens either way. Implicit week selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. Every day carries a Cooking status/headline/warningCodes projection; unsafe or unverifiable meals are withheld rather than treated as safe. SWR cache TTL 120s/stale 600s; x-language header respected.
+        Notes: Mount is unconditional (router.ts:135). Skills the user is not entitled to appear as gated sections in the payload rather than a route-level 403. Token-zero: creativeCopy is template strings (weekly-plan-orchestrator.ts:1969); degraded=true suppresses copy when the user is over the daily AI cap or when required source health is degraded, but no model call happens either way. Implicit week selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. Every day carries a Cooking status/headline/warningCodes projection; unsafe or unverifiable meals are withheld rather than treated as safe. Route-owned SWR cache TTL 120s/stale 600s; the underlying composer cache is bypassed for route fills so there is one cache owner. x-language header respected.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/plan.ts:27 (mounted src/api/router.ts:405)"
       parameters:
@@ -11675,7 +11693,7 @@ paths:
           description: "ISO date; normalized to its week start in the authenticated user's timezone (app timezone is fallback only)"
       responses:
         "200":
-          description: "apiSuccess with WeeklyPlanResponse: weekStart, weekEnd, generatedAt, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], creativeCopy, summary:{sessionCount,mealCount,activeConflictCount}, days[]. Each day includes cooking:{status:ready|empty|degraded|unavailable|gated,headline,warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
+          description: "apiSuccess with WeeklyPlanResponse: weekStart, weekEnd, generatedAt, optional planningSnapshot, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], creativeCopy, summary:{sessionCount,mealCount,activeConflictCount}, days[]. Each day includes cooking:{status:ready|empty|degraded|unavailable|gated,headline,warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -12265,7 +12283,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:178
 
-        Notes: User-suppressed decision types are filtered out flag-gated via DECISION_TYPE_SUPPRESSION_ENABLED (route always registered; only the read filter is flag-gated)
+        Notes: User-suppressed decision types are filtered out flag-gated via DECISION_TYPE_SUPPRESSION_ENABLED (route always registered; only the read filter is flag-gated). GET is side-effect-free. V2 cursor mode binds scope, filters, ranking version, ranking instant, immutable snapshot id, and the full rank tuple. Valid legacy cursors keep legacy ordering; malformed cursors return typed 400 and stale/incompatible snapshot cursors return typed 409 instead of restarting page one.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:178"
       parameters:
@@ -12309,9 +12327,11 @@ paths:
           description: "v2 cursor mode only; positive integer, default 50, max 100"
       responses:
         "200":
-          description: "{ count, openCount, items[] }; v2 adds schemaVersion and card summaries; cursor mode adds pageSize and optional nextCursor (Standard success envelope unless noted.)"
+          description: "{ count, openCount, items[] }; v2 adds schemaVersion and card summaries; cursor mode adds pageSize, optional nextCursor, snapshotId, rankingAsOf, rankingVersion, and structured degradationReasons when immutable snapshot data is awaiting backfill. (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): VALIDATION."
+          description: "Error envelope. Stable code(s): VALIDATION, DECISION_CURSOR_MALFORMED."
+        "409":
+          description: "Error envelope. Stable code(s): DECISION_CURSOR_STALE."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "4XX":
@@ -12327,7 +12347,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:261
 
-        Request body (evidenced fields): decisionIds: array of 1-100 non-empty strings (each <=200 chars), required
+        Request body (evidenced fields): decisionIds: array of 1-100 non-empty strings (each <=200 chars), required; idempotencyKey?: stable string <=200 (old clients receive a deterministic compatibility key)
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:261"
       requestBody:
@@ -12336,7 +12356,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: decisionIds: array of 1-100 non-empty strings (each <=200 chars), required. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: decisionIds: array of 1-100 non-empty strings (each <=200 chars), required; idempotencyKey?: stable string <=200 (old clients receive a deterministic compatibility key). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "recordDecisionItemExposuresByIds result (Standard success envelope unless noted.)"
@@ -12384,7 +12404,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:236
 
-        Request body (evidenced fields): decision intent fields (spread from body); userId/tenantId always overridden from auth
+        Request body (evidenced fields): decision intent fields (spread from body); idempotencyKey?: stable string <=200; userId/tenantId always overridden from auth
 
         Notes: Extra gate: requires x-internal-secret header matching INTERNAL_API_SECRET. Success status is 201 or 202 depending on whether an item materialized
       x-nexus-kind: "deterministic"
@@ -12514,7 +12534,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:316
 
-        Request body (evidenced fields): preferences patch object
+        Request body (evidenced fields): preferences patch object plus idempotencyKey?: stable string <=200
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:316"
       requestBody:
@@ -12523,7 +12543,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: preferences patch object. Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: preferences patch object plus idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "updateDecisionPreferences result (Standard success envelope unless noted.)"
@@ -12544,7 +12564,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:340
 
-        Request body (evidenced fields): sourceSkill (string, required), type (string, required), mode ('dont_show_type'|'snooze_type', required), untilDays (positive int, default 7, max 365, snooze mode only), recipe (string, optional)
+        Request body (evidenced fields): sourceSkill (string, required), type (string, required), mode ('dont_show_type'|'snooze_type', required), untilDays (positive int, default 7, max 365, snooze mode only), recipe (string, optional), idempotencyKey?: stable string <=200
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:340"
       requestBody:
@@ -12553,7 +12573,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: sourceSkill (string, required), type (string, required), mode ('dont_show_type'|'snooze_type', required), untilDays (positive int, default 7, max 365, snooze mode only), recipe (string, optional). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: sourceSkill (string, required), type (string, required), mode ('dont_show_type'|'snooze_type', required), untilDays (positive int, default 7, max 365, snooze mode only), recipe (string, optional), idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "201":
           description: "{ suppressions[] } (Standard success envelope unless noted.)"
@@ -12570,7 +12590,10 @@ paths:
       tags:
         - "decisions"
       summary: "Remove a decision type suppression"
-      description: "Source: src/api/routes/decisions.ts:372"
+      description: |-
+        Source: src/api/routes/decisions.ts:624
+
+        Query selects sourceSkill/type/recipe. An optional DELETE body accepts idempotencyKey (stable string <=200); old clients receive a deterministic compatibility key.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:372"
       parameters:
@@ -12685,13 +12708,13 @@ paths:
       operationId: "postDecisionsByIdActions"
       tags:
         - "decisions"
-      summary: "Execute a decision action (approve/apply command effects) with optional idempotency and version checks"
+      summary: "Execute a decision action through the unified replay-safe command contract"
       description: |-
         Source: src/api/routes/decisions.ts:589
 
-        Request body (evidenced fields): actionId (string); optional idempotencyKey (string), payload (object), channel (string), expectedVersion (positive integer if present), contextVersion (string)
+        Request body (evidenced fields): actionId (string); idempotencyKey?: stable string <=200, payload (object), channel (string), expectedVersion/recordVersion (positive integer if present), contextVersion (string). New clients persist and reuse idempotencyKey; old clients receive a deterministic request/version-bound compatibility key.
 
-        Notes: DecisionActionError instances pass through with service-defined code/status/details
+        Notes: DecisionActionError instances pass through with service-defined code/status/details. APNs requires current record/context versions and an exact low-risk executable action; otherwise the response directs the client to open the app without executing. Successful action responses include action-specific exact readback.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:589"
       parameters:
@@ -12706,7 +12729,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: actionId (string); optional idempotencyKey (string), payload (object), channel (string), expectedVersion (positive integer if present), contextVersion (string). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: actionId (string); idempotencyKey?: stable string <=200, payload (object), channel (string), expectedVersion/recordVersion (positive integer if present), contextVersion (string). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "performDecisionAction result (Standard success envelope unless noted.)"
@@ -12727,7 +12750,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:568
 
-        Request body (evidenced fields): optional reason (string); optional expectedVersion (number)
+        Request body (evidenced fields): optional reason (string), expectedVersion (positive integer), contextVersion (string), and idempotencyKey (stable string <=200). Legacy omissions receive a deterministic compatibility key/version behavior.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:568"
       parameters:
@@ -12742,7 +12765,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: optional reason (string); optional expectedVersion (number). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: optional reason (string), expectedVersion (positive integer), contextVersion (string), and idempotencyKey (stable string <=200). Legacy omissions receive deterministic compatibility behavior. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ item } (Standard success envelope unless noted.)"
@@ -12789,7 +12812,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:523
 
-        Request body (evidenced fields): expectedVersion (positive integer, required); optional recommendedStartAt, recommendedEndAt (ISO strings)
+        Request body (evidenced fields): expectedVersion/recordVersion (positive integer, required); idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings)
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:523"
       parameters:
@@ -12804,7 +12827,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: expectedVersion (positive integer, required); optional recommendedStartAt, recommendedEndAt (ISO strings). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: expectedVersion/recordVersion (positive integer, required); idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings). Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ item } (Standard success envelope unless noted.)"
@@ -12825,7 +12848,9 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:439
 
-        Notes: Feature-flag gated: DECISION_REFRESH_ENABLED, default OFF — responds 404 NOT_FOUND ('Decision refresh is not enabled') when disabled. Route file comment explicitly states token-zero (no AI). May persist a new context evaluation and bump recordVersion
+        Request body: idempotencyKey?: stable string <=200, expectedVersion/recordVersion?: positive integer, contextVersion?: non-empty string.
+
+        Notes: Feature-flag gated: DECISION_REFRESH_ENABLED, default OFF — responds 404 NOT_FOUND ('Decision refresh is not enabled') when disabled. Route file comment explicitly states token-zero (no AI). May persist a new context evaluation and bump recordVersion.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:439"
       parameters:
@@ -12890,11 +12915,11 @@ paths:
       operationId: "patchDecisionsByIdSnooze"
       tags:
         - "decisions"
-      summary: "Snooze a decision for N minutes"
+      summary: "Snooze a decision until an exact instant or for legacy minutes"
       description: |-
         Source: src/api/routes/decisions.ts:547
 
-        Request body (evidenced fields): optional minutes (number, default 60); optional expectedVersion (number)
+        Request body (evidenced fields): deferUntil?: absolute ISO timestamp; minutes?: positive integer retained for legacy clients; followUp?: string ("next week" and supported Portuguese equivalents resolve to next Monday 09:00 in the user timezone); expectedVersion?: positive integer; contextVersion?: string; idempotencyKey?: stable string <=200.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:547"
       parameters:
@@ -12909,7 +12934,7 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: optional minutes (number, default 60); optional expectedVersion (number). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: deferUntil?: absolute ISO timestamp; minutes?: positive integer retained for legacy clients; followUp?: string; expectedVersion?: positive integer; contextVersion?: string; idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "200":
           description: "{ item } (Standard success envelope unless noted.)"
@@ -12930,7 +12955,9 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:421
 
-        Notes: DecisionActionError instances pass through with service-defined code/status
+        Request body: idempotencyKey?: stable string <=200 and expectedVersion/recordVersion?: positive integer. Old clients receive a deterministic compatibility key.
+
+        Notes: DecisionActionError instances pass through with service-defined code/status. This is an explicit mutation; decision GET routes never mark an item viewed.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:421"
       parameters:

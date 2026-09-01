@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { readFileSync } from 'node:fs';
 
 let testDb: Database.Database;
 
@@ -39,6 +40,11 @@ import {
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import { isDecisionActionBusEligible } from '../../src/services/decision-command-adapter';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
+import {
+  createCanonicalContentDecisionFixture,
+  ensureCanonicalContentDecisionFixtureSchema,
+} from '../helpers/content-workspace-decision-fixture';
 
 // Classic instruction-injection payload an attacker might smuggle through evidence (calendar notes,
 // finance memos, content drafts, training feedback, cooking notes, chat-derived text).
@@ -54,7 +60,11 @@ describe('Decision Center prompt-injection / evidence quarantine (F1)', () => {
     vi.setSystemTime(new Date('2026-05-10T10:00:00.000Z'));
     testDb = new Database(':memory:');
     process.env.NOTIFICATION_DELIVERY_MODE = 'mock';
+    ensureCanonicalContentDecisionFixtureSchema(testDb);
+    testDb.exec(readFileSync('migrations/022_finance_tables.sql', 'utf8'));
+    testDb.exec('ALTER TABLE finance_tax_events ADD COLUMN tenant_id INTEGER');
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
   afterEach(() => {
@@ -86,8 +96,19 @@ describe('Decision Center prompt-injection / evidence quarantine (F1)', () => {
   });
 
   it('injected evidence text does not leak verbatim into the safe preview copy', async () => {
+    testDb.prepare(`
+      INSERT INTO finance_tax_events (
+        user_id, tenant_id, month, gross_income, deductions, taxable_income,
+        tax_due, inss_due, status, created_at, updated_at
+      ) VALUES (81, 81, '2026-05', 0, 0, 0, 100, 0, 'pending', datetime('now'), datetime('now'))
+    `).run();
     const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('finance', 81, {
-      tenantId: 81, dedupeKey: 'inj-finance', title: INJECTION, body: INJECTION,
+      tenantId: 81,
+      relatedEntityId: '2026-05',
+      relatedEntityType: 'finance_tax_event',
+      dedupeKey: 'inj-finance',
+      title: INJECTION,
+      body: INJECTION,
     }));
     const item = getDecisionItem(created.item!.decisionId, 81, 81)!;
     // Finance is privacy-sensitive: the user-safe preview must not echo raw injected instruction text.
@@ -128,11 +149,38 @@ describe('Decision Center prompt-injection / evidence quarantine (F1)', () => {
   });
 
   it('injected content-draft text cannot change actionability or leak into the safe preview', async () => {
+    const benignObject = createCanonicalContentDecisionFixture(testDb, {
+      userId: 83,
+      tenantId: 83,
+      objectType: 'script',
+      title: 'Normal draft',
+      editorialState: 'drafted',
+      inReview: true,
+    });
+    const injectedObject = createCanonicalContentDecisionFixture(testDb, {
+      userId: 83,
+      tenantId: 83,
+      objectType: 'script',
+      title: INJECTION,
+      editorialState: 'drafted',
+      inReview: true,
+    });
     const benign = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 83, {
-      tenantId: 83, dedupeKey: 'inj-content-benign', title: 'Review the draft', body: 'A normal draft.',
+      tenantId: 83,
+      relatedEntityId: benignObject.id,
+      relatedEntityType: 'content_workflow_object',
+      dedupeKey: 'inj-content-benign',
+      title: 'Review the draft',
+      body: 'A normal draft.',
     }));
     const injected = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 83, {
-      tenantId: 83, dedupeKey: 'inj-content-evil', title: INJECTION, body: INJECTION, sensitiveBody: INJECTION,
+      tenantId: 83,
+      relatedEntityId: injectedObject.id,
+      relatedEntityType: 'content_workflow_object',
+      dedupeKey: 'inj-content-evil',
+      title: INJECTION,
+      body: INJECTION,
+      sensitiveBody: INJECTION,
     }));
     const b = getDecisionItem(benign.item!.decisionId, 83, 83)!;
     const e = getDecisionItem(injected.item!.decisionId, 83, 83)!;

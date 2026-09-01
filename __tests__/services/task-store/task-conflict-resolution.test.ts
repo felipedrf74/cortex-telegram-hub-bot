@@ -142,9 +142,11 @@ describe('normalizeTheirs defensive shape handling', () => {
     expect(_normalizeTheirsForTests({ importance: 'low' }).importance).toBe('low');
     expect(_normalizeTheirsForTests({ importance: 'urgent' }).importance).toBe('high');
     expect(_normalizeTheirsForTests({ importance: 'important' }).importance).toBe('high');
-    expect(_normalizeTheirsForTests({ priority: 4 }).importance).toBe('high');
-    expect(_normalizeTheirsForTests({ priority: 1 }).importance).toBe('low');
-    expect(_normalizeTheirsForTests({ priority: 2 }).importance).toBe('normal');
+    expect(_normalizeTheirsForTests({ priority: 1 }).importance).toBe('high');
+    expect(_normalizeTheirsForTests({ priority: 2 }).importance).toBe('high');
+    expect(_normalizeTheirsForTests({ priority: 3 }).importance).toBe('normal');
+    expect(_normalizeTheirsForTests({ priority: 4 }).importance).toBe('low');
+    expect(_normalizeTheirsForTests({ priority: 0 }).importance).toBe('normal');
     expect(_normalizeTheirsForTests({ priority: 'not-a-number' }).importance).toBe('normal');
     expect(_normalizeTheirsForTests({}).importance).toBe('normal');
   });

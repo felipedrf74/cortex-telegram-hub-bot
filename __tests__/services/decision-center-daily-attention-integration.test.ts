@@ -7,6 +7,7 @@ let testDb: Database.Database;
 const mocks = vi.hoisted(() => ({
   listTasksForUser: vi.fn(),
   getUserTimezoneById: vi.fn(),
+  getUserLanguageById: vi.fn(),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -41,6 +42,7 @@ vi.mock('../../src/services/user-service', async () => {
   return {
     ...actual,
     getUserTimezoneById: (...args: unknown[]) => mocks.getUserTimezoneById(...args),
+    getUserLanguageById: (...args: unknown[]) => mocks.getUserLanguageById(...args),
   };
 });
 
@@ -63,6 +65,7 @@ import {
 } from '../../src/services/decision-center';
 import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import { materializeDecisionCenterDailyAttention } from '../../src/services/decision-center-daily-attention';
+import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 function task(overrides: Partial<NormalizedTask> = {}): NormalizedTask {
   return {
@@ -97,7 +100,10 @@ describe('Decision Center daily attention integration', () => {
     mocks.listTasksForUser.mockReset();
     mocks.getUserTimezoneById.mockReset();
     mocks.getUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mocks.getUserLanguageById.mockReset();
+    mocks.getUserLanguageById.mockReturnValue('en');
     ensureNotificationTables();
+    initializeDecisionCenterSchemaForTests();
     ensureDecisionCenterTables();
   });
 

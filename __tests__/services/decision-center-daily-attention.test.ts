@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   listTasksForUser: vi.fn(),
   createDecisionIntent: vi.fn(),
   getUserTimezoneById: vi.fn(),
+  getUserLanguageById: vi.fn(),
   loggerWarn: vi.fn(),
 }));
 
@@ -30,6 +31,7 @@ vi.mock('../../src/services/user-service', async () => {
   return {
     ...actual,
     getUserTimezoneById: (...args: unknown[]) => mocks.getUserTimezoneById(...args),
+    getUserLanguageById: (...args: unknown[]) => mocks.getUserLanguageById(...args),
   };
 });
 
@@ -67,6 +69,7 @@ describe('Decision Center daily attention materializer', () => {
     vi.clearAllMocks();
     delete process.env.DECISION_CENTER_DAILY_ATTENTION_ENABLED;
     mocks.getUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mocks.getUserLanguageById.mockReturnValue('en');
     mocks.createDecisionIntent.mockResolvedValue({
       item: { decisionId: 'dc_task_attention' },
       eligibility: { classification: 'decision' },
@@ -77,17 +80,29 @@ describe('Decision Center daily attention materializer', () => {
     const counts = summarizeTaskAttention([
       task({ id: 1, title: 'Overdue private title', dueDate: '2026-06-16', priority: 1 }),
       task({ id: 2, title: 'Today private title', dueDate: '2026-06-17T08:00:00.000Z', dueIsDatetime: true, priority: 3 }),
-      task({ id: 3, title: 'Future important', dueDate: '2026-06-20', priority: 4 }),
-      task({ id: 4, title: 'Completed stale', status: 'completed', dueDate: '2026-06-16', priority: 4 }),
-      task({ id: 5, title: 'Cancelled stale', status: 'cancelled', dueDate: '2026-06-16', priority: 4 }),
+      task({ id: 3, title: 'Future low priority', dueDate: '2026-06-20', priority: 4 }),
+      task({ id: 4, title: 'Completed stale', status: 'completed', dueDate: '2026-06-16', priority: 2 }),
+      task({ id: 5, title: 'Cancelled stale', status: 'cancelled', dueDate: '2026-06-16', priority: 2 }),
     ], '2026-06-17', 'Europe/Lisbon');
 
     expect(counts).toEqual({
       pending: 3,
       overdue: 1,
       dueToday: 1,
-      highPriority: 2,
+      highPriority: 1,
     });
+  });
+
+  it('treats canonical P1/P2 as high attention and P3/P4/none as lower priority', () => {
+    const counts = summarizeTaskAttention([
+      task({ id: 101, priority: 1 }),
+      task({ id: 102, priority: 2 }),
+      task({ id: 103, priority: 3 }),
+      task({ id: 104, priority: 4 }),
+      task({ id: 105, priority: 0 }),
+    ], '2026-06-17', 'Europe/Lisbon');
+
+    expect(counts).toMatchObject({ pending: 5, highPriority: 2 });
   });
 
   it('buckets naive datetimes by user timezone rather than server timezone near midnight', () => {
@@ -95,7 +110,7 @@ describe('Decision Center daily attention materializer', () => {
     Settings.defaultZone = 'UTC';
     try {
       const counts = summarizeTaskAttention([
-        task({ id: 6, title: 'Late Lisbon task', dueDate: '2026-06-18T23:30:00', dueIsDatetime: true, priority: 1 }),
+        task({ id: 6, title: 'Late Lisbon task', dueDate: '2026-06-18T23:30:00', dueIsDatetime: true, priority: 3 }),
       ], '2026-06-18', 'Europe/Lisbon');
 
       expect(counts).toMatchObject({ overdue: 0, dueToday: 1, highPriority: 0 });
@@ -106,7 +121,7 @@ describe('Decision Center daily attention materializer', () => {
 
   it('buckets UTC datetimes across the Lisbon midnight boundary', () => {
     const counts = summarizeTaskAttention([
-      task({ id: 7, title: 'UTC boundary task', dueDate: '2026-06-18T23:30:00Z', dueIsDatetime: true, priority: 1 }),
+      task({ id: 7, title: 'UTC boundary task', dueDate: '2026-06-18T23:30:00Z', dueIsDatetime: true, priority: 3 }),
     ], '2026-06-19', 'Europe/Lisbon');
 
     expect(counts).toMatchObject({ overdue: 0, dueToday: 1, highPriority: 0 });
@@ -171,7 +186,7 @@ describe('Decision Center daily attention materializer', () => {
   it('creates a concrete focus decision when high-priority and due-today tasks need attention', async () => {
     mocks.listTasksForUser.mockReturnValue([
       task({ id: 20, title: 'Private focus', dueDate: '2026-06-17', priority: 3 }),
-      task({ id: 21, title: 'Private important', dueDate: '2026-06-20', priority: 4 }),
+      task({ id: 21, title: 'Private important', dueDate: '2026-06-20', priority: 2 }),
     ]);
 
     await materializeDecisionCenterDailyAttention({
@@ -206,7 +221,7 @@ describe('Decision Center daily attention materializer', () => {
 
   it('skips when no pending task attention is needed', async () => {
     mocks.listTasksForUser.mockReturnValue([
-      task({ id: 40, title: 'Future low priority', dueDate: '2026-06-20', priority: 1 }),
+      task({ id: 40, title: 'Future low priority', dueDate: '2026-06-20', priority: 4 }),
     ]);
 
     const result = await materializeDecisionCenterDailyAttention({

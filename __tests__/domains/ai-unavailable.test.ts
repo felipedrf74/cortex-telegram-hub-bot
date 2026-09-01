@@ -174,11 +174,13 @@ describe('buildAITemporarilyBusyResponse', () => {
       transactionCount: 3,
     });
 
-    const response = await buildAITemporarilyBusyResponse('finance', 41);
+    const response = await buildAITemporarilyBusyResponse('finance', 41, 410);
 
     expect(response.text).toContain('3 finance entries');
     expect(response.text).toContain('income EUR 2400.00');
     expect(response.text).toContain('expenses EUR 187.00');
+    expect(mockGetMonthlySummary).toHaveBeenCalledWith(41, expect.any(String), { tenantId: 410 });
+    expect(mockGetPreferredCurrencyForUser).toHaveBeenCalledWith(41, { tenantId: 410 });
   });
 
   it('uses content desk items and pillars for content overloads', async () => {

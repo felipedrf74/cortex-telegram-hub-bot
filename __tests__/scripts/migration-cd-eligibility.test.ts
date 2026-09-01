@@ -364,7 +364,7 @@ describe('migration inventory', () => {
     });
     const onDisk = readdirSync(join(root, 'migrations'))
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(inventory).toHaveLength(296);
+    expect(inventory).toHaveLength(297);
     expect(inventory).toHaveLength(onDisk.length);
     expect(() => assertMigrationInventoryShape(inventory)).not.toThrow();
     for (const entry of inventory) {
@@ -372,11 +372,11 @@ describe('migration inventory', () => {
       expect(typeof entry.predecessorCompatible).toBe('boolean');
     }
     expect(inventory.at(-1)).toMatchObject({
-      file: '305_training_coach_v2_soak_metrics.sql',
-      kind: 'expand',
+      file: '306_decision_center_rewrite_foundation.sql',
+      kind: 'backfill',
       predecessorCompatible: true,
     });
-    expect(inventory.slice(-3)).toMatchObject([
+    expect(inventory.slice(-4)).toMatchObject([
       {
         file: '303_training_coach_v2_contracts.sql',
         kind: 'expand',
@@ -390,6 +390,11 @@ describe('migration inventory', () => {
       {
         file: '305_training_coach_v2_soak_metrics.sql',
         kind: 'expand',
+        predecessorCompatible: true,
+      },
+      {
+        file: '306_decision_center_rewrite_foundation.sql',
+        kind: 'backfill',
         predecessorCompatible: true,
       },
     ]);
@@ -483,7 +488,7 @@ describe('migration inventory', () => {
     // still-green zero-unknown assertion. Deliberate policy changes update this
     // exact snapshot together.
     const compatible = inventory.filter((entry) => entry.predecessorCompatible).length;
-    expect(compatible).toBe(168);
+    expect(compatible).toBe(170);
   });
 });
 
@@ -717,7 +722,7 @@ describe('second-round adversarial probes', () => {
     // block every release for a classifier gap rather than a real risk.
     const dir = join(process.cwd(), 'migrations');
     const files = readdirSync(dir).filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(files.length).toBe(296);
+    expect(files.length).toBe(297);
     const unknown = files.filter(
       (file) => classifyMigrationSql(readFileSync(join(dir, file), 'utf8')).kind === 'unknown',
     );

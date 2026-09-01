@@ -416,6 +416,46 @@ describe('publishAdherenceSignalsForUser', () => {
     expect(JSON.parse(rows[1].payload).planned).toBe(5);
   });
 
+  it('rolls back stale-signal retirement when the replacement write fails', () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
+    seedPlanWithWeek({
+      userId: 1013,
+      referenceDate: ref,
+      sessionStatuses: ['pending', 'pending', 'pending', 'pending', 'pending'],
+      baseId: 31,
+    });
+
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
+      VALUES
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?, ?)
+    `).run(JSON.stringify({
+      completed: 0,
+      planned: 7,
+      adherence_pct: 0,
+      week_start: ref.minus({ weeks: 1 }).startOf('week').toISO(),
+      week_end: ref.minus({ weeks: 1 }).endOf('week').toISO(),
+    }), 1013, 1013);
+    testDb.exec(`
+      CREATE TRIGGER reject_adherence_replacement
+      BEFORE INSERT ON agent_signals
+      WHEN NEW.signal_type = 'low_adherence'
+      BEGIN
+        SELECT RAISE(ABORT, 'replacement rejected');
+      END;
+    `);
+
+    expect(() => publishAdherenceSignalsForUser(1013, 1013, ref)).toThrow();
+
+    const rows = testDb.prepare(`
+      SELECT status
+      FROM agent_signals
+      WHERE signal_type = 'low_adherence' AND user_id = ?
+    `).all(1013) as Array<{ status: string }>;
+    expect(rows).toEqual([{ status: 'active' }]);
+  });
+
   it('dismisses stale adherence signals when the user returns to the neutral band', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
@@ -809,6 +849,108 @@ describe('publishPlanDriftSignalForUser', () => {
       "SELECT COUNT(*) as count FROM agent_signals WHERE signal_type = 'plan_drift' AND user_id = 5008"
     ).get() as any;
     expect(rows.count).toBe(1);
+  });
+
+  it('atomically replaces a stale plan-drift snapshot', () => {
+    seedPlanAndCompletions({
+      userId: 5014,
+      planSport: 'strength',
+      sessions: [
+        [1, 'running'], [2, 'running'], [3, 'running'],
+        [4, 'running'], [5, 'running'],
+      ],
+      baseId: 63,
+    });
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
+      VALUES
+        ('session.analytics', 'plan_drift', ?, 'normal', datetime('now', '+1 day'), ?, ?)
+    `).run(JSON.stringify({
+      plan_sport: 'strength',
+      dominant_sport: 'cycling',
+      drift_pct: 80,
+      sessions_in_window: 4,
+      window_weeks: PLAN_DRIFT_WINDOW_WEEKS,
+    }), 5014, 5014);
+
+    expect(publishPlanDriftSignalForUser(5014, 5014).action).toBe('published_drift');
+
+    const rows = testDb.prepare(`
+      SELECT status, payload
+      FROM agent_signals
+      WHERE signal_type = 'plan_drift' AND user_id = ?
+      ORDER BY id
+    `).all(5014) as Array<{ status: string; payload: string }>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].status).toBe('dismissed');
+    expect(rows[1].status).toBe('active');
+    expect(JSON.parse(rows[1].payload).dominant_sport).toBe('running');
+  });
+
+  it('rolls back stale drift retirement when replacement persistence fails', () => {
+    seedPlanAndCompletions({
+      userId: 5015,
+      planSport: 'strength',
+      sessions: [
+        [1, 'running'], [2, 'running'], [3, 'running'],
+        [4, 'running'], [5, 'running'],
+      ],
+      baseId: 64,
+    });
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
+      VALUES
+        ('session.analytics', 'plan_drift', ?, 'normal', datetime('now', '+1 day'), ?, ?)
+    `).run(JSON.stringify({
+      plan_sport: 'strength',
+      dominant_sport: 'cycling',
+      drift_pct: 80,
+      sessions_in_window: 4,
+      window_weeks: PLAN_DRIFT_WINDOW_WEEKS,
+    }), 5015, 5015);
+    testDb.exec(`
+      CREATE TRIGGER reject_plan_drift_replacement
+      BEFORE INSERT ON agent_signals
+      WHEN NEW.signal_type = 'plan_drift'
+      BEGIN
+        SELECT RAISE(ABORT, 'replacement rejected');
+      END;
+    `);
+
+    expect(() => publishPlanDriftSignalForUser(5015, 5015)).toThrow();
+    const rows = testDb.prepare(`
+      SELECT status
+      FROM agent_signals
+      WHERE signal_type = 'plan_drift' AND user_id = ?
+    `).all(5015) as Array<{ status: string }>;
+    expect(rows).toEqual([{ status: 'active' }]);
+  });
+
+  it('retires an obsolete drift signal when behavior returns in band', () => {
+    seedPlanAndCompletions({
+      userId: 5016,
+      planSport: 'strength',
+      sessions: [
+        [1, 'strength'], [2, 'strength'], [3, 'strength'],
+        [4, 'strength'], [5, 'strength'],
+      ],
+      baseId: 65,
+    });
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id)
+      VALUES
+        ('session.analytics', 'plan_drift', '{}', 'normal', datetime('now', '+1 day'), ?, ?)
+    `).run(5016, 5016);
+
+    expect(publishPlanDriftSignalForUser(5016, 5016).action).toBe('skipped_in_band');
+    const row = testDb.prepare(`
+      SELECT status FROM agent_signals
+      WHERE signal_type = 'plan_drift' AND user_id = ?
+    `).get(5016) as { status: string };
+    expect(row.status).toBe('dismissed');
   });
 
   it('keeps users isolated — drift for user A does not affect user B', () => {

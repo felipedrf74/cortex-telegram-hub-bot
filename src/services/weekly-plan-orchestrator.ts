@@ -23,8 +23,9 @@ import {
 import { isUserOverDailyCap } from './cost-guardrail';
 import { getDb } from './database';
 import {
-  dismissSignal,
   readSignals,
+  reconcileGovernedSignalSet,
+  runSignalWriteTransaction,
   writeGovernedSignal,
   type AgentSignal,
   type MeshPriority,
@@ -45,6 +46,12 @@ import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './tra
 import { resolveTrainingPlanTimezone, resolveTrainingTimezone } from './training-date-utils';
 import type { MealPlan } from './cooking-chef';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { createDecisionPlanningContext, type DecisionPlanningContext } from './decision-planning-context';
+import {
+  assertPlanningSnapshotScope,
+  createPlanningSnapshotIdentity,
+  type PlanningSnapshotIdentity,
+} from './planning-snapshot-contract';
 
 const WEEKLY_PLAN_SIGNAL_PRODUCER_VERSION = 'weekly-plan-orchestrator.v1';
 
@@ -136,6 +143,8 @@ export interface WeeklyPlanResponse {
   weekStart: string;
   weekEnd: string;
   generatedAt: string;
+  /** Shared identity used when a daily brief is projected from this week. */
+  planningSnapshot?: PlanningSnapshotIdentity;
   variant: 'conservative' | 'steady' | 'push';
   degraded: boolean;
   gated: { skills: string[] };
@@ -250,6 +259,10 @@ export async function composeWeeklyPlan(opts: {
   timezone?: string;
   forceRefresh?: boolean;
   syncSignals?: boolean;
+  /** Route-owned SWR callers bypass the orchestrator cache to avoid two owners. */
+  cacheMode?: 'read-write' | 'bypass';
+  planningContext?: DecisionPlanningContext;
+  planningSnapshot?: PlanningSnapshotIdentity;
 }): Promise<WeeklyPlanResponse> {
   if (!isValidTenantUserId(opts.userId)) {
     recordTenantScopeAnomaly({
@@ -262,10 +275,12 @@ export async function composeWeeklyPlan(opts: {
         weekStart: opts.weekStart ?? null,
       },
     });
-    return buildEmptyWeeklyPlanResponse(opts);
+    return buildEmptyWeeklyPlanResponse({
+      ...opts,
+      timezone: resolveTrainingTimezone(opts.timezone ?? config.app.timezone),
+    });
   }
 
-  const tenantId = isValidTenantUserId(opts.tenantId) ? opts.tenantId! : opts.userId;
   if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
     recordTenantScopeAnomaly({
       layer: 'orchestration',
@@ -277,13 +292,35 @@ export async function composeWeeklyPlan(opts: {
         weekStart: opts.weekStart ?? null,
       },
     });
+    return buildEmptyWeeklyPlanResponse({
+      ...opts,
+      timezone: resolveTrainingTimezone(opts.timezone ?? config.app.timezone),
+    });
   }
+  const tenantId = opts.tenantId ?? opts.userId;
 
-  const timezone = resolveWeeklyPlanTimezone(opts.userId, opts.timezone);
-  const window = resolveWeekWindow(opts.weekStart, timezone);
+  const planningContext = opts.planningContext ?? createDecisionPlanningContext({
+    userId: opts.userId,
+    tenantId,
+    timezone: resolveWeeklyPlanTimezone(opts.userId, opts.timezone),
+  });
+  if (planningContext.userId !== opts.userId || planningContext.tenantId !== tenantId) {
+    throw new Error('PLANNING_CONTEXT_SCOPE_MISMATCH');
+  }
+  const timezone = planningContext.timezone;
+  const window = resolveWeekWindow(opts.weekStart, timezone, planningContext.localDate);
+  const planningSnapshot = opts.planningSnapshot
+    ?? createPlanningSnapshotIdentity(planningContext, window.weekStart);
+  assertPlanningSnapshotScope(planningSnapshot, {
+    userId: opts.userId,
+    tenantId,
+    timezone,
+    weekStart: window.weekStart,
+  });
   const shouldSyncSignals = opts.syncSignals === true;
   const cacheKey = `plan:week:u:${opts.userId}:t:${tenantId}:${window.weekStart}:tz:${timezone}:sync:${shouldSyncSignals ? '1' : '0'}`;
-  if (!opts.forceRefresh) {
+  const ownsCache = opts.cacheMode !== 'bypass';
+  if (ownsCache && !opts.forceRefresh) {
     const cached = getCached<WeeklyPlanResponse>(cacheKey);
     if (cached) {
       return cached;
@@ -314,7 +351,13 @@ export async function composeWeeklyPlan(opts: {
       label: 'secretary',
       userId: opts.userId,
       weekStart: window.weekStart,
-      loader: readSecretaryMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart, timezone }),
+      loader: readSecretaryMeshContext({
+        userId: opts.userId,
+        tenantId,
+        weekStart: window.weekStart,
+        timezone,
+        referenceDate: planningContext.localDate,
+      }),
       fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart, timezone }),
     }),
     gatedSkills.includes('cooking')
@@ -332,7 +375,13 @@ export async function composeWeeklyPlan(opts: {
           label: 'content',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readContentMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
+          loader: readContentMeshContext({
+            userId: opts.userId,
+            tenantId,
+            weekStart: window.weekStart,
+            timezone,
+            referenceNow: planningContext.nowUtc,
+          }),
           fallback: null,
         }),
     gatedSkills.includes('finance')
@@ -341,7 +390,13 @@ export async function composeWeeklyPlan(opts: {
           label: 'finance',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readFinanceMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart }),
+          loader: readFinanceMeshContext({
+            userId: opts.userId,
+            tenantId,
+            weekStart: window.weekStart,
+            timezone,
+            referenceNow: planningContext.nowUtc,
+          }),
           fallback: null,
         }),
   ]);
@@ -369,15 +424,31 @@ export async function composeWeeklyPlan(opts: {
   const derivedSignalDrafts = [
     ...training.derivedSignals,
     ...secretary.derivedSignals,
-    ...(cooking ? buildCookingMeshSignals(cooking, training, content) : []),
+    ...(cooking ? buildCookingMeshSignals(cooking, training, content, planningContext.nowUtc) : []),
     ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
     ...(finance ? finance.derivedSignals : []),
   ];
+  const authoritativeSignalSources = new Set(derivedSignalDrafts.map((draft) => draft.sourceAgent));
+  if (!trainingLoad.degraded) authoritativeSignalSources.add('mesh.training-context');
+  if (!secretaryLoad.degraded) authoritativeSignalSources.add('mesh.secretary-context');
+  if (!cookingLoad.degraded) authoritativeSignalSources.add('mesh.cooking-orchestrator');
+  if (!contentLoad.degraded) {
+    authoritativeSignalSources.add('mesh.content-context');
+    authoritativeSignalSources.add('mesh.editorial-coordinator');
+  }
+  if (!financeLoad.degraded) authoritativeSignalSources.add('mesh.finance-context');
+  const isHistoricalWindow = window.weekEnd < planningContext.localDate;
   let meshSignals = new Map<SignalType, AgentSignal[]>();
   try {
-    meshSignals = shouldSyncSignals
-      ? await syncDerivedSignals(opts.userId, tenantId, derivedSignalDrafts)
-      : groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts);
+    meshSignals = shouldSyncSignals && !isHistoricalWindow
+      ? await syncDerivedSignals(
+          opts.userId,
+          tenantId,
+          derivedSignalDrafts,
+          planningContext.nowUtc,
+          authoritativeSignalSources,
+        )
+      : groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts, planningContext.nowUtc);
   } catch (err) {
     orchestrationDegraded = true;
     logger.warn(
@@ -386,7 +457,7 @@ export async function composeWeeklyPlan(opts: {
     );
   }
 
-  const variant = resolveAggressivenessVariant(training, garminStale);
+  const variant = resolveAggressivenessVariant(training, garminStale, planningContext.nowUtc);
   const directives = buildDirectiveSet({
     training,
     secretary,
@@ -414,7 +485,8 @@ export async function composeWeeklyPlan(opts: {
   const response: WeeklyPlanResponse = {
     weekStart: window.weekStart,
     weekEnd: window.weekEnd,
-    generatedAt: new Date().toISOString(),
+    generatedAt: planningSnapshot.generatedAt,
+    planningSnapshot,
     variant,
     degraded: orchestrationDegraded,
     gated: { skills: gatedSkills },
@@ -431,7 +503,7 @@ export async function composeWeeklyPlan(opts: {
     days,
   };
 
-  setCache(cacheKey, response, 1800);
+  if (ownsCache) setCache(cacheKey, response, 1800);
   return response;
 }
 
@@ -439,9 +511,10 @@ function groupDerivedSignalDrafts(
   userId: number,
   tenantId: number,
   drafts: MeshSignalDraft[],
+  observedAt: string,
 ): Map<SignalType, AgentSignal[]> {
   const grouped = new Map<SignalType, AgentSignal[]>();
-  const createdAt = new Date().toISOString();
+  const createdAt = observedAt;
   drafts.forEach((draft, index) => {
     const signal: AgentSignal = {
       id: -(index + 1),
@@ -452,9 +525,11 @@ function groupDerivedSignalDrafts(
       consumed_by: [],
       status: 'active',
       created_at: createdAt,
-      expires_at: draft.expiresAt ?? DateTime.now().plus({ days: 7 }).toISO()!,
+      expires_at: draft.expiresAt
+        ?? DateTime.fromISO(observedAt, { zone: 'utc' }).plus({ days: 7 }).toISO()!,
       user_id: userId,
       tenant_id: tenantId,
+      signal_identity: null,
       confidence: 0.5,
       format_tag: null,
       pillar_tag: null,
@@ -475,6 +550,7 @@ function buildCookingMeshSignals(
   cooking: CookingMeshContext,
   training: TrainingMeshContext,
   content: ContentMeshContext | null,
+  referenceNow: string,
 ): MeshSignalDraft[] {
   const fuelingSupport = readFuelingSupportSignal(cooking);
   const executionReadiness = readMealExecutionReadinessSignal(cooking);
@@ -511,7 +587,7 @@ function buildCookingMeshSignals(
       || (cooking.meals.length >= 3 && !executionReadiness.shoppingReady)
     );
   const batchCookDate = hasVerifiedAvailability && hasActualPrepNeed
-    ? chooseBatchCookDate(training, cooking, content, cooking.weekStart)
+    ? chooseBatchCookDate(training, cooking, content, cooking.weekStart, referenceNow)
     : null;
 
   const drafts: MeshSignalDraft[] = [];
@@ -560,21 +636,42 @@ async function syncDerivedSignals(
   userId: number,
   tenantId: number,
   drafts: MeshSignalDraft[],
+  observedAt: string,
+  authoritativeSourceAgents: ReadonlySet<string>,
 ): Promise<Map<SignalType, AgentSignal[]>> {
-  const grouped = new Map<SignalType, AgentSignal[]>();
-  for (const draft of drafts) {
-    const signal = ensureSignal(userId, tenantId, draft);
-    const bucket = grouped.get(signal.signal_type);
-    if (bucket) {
-      bucket.push(signal);
-    } else {
-      grouped.set(signal.signal_type, [signal]);
+  return runSignalWriteTransaction(() => {
+    const grouped = new Map<SignalType, AgentSignal[]>();
+    const keepSignalIdsBySource = new Map<string, number[]>();
+    for (const draft of drafts) {
+      const signal = ensureSignal(userId, tenantId, draft, observedAt);
+      const keepSignalIds = keepSignalIdsBySource.get(draft.sourceAgent) ?? [];
+      keepSignalIds.push(signal.id);
+      keepSignalIdsBySource.set(draft.sourceAgent, keepSignalIds);
+      const bucket = grouped.get(signal.signal_type);
+      if (bucket) {
+        bucket.push(signal);
+      } else {
+        grouped.set(signal.signal_type, [signal]);
+      }
     }
-  }
-  return grouped;
+    for (const sourceAgent of authoritativeSourceAgents) {
+      reconcileGovernedSignalSet({
+        sourceAgent,
+        userId,
+        tenantId,
+        keepSignalIds: keepSignalIdsBySource.get(sourceAgent) ?? [],
+      });
+    }
+    return grouped;
+  });
 }
 
-function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft): AgentSignal {
+function ensureSignal(
+  userId: number,
+  tenantId: number,
+  draft: MeshSignalDraft,
+  observedAt: string,
+): AgentSignal {
   const existing = readSignals('mesh.orchestrator', [draft.signalType], 20, userId, undefined, tenantId).find((signal) =>
     signal.source_agent === draft.sourceAgent
     && signal.meshPriority === draft.meshPriority
@@ -585,9 +682,6 @@ function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft):
     return existing;
   }
 
-  dismissSupersededSignals(userId, tenantId, draft);
-
-  const observedAt = new Date().toISOString();
   const signalId = writeGovernedSignal({
     source_agent: draft.sourceAgent,
     signal_type: draft.signalType,
@@ -595,7 +689,8 @@ function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft):
     user_id: userId,
     tenant_id: tenantId,
     priority: draft.priority,
-    expires_at: draft.expiresAt,
+    expires_at: draft.expiresAt
+      ?? DateTime.fromISO(observedAt, { zone: 'utc' }).plus({ days: 7 }).toISO()!,
     meshPriority: draft.meshPriority,
     provenance: {
       producerVersion: WEEKLY_PLAN_SIGNAL_PRODUCER_VERSION,
@@ -610,22 +705,6 @@ function ensureSignal(userId: number, tenantId: number, draft: MeshSignalDraft):
     throw new Error(`Failed to read freshly written mesh signal ${draft.signalType}`);
   }
   return inserted;
-}
-
-function dismissSupersededSignals(userId: number, tenantId: number, draft: MeshSignalDraft): void {
-  const currentPayload = stableStringify(draft.payload);
-  const activeSignals = readSignals('mesh.orchestrator', [draft.signalType], 50, userId, undefined, tenantId)
-    .filter((signal) =>
-      signal.source_agent === draft.sourceAgent
-      && (
-        signal.meshPriority !== draft.meshPriority
-        || stableStringify(signal.payload) !== currentPayload
-      ),
-    );
-
-  for (const signal of activeSignals) {
-    dismissSignal(signal.id, userId, tenantId);
-  }
 }
 
 function buildDirectiveSet(opts: {
@@ -1992,6 +2071,7 @@ function buildCreativeCopy(
 function resolveAggressivenessVariant(
   training: TrainingMeshContext,
   garminStale: boolean,
+  referenceNow: string,
 ): 'conservative' | 'steady' | 'push' {
   if (garminStale || training.trainingContext.flags.lowAdherence) {
     return 'conservative';
@@ -2004,7 +2084,7 @@ function resolveAggressivenessVariant(
   const zone = resolveTrainingPlanTimezone(training.activePlan);
   const planAgeDays = Math.max(
     0,
-    DateTime.now().setZone(zone).startOf('day').diff(
+    DateTime.fromISO(referenceNow, { setZone: true }).setZone(zone).startOf('day').diff(
       DateTime.fromISO(training.activePlan.start_date, { zone }).startOf('day'),
       'days',
     ).days,
@@ -2083,11 +2163,16 @@ function chooseBatchCookDate(
   cooking: CookingMeshContext,
   content: ContentMeshContext | null,
   weekStart: string,
+  referenceNow: string,
 ): string | null {
   const trainingTimezone = resolveTrainingPlanTimezone(training.activePlan);
   const dates = weekIsoDates(DateTime.fromISO(weekStart, { zone: trainingTimezone }));
-  const today = DateTime.now().setZone(resolveTrainingTimezone(cooking.timezone)).toISODate();
-  const eligibleDates = today ? dates.filter((date) => date >= today) : dates;
+  const today = DateTime.fromISO(referenceNow, { setZone: true })
+    .setZone(resolveTrainingTimezone(cooking.timezone))
+    .toISODate();
+  const eligibleDates = today && today >= dates[0]! && today <= dates[dates.length - 1]!
+    ? dates.filter((date) => date >= today)
+    : dates;
   if (eligibleDates.length === 0) return null;
   const trainingLoadRank = { light: 1, moderate: 2, hard: 3 } as const;
   const trainingLoadByDate = new Map<string, 'hard' | 'moderate' | 'light'>();
@@ -2145,12 +2230,20 @@ function weekIsoDates(start: DateTime): string[] {
   return Array.from({ length: 7 }, (_, index) => start.plus({ days: index }).toISODate()!);
 }
 
-function resolveWeekWindow(weekStart?: string, timezone?: string): { start: DateTime; weekStart: string; weekEnd: string } {
+function resolveWeekWindow(
+  weekStart?: string,
+  timezone?: string,
+  fallbackLocalDate?: string,
+): { start: DateTime; weekStart: string; weekEnd: string } {
   const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
+  const capturedFallback = DateTime.fromISO(fallbackLocalDate ?? '', { zone }).startOf('week');
+  const fallback = capturedFallback.isValid
+    ? capturedFallback
+    : DateTime.now().setZone(zone).startOf('week');
   const base = weekStart
     ? DateTime.fromISO(weekStart, { zone }).startOf('day')
-    : DateTime.now().setZone(zone).startOf('week');
-  const start = (base.isValid ? base : DateTime.now().setZone(zone)).startOf('week');
+    : fallback;
+  const start = (base.isValid ? base : fallback).startOf('week');
   return {
     start,
     weekStart: start.toISODate()!,

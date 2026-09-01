@@ -14,16 +14,31 @@ const mockGetUserById = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetWeeklyAdherence = vi.fn();
 const mockGetUserTimezoneById = vi.fn(() => 'Europe/Lisbon');
+const mockGetUserLanguageById = vi.fn(() => 'en');
 let mockEffectivePlan: 'free' | 'pro' | 'max' | 'owner' = 'max';
 
 let garminStatus = 'active';
 let writtenSignals: Array<Record<string, unknown>> = [];
-const mockDismissSignal = vi.fn((signalId: number) => {
-  writtenSignals = writtenSignals.map((signal) =>
-    signal.id === signalId
-      ? { ...signal, status: 'dismissed' }
-      : signal,
-  );
+const mockReconcileGovernedSignalSet = vi.fn((input: {
+  sourceAgent: string;
+  userId: number;
+  tenantId: number;
+  keepSignalIds: readonly number[];
+}) => {
+  const keepSignalIds = new Set(input.keepSignalIds);
+  let changes = 0;
+  writtenSignals = writtenSignals.map((signal) => {
+    if (signal.status === 'active'
+      && signal.source_agent === input.sourceAgent
+      && signal.user_id === input.userId
+      && signal.tenant_id === input.tenantId
+      && !keepSignalIds.has(Number(signal.id))) {
+      changes += 1;
+      return { ...signal, status: 'dismissed' };
+    }
+    return signal;
+  });
+  return changes;
 });
 
 vi.mock('../../src/config', () => ({
@@ -95,6 +110,7 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
   getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+  getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
 }));
 
 vi.mock('../../src/services/entitlement', () => ({
@@ -134,6 +150,10 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
+  runSignalWriteTransaction: (operation: () => unknown) => operation(),
+  reconcileGovernedSignalSet: (...args: unknown[]) => mockReconcileGovernedSignalSet(
+    args[0] as Parameters<typeof mockReconcileGovernedSignalSet>[0],
+  ),
   readSignals: (_consumer: string, signalTypes: string[], _limit: number, userId?: number, _maxAgeDays?: number, tenantId?: number) =>
     writtenSignals
       .filter((signal) =>
@@ -158,7 +178,6 @@ vi.mock('../../src/services/intelligence-bus', () => ({
     });
     return id;
   },
-  dismissSignal: (...args: unknown[]) => mockDismissSignal(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -426,7 +445,7 @@ describe('weekly-plan-orchestrator', () => {
   beforeEach(() => {
     clearTenantScopeAnomaliesForTests();
     writtenSignals = [];
-    mockDismissSignal.mockClear();
+    mockReconcileGovernedSignalSet.mockClear();
     garminStatus = 'active';
     mockGetCached.mockReset();
     mockSetCache.mockReset();
@@ -521,6 +540,28 @@ describe('weekly-plan-orchestrator', () => {
     });
   });
 
+  it('fails closed before cache or mesh reads when an explicit tenant is invalid', async () => {
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 0,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(mockGetCached).not.toHaveBeenCalled();
+    expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
+    expect(mockReadSecretaryMeshContext).not.toHaveBeenCalled();
+    expect(mockGetUserById).not.toHaveBeenCalled();
+    expect(mockGetUserTimezoneById).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      operation: 'compose_weekly_plan_tenant_scope',
+      userId: 12,
+      details: { tenantId: 0, weekStart: '2026-04-13' },
+    });
+  });
+
   it('does not persist or dismiss mesh signals in read-only weekly plan mode', async () => {
     const base = buildBaseContexts();
     base.finance.derivedSignals = [
@@ -543,10 +584,45 @@ describe('weekly-plan-orchestrator', () => {
 
     expect(result.days.length).toBeGreaterThan(0);
     expect(writtenSignals).toHaveLength(0);
-    expect(mockDismissSignal).not.toHaveBeenCalled();
+    expect(mockReconcileGovernedSignalSet).not.toHaveBeenCalled();
+  });
+
+  it('keeps historical recompute signals in memory without publishing expired drafts', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-27T12:00:00.000Z'));
+    const base = buildBaseContexts();
+    base.finance.derivedSignals = [{
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'budget_remaining',
+      meshPriority: 2,
+      priority: 'urgent',
+      expiresAt: '2026-04-19T22:59:59.999Z',
+      payload: {
+        month: '2026-04',
+        remainingRatio: 0.2,
+        budgetMode: 'controlled',
+      },
+    }];
+    mockReadFinanceMeshContext.mockResolvedValueOnce(base.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 34,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    expect(result.degraded).toBe(false);
+    expect(writtenSignals).toHaveLength(0);
+    expect(mockReconcileGovernedSignalSet).not.toHaveBeenCalled();
+    expect(result.days[0]?.finance?.budgetNote).toContain('controlled');
   });
 
   it('uses tenant scope for synced mesh signals', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-14T08:00:00.000Z'));
     const base = buildBaseContexts();
     base.finance.derivedSignals = [
       {
@@ -1107,7 +1183,7 @@ describe('weekly-plan-orchestrator', () => {
     expect(result.days.flatMap((day) => day.meals).some((meal) => meal.title === 'Batch-cook window')).toBe(false);
   });
 
-  it('resolves the implicit planning week in the user timezone and propagates it to Cooking', async () => {
+  it('propagates one timezone and captured clock to Content and Finance planning reads', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
     mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
@@ -1121,6 +1197,20 @@ describe('weekly-plan-orchestrator', () => {
       tenantId: 12,
       weekStart: '2026-04-06',
       timezone: 'Pacific/Honolulu',
+    });
+    expect(mockReadContentMeshContext).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-06',
+      timezone: 'Pacific/Honolulu',
+      referenceNow: '2026-04-13T00:30:00.000Z',
+    });
+    expect(mockReadFinanceMeshContext).toHaveBeenCalledWith({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-06',
+      timezone: 'Pacific/Honolulu',
+      referenceNow: '2026-04-13T00:30:00.000Z',
     });
   });
 
@@ -1311,6 +1401,8 @@ describe('weekly-plan-orchestrator', () => {
   });
 
   it('retires superseded mesh signals so orchestration does not reason from stale copies', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-14T08:00:00.000Z'));
     const first = buildBaseContexts();
     first.finance.derivedSignals = [
       {
@@ -1355,8 +1447,12 @@ describe('weekly-plan-orchestrator', () => {
       && signal.signal_type === 'budget_remaining',
     );
 
-    expect(mockDismissSignal).toHaveBeenCalledTimes(1);
-    expect(mockDismissSignal).toHaveBeenCalledWith(expect.any(Number), 12, 34);
+    expect(mockReconcileGovernedSignalSet).toHaveBeenCalledWith({
+      sourceAgent: 'mesh.finance-context',
+      userId: 12,
+      tenantId: 34,
+      keepSignalIds: [expect.any(Number)],
+    });
     expect(activeBudgetSignals).toHaveLength(1);
     expect(activeBudgetSignals[0]?.payload).toMatchObject({
       month: '2026-04',
@@ -1364,5 +1460,96 @@ describe('weekly-plan-orchestrator', () => {
       budgetMode: 'tight',
     });
     expect(refreshed.days[0]?.finance?.budgetNote).toContain('Budget headroom is tight this week');
+  });
+
+  it('retires a producer previous signal set when its refreshed draft set is empty', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-14T08:00:00.000Z'));
+    const first = buildBaseContexts();
+    first.finance.derivedSignals = [{
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'budget_remaining',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: { month: '2026-04', remainingRatio: 0.22, budgetMode: 'controlled' },
+    }];
+    mockReadFinanceMeshContext.mockResolvedValueOnce(first.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 34,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    const second = buildBaseContexts();
+    second.finance.derivedSignals = [];
+    mockReadFinanceMeshContext.mockResolvedValueOnce(second.finance);
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 34,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    expect(mockReconcileGovernedSignalSet).toHaveBeenCalledWith({
+      sourceAgent: 'mesh.finance-context',
+      userId: 12,
+      tenantId: 34,
+      keepSignalIds: [],
+    });
+    expect(writtenSignals.filter((signal) =>
+      signal.status === 'active'
+      && signal.source_agent === 'mesh.finance-context'
+      && signal.user_id === 12
+      && signal.tenant_id === 34,
+    )).toEqual([]);
+  });
+
+  it('preserves the last coherent producer set when that producer read degrades', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-14T08:00:00.000Z'));
+    const first = buildBaseContexts();
+    first.finance.derivedSignals = [{
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'budget_remaining',
+      meshPriority: 2,
+      priority: 'urgent',
+      payload: { month: '2026-04', remainingRatio: 0.22, budgetMode: 'controlled' },
+    }];
+    mockReadFinanceMeshContext.mockResolvedValueOnce(first.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 34,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+    mockReconcileGovernedSignalSet.mockClear();
+    mockReadFinanceMeshContext.mockRejectedValueOnce(new Error('finance unavailable'));
+
+    const degraded = await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 34,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    expect(degraded.degraded).toBe(true);
+    expect(mockReconcileGovernedSignalSet.mock.calls.some(
+      ([input]) => input.sourceAgent === 'mesh.finance-context',
+    )).toBe(false);
+    expect(writtenSignals.filter((signal) =>
+      signal.status === 'active'
+      && signal.source_agent === 'mesh.finance-context'
+      && signal.user_id === 12
+      && signal.tenant_id === 34,
+    )).toHaveLength(1);
   });
 });

@@ -150,14 +150,14 @@ describe('cancelAllPendingChatWork', () => {
     testDb?.close();
   });
 
-  it('clears every pending-work store in one call', () => {
+  it('clears every pending-work store in one call', async () => {
     const action = seedPendingAction(TENANT_A);
     const run = seedActionRun(TENANT_A);
     seedConfirmation(TENANT_A);
     seedV2Command(TENANT_A, 'cmd-1');
     seedTimeoutContinuation(TENANT_A, 'timeout-1');
 
-    const result = cancelAllPendingChatWork({
+    const result = await cancelAllPendingChatWork({
       userId: USER_ID,
       tenantId: TENANT_A,
       conversationId: CONVERSATION,
@@ -176,14 +176,14 @@ describe('cancelAllPendingChatWork', () => {
     expect(getPendingChatCoreV2Command('cmd-1', USER_ID, TENANT_A)).toBeNull();
   });
 
-  it('one failing store is reported in errors[] and never stops the other stores', () => {
+  it('one failing store is reported in errors[] and never stops the other stores', async () => {
     seedPendingAction(TENANT_A);
     seedConfirmation(TENANT_A);
     seedV2Command(TENANT_A, 'cmd-2');
     // Force a real store failure: the action-run store's table is gone.
     testDb.exec('DROP TABLE chat_action_runs');
 
-    const result = cancelAllPendingChatWork({
+    const result = await cancelAllPendingChatWork({
       userId: USER_ID,
       tenantId: TENANT_A,
       conversationId: CONVERSATION,
@@ -199,7 +199,7 @@ describe('cancelAllPendingChatWork', () => {
     expect(getPendingChatCoreV2Command('cmd-2', USER_ID, TENANT_A)).toBeNull();
   });
 
-  it('never clears another tenant\'s pending work for the same user', () => {
+  it('never clears another tenant\'s pending work for the same user', async () => {
     const actionB = seedPendingAction(TENANT_B);
     const runB = seedActionRun(TENANT_B, 'msg-b');
     seedConfirmation(TENANT_B);
@@ -207,7 +207,7 @@ describe('cancelAllPendingChatWork', () => {
     seedPendingAction(TENANT_A);
     seedConfirmation(TENANT_A);
 
-    const result = cancelAllPendingChatWork({
+    const result = await cancelAllPendingChatWork({
       userId: USER_ID,
       tenantId: TENANT_A,
       conversationId: CONVERSATION,
@@ -221,8 +221,8 @@ describe('cancelAllPendingChatWork', () => {
     expect(getPendingChatCoreV2Command('cmd-b', USER_ID, TENANT_B)).not.toBeNull();
   });
 
-  it('is a stable no-op when there is nothing pending', () => {
-    const result = cancelAllPendingChatWork({
+  it('is a stable no-op when there is nothing pending', async () => {
+    const result = await cancelAllPendingChatWork({
       userId: USER_ID,
       tenantId: TENANT_A,
       conversationId: CONVERSATION,

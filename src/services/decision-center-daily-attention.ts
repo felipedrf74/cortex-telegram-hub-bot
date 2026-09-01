@@ -2,11 +2,12 @@
 
 import { DateTime } from 'luxon';
 import { createDecisionIntent } from './decision-center';
+import { createDecisionPlanningContext, type DecisionPlanningContext } from './decision-planning-context';
 import { getDb } from './database';
 import { isDecisionCenterDailyAttentionEnabled } from './runtime-flags';
+import { priorityToImportance } from './task-store/task-priority';
 import { listTasksForUser } from './task-store/task-service';
 import type { NormalizedTask } from './task-store/types';
-import { getUserTimezoneById } from './user-service';
 import { logger } from '../utils/logger';
 
 export type DailyAttentionStatus = 'materialized' | 'skipped' | 'failed';
@@ -30,6 +31,7 @@ export interface DailyAttentionMaterializeInput {
   userId: number;
   tenantId: number;
   now?: Date;
+  planningContext?: DecisionPlanningContext;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -49,8 +51,6 @@ const EMPTY_COUNTS: DailyTaskAttentionCounts = Object.freeze({
   dueToday: 0,
   highPriority: 0,
 });
-
-const HIGH_PRIORITY_THRESHOLD = 3;
 
 export async function materializeDecisionCenterDailyAttention(
   input: DailyAttentionMaterializeInput,
@@ -79,8 +79,23 @@ export async function materializeDecisionCenterDailyAttention(
     };
   }
 
-  const timezone = getUserTimezoneById(input.userId);
-  const localDate = localDateFor(input.now ?? new Date(), timezone);
+  const planningContext = input.planningContext ?? createDecisionPlanningContext({
+    userId: input.userId,
+    tenantId: input.tenantId,
+    now: input.now,
+  });
+  if (planningContext.userId !== input.userId || planningContext.tenantId !== input.tenantId) {
+    return {
+      status: 'skipped',
+      reason: 'invalid_scope',
+      localDate: null,
+      timezone: planningContext.timezone,
+      counts: EMPTY_COUNTS,
+      dedupeKey: null,
+      decisionId: null,
+    };
+  }
+  const { timezone, localDate } = planningContext;
   const base = (overrides: Partial<DailyAttentionMaterializeResult>): DailyAttentionMaterializeResult => ({
     status: 'skipped',
     localDate,
@@ -138,9 +153,11 @@ export async function materializeDecisionCenterDailyAttention(
         { id: 'open_detail', label: primaryActionLabel, style: 'primary', deeplink },
       ],
       deeplink,
-      expiresAt: localDayEndIso(localDate, timezone),
+      expiresAt: planningContext.localDayEndUtc,
       quietHoursPolicy: 'respect',
       dedupeKey,
+      idempotencyKey: `daily-attention:${input.tenantId}:${input.userId}:${localDate}`,
+      channel: 'automation',
       requiresUserAction: true,
       deliveryPolicy: 'in_app_only',
       privacyPolicy: 'standard',
@@ -216,7 +233,7 @@ export function summarizeTaskAttention(
   for (const task of tasks) {
     if (task.status !== 'pending') continue;
     pending += 1;
-    if (task.priority >= HIGH_PRIORITY_THRESHOLD) highPriority += 1;
+    if (priorityToImportance(task.priority) === 'high') highPriority += 1;
 
     const dueKey = taskDueDateKey(task, timezone);
     if (!dueKey) continue;
@@ -276,14 +293,6 @@ function joinCountPhrases(values: Array<string | null>): string {
 function attentionVerb(values: Array<string | null>): 'need' | 'needs' {
   const parts = values.filter((value): value is string => Boolean(value));
   return parts.length === 1 && /^1\b/.test(parts[0]) ? 'needs' : 'need';
-}
-
-function localDateFor(now: Date, timezone: string): string {
-  return DateTime.fromJSDate(now).setZone(timezone).toISODate() ?? now.toISOString().slice(0, 10);
-}
-
-function localDayEndIso(localDate: string, timezone: string): string | null {
-  return DateTime.fromISO(localDate, { zone: timezone }).plus({ days: 1 }).toUTC().toISO();
 }
 
 function taskDueDateKey(task: NormalizedTask, timezone: string): string | null {

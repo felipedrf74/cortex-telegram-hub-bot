@@ -361,7 +361,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:219-219",
+            "pattern": "src/services/event-backbone-worker.ts:222-222",
             "anchor": "jobType: 'training_plan_calendar_sync'",
             "behavior": "The wildcard event router converts a Training calendar-sync request into the dedicated durable worker job without performing provider work itself.",
             "replacementTest": "__tests__/services/training-plan-calendar-sync-worker.test.ts",
@@ -839,7 +839,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:196-196",
+            "pattern": "src/services/event-backbone-worker.ts:199-199",
             "anchor": "jobType: 'project_read_models'",
             "behavior": "Projectable Training revision events enqueue exactly one idempotent read-model projection job and no calendar worker job.",
             "replacementTest": "__tests__/services/training-plan-revision-outbox.test.ts",
@@ -1558,7 +1558,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/finance-tracker.ts:997-1001",
+            "pattern": "src/services/finance-tracker.ts:998-1004",
             "anchor": "financeTransactionAuditEvidence(transactionId, ['category', 'subcategory'])",
             "behavior": "Finance transaction updates emit only the transaction identity and changed-field names, never private before or after values.",
             "replacementTest": "__tests__/services/finance-tracker.test.ts",

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Response } from 'express';
+import { createHash } from 'node:crypto';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
@@ -11,28 +12,32 @@ import {
   createDecisionIntent,
   decisionRefreshSupportedForDecision,
   DecisionActionError,
-  dismissDecision,
+  ensureDecisionCenterTables,
+  evaluateDecisionApnsActionRequest,
   getDecisionOverview,
   getDecisionItem,
+  getDecisionItemForCommand,
   getDecisionAuditHistory,
   getDecisionPreferences,
   getDecisionSummary,
   listDecisionTypeSuppressions,
   listHandledByNexusItems,
   listDecisionItems,
+  isDecisionActionAttemptReplay,
   markDecisionViewed,
   refreshDecisionItem,
   recordDecisionItemExposuresByIds,
   performDecisionAction,
   reviewDecision,
   reviseDecisionProposal,
-  snoozeDecision,
   suppressDecisionType,
   unsuppressDecisionType,
-  updateDecisionPreferences,
+  updateDecisionPreferencesViaCommand,
   type DecisionTypeSuppressionMode,
   type DecisionUrgency,
   type DecisionReplacementChoice,
+  type DecisionIntentCommandInput,
+  DECISION_RANKING_VERSION,
 } from '../../services/decision-center';
 import {
   registerNotificationDeviceToken,
@@ -42,7 +47,7 @@ import {
 } from '../../services/notification-orchestrator';
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
 import { buildDecisionCardSummary, resolveDecisionApiVersion } from '../decision-api-version';
-import { decodeDecisionCursor, paginateDecisions, sortDecisionsForKeyset } from '../decision-cursor';
+import { paginateDecisions, sortDecisionsForKeyset } from '../decision-cursor';
 
 const DECISION_REPLACEMENT_CHOICES = new Set<DecisionReplacementChoice>([
   'keep_existing_commitment',
@@ -53,6 +58,13 @@ const DECISION_REPLACEMENT_CHOICES = new Set<DecisionReplacementChoice>([
 import type { DecisionListResponse } from '../../services/decision-center';
 import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
 import { logger } from '../../utils/logger';
+import { normalizeDecisionCenterError } from '../../services/decision-center/errors';
+import {
+  createDecisionMutationCommand,
+  type DecisionMutationOperation,
+} from '../../services/decision-center/contracts';
+import { executeDecisionMutationWithReceipt } from '../../services/decision-center/command-receipts';
+import { readDecisionRankSnapshotPageFromCurrentDatabase } from '../../services/decision-center/rank-snapshot-service';
 
 function routeTenantId(
   req: AuthenticatedRequest,
@@ -108,7 +120,103 @@ function decisionError(res: Response, err: unknown, fallbackCode = 'DECISION_ERR
     return;
   }
   logger.warn({ err }, 'Decision route rejected request');
-  sendError(res, fallbackCode, 'Unable to process decision request', 400);
+  const normalized = normalizeDecisionCenterError(err);
+  sendError(
+    res,
+    normalized.code === 'DECISION_INTERNAL_ERROR' ? fallbackCode : normalized.code,
+    normalized.message,
+    normalized.status,
+    sanitizeDecisionErrorDetails(normalized.details),
+  );
+}
+
+function mutationIdempotencyKey(
+  body: Record<string, unknown>,
+  actionId: string,
+  decisionId: string,
+  expectedVersion?: number,
+): string | null {
+  if (body.idempotencyKey != null) {
+    if (typeof body.idempotencyKey !== 'string') return null;
+    const explicit = body.idempotencyKey.trim();
+    if (!explicit || explicit.length > 200) return null;
+    return explicit;
+  }
+  // Additive compatibility for an old binary: bind its replay key to the
+  // reviewed version and canonical request payload. New clients always send
+  // their durable journal key.
+  const payloadDigest = createHash('sha256').update(stableRouteJson(body)).digest('hex').slice(0, 24);
+  return `legacy-rest:${actionId}:${decisionId}:v${expectedVersion ?? 'unversioned'}:${payloadDigest}`;
+}
+
+function stableRouteJson(value: unknown): string {
+  if (value === undefined) return '"__undefined__"';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableRouteJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableRouteJson(record[key])}`).join(',')}}`;
+}
+
+function decisionProposalRequestFingerprint(
+  body: Record<string, unknown>,
+  userId: number,
+  tenantId: number,
+  fixtureSourceSkill?: string,
+): string {
+  const sanitized = { ...body };
+  delete sanitized.idempotencyKey;
+  delete sanitized.userId;
+  delete sanitized.tenantId;
+  return createHash('sha256').update(stableRouteJson({
+    schemaVersion: 'decision-proposal-route@1.0.0',
+    scope: { userId, tenantId },
+    fixtureSourceSkill: fixtureSourceSkill ?? null,
+    body: sanitized,
+  })).digest('hex');
+}
+
+function executeRouteDecisionMutation<Result>(input: {
+  operation: DecisionMutationOperation;
+  resourceId: string;
+  userId: number;
+  tenantId: number;
+  idempotencyKey: string;
+  entityType: string;
+  payload: Readonly<Record<string, unknown>>;
+  mutate: () => Result;
+}): { result: Result; idempotent: boolean } {
+  ensureDecisionCenterTables();
+  const requestedAt = new Date(Date.now()).toISOString();
+  const commandKey = createHash('sha256').update(input.idempotencyKey).digest('hex');
+  const command = createDecisionMutationCommand({
+    commandId: `rest:${input.operation}:${commandKey}`,
+    decisionId: input.resourceId,
+    operation: input.operation,
+    actionId: input.operation,
+    scope: { userId: input.userId, tenantId: input.tenantId },
+    channel: 'rest',
+    idempotencyKey: input.idempotencyKey,
+    recordVersion: null,
+    contextVersion: null,
+    approval: { requiredLevel: 'none', evidence: null },
+    execution: {
+      executorId: `decision-center.${input.operation}`,
+      strategy: 'synchronous',
+      riskLevel: 'low',
+      reversible: true,
+      supportsIdempotency: true,
+    },
+    readback: {
+      verifierId: `decision-center.${input.operation}.readback`,
+      entityType: input.entityType,
+      entityId: input.resourceId,
+      mode: 'exact',
+      expectedState: {},
+    },
+    payload: input.payload,
+    requestedAt,
+  });
+  return executeDecisionMutationWithReceipt(command, input.mutate);
 }
 
 function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: string, max: number): number | null {
@@ -126,9 +234,10 @@ function positiveIntQuery(res: Response, raw: unknown, fallback: number, name: s
   return Math.min(parsed, max);
 }
 
-/** Internal read cap for v2 cursor pagination: the full active list to paginate over (cursor/pageSize bound
- *  the page). Comfortably exceeds the ~50-active-per-user product ceiling so cursors traverse everything. */
-const DECISION_LIST_CURSOR_CAP = 500;
+/** Internal read cap for v2 cursor pagination when a rank snapshot is not yet available.
+ *  It matches the snapshot repository and iOS traversal ceiling so fallback pagination
+ *  cannot silently truncate the authoritative universe at an unrelated lower limit. */
+const DECISION_LIST_CURSOR_CAP = 50_000;
 
 export function decisionRoutes(): Router {
   const router = Router();
@@ -191,29 +300,75 @@ export function decisionRoutes(): Router {
     // API v2 keyset cursor pagination — opt-in WITHIN v2 via ?cursor / ?pageSize. v1 and v2-without-cursor
     // responses are byte-identical to before (this branch only triggers on an explicit cursor/pageSize param).
     const cursorMode = version === 'v2' && (req.query.cursor !== undefined || req.query.pageSize !== undefined);
-    // In cursor mode the URL ?limit is irrelevant — the pagination universe must be the FULL active list, so
-    // read with a generous internal cap (cursor/pageSize bound the page). Otherwise a >80-item user would get
-    // nextCursor=null mid-dataset. The cap comfortably exceeds the ~50-active-per-user product ceiling.
-    const readLimit = cursorMode ? DECISION_LIST_CURSOR_CAP : limit;
-    // C3: drop user-suppressed types from the user-facing list (flag-gated; floored decisions never dropped).
-    const items = applyDecisionTypeSuppression(
-      listDecisionItems(userId, tenantId, {
-        status,
-        sourceSkill,
-        type,
-        urgency,
-        limit: readLimit,
-        recordExposure: false,
-        ...(cursorMode ? { maxLimit: DECISION_LIST_CURSOR_CAP } : {}),
-      }),
-      userId,
-      tenantId,
-    );
     if (cursorMode) {
       const pageSize = positiveIntQuery(res, req.query.pageSize, 50, 'pageSize', 100);
       if (pageSize == null) return;
-      const cursor = typeof req.query.cursor === 'string' ? decodeDecisionCursor(req.query.cursor) : null;
-      const { page, nextCursor } = paginateDecisions(sortDecisionsForKeyset(items), cursor, pageSize);
+      if (req.query.cursor !== undefined && typeof req.query.cursor !== 'string') {
+        sendError(res, 'DECISION_CURSOR_MALFORMED', 'Decision cursor is malformed.', 400, { reason: 'encoding' });
+        return;
+      }
+      let snapshotResolution: ReturnType<typeof readDecisionRankSnapshotPageFromCurrentDatabase>;
+      try {
+        snapshotResolution = readDecisionRankSnapshotPageFromCurrentDatabase({
+          scope: { userId, tenantId },
+          rankingVersion: DECISION_RANKING_VERSION,
+          filters: { status, sourceSkill, type, urgency },
+          cursorRaw: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+          pageSize,
+        });
+      } catch (err) {
+        decisionError(res, err, 'DECISION_CURSOR_INVALID');
+        return;
+      }
+
+      if (snapshotResolution.kind === 'snapshot') {
+        const response: DecisionListResponse = {
+          schemaVersion,
+          count: snapshotResolution.cards.length,
+          openCount: snapshotResolution.cards.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
+          items: [...snapshotResolution.cards],
+          pageSize,
+          snapshotId: snapshotResolution.snapshotId,
+          rankingAsOf: snapshotResolution.rankingAsOf,
+          rankingVersion: snapshotResolution.rankingVersion,
+          ...(snapshotResolution.nextCursor ? { nextCursor: snapshotResolution.nextCursor } : {}),
+        };
+        sendSuccess(res, response);
+        return;
+      }
+
+      // Valid old cursors remain on their original ordering contract. A scope
+      // awaiting migration backfill also falls back explicitly; the GET stays
+      // pure and advertises structured degradation instead of creating state.
+      const items = applyDecisionTypeSuppression(
+        listDecisionItems(userId, tenantId, {
+          status,
+          sourceSkill,
+          type,
+          urgency,
+          limit: DECISION_LIST_CURSOR_CAP,
+          maxLimit: DECISION_LIST_CURSOR_CAP,
+          recordExposure: false,
+        }),
+        userId,
+        tenantId,
+      );
+      const cursor = snapshotResolution.kind === 'legacy'
+        ? {
+            priorityScore: snapshotResolution.cursor.priorityScore,
+            createdAt: snapshotResolution.cursor.createdAt,
+            decisionId: snapshotResolution.cursor.decisionId,
+            rankingVersion: snapshotResolution.cursor.rankingVersion,
+          }
+        : null;
+      let page: ReturnType<typeof paginateDecisions>['page'];
+      let nextCursor: ReturnType<typeof paginateDecisions>['nextCursor'];
+      try {
+        ({ page, nextCursor } = paginateDecisions(sortDecisionsForKeyset(items), cursor, pageSize));
+      } catch (err) {
+        decisionError(res, err, 'DECISION_CURSOR_INVALID');
+        return;
+      }
       const response: DecisionListResponse = {
         schemaVersion,
         count: page.length,
@@ -221,10 +376,29 @@ export function decisionRoutes(): Router {
         items: page.map(buildDecisionCardSummary),
         pageSize,
         ...(nextCursor ? { nextCursor } : {}),
+        ...(snapshotResolution.kind === 'unavailable' ? {
+          degradationReasons: [{
+            code: 'DECISION_RANK_SNAPSHOT_UNAVAILABLE',
+            message: 'Immutable ranking snapshot is awaiting backfill.',
+          }],
+        } : {}),
       };
       sendSuccess(res, response);
       return;
     }
+    // C3: drop user-suppressed types from the user-facing list (flag-gated; floored decisions never dropped).
+    const items = applyDecisionTypeSuppression(
+      listDecisionItems(userId, tenantId, {
+        status,
+        sourceSkill,
+        type,
+        urgency,
+        limit,
+        recordExposure: false,
+      }),
+      userId,
+      tenantId,
+    );
     const response = {
       count: items.length,
       openCount: items.filter((item) => ['unread', 'read', 'failed'].includes(item.status)).length,
@@ -243,12 +417,25 @@ export function decisionRoutes(): Router {
     }
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_create_intent', 'notification_center_items');
     if (tenantId == null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      'create_intent',
+      typeof body.intentId === 'string' && body.intentId.trim() ? body.intentId.trim() : 'decision-intent',
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
       const result = await createDecisionIntent({
-        ...(req.body ?? {}),
+        ...body,
         userId,
         tenantId,
-      });
+        idempotencyKey,
+        channel: 'rest',
+        proposalRequestFingerprint: decisionProposalRequestFingerprint(body, userId, tenantId),
+      } as DecisionIntentCommandInput);
       if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result, { status: result.item ? 201 : 202 });
     } catch (err) {
@@ -270,8 +457,24 @@ export function decisionRoutes(): Router {
       sendError(res, 'VALIDATION', 'decisionIds must contain 1 to 100 non-empty decision IDs', 400);
       return;
     }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const idempotencyKey = mutationIdempotencyKey(body, 'record_exposure', 'decision-exposures');
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      sendSuccess(res, recordDecisionItemExposuresByIds(rawIds, userId, tenantId));
+      const receipt = executeRouteDecisionMutation({
+        operation: 'record_exposure',
+        resourceId: 'decision-exposures',
+        userId,
+        tenantId,
+        idempotencyKey,
+        entityType: 'decision_exposure_batch',
+        payload: { decisionIds: rawIds },
+        mutate: () => recordDecisionItemExposuresByIds(rawIds, userId, tenantId),
+      });
+      sendSuccess(res, receipt.result);
     } catch (err) {
       decisionError(res, err, 'DECISION_EXPOSURE_FAILED');
     }
@@ -287,16 +490,37 @@ export function decisionRoutes(): Router {
     }
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_fixture_intent', 'notification_center_items');
     if (tenantId == null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      'create_fixture_intent',
+      String(req.params.sourceSkill || 'secretary'),
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      const result = await createDecisionIntent(buildSkillDecisionFixtureIntent(
+      const fixture = buildSkillDecisionFixtureIntent(
         String(req.params.sourceSkill || 'secretary') as NotificationSourceSkill,
         userId,
         {
-          ...(req.body ?? {}),
+          ...body,
           tenantId,
           userId,
         },
-      ));
+      );
+      const result = await createDecisionIntent({
+        ...fixture,
+        idempotencyKey,
+        channel: 'rest',
+        proposalRequestFingerprint: decisionProposalRequestFingerprint(
+          body,
+          userId,
+          tenantId,
+          String(req.params.sourceSkill || 'secretary'),
+        ),
+      });
       if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result, { status: result.item ? 201 : 202 });
     } catch (err) {
@@ -319,8 +543,22 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_update_preferences')) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_update_preferences', 'notification_profiles');
     if (tenantId == null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const idempotencyKey = mutationIdempotencyKey(body, 'update_preferences', 'decision-preferences');
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
+    const patch = Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'idempotencyKey'));
     try {
-      sendSuccess(res, updateDecisionPreferences(userId, tenantId, req.body ?? {}));
+      const receipt = updateDecisionPreferencesViaCommand({
+        userId,
+        tenantId,
+        idempotencyKey,
+        channel: 'rest',
+        patch,
+      });
+      sendSuccess(res, receipt.preferences);
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_PREFERENCES');
     }
@@ -343,7 +581,7 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_suppress_type')) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_suppress_type', 'decision_type_suppressions');
     if (tenantId == null) return;
-    const body = (req.body ?? {}) as { sourceSkill?: unknown; type?: unknown; mode?: unknown; untilDays?: unknown; recipe?: unknown };
+    const body = (req.body ?? {}) as Record<string, unknown>;
     const sourceSkill = typeof body.sourceSkill === 'string' ? body.sourceSkill.trim() : '';
     const type = typeof body.type === 'string' ? body.type.trim() : '';
     const recipe = typeof body.recipe === 'string' && body.recipe.trim() ? body.recipe.trim() : null;
@@ -358,15 +596,38 @@ export function decisionRoutes(): Router {
       if (days == null) return;
       until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
     }
+    const idempotencyKey = mutationIdempotencyKey(body, 'suppress_type', `${sourceSkill}:${type}:${recipe ?? '*'}`);
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      suppressDecisionType(userId, tenantId, sourceSkill, type, mode as DecisionTypeSuppressionMode, until, recipe);
+      const receipt = executeRouteDecisionMutation({
+        operation: 'suppress_type',
+        resourceId: `decision-suppression:${sourceSkill}:${type}:${recipe ?? '*'}`,
+        userId,
+        tenantId,
+        idempotencyKey,
+        entityType: 'decision_type_suppression',
+        payload: {
+          sourceSkill,
+          type,
+          mode,
+          untilDays: body.untilDays ?? null,
+          recipe,
+        },
+        mutate: () => {
+          suppressDecisionType(userId, tenantId, sourceSkill, type, mode as DecisionTypeSuppressionMode, until, recipe);
+          return { suppressions: listDecisionTypeSuppressions(userId, tenantId) };
+        },
+      });
+      sendSuccess(res, receipt.result, { status: 201 });
     } catch (err) {
       // Map service-layer DecisionActionError (VALIDATION / INVALID_SCOPE) to its intended 4xx instead of a
       // 500, consistent with every other handler in this file.
       decisionError(res, err, 'DECISION_SUPPRESS_FAILED');
       return;
     }
-    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) }, { status: 201 });
   }));
 
   router.delete('/preferences/suppress-type', asyncHandler(async (req, res: Response) => {
@@ -382,13 +643,36 @@ export function decisionRoutes(): Router {
       sendError(res, 'VALIDATION', 'sourceSkill and type query params are required', 400);
       return;
     }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const receiptPayload = { sourceSkill, type, recipe };
+    const idempotencyKey = mutationIdempotencyKey(
+      { ...receiptPayload, ...body },
+      'unsuppress_type',
+      `${sourceSkill}:${type}:${recipe ?? '*'}`,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      unsuppressDecisionType(userId, tenantId, sourceSkill, type, recipe);
+      const receipt = executeRouteDecisionMutation({
+        operation: 'unsuppress_type',
+        resourceId: `decision-suppression:${sourceSkill}:${type}:${recipe ?? '*'}`,
+        userId,
+        tenantId,
+        idempotencyKey,
+        entityType: 'decision_type_suppression',
+        payload: receiptPayload,
+        mutate: () => {
+          unsuppressDecisionType(userId, tenantId, sourceSkill, type, recipe);
+          return { suppressions: listDecisionTypeSuppressions(userId, tenantId) };
+        },
+      });
+      sendSuccess(res, receipt.result);
     } catch (err) {
       decisionError(res, err, 'DECISION_UNSUPPRESS_FAILED');
       return;
     }
-    sendSuccess(res, { suppressions: listDecisionTypeSuppressions(userId, tenantId) });
   }));
 
   router.get('/handled', asyncHandler(async (req, res: Response) => {
@@ -409,7 +693,10 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_detail', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route');
     if (tenantId == null) return;
-    const item = getDecisionItem(String(req.params.id || ''), userId, tenantId);
+    // Exact detail is also the canonical mutation readback. Preserve terminal
+    // owned rows here so durable clients can reconcile a completed write even
+    // after the item correctly disappears from active list projections.
+    const item = getDecisionItemForCommand(String(req.params.id || ''), userId, tenantId);
     if (!item) {
       sendError(res, 'NOT_FOUND', 'Decision not found', 404);
       return;
@@ -424,8 +711,29 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_viewed', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_viewed', 'notification_center_items');
     if (tenantId == null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const expectedVersion = body.expectedVersion ?? body.recordVersion;
+    if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) <= 0)) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    const decisionId = String(req.params.id || '');
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      'mark_viewed',
+      decisionId,
+      typeof expectedVersion === 'number' ? expectedVersion : undefined,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      const item = markDecisionViewed(String(req.params.id || ''), userId, tenantId);
+      const item = markDecisionViewed(decisionId, userId, tenantId, {
+        idempotencyKey,
+        expectedVersion: typeof expectedVersion === 'number' ? expectedVersion : undefined,
+        channel: 'rest',
+      });
       invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, { item });
     } catch (err) {
@@ -446,8 +754,42 @@ export function decisionRoutes(): Router {
       sendError(res, 'NOT_FOUND', 'Decision refresh is not enabled', 404);
       return;
     }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const decisionId = String(req.params.id || '');
+    const current = getDecisionItem(decisionId, userId, tenantId);
+    if (!current) {
+      sendError(res, 'DECISION_NOT_FOUND', 'Decision not found', 404);
+      return;
+    }
+    const expectedVersion = body.expectedVersion ?? body.recordVersion ?? current.recordVersion;
+    if (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) <= 0) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    if (body.contextVersion != null && (typeof body.contextVersion !== 'string' || !body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
+      return;
+    }
+    const contextVersion = typeof body.contextVersion === 'string'
+      ? body.contextVersion
+      : current.contextVersion;
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      'refresh',
+      decisionId,
+      Number(expectedVersion),
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      const result = refreshDecisionItem(String(req.params.id || ''), userId, tenantId);
+      const result = refreshDecisionItem(decisionId, userId, tenantId, {
+        idempotencyKey,
+        expectedVersion: Number(expectedVersion),
+        ...(contextVersion ? { contextVersion } : {}),
+        channel: 'rest',
+      });
       if (!result) {
         sendError(res, 'DECISION_NOT_FOUND', 'Decision not found', 404);
         return;
@@ -488,7 +830,7 @@ export function decisionRoutes(): Router {
       sendError(res, 'VALIDATION', 'outcome must be approve, reject, or defer', 400);
       return;
     }
-    const expectedVersion = req.body?.expectedVersion;
+    const expectedVersion = req.body?.expectedVersion ?? req.body?.recordVersion;
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0) {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
       return;
@@ -501,14 +843,25 @@ export function decisionRoutes(): Router {
       sendError(res, 'VALIDATION', 'replacementChoiceId is not a supported conflict option', 400);
       return;
     }
+    const idempotencyKey = mutationIdempotencyKey(
+      req.body ?? {},
+      `review:${outcome}`,
+      String(req.params.id || ''),
+      expectedVersion,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
       const item = reviewDecision(String(req.params.id || ''), userId, tenantId, {
         outcome,
         expectedVersion,
-        idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
+        idempotencyKey,
         deferUntil: typeof req.body?.deferUntil === 'string' ? req.body.deferUntil : undefined,
         reasonCode: typeof req.body?.reasonCode === 'string' ? req.body.reasonCode : undefined,
         replacementChoiceId,
+        channel: 'rest',
         strongConfirmationText: typeof req.body?.strongConfirmationText === 'string'
           ? req.body.strongConfirmationText
           : undefined,
@@ -526,14 +879,26 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_revise', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_revise', 'notification_center_items');
     if (tenantId == null) return;
-    const expectedVersion = req.body?.expectedVersion;
+    const expectedVersion = req.body?.expectedVersion ?? req.body?.recordVersion;
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0) {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    const idempotencyKey = mutationIdempotencyKey(
+      req.body ?? {},
+      'edit_proposal',
+      String(req.params.id || ''),
+      expectedVersion,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
       return;
     }
     try {
       const item = reviseDecisionProposal(String(req.params.id || ''), userId, tenantId, {
         expectedVersion,
+        idempotencyKey,
+        channel: 'rest',
         recommendedStartAt: typeof req.body?.recommendedStartAt === 'string' ? req.body.recommendedStartAt : undefined,
         recommendedEndAt: typeof req.body?.recommendedEndAt === 'string' ? req.body.recommendedEndAt : undefined,
       });
@@ -550,16 +915,45 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_snooze', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_snooze', 'notification_center_items');
     if (tenantId == null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const decisionId = String(req.params.id || '');
+    const expectedVersion = body.expectedVersion;
+    if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) <= 0)) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    if (body.minutes != null && (!Number.isSafeInteger(body.minutes) || Number(body.minutes) <= 0)) {
+      sendError(res, 'VALIDATION', 'minutes must be a positive integer', 400);
+      return;
+    }
+    if (body.deferUntil != null && typeof body.deferUntil !== 'string') {
+      sendError(res, 'VALIDATION', 'deferUntil must be an ISO timestamp', 400);
+      return;
+    }
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      'snooze',
+      decisionId,
+      typeof expectedVersion === 'number' ? expectedVersion : undefined,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      const item = snoozeDecision(
-        String(req.params.id || ''),
-        userId,
-        tenantId,
-        Number(req.body?.minutes ?? 60),
-        typeof req.body?.expectedVersion === 'number' ? req.body.expectedVersion : undefined,
-      );
+      const result = await performDecisionAction(decisionId, 'snooze', userId, tenantId, {
+        idempotencyKey,
+        expectedVersion: typeof expectedVersion === 'number' ? expectedVersion : undefined,
+        contextVersion: typeof body.contextVersion === 'string' ? body.contextVersion : undefined,
+        channel: 'rest',
+        payload: {
+          ...(body.minutes == null ? {} : { minutes: body.minutes }),
+          ...(typeof body.deferUntil === 'string' ? { deferUntil: body.deferUntil } : {}),
+          ...(typeof body.followUp === 'string' ? { followUp: body.followUp } : {}),
+        },
+      });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item });
+      sendSuccess(res, { item: result.item });
     } catch (err) {
       decisionError(res, err, 'DECISION_SNOOZE_FAILED');
     }
@@ -571,16 +965,33 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_dismiss', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_dismiss', 'notification_center_items');
     if (tenantId == null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const decisionId = String(req.params.id || '');
+    const expectedVersion = body.expectedVersion;
+    if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) <= 0)) {
+      sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      'dismiss',
+      decisionId,
+      typeof expectedVersion === 'number' ? expectedVersion : undefined,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
-      const item = dismissDecision(
-        String(req.params.id || ''),
-        userId,
-        tenantId,
-        typeof req.body?.reason === 'string' ? req.body.reason : undefined,
-        typeof req.body?.expectedVersion === 'number' ? req.body.expectedVersion : undefined,
-      );
+      const result = await performDecisionAction(decisionId, 'dismiss', userId, tenantId, {
+        idempotencyKey,
+        expectedVersion: typeof expectedVersion === 'number' ? expectedVersion : undefined,
+        contextVersion: typeof body.contextVersion === 'string' ? body.contextVersion : undefined,
+        channel: 'rest',
+        payload: typeof body.reason === 'string' ? { reason: body.reason } : {},
+      });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item });
+      sendSuccess(res, { item: result.item });
     } catch (err) {
       decisionError(res, err, 'DECISION_DISMISS_FAILED');
     }
@@ -592,23 +1003,62 @@ export function decisionRoutes(): Router {
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_action', { decisionId: req.params.id })) return;
     const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_action', 'notification_center_items');
     if (tenantId == null) return;
-    const expectedVersion = req.body?.expectedVersion;
-    if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0)) {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const decisionId = String(req.params.id || '');
+    const actionId = String(body.actionId || '');
+    const expectedVersion = body.expectedVersion ?? body.recordVersion;
+    if (expectedVersion != null && (
+      typeof expectedVersion !== 'number'
+      || !Number.isSafeInteger(expectedVersion)
+      || expectedVersion <= 0
+    )) {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
       return;
     }
+    const idempotencyKey = mutationIdempotencyKey(
+      body,
+      actionId,
+      decisionId,
+      typeof expectedVersion === 'number' ? expectedVersion : undefined,
+    );
+    if (!idempotencyKey) {
+      sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
+      return;
+    }
     try {
+      const channel = typeof body.channel === 'string' ? body.channel : undefined;
+      const isApnsReplay = channel === 'apns' && isDecisionActionAttemptReplay({
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        idempotencyKey,
+      });
+      if (channel === 'apns' && !isApnsReplay) {
+        const policy = evaluateDecisionApnsActionRequest({
+          decisionId,
+          actionId,
+          userId,
+          tenantId,
+          recordVersion: typeof expectedVersion === 'number' ? expectedVersion : null,
+          contextVersion: typeof body.contextVersion === 'string' ? body.contextVersion : null,
+        });
+        if (!policy.execute) {
+          sendSuccess(res, policy);
+          return;
+        }
+      }
       const result = await performDecisionAction(
-        String(req.params.id || ''),
-        String(req.body?.actionId || ''),
+        decisionId,
+        actionId,
         userId,
         tenantId,
         {
-          idempotencyKey: typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : undefined,
-          payload: typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {},
-          channel: typeof req.body?.channel === 'string' ? req.body.channel : undefined,
+          idempotencyKey,
+          payload: typeof body.payload === 'object' && body.payload ? body.payload as Record<string, unknown> : {},
+          channel,
           expectedVersion: typeof expectedVersion === 'number' ? expectedVersion : undefined,
-          contextVersion: typeof req.body?.contextVersion === 'string' ? req.body.contextVersion : undefined,
+          contextVersion: typeof body.contextVersion === 'string' ? body.contextVersion : undefined,
         },
       );
       invalidateNotificationInboxCaches(userId, tenantId);

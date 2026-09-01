@@ -49,20 +49,36 @@ export interface DecisionDashboardSnapshot {
   };
 }
 
+export interface DecisionDashboardContext {
+  /** Optional request-scoped timezone override; production defaults to the user's stored timezone. */
+  timezone?: string;
+  /** Injected request clock used for both generatedAt and the local-day lookup. */
+  now?: Date;
+}
+
 /**
  * Build the operator dashboard snapshot by composing the existing decision-center reads. Pure
  * read-only; no writes. Scoping is inherited from the composed reads (called with the same
  * userId/tenantId). `today` is null until the daily rollup job has run for the current date.
  */
-export function buildDecisionDashboardSnapshot(userId: number, tenantId = userId): DecisionDashboardSnapshot {
+export function buildDecisionDashboardSnapshot(
+  userId: number,
+  tenantId = userId,
+  context: DecisionDashboardContext = {},
+): DecisionDashboardSnapshot {
+  const now = context.now ?? new Date();
   const outcomes = getDecisionOutcomeMetrics(userId, tenantId);
   return {
     userId,
     tenantId,
-    generatedAt: new Date().toISOString(),
+    generatedAt: now.toISOString(),
     releaseGate: getDecisionReleaseGateStatus(userId, tenantId),
     activeBreakdowns: getDecisionActiveBreakdowns(userId, tenantId),
-    today: getDecisionMetricsDaily(tenantId),
+    today: getDecisionMetricsDaily(tenantId, {
+      userId,
+      ...(context.timezone ? { timezone: context.timezone } : {}),
+      now,
+    }),
     feedbackBySkill: getDecisionFeedbackSignals(userId, tenantId),
     outcomes: {
       totalOutcomes: outcomes.totalOutcomes,

@@ -6,9 +6,10 @@ const mocks = vi.hoisted(() => ({
   getDecisionSummary: vi.fn(),
   listDecisionItems: vi.fn(),
   getDecisionItem: vi.fn(),
+  getDecisionItemForCommand: vi.fn(),
   getDecisionPreferences: vi.fn(),
   performDecisionAction: vi.fn(),
-  updateDecisionPreferences: vi.fn(),
+  updateDecisionPreferencesViaCommand: vi.fn(),
   logPortalAdminMutation: vi.fn(),
   isDecisionDashboardEnabled: vi.fn(),
   buildDecisionDashboardSnapshot: vi.fn(),
@@ -71,11 +72,12 @@ vi.mock('../../src/services/decision-center', () => ({
   listDecisionDependencies: vi.fn(),
   markDecisionViewed: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mocks.getDecisionItem(...args),
+  getDecisionItemForCommand: (...args: unknown[]) => mocks.getDecisionItemForCommand(...args),
   getDecisionPreferences: (...args: unknown[]) => mocks.getDecisionPreferences(...args),
   performDecisionAction: (...args: unknown[]) => mocks.performDecisionAction(...args),
   runDecisionSourceStateSupersessionJob: vi.fn(),
   snoozeDecision: vi.fn(),
-  updateDecisionPreferences: (...args: unknown[]) => mocks.updateDecisionPreferences(...args),
+  updateDecisionPreferencesViaCommand: (...args: unknown[]) => mocks.updateDecisionPreferencesViaCommand(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -225,6 +227,8 @@ function sampleDecision(overrides: Record<string, unknown> = {}) {
     visibilityScope: 'user_private',
     createdAt: '2026-05-10T10:00:00.000Z',
     updatedAt: '2026-05-10T10:00:00.000Z',
+    recordVersion: 3,
+    contextVersion: 'ctx_3',
     actions: [{ id: 'mark_paid', label: 'Mark paid', style: 'primary', destructive: false }],
     ...overrides,
   };
@@ -247,6 +251,7 @@ describe('portal Decision Center routes', () => {
     });
     mocks.listDecisionItems.mockReturnValue([sampleDecision()]);
     mocks.getDecisionItem.mockReturnValue(sampleDecision());
+    mocks.getDecisionItemForCommand.mockReturnValue(sampleDecision());
     mocks.getDecisionPreferences.mockReturnValue({
       decisionPreferences: {
         pushEnabled: true,
@@ -254,8 +259,9 @@ describe('portal Decision Center routes', () => {
         autoHideResolved: true,
       },
     });
-    mocks.updateDecisionPreferences.mockReturnValue({
-      profile: { pushEnabled: false },
+    mocks.updateDecisionPreferencesViaCommand.mockReturnValue({
+      preferences: { profile: { pushEnabled: false } },
+      idempotent: false,
     });
     mocks.performDecisionAction.mockResolvedValue({
       actionId: 'mark_paid',
@@ -440,6 +446,9 @@ describe('portal Decision Center routes', () => {
     expect(mocks.performDecisionAction).toHaveBeenCalledWith('nc_1', 'mark_paid', 7, 7, {
       idempotencyKey: 'portal-tap-1',
       payload: { month: '2026-05' },
+      channel: 'portal',
+      expectedVersion: 3,
+      contextVersion: 'ctx_3',
     });
     expect(mocks.logPortalAdminMutation).toHaveBeenCalledWith(expect.any(Object), 7, 'portal.decision_center.action', expect.objectContaining({
       decisionId: 'nc_1',
@@ -447,6 +456,51 @@ describe('portal Decision Center routes', () => {
     }));
     expect(payload.statusCode).toBe(200);
     expect((payload.body as any).item.status).toBe('actioned');
+  });
+
+  it('derives a version-bound replay key for an old portal action client', async () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/decision-center/decisions/:decisionId/actions')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({
+      params: { userId: '7', decisionId: 'nc_1' },
+      body: { actionId: 'mark_paid', payload: { month: '2026-05' } },
+      query: {},
+    }, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mocks.performDecisionAction).toHaveBeenCalledWith(
+      'nc_1',
+      'mark_paid',
+      7,
+      7,
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^legacy-portal-action:[a-f0-9]{64}$/),
+        expectedVersion: 3,
+      }),
+    );
+    expect(payload.statusCode).toBe(200);
+  });
+
+  it('returns a typed 404 when an exact portal action target is absent', async () => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/decision-center/decisions/:decisionId/actions')?.[2]!;
+    const { payload, res } = makeResponse();
+    mocks.getDecisionItemForCommand.mockReturnValueOnce(null);
+
+    handler({
+      params: { userId: '7', decisionId: 'missing' },
+      body: { actionId: 'mark_paid', idempotencyKey: 'portal-missing-1' },
+      query: {},
+    }, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(payload.statusCode).toBe(404);
+    expect((payload.body as any).error.code).toBe('DECISION_NOT_FOUND');
+    expect(mocks.performDecisionAction).not.toHaveBeenCalled();
   });
 
   it('exposes tenant-scoped Decision Center preferences behind the same visibility guard', () => {
@@ -470,7 +524,13 @@ describe('portal Decision Center routes', () => {
 
     handler({ params: { userId: '7' }, query: {}, body: { pushEnabled: false } }, res);
 
-    expect(mocks.updateDecisionPreferences).toHaveBeenCalledWith(7, 7, { pushEnabled: false });
+    expect(mocks.updateDecisionPreferencesViaCommand).toHaveBeenCalledWith({
+      userId: 7,
+      tenantId: 7,
+      patch: { pushEnabled: false },
+      idempotencyKey: expect.stringMatching(/^legacy-portal-preferences:[a-f0-9]{64}$/),
+      channel: 'portal',
+    });
     expect(mocks.logPortalAdminMutation).toHaveBeenCalledWith(expect.any(Object), 7, 'portal.decision_center.preferences', { tenantId: 7 });
     expect(payload.statusCode).toBe(200);
     expect((payload.body as any).preferences.profile.pushEnabled).toBe(false);

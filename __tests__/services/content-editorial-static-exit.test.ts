@@ -14,7 +14,8 @@ describe('editorial compatibility static exit inventory', () => {
     ]) {
       expect(read(path), path).not.toContain("from './content-editorial-workflow'");
     }
-    expect(read('src/services/decision-center.ts')).toContain("from './content-workspace-decision-adapter'");
+    expect(read('src/services/decision-center/command-service.ts')).toContain("from '../content-workspace-decision-adapter'");
+    expect(read('src/services/decision-center.ts')).toContain("from './decision-center/command-service'");
     expect(read('src/services/content-radar-engine.ts')).toContain("from './content-workspace'");
   });
 

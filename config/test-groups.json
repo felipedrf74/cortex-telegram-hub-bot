@@ -1,5 +1,5 @@
 {
-  "version": "2026-08-23.1",
+  "version": "2026-08-31.1",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -1154,6 +1154,7 @@
         "src/services/*cache-invalidator.ts",
         "src/services/coordination-cache-invalidator.ts",
         "src/services/daily-brief-orchestrator.ts",
+        "src/services/decision-center/**",
         "src/services/decision-*.ts",
         "src/services/delta-sync.ts",
         "src/services/dashboard-home-view-state.ts",
@@ -1161,6 +1162,7 @@
         "src/services/focus-*.ts",
         "src/services/notification-*.ts",
         "src/services/plan-*.ts",
+        "src/services/planning-*.ts",
         "src/services/product-*.ts",
         "src/services/report-*.ts",
         "src/services/resource-budgets.ts",
@@ -1175,6 +1177,7 @@
         "__tests__/fixtures/decision-center/**",
         "__tests__/**/*decision*.test.ts",
         "__tests__/**/*notification*.test.ts",
+        "__tests__/**/*planning*.test.ts",
         "__tests__/**/*scheduler*.test.ts",
         "__tests__/**/*task*.test.ts",
         "__tests__/services/completion-feedback-v2-and-events.test.ts",

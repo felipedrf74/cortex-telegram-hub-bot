@@ -28,6 +28,8 @@ export interface DecisionLogicContext {
   recommendedStartAt?: string | null;
   recommendedEndAt?: string | null;
   candidateSlots?: SecretaryAvailableSlot[] | null;
+  /** True only after an explicit user instruction to consume protected time. */
+  allowProtectedTimeOverride?: boolean | null;
   reasonCodes?: string[] | null;
   sourceState?: string | null;
   explicitNoRelatedEntityReason?: string | null;
@@ -197,6 +199,8 @@ export interface SecretaryDecisionAdvisorInput {
   currentStartAt?: string | null;
   currentEndAt?: string | null;
   availableSlots?: SecretaryAvailableSlot[];
+  /** Explicit user authority to consider otherwise protected time. */
+  allowProtectedTimeOverride?: boolean;
   preferredWindowLabel?: string | null;
   reasonCodes?: string[];
   timezone?: string | null;
@@ -471,10 +475,11 @@ export function evaluateDecisionQuality(
 
 export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): SecretaryDecisionAdvice {
   const current = formatDecisionWindow(input.currentStartAt, input.currentEndAt, input.timezone, input.locale);
-  const feasibleSlots = (input.availableSlots ?? [])
+  const candidateSlots = (input.availableSlots ?? [])
     .filter((slot) => isValidWindow(slot.startAt, slot.endAt))
     .filter((slot) => !sameWindow(slot.startAt, slot.endAt, input.currentStartAt, input.currentEndAt));
-  const rankedSlots = rankSecretaryDecisionSlots(input, feasibleSlots);
+  const protectedSlotCount = candidateSlots.filter(slotTouchesProtectedWindow).length;
+  const rankedSlots = rankSecretaryDecisionSlots(input, candidateSlots);
   const best = rankedSlots[0]?.slot ?? null;
   const title = input.title.trim() || 'schedule item';
   const bestWindow = best ? formatDecisionWindow(best.startAt, best.endAt, input.timezone, input.locale) : null;
@@ -484,13 +489,20 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
   ];
 
   if (!best) {
+    const protectedTimeBlocked = protectedSlotCount > 0 && input.allowProtectedTimeOverride !== true;
     return {
-      bestAction: 'Collect schedule context before asking the user.',
+      bestAction: protectedTimeBlocked
+        ? 'Keep protected time unchanged and collect an unprotected slot or explicit user override.'
+        : 'Collect schedule context before asking the user.',
       alternatives: [],
-      feasibility: 'needs_enrichment',
+      feasibility: protectedTimeBlocked ? 'blocked' : 'needs_enrichment',
       conflictGraph,
-      capacityImpact: 'Unknown until availability is read.',
-      scheduleImpact: 'Nexus cannot safely reflow without a candidate slot.',
+      capacityImpact: protectedTimeBlocked
+        ? 'Known availability is protected and cannot be consumed implicitly.'
+        : 'Unknown until availability is read.',
+      scheduleImpact: protectedTimeBlocked
+        ? 'Nexus leaves every protected window unchanged.'
+        : 'Nexus cannot safely reflow without a candidate slot.',
       expectedEffect: 'Decision remains internal until Secretary has a feasible recommendation.',
       impactIfIgnored: 'The conflict may remain unresolved.',
       confidence: DECISION_CONFIDENCE_RUBRIC.lowAdvisorMissingContext,
@@ -498,8 +510,12 @@ export function adviseSecretaryDecision(input: SecretaryDecisionAdvisorInput): S
       recommendedEndAt: null,
       whyFacts: conflictGraph,
       whyPreferences: input.preferredWindowLabel ? [`Preference considered: ${input.preferredWindowLabel}.`] : [],
-      whyRules: ['Secretary must not recommend impossible slots.'],
-      whyTradeoffs: ['Waiting for availability is safer than showing a vague decision.'],
+      whyRules: protectedTimeBlocked
+        ? ['Protected time is a hard exclusion unless the user explicitly overrides it.']
+        : ['Secretary must not recommend impossible slots.'],
+      whyTradeoffs: protectedTimeBlocked
+        ? ['Preserving protected time outranks resolving the conflict without user authority.']
+        : ['Waiting for availability is safer than showing a vague decision.'],
       automationEligibility: 'never',
     };
   }
@@ -542,6 +558,7 @@ export function rankSecretaryDecisionSlots(
   slots: SecretaryAvailableSlot[],
 ): SecretaryDecisionSlotScore[] {
   return slots
+    .filter((slot) => input.allowProtectedTimeOverride === true || !slotTouchesProtectedWindow(slot))
     .map((slot, index) => scoreSecretaryDecisionSlot(input, slot, index))
     .sort((a, b) => b.score - a.score || Date.parse(a.slot.startAt) - Date.parse(b.slot.startAt));
 }
@@ -589,7 +606,9 @@ export function scoreSecretaryDecisionSlot(
   }
   if (slotTouchesProtectedWindow(slot)) {
     score -= 12;
-    reasons.push('touches a protected window');
+    reasons.push(input.allowProtectedTimeOverride === true
+      ? 'uses a protected window under explicit user override'
+      : 'touches a protected window');
   }
   if (input.reasonCodes?.includes('overcapacity') && /\b(open|free|buffer)\b/i.test(label)) {
     score += 10;
@@ -611,9 +630,14 @@ function slotTouchesProtectedWindow(slot: SecretaryAvailableSlot): boolean {
     slot.metadata?.blockType,
     slot.metadata?.kind,
     slot.metadata?.type,
-    slot.label,
   ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  return signals.some((value) => /\b(protected|focus|deep work|family|sleep)\b/i.test(value));
+  if (signals.some((value) => /\b(protected|focus|deep work|family|sleep)\b/i.test(value))) return true;
+  // Legacy slots sometimes have no structured classification. Treat an
+  // explicit protected/sleep/family/deep-work label as protected, while a
+  // preference label such as "afternoon focus" remains only a preference.
+  const label = slot.label?.trim() ?? '';
+  return /\bprotected\b/i.test(label)
+    || /^(?:sleep|family|deep work)(?:\b|\s)/i.test(label);
 }
 
 export function evaluateAutopilotPolicy(input: DecisionLogicInput, logic: DecisionLogicV2): {
@@ -647,7 +671,10 @@ export function rankDecision(
   const riskBoost = logic.riskIfIgnored === 'high' ? 18 : logic.riskIfIgnored === 'medium' ? 8 : 0;
   const confidencePenalty = logic.confidence < 0.5 ? 15 : 0;
   const qualityPenalty = quality && !quality.safeToShowUser ? 40 : 0;
-  const priorityScore = Math.max(0, urgency + deadlineBoost + riskBoost - confidencePenalty - qualityPenalty);
+  const priorityScore = Math.max(0, Math.min(
+    100,
+    urgency + deadlineBoost + riskBoost - confidencePenalty - qualityPenalty,
+  ));
   const safeForAPNs = quality?.safeForAPNs ?? false;
   const safeForHomePreview = quality?.safeForHomePreview ?? false;
   const apnsEligible = safeForAPNs && priorityScore >= 82 && input.priority !== 'passive';

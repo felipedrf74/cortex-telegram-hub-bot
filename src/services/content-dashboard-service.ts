@@ -318,6 +318,7 @@ export function isSprintModeActive(): boolean {
       `SELECT id FROM agent_signals
        WHERE signal_type = 'content_sprint_mode'
          AND status = 'active'
+         AND julianday(expires_at) > julianday('now')
          AND tenant_id IS NULL
          AND user_id IS NULL
        LIMIT 1`,
@@ -339,6 +340,7 @@ export function toggleSprintMode(): { sprint: boolean; message: string } {
       `SELECT id FROM agent_signals
        WHERE signal_type = 'content_sprint_mode'
          AND status = 'active'
+         AND julianday(expires_at) > julianday('now')
          AND tenant_id IS NULL
          AND user_id IS NULL
        LIMIT 1`,

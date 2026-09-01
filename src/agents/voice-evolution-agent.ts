@@ -336,6 +336,7 @@ function readPriorInputFingerprint(
       WHERE source_agent = 'voice-evolution'
         AND signal_type = 'voice_analysis_fingerprint'
         AND status = 'active'
+        AND julianday(expires_at) > julianday('now')
         AND user_id = ?
         AND tenant_id = ?
         AND created_at > datetime('now', '-370 days')

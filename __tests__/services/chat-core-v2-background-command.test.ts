@@ -74,6 +74,7 @@ import {
   ensureChatCoreV2CommandEventTables,
   getChatV2CommandEventById,
 } from '../../src/services/chat-core-v2/command-events';
+import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
 import {
   setChatCoreV2RuntimeOverride,
   _resetChatCoreV2RuntimeOverridesForTests,
@@ -169,6 +170,10 @@ beforeEach(() => {
   testDb = new Database(':memory:');
   ensureBackgroundJobTables(testDb);
   ensureChatCoreV2CommandEventTables(testDb);
+  // Request paths intentionally no longer create notification schema. Tests
+  // that exercise the orchestrated delivery boundary bootstrap it explicitly,
+  // just as migrations do in production.
+  ensureNotificationTables();
   mockSendPushNotification.mockClear();
   mockExecuteCommand.mockReset();
   // The orchestrator refuses to dispatch unless APNs is the selected delivery

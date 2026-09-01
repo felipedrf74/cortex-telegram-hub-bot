@@ -13,12 +13,19 @@ import {
 import { getDecisionOverview } from './decision-center';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { getUserTimezoneById } from './user-service';
+import { getUserLanguageById, getUserTimezoneById } from './user-service';
 import { resolveTrainingTimezone } from './training-date-utils';
+import type { PlanningSnapshotIdentity } from './planning-snapshot-contract';
+import {
+  createDecisionPlanningContext,
+  type DecisionPlanningContext,
+} from './decision-planning-context';
 
 export interface DailyBriefResponse {
   date: string;
   generatedAt: string;
+  /** Exact weekly snapshot from which this daily projection was built. */
+  planningSnapshot?: PlanningSnapshotIdentity;
   degraded: boolean;
   gated: { skills: string[] };
   garmin_stale: boolean;
@@ -268,8 +275,13 @@ export async function composeDailyBrief(opts: {
   language?: string;
   timezone?: string;
   forceRefresh?: boolean;
+  cacheMode?: 'read-write' | 'bypass';
+  /** Recompute supplies its exact weekly snapshot so daily never re-reads. */
+  weekPlan?: WeeklyPlanResponse;
+  planningSnapshot?: PlanningSnapshotIdentity;
+  planningContext?: DecisionPlanningContext;
 }): Promise<DailyBriefResponse> {
-  const timezone = resolveDailyBriefTimezone(opts.userId, opts.timezone);
+  const fallbackTimezone = resolveTrainingTimezone(opts.timezone ?? config.app.timezone);
   if (!isValidTenantUserId(opts.userId)) {
     recordTenantScopeAnomaly({
       layer: 'orchestration',
@@ -280,9 +292,8 @@ export async function composeDailyBrief(opts: {
         date: opts.date ?? null,
       },
     });
-    return buildEmptyDailyBriefResponse({ ...opts, timezone });
+    return buildEmptyDailyBriefResponse({ ...opts, timezone: fallbackTimezone });
   }
-  const tenantId = isValidTenantUserId(opts.tenantId) ? opts.tenantId! : opts.userId;
   if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
     recordTenantScopeAnomaly({
       layer: 'orchestration',
@@ -294,12 +305,26 @@ export async function composeDailyBrief(opts: {
         date: opts.date ?? null,
       },
     });
+    return buildEmptyDailyBriefResponse({ ...opts, timezone: fallbackTimezone });
   }
+  const tenantId = opts.tenantId ?? opts.userId;
+  const requestedTimezone = resolveDailyBriefTimezone(opts.userId, opts.timezone);
 
-  const targetDate = resolveTargetDate(opts.date, timezone);
-  const languageBucket = resolveLanguageBucket(opts.language);
+  const planningContext = opts.planningContext ?? createDecisionPlanningContext({
+    userId: opts.userId,
+    tenantId,
+    timezone: requestedTimezone,
+    locale: resolveDailyBriefLanguage(opts.userId, opts.language),
+  });
+  if (planningContext.userId !== opts.userId || planningContext.tenantId !== tenantId) {
+    throw new Error('PLANNING_CONTEXT_SCOPE_MISMATCH');
+  }
+  const timezone = planningContext.timezone;
+  const targetDate = resolveTargetDate(opts.date, timezone, planningContext.localDate);
+  const languageBucket = resolveLanguageBucket(planningContext.locale);
   const cacheKey = `plan:today:u:${opts.userId}:t:${tenantId}:${targetDate}:tz:${timezone}:${languageBucket}`;
-  if (!opts.forceRefresh) {
+  const ownsCache = opts.cacheMode !== 'bypass';
+  if (ownsCache && !opts.forceRefresh) {
     const cached = getCached<DailyBriefResponse>(cacheKey);
     if (cached) {
       return cached;
@@ -307,19 +332,30 @@ export async function composeDailyBrief(opts: {
   }
 
   try {
-    const weekPlan = await composeWeeklyPlan({
+    const weekPlan = opts.weekPlan ?? await composeWeeklyPlan({
       userId: opts.userId,
       tenantId,
       weekStart: weekStartForDate(targetDate, timezone),
       timezone,
       forceRefresh: opts.forceRefresh,
+      cacheMode: opts.cacheMode,
+      planningContext,
     });
+    const planningSnapshot = opts.planningSnapshot ?? weekPlan.planningSnapshot;
+    if (planningSnapshot && planningSnapshot.snapshotId !== weekPlan.planningSnapshot?.snapshotId) {
+      throw new Error('PLANNING_SNAPSHOT_DAILY_WEEK_MISMATCH');
+    }
 
-    const fallbackDay = buildUnavailableDailyBriefDay(targetDate, opts.language);
+    const fallbackDay = buildUnavailableDailyBriefDay(targetDate, planningContext.locale);
     const day = weekPlan.days.find((entry) => entry.date === targetDate) ?? fallbackDay;
     const conflicts = weekPlan.conflicts.filter((conflict) => conflict.date === targetDate);
     const secretaryTodaySignals = readSecretaryTodayDecisionSignals(opts.userId, tenantId);
-    let coordination = buildUnavailableDailyBriefResponse({ ...opts, timezone }).coordination;
+    let coordination = buildUnavailableDailyBriefResponse({
+      userId: opts.userId,
+      date: targetDate,
+      language: planningContext.locale,
+      timezone,
+    }).coordination;
     let coordinationDegraded = day === fallbackDay;
 
     if (!coordinationDegraded) {
@@ -329,7 +365,7 @@ export async function composeDailyBrief(opts: {
           day,
           weekPlan,
           conflicts,
-          language: opts.language,
+          language: planningContext.locale,
           secretaryTodaySignals,
         });
       } catch (err) {
@@ -343,7 +379,8 @@ export async function composeDailyBrief(opts: {
 
     const response: DailyBriefResponse = {
       date: targetDate,
-      generatedAt: new Date().toISOString(),
+      generatedAt: planningSnapshot?.generatedAt ?? weekPlan.generatedAt,
+      planningSnapshot,
       degraded: weekPlan.degraded || coordinationDegraded,
       gated: weekPlan.gated,
       garmin_stale: weekPlan.garmin_stale,
@@ -353,14 +390,19 @@ export async function composeDailyBrief(opts: {
       coordination,
     };
 
-    setCache(cacheKey, response, 1800);
+    if (ownsCache) setCache(cacheKey, response, 1800);
     return response;
   } catch (err) {
     logger.warn(
       { err, userId: opts.userId, date: targetDate },
       'daily brief weekly-plan compose failed — returning degraded fallback',
     );
-    return buildUnavailableDailyBriefResponse({ ...opts, timezone });
+    return buildUnavailableDailyBriefResponse({
+      userId: opts.userId,
+      date: targetDate,
+      language: planningContext.locale,
+      timezone,
+    });
   }
 }
 
@@ -467,11 +509,11 @@ function compact(values: Array<string | null | undefined>): string[] {
   return values.filter((value): value is string => Boolean(value && value.trim().length > 0));
 }
 
-function resolveTargetDate(date?: string, timezone?: string): string {
+function resolveTargetDate(date?: string, timezone?: string, fallbackLocalDate?: string): string {
   const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
   const parsed = date
     ? DateTime.fromISO(date, { zone }).startOf('day')
-    : DateTime.now().setZone(zone).startOf('day');
+    : DateTime.fromISO(fallbackLocalDate ?? '', { zone }).startOf('day');
   return (parsed.isValid ? parsed : DateTime.now().setZone(zone)).toISODate()!;
 }
 
@@ -487,6 +529,15 @@ function resolveDailyBriefTimezone(userId: number, requested?: string | null): s
     return resolveTrainingTimezone(getUserTimezoneById(userId));
   } catch {
     return resolveTrainingTimezone(config.app.timezone);
+  }
+}
+
+function resolveDailyBriefLanguage(userId: number, requested?: string | null): string {
+  if (requested?.trim()) return requested.trim();
+  try {
+    return getUserLanguageById(userId);
+  } catch {
+    return 'en';
   }
 }
 

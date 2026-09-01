@@ -30,12 +30,15 @@ const mockCronSchedule = vi.hoisted(() => vi.fn());
 const mockCreateNotificationIntent = vi.hoisted(() => vi.fn());
 const mockReleaseDueNotificationDeliveries = vi.hoisted(() => vi.fn());
 const mockCreateDecisionIntent = vi.hoisted(() => vi.fn());
+const mockRunDecisionMetricsRollupJob = vi.hoisted(() => vi.fn());
 const mockListSecretaryAgendaItems = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneOnce = vi.hoisted(() => vi.fn());
 const mockRunEventBackboneCleanup = vi.hoisted(() => vi.fn());
 const mockRunGarminTenantIsolationWatcher = vi.hoisted(() => vi.fn());
+const mockGetActivePlans = vi.hoisted(() => vi.fn());
 const mockGetActivePlan = vi.hoisted(() => vi.fn());
 const mockGetCurrentWeek = vi.hoisted(() => vi.fn());
+const mockGetSessionsForWeek = vi.hoisted(() => vi.fn());
 const mockGetWeeklyAdherence = vi.hoisted(() => vi.fn());
 const mockComputeAdjustmentRecommendation = vi.hoisted(() => vi.fn());
 const mockGetWeeksForPlan = vi.hoisted(() => vi.fn());
@@ -50,7 +53,13 @@ const mockGenerateAndStoreTopicCandidates = vi.hoisted(() => vi.fn());
 const mockGenerateWeeklyPackage = vi.hoisted(() => vi.fn());
 const mockGetMissingScheduledInventoryCount = vi.hoisted(() => vi.fn());
 const mockWithAiBudgetReservation = vi.hoisted(() => vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()));
-const mockReleaseFreshReportScheduleClaim = vi.hoisted(() => vi.fn());
+const mockClaimDueScheduledReportLeaseBatch = vi.hoisted(() => vi.fn());
+const mockCompleteScheduledReportLease = vi.hoisted(() => vi.fn());
+const mockFailScheduledReportLease = vi.hoisted(() => vi.fn());
+const mockStartScheduledReportLeaseHeartbeat = vi.hoisted(() => vi.fn(() => ({
+  assertActive: vi.fn(),
+  stop: vi.fn(),
+})));
 const mockRunGovernedAgentJob = vi.hoisted(() => vi.fn());
 const mockComputePromptStateHash = vi.hoisted(() => vi.fn());
 const mockGetScheduledTarget = vi.hoisted(() => vi.fn());
@@ -60,6 +69,7 @@ const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
 const mockRunTaskLedgerRetentionJob = vi.hoisted(() => vi.fn());
 const mockSweepExpiredStructuredHealthData = vi.hoisted(() => vi.fn());
 const mockRunPipelineAgent = vi.hoisted(() => vi.fn());
+const mockListHandledByNexusItems = vi.hoisted(() => vi.fn());
 const mockWrapJob = vi.hoisted(() => vi.fn(
   (name: string, fn: (...args: unknown[]) => unknown, _options?: unknown) => {
     const wrapped = vi.fn((...args: unknown[]) => fn(...args));
@@ -317,14 +327,16 @@ vi.mock('../../src/services/daily-brief-orchestrator', () => ({
 vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
-// The four report crons now run on */5 dispatch ticks (same expression as
-// shared_list), so expression-driven callback invocation reaches them in
-// this suite. Dispatch timing has its own suite
-// (report-schedule-dispatcher.test.ts); here nobody is ever "due" so the
-// scoping tests stay isolated.
+// Dispatch timing and persistence have their own focused suite. This broad
+// scheduler suite defaults to an empty lease batch unless a test supplies one.
 vi.mock('../../src/services/report-schedule-dispatcher', () => ({
   resolveDueReportTargets: vi.fn(() => []),
-  releaseFreshReportScheduleClaim: (...args: unknown[]) => mockReleaseFreshReportScheduleClaim(...args),
+}));
+vi.mock('../../src/services/report-schedule-jobs', () => ({
+  claimDueScheduledReportLeaseBatch: (...args: unknown[]) => mockClaimDueScheduledReportLeaseBatch(...args),
+  completeScheduledReportLease: (...args: unknown[]) => mockCompleteScheduledReportLease(...args),
+  failScheduledReportLease: (...args: unknown[]) => mockFailScheduledReportLease(...args),
+  startScheduledReportLeaseHeartbeat: (...args: unknown[]) => mockStartScheduledReportLeaseHeartbeat(...args),
 }));
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
@@ -341,8 +353,9 @@ vi.mock('../../src/services/decision-center', async () => {
     runDecisionExpiryJob: vi.fn(),
     runDecisionHandledHistoryBackfillJob: vi.fn(),
     runDecisionLedgerRetentionPruneJob: vi.fn(),
-    runDecisionMetricsRollupJob: vi.fn(),
+    runDecisionMetricsRollupJob: (...args: unknown[]) => mockRunDecisionMetricsRollupJob(...args),
     runDecisionSourceStateSupersessionJob: vi.fn(),
+    listHandledByNexusItems: (...args: unknown[]) => mockListHandledByNexusItems(...args),
   };
 });
 vi.mock('../../src/services/secretary-scheduling-arbitrator', async () => {
@@ -362,13 +375,13 @@ vi.mock('../../src/tools/event-backbone-cleanup', () => ({
 }));
 vi.mock('../../src/services/training-plans', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/services/training-plans')>()),
-  getActivePlans: vi.fn(() => []),
+  getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
   computeAdjustmentRecommendation: (...args: unknown[]) => mockComputeAdjustmentRecommendation(...args),
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
-  getSessionsForWeek: vi.fn(() => []),
+  getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
 }));
 vi.mock('../../src/services/training-coach-v2-proposals', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/services/training-coach-v2-proposals')>()),
@@ -410,6 +423,7 @@ import {
   buildSharedListNotificationForUser,
   buildWeeklyReviewPayloadForUser,
   decisionMetricsRollupDateForScheduler,
+  executeScheduledReportLeaseBatch,
   getActiveUserIds,
   getActiveTaskSyncScopes,
   getActiveTrainingScopes,
@@ -426,6 +440,8 @@ import {
   sendWeeklyReviewForTarget,
   refreshConnectedGarminUsers,
   refreshConnectedGarminUsersWithLease,
+  runDecisionMetricsRollupForActiveUsers,
+  ScheduledReportFanOutError,
 } from '../../src/services/scheduler';
 import { runScheduledAutoresearch } from '../../src/services/scheduled-agent-jobs';
 import { setLastCoachState } from '../../src/domains/domain-handler';
@@ -434,6 +450,11 @@ import { addToConversation } from '../../src/state/conversation';
 import { getDueReminders, markReminderFired } from '../../src/state/reminders';
 import { logger } from '../../src/utils/logger';
 import { AiBudgetError } from '../../src/services/cost-guardrail';
+import { TrainingPlanRevisionError } from '../../src/services/training-plan-revision-errors';
+import {
+  AgentJobTargetEnumerationError,
+  listActiveAgentJobTenantTargets,
+} from '../../src/services/agent-job-targets';
 
 function useTrainingScopeDb(scopes: Array<{ tenant_id: number; user_id: number }>): void {
   mockGetDb.mockReturnValue({
@@ -640,9 +661,13 @@ describe('scheduler tenant scoping', () => {
       totalDurationMs: 12,
     });
     mockWithAiBudgetReservation.mockImplementation(async (_request: unknown, fn: () => Promise<unknown>) => fn());
-    mockReleaseFreshReportScheduleClaim.mockReturnValue(true);
+    mockClaimDueScheduledReportLeaseBatch.mockReturnValue({ leases: [], failures: [] });
+    mockCompleteScheduledReportLease.mockReturnValue(true);
+    mockFailScheduledReportLease.mockReturnValue('failed');
+    mockGetActivePlans.mockReturnValue([]);
     mockGetActivePlan.mockReturnValue(null);
     mockGetCurrentWeek.mockReturnValue(null);
+    mockGetSessionsForWeek.mockReturnValue([]);
     mockGetWeeklyAdherence.mockReturnValue({ completedSessions: 0, skippedSessions: 0 });
     mockComputeAdjustmentRecommendation.mockReturnValue({ adjustIntensity: 100, reason: 'No adjustment' });
     mockGetWeeksForPlan.mockReturnValue([]);
@@ -656,6 +681,7 @@ describe('scheduler tenant scoping', () => {
     });
     mockCalculateReadiness.mockResolvedValue({ score: 80, recommendation: 'Ready', factors: {} });
     mockPersistReadinessScore.mockReturnValue(undefined);
+    mockListHandledByNexusItems.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -668,6 +694,100 @@ describe('scheduler tenant scoping', () => {
 
     const winterMidnight = DateTime.fromISO('2026-01-03T00:15:00', { zone: 'Europe/Lisbon' }).toJSDate();
     expect(decisionMetricsRollupDateForScheduler(winterMidnight, 'Europe/Lisbon')).toBe('2026-01-02');
+  });
+
+  it('materializes current local-day metrics per scoped user and finalizes the prior day at local midnight', () => {
+    mockGetUserTimezoneById
+      .mockReturnValueOnce('Europe/Lisbon')
+      .mockReturnValueOnce('America/Sao_Paulo')
+      .mockReturnValueOnce('America/Los_Angeles');
+    const at = new Date('2026-08-31T23:15:00.000Z');
+    const result = runDecisionMetricsRollupForActiveUsers(at, [
+      { userId: 1, tenantId: 101, telegramId: null },
+      { userId: 2, tenantId: 102, telegramId: null },
+      { userId: 3, tenantId: 103, telegramId: null },
+    ]);
+
+    expect(result).toEqual({ scopes: 3, rollups: 4, failedScopes: 0 });
+    expect(mockRunDecisionMetricsRollupJob.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({ userId: 1, tenantId: 101, timezone: 'Europe/Lisbon', date: '2026-09-01' }),
+      expect.objectContaining({ userId: 1, tenantId: 101, timezone: 'Europe/Lisbon', date: '2026-08-31' }),
+      expect.objectContaining({ userId: 2, tenantId: 102, timezone: 'America/Sao_Paulo', date: '2026-08-31' }),
+      expect.objectContaining({ userId: 3, tenantId: 103, timezone: 'America/Los_Angeles', date: '2026-08-31' }),
+    ]);
+  });
+
+  it('finishes healthy report leases but fails the parent tick after a partial user failure', async () => {
+    const failedLease = {
+      target: { userId: 11, tenantId: 11 },
+      schedule: {
+        job: 'morning_briefing', userId: 11, tenantId: 11,
+        localDate: '2026-04-17', timezone: 'Europe/Lisbon', capturedAt: '2026-04-17T07:00:00.000Z',
+      },
+      jobRecord: { jobId: 'report-failed' },
+    } as any;
+    const healthyLease = {
+      target: { userId: 22, tenantId: 22 },
+      schedule: {
+        job: 'morning_briefing', userId: 22, tenantId: 22,
+        localDate: '2026-04-17', timezone: 'Europe/Lisbon', capturedAt: '2026-04-17T07:00:00.000Z',
+      },
+      jobRecord: { jobId: 'report-healthy' },
+    } as any;
+    mockClaimDueScheduledReportLeaseBatch.mockReturnValue({
+      leases: [failedLease, healthyLease],
+      failures: [],
+    });
+    const execute = vi.fn(async (lease: typeof failedLease) => {
+      if (lease === failedLease) throw new Error('provider unavailable');
+      return { degraded: false };
+    });
+
+    await expect(executeScheduledReportLeaseBatch(
+      'morning_briefing',
+      [failedLease.target, healthyLease.target],
+      { assertLeaseActive: vi.fn() },
+      execute,
+    )).rejects.toMatchObject({
+      name: 'ScheduledReportFanOutError',
+      failedTargets: 1,
+      degradedTargets: 0,
+    } satisfies Partial<ScheduledReportFanOutError>);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(mockFailScheduledReportLease).toHaveBeenCalledWith(failedLease, expect.any(Error));
+    expect(mockCompleteScheduledReportLease).toHaveBeenCalledWith(healthyLease);
+    expect(mockStartScheduledReportLeaseHeartbeat).toHaveBeenCalledTimes(2);
+    for (const result of mockStartScheduledReportLeaseHeartbeat.mock.results) {
+      expect(result.value.assertActive).toHaveBeenCalled();
+      expect(result.value.stop).toHaveBeenCalled();
+    }
+  });
+
+  it('receipts a degraded report once and makes the parent tick observably fail', async () => {
+    const lease = {
+      target: { userId: 11, tenantId: 11 },
+      schedule: {
+        job: 'weekly_review', userId: 11, tenantId: 11,
+        localDate: '2026-04-17', timezone: 'Europe/Lisbon', capturedAt: '2026-04-17T16:00:00.000Z',
+      },
+      jobRecord: { jobId: 'report-degraded' },
+    } as any;
+    mockClaimDueScheduledReportLeaseBatch.mockReturnValue({ leases: [lease], failures: [] });
+
+    await expect(executeScheduledReportLeaseBatch(
+      'weekly_review',
+      [lease.target],
+      { assertLeaseActive: vi.fn() },
+      async () => ({ degraded: true }),
+    )).rejects.toMatchObject({
+      name: 'ScheduledReportFanOutError',
+      failedTargets: 0,
+      degradedTargets: 1,
+    } satisfies Partial<ScheduledReportFanOutError>);
+
+    expect(mockCompleteScheduledReportLease).toHaveBeenCalledWith(lease);
+    expect(mockFailScheduledReportLease).not.toHaveBeenCalled();
   });
 
   it('uses the deterministic Decision Metrics fallback for an invalid clock value', () => {
@@ -1037,7 +1157,7 @@ describe('scheduler tenant scoping', () => {
     expect(vi.mocked(globalTodo.getAllPendingTasks)).not.toHaveBeenCalled();
   });
 
-  it('stores end-of-day and weekly scheduler reports under the user, not the tenant id', async () => {
+  it('stores end-of-day and weekly scheduler reports under the distinct user and tenant scope', async () => {
     mockGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [{
@@ -1053,6 +1173,7 @@ describe('scheduler tenant scoping', () => {
     expect(mockGetTaskProviderForUser).toHaveBeenLastCalledWith(42);
     expect(mockStoreAndPushReport).toHaveBeenLastCalledWith(expect.objectContaining({
       userId: 42,
+      tenantId: 700,
       type: 'evening_summary',
     }));
 
@@ -1063,9 +1184,81 @@ describe('scheduler tenant scoping', () => {
     }));
     expect(mockStoreAndPushReport).toHaveBeenLastCalledWith(expect.objectContaining({
       userId: 42,
+      tenantId: 700,
       type: 'weekly_review',
       documentJson: expect.objectContaining({
         cooking: expect.objectContaining({ mealCount: 1 }),
+      }),
+    }));
+  });
+
+  it('marks end-of-day delivery degraded when the scoped Training source fails', async () => {
+    mockGetAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [{
+        id: 'due',
+        title: 'Still deliver this report',
+        listName: 'Inbox',
+        importance: 'normal',
+        dueDateTime: '2026-04-17T16:00:00.000Z',
+      }],
+    });
+    mockGetActivePlans.mockImplementationOnce(() => {
+      throw new Error('training database unavailable');
+    });
+
+    const result = await runEndOfDaySummaryForTarget({
+      userId: 42,
+      tenantId: 700,
+      telegramId: null,
+    });
+
+    expect(result).toEqual({ degraded: true });
+    expect(mockGetActivePlans).toHaveBeenCalledWith(42, 700);
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 700,
+      type: 'evening_summary',
+      documentJson: expect.objectContaining({
+        degradationReasons: ['training_source_unavailable'],
+      }),
+    }));
+  });
+
+  it('fails an empty end-of-day run when Training was unavailable instead of completing green', async () => {
+    mockGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
+    mockGetActivePlans.mockImplementationOnce(() => {
+      throw new Error('training database unavailable');
+    });
+
+    await expect(runEndOfDaySummaryForTarget({
+      userId: 42,
+      tenantId: 700,
+      telegramId: null,
+    })).rejects.toThrow('END_OF_DAY_TRAINING_SOURCE_UNAVAILABLE');
+
+    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
+  });
+
+  it('marks weekly delivery degraded when Decision history cannot be read', async () => {
+    mockListHandledByNexusItems.mockImplementationOnce(() => {
+      throw new Error('decision history unavailable');
+    });
+
+    const result = await sendWeeklyReviewForTarget({
+      userId: 42,
+      tenantId: 700,
+      telegramId: null,
+    });
+
+    expect(result).toEqual({ degraded: true });
+    expect(mockListHandledByNexusItems).toHaveBeenCalledWith(42, 700, 25);
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 700,
+      type: 'weekly_review',
+      documentJson: expect.objectContaining({
+        degradationReasons: ['decision_history_source_unavailable'],
       }),
     }));
   });
@@ -1789,15 +1982,48 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 
-  it('sendDailyBriefing falls back to the owner bootstrap target when active users cannot be queried', async () => {
+  it('sendDailyBriefing fails observably when active users cannot be queried', async () => {
     mockGetDb.mockImplementation(() => {
-      throw new Error('no users table');
+      throw new Error('database unavailable');
     });
 
-    await sendDailyBriefing();
+    await expect(sendDailyBriefing()).rejects.toBeInstanceOf(AgentJobTargetEnumerationError);
 
-    expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
-    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 99 }));
+    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
+    expect(mockGetOwnerBootstrapTarget).not.toHaveBeenCalled();
+  });
+
+  it('sendDailyBriefing treats an authoritative zero-user result as no work', async () => {
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn(() => ({ all: vi.fn(() => []) })),
+    });
+
+    await expect(sendDailyBriefing()).resolves.toBeUndefined();
+
+    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
+    expect(mockGetOwnerBootstrapTarget).not.toHaveBeenCalled();
+  });
+
+  it('allows only an explicit pre-bootstrap caller to use the owner bridge', () => {
+    mockGetDb.mockImplementation(() => {
+      throw new Error('no such table: users');
+    });
+
+    expect(listActiveAgentJobTenantTargets({ allowBootstrapFallback: true })).toEqual([{
+      userId: 99,
+      tenantId: 99,
+      telegramId: 1999,
+    }]);
+  });
+
+  it('does not treat an unrelated missing table as owner-bootstrap state', () => {
+    mockGetDb.mockImplementation(() => {
+      throw new Error('no such table: migration_ledger');
+    });
+
+    expect(() => listActiveAgentJobTenantTargets({ allowBootstrapFallback: true }))
+      .toThrow(AgentJobTargetEnumerationError);
+    expect(mockGetOwnerBootstrapTarget).not.toHaveBeenCalled();
   });
 
   it('makes zero provider calls when Tuesday pending inventory is already full', async () => {
@@ -2333,7 +2559,7 @@ describe('scheduler tenant scoping', () => {
     expect(() => adapter.prepare()).toThrow('UnknownScheduledAutoresearchTargetError');
   });
 
-  it('releases a fresh Coach claim and uses operations copy on lock contention', async () => {
+  it('leaves retry ownership with the scheduled report lease on Coach lock contention', async () => {
     mockGetActivePlan.mockReturnValue({ id: 701, user_id: 11, tenant_id: 11, status: 'active' });
     mockGenerateCoachBriefing.mockRejectedValue(new AiBudgetError({
       allowed: false,
@@ -2348,9 +2574,9 @@ describe('scheduler tenant scoping', () => {
       internalReason: 'lock_unavailable',
     }));
 
-    await sendCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
+    const result = await sendCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
 
-    expect(mockReleaseFreshReportScheduleClaim).toHaveBeenCalledWith(11, 'coach_briefing', 10, 11);
+    expect(result.status).toBe('deferred');
     expect(mockCreateNotificationIntent).toHaveBeenCalledWith(expect.objectContaining({
       userId: 11,
       body: 'Your next Coach report will retry automatically after a temporary service delay.',
@@ -2388,7 +2614,6 @@ describe('scheduler tenant scoping', () => {
     for (const [intent] of mockCreateNotificationIntent.mock.calls) {
       expect(intent).toMatchObject({ expiresAt: reset });
     }
-    expect(mockReleaseFreshReportScheduleClaim).not.toHaveBeenCalled();
   });
 
   it('keeps Coach briefing user identity separate from delegated tenant scope', async () => {

@@ -7,6 +7,7 @@ import {
 
 const mockComposeWeeklyPlan = vi.fn();
 const mockComposeDailyBrief = vi.fn();
+const mockRecomputePlanningSnapshot = vi.fn();
 const mockGetCachedSWR = vi.fn();
 const mockSetCacheSWR = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
@@ -15,15 +16,6 @@ const mockGetUserLanguageById = vi.fn();
 const mockGetUserTimezoneById = vi.fn();
 let mockEffectivePlan: 'free' | 'pro' | 'max' | 'owner' = 'max';
 
-function expectCachePrefixesCleared(...prefixes: string[]) {
-  const cleared = mockClearCacheByPrefix.mock.calls.flatMap(([prefix]) => (
-    Array.isArray(prefix) ? prefix : [prefix]
-  ));
-  for (const prefix of prefixes) {
-    expect(cleared).toContain(prefix);
-  }
-}
-
 vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
@@ -31,6 +23,16 @@ vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: (...args: unknown[]) => mockComposeDailyBrief(...args),
 }));
+
+vi.mock('../../src/services/planning-recompute-service', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/planning-recompute-service')>(
+    '../../src/services/planning-recompute-service',
+  );
+  return {
+    ...actual,
+    recomputePlanningSnapshot: (...args: unknown[]) => mockRecomputePlanningSnapshot(...args),
+  };
+});
 
 vi.mock('../../src/services/cache-store', () => ({
   getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
@@ -149,6 +151,7 @@ describe('plan routes', () => {
     clearTenantScopeAnomaliesForTests();
     mockComposeWeeklyPlan.mockReset();
     mockComposeDailyBrief.mockReset();
+    mockRecomputePlanningSnapshot.mockReset();
     mockGetCachedSWR.mockReset();
     mockSetCacheSWR.mockReset();
     mockClearCacheByPrefix.mockReset();
@@ -227,6 +230,32 @@ describe('plan routes', () => {
         crossSkillImpacts: [],
       },
     });
+    const planningSnapshot = {
+      snapshotId: 'plan_route_snapshot',
+      generatedAt: '2026-04-14T10:00:00.000Z',
+      userId: 12,
+      tenantId: 12,
+      timezone: 'Europe/Lisbon',
+      locale: 'pt-BR',
+      localDate: '2026-04-14',
+      weekStart: '2026-04-13',
+      isoWeek: '2026-W16',
+    };
+    mockRecomputePlanningSnapshot.mockResolvedValue({
+      snapshot: planningSnapshot,
+      week: {
+        weekStart: '2026-04-13',
+        weekEnd: '2026-04-19',
+        generatedAt: planningSnapshot.generatedAt,
+        planningSnapshot,
+        days: [],
+      },
+      today: {
+        date: '2026-04-14',
+        generatedAt: planningSnapshot.generatedAt,
+        planningSnapshot,
+      },
+    });
     mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
     mockGetUserLanguageById.mockReturnValue('pt-BR');
     mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
@@ -277,9 +306,31 @@ describe('plan routes', () => {
     );
     expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
       timezone: 'Pacific/Honolulu',
+      cacheMode: 'bypass',
     }));
     expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
       timezone: 'Pacific/Honolulu',
+      cacheMode: 'bypass',
+    }));
+  });
+
+  it('never shares a daily plan cache entry across authenticated user or tenant scope', async () => {
+    await dispatch('GET', '/today?date=2026-04-14', { userId: 12, tenantId: 34 });
+    await dispatch('GET', '/today?date=2026-04-14', { userId: 13, tenantId: 35 });
+
+    expect(mockGetCachedSWR).toHaveBeenCalledWith(
+      'plan:today:u:12:tenant:34:2026-04-14:tz:Europe/Lisbon:route:pt-br',
+    );
+    expect(mockGetCachedSWR).toHaveBeenCalledWith(
+      'plan:today:u:13:tenant:35:2026-04-14:tz:Europe/Lisbon:route:pt-br',
+    );
+    expect(mockComposeDailyBrief).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      userId: 12,
+      tenantId: 34,
+    }));
+    expect(mockComposeDailyBrief).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      userId: 13,
+      tenantId: 35,
     }));
   });
 
@@ -425,12 +476,20 @@ describe('plan routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.cached).toBe(true);
     expect(response.body.data.creativeCopy.headline).toBe('Stale');
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
       userId: 12,
       tenantId: 12,
       weekStart: '2026-04-13',
       timezone: 'Europe/Lisbon',
-    });
+      forceRefresh: true,
+      cacheMode: 'bypass',
+      planningContext: expect.objectContaining({
+        userId: 12,
+        tenantId: 12,
+        timezone: 'Europe/Lisbon',
+        locale: 'pt-BR',
+      }),
+    }));
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
       'plan:week:u:12:tenant:12:2026-04-13:tz:Europe/Lisbon:route:pt-br',
       expect.objectContaining({ weekStart: '2026-04-13' }),
@@ -443,12 +502,20 @@ describe('plan routes', () => {
     const response = await dispatch('GET', '/week?weekStart=2026-04-13', { tenantId: 34 });
 
     expect(response.statusCode).toBe(200);
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith({
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
       userId: 12,
       tenantId: 34,
       weekStart: '2026-04-13',
       timezone: 'Europe/Lisbon',
-    });
+      forceRefresh: true,
+      cacheMode: 'bypass',
+      planningContext: expect.objectContaining({
+        userId: 12,
+        tenantId: 34,
+        timezone: 'Europe/Lisbon',
+        locale: 'pt-BR',
+      }),
+    }));
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
       'plan:week:u:12:tenant:34:2026-04-13:tz:Europe/Lisbon:route:pt-br',
       expect.objectContaining({ weekStart: '2026-04-13' }),
@@ -470,41 +537,60 @@ describe('plan routes', () => {
     });
   });
 
-  it('clears both caches and recomputes week + today on recompute', async () => {
+  it('delegates validated idempotent week + today recompute to one coherent snapshot owner', async () => {
     const response = await dispatch('POST', '/recompute', {
-      body: { weekStart: '2026-04-13', date: '2026-04-14' },
+      body: { idempotencyKey: 'plan-route-recompute-1', weekStart: '2026-04-13', date: '2026-04-14' },
     });
 
     expect(response.statusCode).toBe(200);
-    expectCachePrefixesCleared('plan:week:u:12:', 'plan:today:u:12:');
     expect(response.body.ok).toBe(true);
+    expect(response.body.data.snapshot.snapshotId).toBe('plan_route_snapshot');
     expect(response.body.data.week.weekStart).toBe('2026-04-13');
     expect(response.body.data.today.date).toBe('2026-04-14');
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockRecomputePlanningSnapshot).toHaveBeenCalledWith({
       userId: 12,
       tenantId: 12,
       timezone: 'Europe/Lisbon',
-      syncSignals: true,
-    }));
-    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 12,
-      tenantId: 12,
-      timezone: 'Europe/Lisbon',
-    }));
+      locale: 'pt-BR',
+      idempotencyKey: 'plan-route-recompute-1',
+      weekStart: '2026-04-13',
+      date: '2026-04-14',
+    });
+  });
+
+  it('returns typed validation and idempotency-conflict errors from recompute', async () => {
+    const { PlanningRecomputeError } = await import('../../src/services/planning-recompute-service');
+    mockRecomputePlanningSnapshot.mockRejectedValueOnce(new PlanningRecomputeError(
+      'PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED',
+      'idempotencyKey is required.',
+      400,
+    ));
+    const missingKey = await dispatch('POST', '/recompute', { body: {} });
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.body.error.code).toBe('PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED');
+
+    mockRecomputePlanningSnapshot.mockRejectedValueOnce(new PlanningRecomputeError(
+      'PLANNING_RECOMPUTE_IDEMPOTENCY_REUSED',
+      'This idempotency key was already used for a different recompute request.',
+      409,
+    ));
+    const reused = await dispatch('POST', '/recompute', {
+      body: { idempotencyKey: 'reused', weekStart: '2026-04-13' },
+    });
+    expect(reused.statusCode).toBe(409);
+    expect(reused.body.error.code).toBe('PLANNING_RECOMPUTE_IDEMPOTENCY_REUSED');
   });
 
   it('fails closed on invalid tenant scope before recompute invalidation and planner reads', async () => {
     const response = await dispatch('POST', '/recompute', {
       userId: 0,
-      body: { weekStart: '2026-04-13', date: '2026-04-14' },
+      body: { idempotencyKey: 'invalid-scope', weekStart: '2026-04-13', date: '2026-04-14' },
     });
 
     expect(response.statusCode, JSON.stringify(response.body)).toBe(401);
     expect(response.body.ok).toBe(false);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
-    expect(mockClearCacheByPrefix).not.toHaveBeenCalled();
-    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
-    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+    expect(mockRecomputePlanningSnapshot).not.toHaveBeenCalled();
 
     expect(getTenantScopeAnomalies(1)).toEqual([
       expect.objectContaining({

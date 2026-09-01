@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 let testDb: Database.Database;
 const mockReleaseDueNotificationDeliveries = vi.hoisted(() => vi.fn());
+const mockResumeNotificationIntentDelivery = vi.hoisted(() => vi.fn());
 const mockConsumeCookingProviderSyncCompleted = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
@@ -67,6 +68,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/services/notification-orchestrator', () => ({
   releaseDueNotificationDeliveries: (...args: unknown[]) => mockReleaseDueNotificationDeliveries(...args),
+  resumeNotificationIntentDelivery: (...args: unknown[]) => mockResumeNotificationIntentDelivery(...args),
 }));
 
 vi.mock('../../src/services/cooking-calendar-sync-completion', () => ({
@@ -123,10 +125,18 @@ describe('event backbone foundation', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     mockReleaseDueNotificationDeliveries.mockReset();
+    mockResumeNotificationIntentDelivery.mockReset();
     mockConsumeCookingProviderSyncCompleted.mockReset();
     mockConsumeCookingProviderSyncCompleted.mockResolvedValue(undefined);
     mockReleaseDueNotificationDeliveries.mockResolvedValue({
       inspected: 0, released: 0, blocked: 0, failed: 0,
+    });
+    mockResumeNotificationIntentDelivery.mockResolvedValue({
+      intentId: 'intent-delivery-1',
+      notificationId: 'notification-delivery-1',
+      decisionLogId: 'decision-log-delivery-1',
+      decision: 'in_app_only',
+      replayed: false,
     });
     ensureEventOutboxTables();
     ensureBackgroundJobTables();
@@ -639,6 +649,7 @@ describe('event backbone foundation', () => {
     });
     expect(JSON.parse(row.decisionJson)).toMatchObject({
       inspected: 0, released: 0, blocked: 0, failed: 0,
+      exact: { intentId: 'intent-delivery-1', replayed: false },
     });
   });
 

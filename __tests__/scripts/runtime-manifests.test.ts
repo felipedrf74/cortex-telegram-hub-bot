@@ -40,7 +40,7 @@ describe('runtime manifests', () => {
       queuedJobHandlers: 10,
     });
     // Phase 1B: +1 scheduler job (training_plan_calendar_sync_worker drain).
-    expect(result).toMatchObject({ jobs: 69, scheduledJobs: 69 });
+    expect(result).toMatchObject({ jobs: 70, scheduledJobs: 70 });
   });
 
   it('keeps parent skill and domain metadata byte-identical to CapabilityManifest generation', () => {
@@ -84,7 +84,7 @@ describe('runtime manifests', () => {
       ok: true,
       output: 'config/agent-job-manifest.json',
       schema: 'nexus.agent-job-manifest.v3',
-      jobs: 69,
+      jobs: 70,
       eventHandlers: 1,
       directEventEffects: 5,
       queuedJobHandlers: 10,
@@ -93,8 +93,8 @@ describe('runtime manifests', () => {
 
     const manifest = JSON.parse(before);
     expect(manifest.schema).toBe('nexus.agent-job-manifest.v3');
-    expect(manifest.version).toBe('2026-08-23.1');
-    expect(manifest.jobs).toHaveLength(69);
+    expect(manifest.version).toBe('2026-08-31.1');
+    expect(manifest.jobs).toHaveLength(70);
     for (const job of manifest.jobs) {
       expect(job).toMatchObject({
         id: expect.any(String),
@@ -272,7 +272,7 @@ describe('runtime manifests', () => {
   });
 
   it('fails closed when runtime registration drifts from the exact manifest identity', () => {
-    expect(loadAgentJobManifest().jobs).toHaveLength(69);
+    expect(loadAgentJobManifest().jobs).toHaveLength(70);
     expect(() => assertAgentJobRuntimeRegistration({
       id: 'tuesday_reels',
       name: 'Tuesday Reel Topics',

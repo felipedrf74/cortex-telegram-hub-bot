@@ -24,21 +24,28 @@ describe('decision cursor keyset (API v2 pagination)', () => {
       .toBe(-Math.sign(compareDecisionCursor(k(80, 'y', 'b'), k(90, 'x', 'a'))));
   });
 
-  it('encode/decode round-trips and decode rejects malformed input (never throws)', () => {
+  it('encode/decode round-trips and rejects malformed input with a typed 400', () => {
     const dec = decodeDecisionCursor(encodeDecisionCursor(item('d1', 70, '2026-05-10T00:00:00.000Z')))!;
     expect(dec).toMatchObject({ priorityScore: 70, createdAt: '2026-05-10T00:00:00.000Z', decisionId: 'd1', rankingVersion: DECISION_RANKING_VERSION });
-    expect(decodeDecisionCursor('')).toBeNull();
-    expect(decodeDecisionCursor('not-base64-$$$')).toBeNull();
-    expect(decodeDecisionCursor(Buffer.from('{"ps":"x"}').toString('base64url'))).toBeNull(); // wrong shape
-    expect(decodeDecisionCursor('a'.repeat(600))).toBeNull(); // oversized
-    expect(decodeDecisionCursor(Buffer.from('not json').toString('base64url'))).toBeNull();
+    for (const malformed of [
+      '',
+      'not-base64-$$$',
+      Buffer.from('{"ps":"x"}').toString('base64url'),
+      'a'.repeat(600),
+      Buffer.from('not json').toString('base64url'),
+    ]) {
+      expect(() => decodeDecisionCursor(malformed)).toThrow(expect.objectContaining({
+        code: 'DECISION_CURSOR_MALFORMED',
+        status: 400,
+      }));
+    }
   });
 
   it('paginates the whole list with no overlap and no gap', () => {
     const items = Array.from({ length: 25 }, (_, i) => item(`d${i}`, 100 - i, '2026-05-10T00:00:00.000Z'));
     const sorted = sortDecisionsForKeyset(items);
     const seen: string[] = [];
-    let cursor: ReturnType<typeof decodeDecisionCursor> = null;
+    let cursor: ReturnType<typeof decodeDecisionCursor> | null = null;
     for (let guard = 0; guard < 100; guard += 1) {
       const { page, nextCursor } = paginateDecisions(sorted, cursor, 10);
       seen.push(...page.map((p) => p.decisionId));
@@ -50,10 +57,13 @@ describe('decision cursor keyset (API v2 pagination)', () => {
     expect(new Set(seen)).toEqual(new Set(items.map((i) => i.decisionId))); // covers the whole set
   });
 
-  it('ignores a cursor minted under a different ranking version (restarts at page 1)', () => {
+  it('rejects a cursor minted under a different ranking version with a typed conflict', () => {
     const sorted = sortDecisionsForKeyset([item('a', 90, 'x'), item('b', 80, 'x')]);
     const stale = { priorityScore: 90, createdAt: 'x', decisionId: 'a', rankingVersion: DECISION_RANKING_VERSION + 99 };
-    expect(paginateDecisions(sorted, stale, 10).page.map((p) => p.decisionId)).toEqual(['a', 'b']);
+    expect(() => paginateDecisions(sorted, stale, 10)).toThrow(expect.objectContaining({
+      code: 'DECISION_CURSOR_STALE',
+      status: 409,
+    }));
   });
 
   it('clamps pageSize and handles the empty list', () => {

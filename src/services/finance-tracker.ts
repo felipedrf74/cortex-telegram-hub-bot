@@ -475,7 +475,7 @@ export const FINANCE_TRANSACTION_CATEGORIES = new Set([
   'other',
 ]);
 
-interface FinanceScopeOptions {
+export interface FinanceScopeOptions {
   tenantId?: number | null;
 }
 
@@ -503,20 +503,22 @@ export function defaultCurrencyForTimezone(timezone?: string | null): string {
   return 'EUR';
 }
 
-export function getPreferredCurrencyForUser(userId: number): string {
+export function getPreferredCurrencyForUser(userId: number, opts?: FinanceScopeOptions): string {
   try {
     const db = getDb();
+    const tenantId = tenantScopeForUser(userId, opts);
     const dominant = db.prepare(`
       SELECT currency, COUNT(*) as count, MAX(date) as last_date
       FROM finance_transactions
       WHERE user_id = ?
+        AND tenant_id = ?
         AND deleted_at IS NULL
         AND currency IS NOT NULL
         AND TRIM(currency) != ''
       GROUP BY currency
       ORDER BY count DESC, last_date DESC
       LIMIT 1
-    `).get(userId) as { currency?: string | null } | undefined;
+    `).get(userId, tenantId) as { currency?: string | null } | undefined;
 
     if (dominant?.currency && dominant.currency.trim().length > 0) {
       return dominant.currency.trim().toUpperCase();
@@ -701,7 +703,7 @@ export function getMonthlyBudgetView(userId: number, month: string, opts?: Finan
   const db = getDb();
   const tenantId = tenantScopeForUser(userId, opts);
   const { startDate, endDate } = monthBounds(month);
-  const preferredCurrency = getPreferredCurrencyForUser(userId);
+  const preferredCurrency = getPreferredCurrencyForUser(userId, { tenantId });
   const rows = db.prepare(`
     SELECT category,
            COALESCE(amount_cents, CAST(ROUND(amount * 100) AS INTEGER)) as amount_cents,

@@ -1012,7 +1012,17 @@ describe('POST /api/v1/chat/message replay net', () => {
     const hold = await postMessage('req-decision-hold', { text: 'delete all my calendar events' });
     expect(hold.statusCode).toBe(200);
 
-    decisionMocks.findDecisionByRelatedEntity.mockReturnValue({ decisionId: 'decision-fixed' });
+    decisionMocks.findDecisionByRelatedEntity.mockReturnValue({
+      decisionId: 'decision-fixed',
+      recordVersion: 4,
+      contextVersion: 'ctx-current',
+      options: [{
+        optionId: 'server-option-current',
+        actionId: 'apply-current-proposal',
+        actionPayload: { proposalRevision: 4 },
+      }],
+      actions: [{ id: 'apply-current-proposal' }],
+    });
     decisionMocks.performDecisionAction.mockResolvedValue({
       item: { decisionId: 'decision-fixed' },
       actionId: 'action-1',
@@ -1029,7 +1039,18 @@ describe('POST /api/v1/chat/message replay net', () => {
       expect(body.routeMethod).toBe('decision-center-action');
       expect(body.metadata.type).toBe('decision_center_chat_confirmation_actioned');
       expect(body.metadata.decisionId).toBe('decision-fixed');
-      expect(decisionMocks.performDecisionAction).toHaveBeenCalledTimes(1);
+      expect(decisionMocks.performDecisionAction).toHaveBeenCalledWith(
+        'decision-fixed',
+        'apply-current-proposal',
+        USER_ID,
+        TENANT_ID,
+        expect.objectContaining({
+          channel: 'chat',
+          payload: { proposalRevision: 4 },
+          expectedVersion: 4,
+          contextVersion: 'ctx-current',
+        }),
+      );
     }
   });
 

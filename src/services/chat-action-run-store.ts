@@ -124,6 +124,9 @@ export function updateChatActionRun(
   id: string,
   status: ChatActionRunStatus,
   update?: {
+    request?: unknown;
+    expectedRequestJson?: string;
+    expectedStatuses?: ChatActionRunStatus[];
     result?: unknown;
     providerObjectId?: string | null;
     providerTransactionId?: string | null;
@@ -141,10 +144,20 @@ export function updateChatActionRun(
       providerObjectId: update.providerObjectId ?? undefined,
       status,
     });
+  const expectedStatuses = update?.expectedStatuses?.length
+    ? [...new Set(update.expectedStatuses)]
+    : [];
+  const expectedStatusClause = expectedStatuses.length > 0
+    ? ` AND status IN (${expectedStatuses.map(() => '?').join(', ')})`
+    : '';
+  const expectedRequestClause = update?.expectedRequestJson !== undefined
+    ? ' AND request_json = ?'
+    : '';
 
   const result = db.prepare(`
     UPDATE chat_action_runs
     SET status = ?,
+        request_json = COALESCE(?, request_json),
         result_json = COALESCE(?, result_json),
         provider_object_id = COALESCE(?, provider_object_id),
         provider_transaction_id = COALESCE(?, provider_transaction_id),
@@ -154,8 +167,11 @@ export function updateChatActionRun(
         completed_at = COALESCE(?, completed_at)
     WHERE id = ?
       AND status NOT IN ('failed', 'cancelled')
+      ${expectedStatusClause}
+      ${expectedRequestClause}
   `).run(
     status,
+    update?.request === undefined ? null : JSON.stringify(update.request),
     safeResult === undefined ? null : JSON.stringify(safeResult),
     update?.providerObjectId ?? null,
     update?.providerTransactionId ?? null,
@@ -164,6 +180,8 @@ export function updateChatActionRun(
     now,
     completedAt,
     id,
+    ...expectedStatuses,
+    ...(update?.expectedRequestJson !== undefined ? [update.expectedRequestJson] : []),
   );
   if (Number(result.changes ?? 0) === 0) {
     const current = getChatActionRun(id);
@@ -173,13 +191,18 @@ export function updateChatActionRun(
         attemptedStatus: status,
         currentStatus: current.status,
       }, 'late chat action run write rejected by terminal status guard');
-      return null;
+    } else {
+      logger.warn({
+        runId: id,
+        attemptedStatus: status,
+        currentStatus: current?.status ?? 'missing',
+        expectedStatuses,
+        expectedRequestMatched: update?.expectedRequestJson === undefined
+          ? undefined
+          : current?.request_json === update.expectedRequestJson,
+      }, 'chat action run update did not match the expected active state');
     }
-    logger.warn({
-      runId: id,
-      attemptedStatus: status,
-      currentStatus: current?.status ?? 'missing',
-    }, 'chat action run update did not match an active row');
+    return null;
   }
   return getChatActionRun(id);
 }

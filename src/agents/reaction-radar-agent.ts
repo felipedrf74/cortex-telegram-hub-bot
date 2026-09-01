@@ -473,7 +473,7 @@ export async function runReactionRadar(): Promise<void> {
     // Check what we've already signaled (avoid duplicates)
     const existingUrls = new Set(
       (db.prepare(
-        "SELECT json_extract(payload, '$.source_url') as url FROM agent_signals WHERE signal_type = 'reaction_opportunity' AND status = 'active'"
+        "SELECT json_extract(payload, '$.source_url') as url FROM agent_signals WHERE signal_type = 'reaction_opportunity' AND status = 'active' AND julianday(expires_at) > julianday('now')"
       ).all() as any[]).map(r => r.url)
     );
 

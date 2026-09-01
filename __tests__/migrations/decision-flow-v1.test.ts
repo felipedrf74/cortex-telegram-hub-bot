@@ -103,16 +103,30 @@ describe('migration 227 — Decision flow v1', () => {
     }
   });
 
-  it('survives runtime self-healing before the production runner applies migration 227', () => {
+  it('fails readiness without DDL, then becomes ready after additive migrations complete', () => {
     const db = createMigratedTestDatabase({ stopBefore: '227_decision_flow_v1.sql' });
     try {
-      withDatabaseForTest(db, () => ensureDecisionCenterTables());
+      let readinessError: unknown;
+      try {
+        withDatabaseForTest(db, () => ensureDecisionCenterTables());
+      } catch (error) {
+        readinessError = error;
+      }
+      expect(readinessError).toMatchObject({
+        code: 'DECISION_REPOSITORY_NOT_READY',
+        status: 500,
+      });
+      const beforeColumns = db.prepare('PRAGMA table_info(notification_center_items)').all() as Array<{ name: string }>;
+      expect(beforeColumns.map((column) => column.name)).not.toContain('record_version');
 
       expect(() => applyMigrationFileForTest(db, '227_decision_flow_v1.sql')).not.toThrow();
       expect(db.prepare('SELECT filename FROM _migrations WHERE filename = ?').get('227_decision_flow_v1.sql'))
         .toEqual({ filename: '227_decision_flow_v1.sql' });
       const itemColumns = db.prepare('PRAGMA table_info(notification_center_items)').all() as Array<{ name: string }>;
       expect(itemColumns.filter((column) => column.name === 'record_version')).toHaveLength(1);
+
+      runMigrationsForTest(db);
+      expect(() => withDatabaseForTest(db, () => ensureDecisionCenterTables())).not.toThrow();
     } finally {
       db.close();
     }
