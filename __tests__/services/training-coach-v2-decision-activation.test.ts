@@ -327,6 +327,45 @@ describe('Training Coach V2 Decision Center activation', () => {
       idempotencyKey: 'coach-v2-revision-review',
       strongConfirmationText: 'CONFIRM',
     });
+    testDb.exec(`
+      CREATE TRIGGER trg_test_ignore_dropped_projection_update
+      BEFORE UPDATE OF schedule_status ON training_sessions
+      WHEN NEW.schedule_status = 'dropped'
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END
+    `);
+    await expect(performDecisionAction(
+      bound.decisionId!,
+      'activate_training_coach_v2_proposal',
+      44,
+      44,
+      {
+        idempotencyKey: 'coach-v2-revision-activate-conflict',
+        expectedVersion: approved.recordVersion,
+        contextVersion: approved.contextVersion,
+      },
+    )).rejects.toMatchObject({ code: 'TRAINING_ADAPTATION_PROJECTION_SESSION_CONFLICT' });
+    expect(testDb.prepare(`
+      SELECT source_revision_id AS sourceRevisionId, adaptation_revision AS adaptationRevision
+        FROM fitness_training_plans WHERE id = ?
+    `).get(projection.id)).toEqual({
+      sourceRevisionId: projection.sourceRevisionId,
+      adaptationRevision: 0,
+    });
+    expect(testDb.prepare(`
+      SELECT status, schedule_status AS scheduleStatus
+        FROM training_sessions WHERE id = ?
+    `).get(dropTarget.sessionId)).toEqual({ status: 'pending', scheduleStatus: null });
+    testDb.exec('DROP TRIGGER trg_test_ignore_dropped_projection_update');
+    const retryDecision = getDecisionItem(bound.decisionId!, 44, 44)!;
+    const retryApproved = reviewDecision(bound.decisionId!, 44, 44, {
+      outcome: 'approve',
+      expectedVersion: retryDecision.recordVersion,
+      idempotencyKey: 'coach-v2-revision-review-after-conflict',
+      strongConfirmationText: 'CONFIRM',
+    });
+
     const activated = await performDecisionAction(
       bound.decisionId!,
       'activate_training_coach_v2_proposal',
@@ -334,8 +373,8 @@ describe('Training Coach V2 Decision Center activation', () => {
       44,
       {
         idempotencyKey: 'coach-v2-revision-activate',
-        expectedVersion: approved.recordVersion,
-        contextVersion: approved.contextVersion,
+        expectedVersion: retryApproved.recordVersion,
+        contextVersion: retryApproved.contextVersion,
       },
     );
     expect(activated.status).toBe('succeeded');
