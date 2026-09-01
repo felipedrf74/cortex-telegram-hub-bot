@@ -51,6 +51,30 @@ export function initializeDecisionCenterSchemaForTests(): void {
       read_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS report_documents_scoped (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL CHECK (tenant_id > 0),
+      user_id INTEGER NOT NULL CHECK (user_id > 0),
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT,
+      document_json JSON NOT NULL,
+      source_job TEXT,
+      status TEXT NOT NULL DEFAULT 'unread',
+      read_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      dispatch_key TEXT
+    );
+    CREATE TABLE IF NOT EXISTS report_schedule_ledger_scoped (
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      job_type TEXT NOT NULL,
+      fired_for_local_date TEXT NOT NULL,
+      fired_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, user_id, job_type, fired_for_local_date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_report_schedule_ledger_scoped_fired_at
+      ON report_schedule_ledger_scoped(fired_at);
   `);
   ensureColumn('notification_center_items', 'snoozed_until', 'TEXT');
   ensureColumn('notification_center_items', 'action_result_json', 'TEXT');
@@ -64,9 +88,7 @@ export function initializeDecisionCenterSchemaForTests(): void {
   ensureColumn('notification_intents', 'normalized_action_json', 'TEXT');
   ensureColumn('agent_signals', 'signal_identity', 'TEXT');
   ensureColumn('agent_signals', 'provenance_json', 'TEXT');
-  ensureColumn('report_documents', 'tenant_id', 'INTEGER');
-  db.prepare('UPDATE report_documents SET tenant_id = user_id WHERE tenant_id IS NULL').run();
-  ensureColumn('report_documents', 'dispatch_key', 'TEXT');
+  ensureColumn('report_documents_scoped', 'dispatch_key', 'TEXT');
   db.exec(`
     CREATE TABLE IF NOT EXISTS decision_action_executions (
       action_execution_id TEXT PRIMARY KEY,
@@ -354,7 +376,7 @@ export function initializeDecisionCenterSchemaForTests(): void {
     CREATE INDEX IF NOT EXISTS idx_planning_recompute_receipts_scope_created
       ON planning_recompute_receipts(user_id, tenant_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_report_documents_scoped_dispatch
-      ON report_documents(tenant_id, user_id, type, dispatch_key);
+      ON report_documents_scoped(tenant_id, user_id, type, dispatch_key);
     CREATE TABLE IF NOT EXISTS report_document_dispatch_receipts (
       tenant_id INTEGER NOT NULL,
       user_id INTEGER NOT NULL,
@@ -412,7 +434,7 @@ function decisionFlowSchemaReady(db: ReturnType<typeof getDb>): boolean {
     if (!dispatchReceiptTable) return false;
     const signalColumns = new Set((db.prepare('PRAGMA table_info(agent_signals)').all() as Array<{ name: string }>).map((row) => row.name));
     if (!signalColumns.has('signal_identity') || !signalColumns.has('provenance_json')) return false;
-    const reportColumns = new Set((db.prepare('PRAGMA table_info(report_documents)').all() as Array<{ name: string }>).map((row) => row.name));
+    const reportColumns = new Set((db.prepare('PRAGMA table_info(report_documents_scoped)').all() as Array<{ name: string }>).map((row) => row.name));
     if (!reportColumns.has('dispatch_key')) return false;
     const itemColumns = new Set((db.prepare('PRAGMA table_info(notification_center_items)').all() as Array<{ name: string }>).map((row) => row.name));
     return itemColumns.has('decision_state') && itemColumns.has('record_version') && itemColumns.has('updated_at');

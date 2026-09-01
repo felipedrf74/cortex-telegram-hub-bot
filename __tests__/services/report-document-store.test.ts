@@ -138,8 +138,8 @@ describe('report-document-store: creation', () => {
     });
 
     expect(secondTenant).not.toBe(firstTenant);
-    expect(getReportById(firstTenant, 1)).toMatchObject({ tenantId: 10 });
-    expect(getReportById(secondTenant, 1)).toMatchObject({ tenantId: 20 });
+    expect(getReportById(firstTenant, 1, 10)).toMatchObject({ tenantId: 10 });
+    expect(getReportById(secondTenant, 1, 20)).toMatchObject({ tenantId: 20 });
     expect(testDb.prepare(`
       SELECT tenant_id AS tenantId, user_id AS userId, report_document_id AS reportId
         FROM report_document_dispatch_receipts
@@ -513,7 +513,7 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
     });
 
     expect(replay).toBe(first);
-    expect(getRecentReports(1)).toHaveLength(1);
+    expect(getRecentReports(1, { tenantId: 77 })).toHaveLength(1);
     expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(2);
     const replayIntentIds = mockCreateNotificationIntent.mock.calls.map(([intent]) => intent.intentId);
     expect(replayIntentIds[0]).toMatch(/^ni_report_[a-f0-9]{32}$/);

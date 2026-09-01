@@ -62,16 +62,16 @@ describe('report-schedule-dispatcher', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
     testDb.exec(`
-      CREATE TABLE report_schedule_ledger (
+      CREATE TABLE report_schedule_ledger_scoped (
         user_id INTEGER NOT NULL,
         tenant_id INTEGER NOT NULL,
         job_type TEXT NOT NULL,
         fired_for_local_date TEXT NOT NULL,
         fired_at TEXT NOT NULL DEFAULT (datetime('now')),
-        PRIMARY KEY (user_id, job_type, fired_for_local_date)
+        PRIMARY KEY (tenant_id, user_id, job_type, fired_for_local_date)
       );
-      CREATE INDEX idx_report_schedule_ledger_fired_at
-        ON report_schedule_ledger(fired_at);
+      CREATE INDEX idx_report_schedule_ledger_scoped_fired_at
+        ON report_schedule_ledger_scoped(fired_at);
       CREATE TABLE scheduled_report_completion_receipts (
         receipt_id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL UNIQUE,

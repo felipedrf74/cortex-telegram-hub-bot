@@ -117,12 +117,13 @@ export const DECISION_CENTER_REPOSITORY_REQUIREMENTS: readonly DecisionCenterTab
     'id', 'source_agent', 'signal_type', 'payload', 'status', 'expires_at',
     'user_id', 'tenant_id', 'signal_identity', 'provenance_json',
   ]),
-  requirement('report_documents', [
-    'id', 'user_id', 'type', 'title', 'document_json', 'source_job',
-    'dispatch_key', 'status', 'created_at',
+  requirement('report_documents_scoped', [
+    'id', 'tenant_id', 'user_id', 'type', 'title', 'document_json',
+    'source_job', 'dispatch_key', 'status', 'created_at',
   ]),
   requirement('report_document_dispatch_receipts', [
-    'user_id', 'report_type', 'dispatch_key', 'report_document_id', 'created_at',
+    'tenant_id', 'user_id', 'report_type', 'dispatch_key',
+    'report_document_id', 'created_at',
   ]),
   requirement('scheduled_report_completion_receipts', [
     'receipt_id', 'job_id', 'user_id', 'tenant_id', 'report_job', 'local_date',

@@ -3981,9 +3981,7 @@ export async function sendCoachBriefingForTarget(
   options: { runId?: string | null } & ScheduledReportPersistenceOptions = {},
 ): Promise<CoachBriefingDispatchResult> {
   const userId = target.userId;
-  const coachScopeKey = userId === target.tenantId
-    ? `${target.tenantId}`
-    : `${target.tenantId}:${userId}`;
+  const coachScopeKey = `${target.tenantId}:${userId}`;
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
   // calendar fetches). The serialized daily/monthly budget reservation wraps

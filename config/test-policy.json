@@ -1281,7 +1281,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/notification-contracts.ts:184-184",
+          "pattern": "src/services/notification-contracts.ts:187-187",
             "anchor": "return ['reconnect', 'open_detail'];",
             "behavior": "Sync-failure decisions stop advertising an unimplemented retry and instead expose an enabled navigation-only reconnect action.",
             "replacementTest": "__tests__/services/decision-center.test.ts",
@@ -1838,8 +1838,8 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/report-schedule-dispatcher.ts:219-220",
-            "anchor": "claim.run(target.userId, target.tenantId, job, candidateDay.toISODate())",
+            "pattern": "src/services/report-schedule-dispatcher.ts:239-240",
+            "anchor": "claim.run(schedule.userId, schedule.tenantId, job, schedule.localDate)",
             "behavior": "Scheduled reports claim independently for the same user in each explicit tenant while retaining at-most-once delivery per tenant-local day.",
             "replacementTest": "__tests__/services/report-schedule-dispatcher.test.ts",
             "ownerTestNamePattern": "claims the same user independently in two explicit tenant scopes$",

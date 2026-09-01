@@ -108,5 +108,11 @@ describe('Decision Center repository readiness', () => {
     ]));
     expect(byTable.get('event_outbox')).toEqual(expect.arrayContaining(['idempotency_key', 'fencing_token', 'lease_expires_at']));
     expect(byTable.get('background_jobs')).toEqual(expect.arrayContaining(['idempotency_key', 'fencing_token', 'lease_expires_at']));
+    expect(byTable.get('report_documents_scoped')).toEqual(expect.arrayContaining([
+      'tenant_id',
+      'user_id',
+      'dispatch_key',
+    ]));
+    expect(byTable.has('report_documents')).toBe(false);
   });
 });
