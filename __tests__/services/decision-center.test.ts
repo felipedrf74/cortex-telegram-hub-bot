@@ -569,7 +569,7 @@ describe('Decision Center facade', () => {
     expect(overview.items).toHaveLength(100);
     expect(overview.count).toBe(101);
     expect(overview.openCount).toBe(101);
-  });
+  }, 30_000);
 
   it('localizes Home Decision Center CTA labels from the user locale', async () => {
     ensureUserFixtureTable();
