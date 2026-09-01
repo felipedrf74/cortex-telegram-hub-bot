@@ -747,7 +747,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/training-date-utils.ts:124-127",
+            "pattern": "src/services/training-date-utils.ts:148-151",
             "anchor": "return candidate.isValid && candidate > today;",
             "behavior": "A race date is future only when its ISO calendar day is strictly later than the authenticated user's local day boundary.",
             "replacementTest": "__tests__/services/training-date-utils.test.ts",

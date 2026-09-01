@@ -68,6 +68,30 @@ export function resolveTrainingDay(options: {
   };
 }
 
+export function resolveTrainingPlanStartDate(
+  now: Date,
+  startPolicy: 'next_full_week' | 'today',
+  schedulingTimezone?: string | null,
+): string {
+  const zone = resolveTrainingTimezone(schedulingTimezone);
+  const today = DateTime.fromJSDate(now, { zone }).startOf('day');
+  if (!today.isValid) return now.toISOString().slice(0, 10);
+
+  // Luxon weekday is 1=Monday ... 7=Sunday. A full training week begins
+  // on Monday; when today is Monday, starting today is already a full week.
+  const daysUntilMonday = (8 - today.weekday) % 7;
+  if (startPolicy === 'today') {
+    // A Sunday "today" request cannot produce an active week-1 schedule in
+    // the Monday-start planner: every generated Mon-Sat slot is already in
+    // the past and the linter correctly blocks the empty first week. Treat
+    // Sunday as the next usable training-week anchor while preserving true
+    // same-day starts for Monday-Saturday.
+    const anchor = today.weekday === 7 ? today.plus({ days: daysUntilMonday || 1 }) : today;
+    return anchor.toISODate() ?? today.toISODate() ?? now.toISOString().slice(0, 10);
+  }
+  return today.plus({ days: daysUntilMonday }).toISODate() ?? today.toISODate() ?? now.toISOString().slice(0, 10);
+}
+
 export function canonicalTrainingWeekdayKey(value: unknown): string {
   if (typeof value !== 'string') return '';
   const normalized = value

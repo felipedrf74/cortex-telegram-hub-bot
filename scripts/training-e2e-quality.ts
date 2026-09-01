@@ -23,6 +23,7 @@ import { withDatabaseForTest } from '../src/services/database';
 import { getEffectiveEntitlement } from '../src/services/entitlement';
 import { QUESTIONNAIRES } from '../src/services/onboarding';
 import { loadCoachKnowledge } from '../src/services/coach-kernel/knowledge-loader';
+import { resolveTrainingPlanStartDate } from '../src/services/training-date-utils';
 
 export type ApiResult = { status: number; payload: any };
 export type TrainingE2EApi = (
@@ -1929,10 +1930,29 @@ function seedPersonaHistory(
   };
 }
 
+export function trainingE2ECalendarFixtureDays(input: {
+  now: Date;
+  startPolicy: 'next_full_week' | 'today';
+  schedulingTimezone: string;
+}): string[] {
+  const startDate = resolveTrainingPlanStartDate(
+    input.now,
+    input.startPolicy,
+    input.schedulingTimezone,
+  );
+  const startMs = Date.parse(`${startDate}T00:00:00.000Z`);
+  if (!Number.isFinite(startMs)) {
+    throw new Error(`Training E2E calendar fixture start date is invalid: ${startDate}`);
+  }
+  return Array.from({ length: 7 }, (_, dayOffset) =>
+    new Date(startMs + dayOffset * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
+}
+
 function seedPersonaCalendar(
   db: Database.Database,
   userId: number,
   fixture: TrainingE2ECalendarFixture,
+  fixtureDays: string[],
 ): number {
   if (fixture === 'none') return 0;
   const insert = db.prepare(`
@@ -1943,10 +1963,7 @@ function seedPersonaCalendar(
       'Synthetic local-only capacity fixture', '["training-e2e"]', 0)
   `);
   let count = 0;
-  for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
-    const date = new Date();
-    date.setUTCDate(date.getUTCDate() + dayOffset);
-    const day = date.toISOString().slice(0, 10);
+  for (const day of fixtureDays) {
     for (const [suffix, start, end] of [
       ['morning', '05:30:00.000Z', '09:30:00.000Z'],
       ['evening', '16:30:00.000Z', '20:30:00.000Z'],
@@ -2164,7 +2181,19 @@ async function main(): Promise<void> {
         });
         seedPersonaReadiness(db, userId, fixtureSpec.readiness);
         const history = seedPersonaHistory(db, userId, fixtureSpec.adherence);
-        seedPersonaCalendar(db, userId, fixtureSpec.calendar);
+        const startPolicy = currentScenario.request.startPolicy === 'today'
+          ? 'today'
+          : 'next_full_week';
+        seedPersonaCalendar(
+          db,
+          userId,
+          fixtureSpec.calendar,
+          trainingE2ECalendarFixtureDays({
+            now: new Date(),
+            startPolicy,
+            schedulingTimezone: 'Europe/Lisbon',
+          }),
+        );
         db.prepare("DELETE FROM user_oauth_tokens WHERE user_id = ? AND provider IN ('google', 'outlook')").run(userId);
 
         const readinessResponse = await api('GET', '/api/v1/training/readiness', undefined, [200]);

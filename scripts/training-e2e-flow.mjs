@@ -364,7 +364,7 @@ function findStrengthReflowCandidate(planId) {
         JOIN training_sessions s ON s.week_id = w.id AND s.plan_id = p.id
        WHERE p.id = ?
          AND p.user_id = ?
-         AND s.status IN ('pending', 'scheduled')
+         AND s.status IN ('pending', 'scheduled', 'reflowed', 'compressed', 'capped')
          AND (
            lower(s.session_type) LIKE '%strength%'
            OR lower(s.session_type) LIKE '%gym%'
@@ -696,7 +696,17 @@ evidence.steps.push({
 });
 
 const reflowCandidate = findStrengthReflowCandidate(planId);
-assert(reflowCandidate, 'Expected an actionable strength session for a real fixture-backed reflow');
+const observedStrengthSessions = persistedSessions
+  .filter((session) => /(strength|gym|lift)/i.test(String(session.sessionType ?? '')))
+  .map((session) => ({
+    id: session.id,
+    status: session.status,
+    sessionType: session.sessionType,
+  }));
+assert(
+  reflowCandidate,
+  `Expected an actionable strength session for a real fixture-backed reflow; observed=${JSON.stringify(observedStrengthSessions)}`,
+);
 const reflowDates = trainingWeekDateRange(reflowCandidate.planStartDate, reflowCandidate.weekNumber);
 const travelWindow = await api('POST', '/api/v1/training/week/travel', {
   ...reflowDates,

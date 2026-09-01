@@ -23,6 +23,7 @@ import {
   ensurePersonaUser,
   resolveQualityReadinessState,
   runTrainingE2EPersonaScenario,
+  trainingE2ECalendarFixtureDays,
   trainingE2EPersonaUserId,
   validateTrainingE2EPersonaProfiles,
 } from '../../scripts/training-e2e-quality';
@@ -46,6 +47,24 @@ const requiredLifecycleStepIds = [
   'calendar_sync_provider_safe',
   'cancel_cleanup_and_no_plan_recovery',
 ] as const;
+
+describe('Training E2E calendar fixture horizon', () => {
+  it('covers the complete next full training week when today is midweek', () => {
+    expect(trainingE2ECalendarFixtureDays({
+      now: new Date('2026-09-01T10:00:00.000Z'),
+      startPolicy: 'next_full_week',
+      schedulingTimezone: 'Europe/Lisbon',
+    })).toEqual([
+      '2026-09-07',
+      '2026-09-08',
+      '2026-09-09',
+      '2026-09-10',
+      '2026-09-11',
+      '2026-09-12',
+      '2026-09-13',
+    ]);
+  });
+});
 
 function completeEvidence() {
   const runId = 'contract-test-run';
