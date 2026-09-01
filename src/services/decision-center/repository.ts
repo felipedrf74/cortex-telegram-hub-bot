@@ -46,6 +46,11 @@ import {
 } from '../content-workspace-decision-adapter';
 
 import {
+  contentPrivateScopeParams,
+  contentPrivateScopePredicate,
+} from '../content-tenant-scope';
+
+import {
   getSecretaryAgendaItemById,
   type ReasoningTrailNode,
   type SecretaryAgendaItem,
@@ -631,8 +636,13 @@ export function contentWorkflowObjectIdForDecision(record: DecisionRecord): stri
       FROM content_notifications
      WHERE id = ?
        AND user_id = ?
+       AND ${contentPrivateScopePredicate()}
      LIMIT 1
-  `).get(record.relatedEntityId, record.userId) as { data?: string } | undefined;
+  `).get(
+    record.relatedEntityId,
+    record.userId,
+    ...contentPrivateScopeParams(record.userId, record.tenantId),
+  ) as { data?: string } | undefined;
   const data = safeParseJson<Record<string, unknown>>(row?.data, {});
   return firstWorkflowObjectId(data);
 }

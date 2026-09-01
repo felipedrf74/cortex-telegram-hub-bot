@@ -110,6 +110,9 @@ import { buildNormalizedDecisionAction } from '../../src/services/decision-actio
 import { evaluateDecisionConflicts } from '../../src/services/decision-conflict-evaluator';
 import { decideContentWorkspaceReview } from '../../src/services/content-workspace-decision-adapter';
 import { transitionContentWorkspaceItem } from '../../src/services/content-workspace';
+import { ensureContentTenantScopeColumns } from '../../src/services/content-tenant-scope';
+import { contentWorkflowObjectIdForDecision } from '../../src/services/decision-center/repository';
+import { getDecisionRecord } from '../../src/services/decision-center/read-projection-ranking-service';
 import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 // Most cases in this compatibility suite characterize the preserved legacy
@@ -1703,6 +1706,7 @@ describe('Decision Center facade', () => {
 
   it('executes legacy content notification decisions through their workflow object data', async () => {
     testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
+    ensureContentTenantScopeColumns(testDb);
     const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 22,
       tenantId: 22,
@@ -1728,6 +1732,49 @@ describe('Decision Center facade', () => {
     expect(result.status).toBe('succeeded');
     expect(result.verification.actualEffect.contentObjectId).toBe(object.id);
     expect(result.verification.actualEffect.contentApprovalState).toBe('approved');
+  });
+
+  it('never resolves a legacy content notification across tenant scope', async () => {
+    testDb.exec(readFileSync('migrations/061_content_notifications.sql', 'utf8'));
+    ensureContentTenantScopeColumns(testDb);
+    const object = createCanonicalContentDecisionFixture(testDb, {
+      userId: 22,
+      tenantId: 22,
+      objectType: 'script',
+      title: 'Tenant-private legacy notification draft',
+      editorialState: 'drafted',
+    });
+    const notification = testDb.prepare(`
+      INSERT INTO content_notifications (
+        user_id, tenant_id, owner_user_id, visibility_scope, scope_status,
+        type, title, body, data
+      ) VALUES (?, ?, ?, 'user_private', 'active', 'script_ready',
+        'Content review', 'Ready for approval', ?)
+    `).run(22, 22, 22, JSON.stringify({ contentObjectId: object.id }));
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 22, {
+      tenantId: 34,
+      relatedEntityId: String(notification.lastInsertRowid),
+      relatedEntityType: 'content_notification',
+      dedupeKey: 'content:cross-tenant-legacy-notification-approval',
+    }));
+    expect(created.item).toBeNull();
+    const stored = testDb.prepare(`
+      SELECT item_id AS decisionId
+        FROM notification_center_items
+       WHERE user_id = 22
+         AND tenant_id = 34
+         AND dedupe_key = 'content:cross-tenant-legacy-notification-approval'
+    `).get() as { decisionId: string };
+    const record = getDecisionRecord(stored.decisionId, 22, 34);
+    expect(record).not.toBeNull();
+    expect(contentWorkflowObjectIdForDecision(record!)).toBeNull();
+
+    await expect(performDecisionAction(stored.decisionId, 'approve_script', 22, 34, {
+      idempotencyKey: 'cross-tenant-legacy-content-approval',
+    })).rejects.toMatchObject({
+      code: 'DECISION_CONTEXT_CHANGED',
+      status: 409,
+    });
   });
 
   it('keeps GETs write-free while the explicit job supersedes a stale content decision', async () => {

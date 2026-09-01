@@ -334,6 +334,47 @@ describe('plan routes', () => {
     }));
   });
 
+  it('rejects malformed and impossible daily dates before cache or planner work', async () => {
+    const malformed = await dispatch('GET', '/today?date=2026-04-14T10%3A00%3A00Z');
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.body.error).toMatchObject({
+      code: 'PLAN_DATE_INVALID',
+      details: { field: 'date', reason: 'invalid_iso_date' },
+    });
+
+    const impossible = await dispatch('GET', '/today?date=2026-02-30');
+    expect(impossible.statusCode).toBe(400);
+    expect(impossible.body.error).toMatchObject({
+      code: 'PLAN_DATE_INVALID',
+      details: { field: 'date', reason: 'invalid_calendar_date' },
+    });
+    expect(mockGetCachedSWR).not.toHaveBeenCalled();
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+  });
+
+  it('requires exact Monday week starts on weekly reads before cache or planner work', async () => {
+    const response = await dispatch('GET', '/week?weekStart=2026-04-14');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'PLAN_WEEK_START_INVALID',
+      details: { field: 'weekStart', reason: 'monday_required' },
+    });
+    expect(mockGetCachedSWR).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+  });
+
+  it('validates the requested week on the explanation read', async () => {
+    const response = await dispatch('GET', '/week/explain?weekStart=not-a-date');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'PLAN_WEEK_START_INVALID',
+      details: { field: 'weekStart', reason: 'invalid_iso_date' },
+    });
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+  });
+
   it('fails closed on invalid tenant scope before composing the weekly plan', async () => {
     const response = await dispatch('GET', '/week', { userId: 0 });
 
@@ -591,6 +632,27 @@ describe('plan routes', () => {
     });
     expect(reused.statusCode).toBe(409);
     expect(reused.body.error.code).toBe('PLANNING_RECOMPUTE_IDEMPOTENCY_REUSED');
+  });
+
+  it('rejects malformed recompute dates before invoking the snapshot owner', async () => {
+    const invalidWeek = await dispatch('POST', '/recompute', {
+      body: { idempotencyKey: 'invalid-week', weekStart: '2026-04-14' },
+    });
+    expect(invalidWeek.statusCode).toBe(400);
+    expect(invalidWeek.body.error).toMatchObject({
+      code: 'PLAN_WEEK_START_INVALID',
+      details: { field: 'weekStart', reason: 'monday_required' },
+    });
+
+    const invalidDate = await dispatch('POST', '/recompute', {
+      body: { idempotencyKey: 'invalid-date', date: '2026-02-30' },
+    });
+    expect(invalidDate.statusCode).toBe(400);
+    expect(invalidDate.body.error).toMatchObject({
+      code: 'PLAN_DATE_INVALID',
+      details: { field: 'date', reason: 'invalid_calendar_date' },
+    });
+    expect(mockRecomputePlanningSnapshot).not.toHaveBeenCalled();
   });
 
   it('fails closed on invalid tenant scope before recompute invalidation and planner reads', async () => {

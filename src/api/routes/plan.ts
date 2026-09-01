@@ -25,14 +25,21 @@ const PLAN_TODAY_SWR_STALE_SECONDS = 300;
 const PLAN_WEEK_TTL_SECONDS = 120;
 const PLAN_WEEK_SWR_STALE_SECONDS = 600;
 
+interface ValidatedPlanDate {
+  valid: boolean;
+  value?: string;
+}
+
 export function planRoutes(): Router {
   const router = Router();
 
   router.get('/week', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week', { weekStart: req.query.weekStart ?? null })) return;
+    const validatedWeekStart = validateOptionalPlanDate(res, req.query.weekStart, 'weekStart', true);
+    if (!validatedWeekStart.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
+    const weekStart = validatedWeekStart.value;
 
     try {
       const language = resolvePlanLanguage(req, userId);
@@ -85,8 +92,10 @@ export function planRoutes(): Router {
   router.get('/today', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_today', { date: req.query.date ?? null })) return;
+    const validatedDate = validateOptionalPlanDate(res, req.query.date, 'date');
+    if (!validatedDate.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const date = validatedDate.value;
 
     try {
       const language = resolvePlanLanguage(req, userId);
@@ -140,6 +149,10 @@ export function planRoutes(): Router {
       weekStart: req.body?.weekStart ?? null,
       date: req.body?.date ?? null,
     })) return;
+    const validatedWeekStart = validateOptionalPlanDate(res, req.body?.weekStart, 'weekStart', true);
+    if (!validatedWeekStart.valid) return;
+    const validatedDate = validateOptionalPlanDate(res, req.body?.date, 'date');
+    if (!validatedDate.valid) return;
     const tenantId = routeTenantId(req, userId);
     const headerIdempotencyKey = req.header?.('idempotency-key');
 
@@ -152,8 +165,8 @@ export function planRoutes(): Router {
         timezone,
         locale,
         idempotencyKey: req.body?.idempotencyKey ?? headerIdempotencyKey,
-        weekStart: req.body?.weekStart,
-        date: req.body?.date,
+        weekStart: validatedWeekStart.value,
+        date: validatedDate.value,
       });
       res.json(apiSuccess(result));
     } catch (err: any) {
@@ -168,8 +181,10 @@ export function planRoutes(): Router {
   router.get('/week/explain', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     if (!ensureCachedRouteTenantScope(res, userId, 'plan_route_week_explain', { weekStart: req.query.weekStart ?? null })) return;
+    const validatedWeekStart = validateOptionalPlanDate(res, req.query.weekStart, 'weekStart', true);
+    if (!validatedWeekStart.valid) return;
     const tenantId = routeTenantId(req, userId);
-    const weekStart = typeof req.query.weekStart === 'string' ? req.query.weekStart : undefined;
+    const weekStart = validatedWeekStart.value;
     const effectiveTier = entitlementPlanToSkillTier(getEffectiveEntitlement(userId).plan);
 
     if (!['max', 'owner'].includes(effectiveTier)) {
@@ -203,6 +218,44 @@ export function planRoutes(): Router {
   });
 
   return router;
+}
+
+function validateOptionalPlanDate(
+  res: Response,
+  rawValue: unknown,
+  field: 'date' | 'weekStart',
+  requireMonday = false,
+): ValidatedPlanDate {
+  if (rawValue == null) return { valid: true };
+
+  const code = field === 'weekStart' ? 'PLAN_WEEK_START_INVALID' : 'PLAN_DATE_INVALID';
+  const label = field === 'weekStart' ? 'weekStart' : 'date';
+  if (typeof rawValue !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rawValue)) {
+    sendError(res, code, `${label} must be an exact YYYY-MM-DD calendar date.`, 400, {
+      field,
+      reason: 'invalid_iso_date',
+    });
+    return { valid: false };
+  }
+
+  const parsed = DateTime.fromISO(rawValue, { zone: 'UTC' });
+  if (!parsed.isValid || parsed.toISODate() !== rawValue) {
+    sendError(res, code, `${label} must be a real YYYY-MM-DD calendar date.`, 400, {
+      field,
+      reason: 'invalid_calendar_date',
+    });
+    return { valid: false };
+  }
+
+  if (requireMonday && parsed.weekday !== 1) {
+    sendError(res, code, 'weekStart must be a Monday.', 400, {
+      field,
+      reason: 'monday_required',
+    });
+    return { valid: false };
+  }
+
+  return { valid: true, value: rawValue };
 }
 
 function resolvePlanLanguage(req: Request, userId: number): string {

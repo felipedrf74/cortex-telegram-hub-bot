@@ -11631,7 +11631,7 @@ paths:
         "200":
           description: "apiSuccess { snapshot: PlanningSnapshotIdentity, week: WeeklyPlanResponse, today: DailyBrief }. All three identities share snapshotId/generatedAt; today is projected from the returned week."
         "400":
-          description: "Error envelope. Stable code(s): PLANNING_RECOMPUTE_INVALID, PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED."
+          description: "Error envelope. Stable code(s): PLAN_DATE_INVALID, PLAN_WEEK_START_INVALID, PLANNING_RECOMPUTE_INVALID, PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "409":
@@ -11660,10 +11660,13 @@ paths:
           required: false
           schema:
             type: "string"
-          description: "ISO date; defaults to today in the authenticated user's timezone (app timezone is fallback only)"
+            format: "date"
+          description: "Exact real YYYY-MM-DD calendar date; defaults to today in the authenticated user's timezone (app timezone is fallback only). Malformed or impossible dates return PLAN_DATE_INVALID (400)."
       responses:
         "200":
           description: "apiSuccess with DailyBriefResponse: date, generatedAt, optional planningSnapshot, degraded, gated, garmin_stale, conflicts, creativeCopy, day, coordination. day.cooking exposes {status: ready|empty|degraded|unavailable|gated, headline, warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
+        "400":
+          description: "Error envelope. Stable code(s): PLAN_DATE_INVALID."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11690,10 +11693,13 @@ paths:
           required: false
           schema:
             type: "string"
-          description: "ISO date; normalized to its week start in the authenticated user's timezone (app timezone is fallback only)"
+            format: "date"
+          description: "Exact real YYYY-MM-DD Monday starting the requested ISO week. Malformed, impossible, or non-Monday values return PLAN_WEEK_START_INVALID (400)."
       responses:
         "200":
           description: "apiSuccess with WeeklyPlanResponse: weekStart, weekEnd, generatedAt, optional planningSnapshot, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], creativeCopy, summary:{sessionCount,mealCount,activeConflictCount}, days[]. Each day includes cooking:{status:ready|empty|degraded|unavailable|gated,headline,warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
+        "400":
+          description: "Error envelope. Stable code(s): PLAN_WEEK_START_INVALID."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11723,10 +11729,13 @@ paths:
           required: false
           schema:
             type: "string"
-          description: "ISO date; defaults to current week"
+            format: "date"
+          description: "Exact real YYYY-MM-DD Monday; defaults to the current week. Malformed, impossible, or non-Monday values return PLAN_WEEK_START_INVALID (400)."
       responses:
         "200":
           description: "apiSuccess { explanation: string, degraded, gated, garmin_stale, conflicts } (Standard success envelope unless noted.)"
+        "400":
+          description: "Error envelope. Stable code(s): PLAN_WEEK_START_INVALID."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "403":

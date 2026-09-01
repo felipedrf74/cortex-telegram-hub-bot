@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "fd129d9b0799e45721e86f7c7a2cea1fcadee04c77b8d7206419183245676cbd",
-    "baseCommit": "31598ee536f2fbfaf69812243c174d9733692cfe",
-    "baseCommitTimestamp": "2026-09-01T15:42:37+01:00",
+    "sourceDigest": "686fc179ddb507f66d768e93711f037f78ee8f9aa1a5c52ed182e65b7d1db764",
+    "baseCommit": "147a137146210856abcc1d9b856e373c3420dc22",
+    "baseCommitTimestamp": "2026-09-01T15:57:13+01:00",
     "trackedFiles": 3516,
     "sourceFiles": 1236
   },
@@ -6035,7 +6035,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 653161,
+      "bytes": 653804,
       "generated": false
     },
     {
@@ -6059,13 +6059,13 @@
       "generated": false
     },
     {
-      "path": "src/portal/portal.html",
-      "bytes": 312168,
+      "path": "__tests__/services/decision-center.test.ts",
+      "bytes": 312839,
       "generated": false
     },
     {
-      "path": "__tests__/services/decision-center.test.ts",
-      "bytes": 310625,
+      "path": "src/portal/portal.html",
+      "bytes": 312168,
       "generated": false
     },
     {
