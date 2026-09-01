@@ -273,11 +273,19 @@ export function isDecisionCenterCommandBusEnabled(env: RuntimeEnv = process.env,
 
 /**
  * Honors the x-nexus-api-version: v2 Decision Center contract (compact cards on list/overview,
- * full item on detail, cursor pagination). Default OFF; opt-in per user/tenant so older iOS
- * clients keep the v1 shape until they ship v2 decoders.
+ * full item on detail, cursor pagination). Only clients that explicitly send
+ * the v2 header receive v2, so old clients retain v1 without a rollout flag.
+ * The capability is active by default for explicit v2 callers. A global false
+ * value is the authoritative emergency kill switch and cannot be overridden
+ * by stale tenant/user opt-ins; otherwise the normal scoped precedence applies.
  */
 export function isDecisionApiV2Enabled(env: RuntimeEnv = process.env, scope?: RuntimeFlagScope): boolean {
-  return scopedFlagEnabledByExplicitOptIn(env, 'DECISION_API_V2_ENABLED', scope);
+  const globalRaw = env.DECISION_API_V2_ENABLED?.trim().toLowerCase();
+  if (globalRaw === 'false' || globalRaw === 'off' || globalRaw === '0' || globalRaw === 'disabled') return false;
+  const raw = scopedEnvValue(env, 'DECISION_API_V2_ENABLED', scope)?.trim().toLowerCase();
+  if (raw === undefined || raw === '') return true;
+  if (raw === 'false' || raw === 'off' || raw === '0' || raw === 'disabled') return false;
+  return raw === 'true' || raw === 'on' || raw === '1' || raw === 'enabled';
 }
 
 /**

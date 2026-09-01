@@ -2184,9 +2184,14 @@ export function markDecisionViewed(
      LIMIT 1
   `).get(legacyViewedReceiptId, decisionId, userId, tenantId));
   if (prior) {
-    const replay = getDecisionItem(decisionId, userId, tenantId);
-    if (!replay) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
-    return replay;
+    // Replay is receipt-authoritative. The normal list/read projection may
+    // intentionally hide a row whose source became stale after the first
+    // successful command, but that must not turn the same durable command
+    // into a 404. Use the exact scoped record path, matching the in-transaction
+    // replay branches below and the public detail/readback contract.
+    const replayRecord = getDecisionRecord(decisionId, userId, tenantId);
+    if (!replayRecord) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+    return formatDecisionItemForApi(replayRecord);
   }
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);

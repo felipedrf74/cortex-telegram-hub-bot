@@ -5156,6 +5156,55 @@ describe('Decision Center lifecycle events (SI-4)', () => {
     })).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
   });
 
+  it('replays a viewed command from the exact record after the source projection becomes stale', async () => {
+    ensureSecretaryAgendaFixtureTables();
+    testDb.prepare(`
+      INSERT INTO secretary_agenda_items (
+        agenda_item_id, source_intent_id, source_skill, source_action, intent_action,
+        source_entity_id, source_entity_type, owner_user_id, tenant_id,
+        lifecycle_state, provider_sync_state, version, title, start_at, end_at,
+        duration_minutes, decision_action, decision_reason_codes_json, decision_explanation,
+        source_shape_hash, scheduled_segments_json, created_at, updated_at
+      ) VALUES (
+        'agenda-viewed-replay', 'intent-viewed-replay', 'training', 'long_run', 'reschedule_this',
+        'session-viewed-replay', 'training_session', 806, '1806',
+        'proposed', 'not_synced', 1, 'Long run',
+        '2026-05-11T08:00:00.000Z', '2026-05-11T10:00:00.000Z',
+        120, 'deferred', '["training_schedule_request"]', 'Needs user approval',
+        'hash-viewed-replay', ?, datetime('now'), datetime('now')
+      )
+    `).run(JSON.stringify([
+      { start: '2026-05-11T08:00:00.000Z', end: '2026-05-11T10:00:00.000Z', label: 'Current slot' },
+      { start: '2026-05-11T14:00:00.000Z', end: '2026-05-11T16:00:00.000Z', label: 'Afternoon alternative' },
+    ]));
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('secretary', 806, {
+      tenantId: 1806,
+      relatedEntityId: 'agenda-viewed-replay',
+      relatedEntityType: 'secretary_agenda_item',
+      actionButtons: [{ id: 'accept_reflow', label: 'Reflow', style: 'primary' }],
+      dedupeKey: 'viewed-command-stale-source-replay',
+    }));
+    expect(created.item).not.toBeNull();
+    const input = {
+      idempotencyKey: 'viewed-command-stale-source-replay-1',
+      expectedVersion: created.item!.recordVersion,
+      channel: 'rest',
+    };
+
+    const first = markDecisionViewed(created.item!.decisionId, 806, 1806, input);
+    testDb.prepare(`DELETE FROM secretary_agenda_items WHERE agenda_item_id = 'agenda-viewed-replay'`).run();
+    expect(getDecisionItem(created.item!.decisionId, 806, 1806)).toBeNull();
+
+    const replay = markDecisionViewed(created.item!.decisionId, 806, 1806, input);
+    expect(replay.recordVersion).toBe(first.recordVersion);
+    expect(replay.status).toBe(first.status);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND event = 'viewed'
+    `).get(created.item!.decisionId)).toMatchObject({ count: 1 });
+  });
+
   it('records action lifecycle (previewed + started + succeeded + verified) and expiry', async () => {
     const d = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 81, {
       dedupeKey: 'lc-action',

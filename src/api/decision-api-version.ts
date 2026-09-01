@@ -1,11 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Decision Center API version negotiation (v1 default, v2 opt-in).
+ * Decision Center API version negotiation (header-selected v2, legacy-safe v1).
  *
  * v2 ships compact DecisionCardSummary items on list/overview surfaces (full item only on
- * detail), behind the DECISION_API_V2_ENABLED flag + an x-nexus-api-version: v2 request
- * header. v1 clients (no header / flag off) keep the existing full-item shape unchanged.
+ * detail) when a client sends x-nexus-api-version: v2. DECISION_API_V2_ENABLED is an
+ * emergency compatibility kill switch; v1 clients without the header keep the existing
+ * full-item shape unchanged.
  */
 
 import type { AuthenticatedRequest } from './auth-middleware';
@@ -32,7 +33,7 @@ function requestedVersionHeader(req: AuthenticatedRequest): string {
   return value.trim().toLowerCase();
 }
 
-/** v2 only when the client asks for it AND the flag is opt-in for this user/tenant. */
+/** v2 only when the client asks for it and the compatibility kill switch permits it. */
 export function resolveDecisionApiVersion(req: AuthenticatedRequest): ResolvedDecisionApiVersion {
   const wantsV2 = requestedVersionHeader(req) === 'v2';
   const tenantId = typeof req.tenantId === 'number'

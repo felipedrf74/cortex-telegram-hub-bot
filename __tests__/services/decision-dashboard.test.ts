@@ -59,6 +59,14 @@ describe('buildDecisionDashboardSnapshot (T14)', () => {
     const a = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 70, { tenantId: 70, dedupeKey: 'dash-1' }));
     await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 70, { tenantId: 70, dedupeKey: 'dash-2' }));
     dismissDecision(a.item!.decisionId, 70, 70, 'not_relevant');
+    // Creation persists with SQLite's real clock. Pin this historical fixture's
+    // lifecycle rows to the injected request clock so the test remains stable
+    // when it runs after the requested Lisbon day has ended.
+    testDb.prepare(`
+      UPDATE decision_lifecycle_events
+         SET created_at = ?
+       WHERE user_id = 70 AND tenant_id = 70
+    `).run(requestNow.toISOString());
 
     const lifecycleRowsBeforeSnapshot = (testDb.prepare('SELECT COUNT(*) AS n FROM decision_lifecycle_events')
       .get() as { n: number }).n;
