@@ -3251,7 +3251,7 @@ paths:
               description: "Evidenced fields: TrainingPlanCandidateRequest (typed plan candidate request); idempotency-key header. Route validation code is authoritative for exact shapes."
       responses:
         "201":
-          description: "{ schemaVersion, mode: 'active', candidateSet: { candidates: [revision with decisionId] } } (Standard success envelope unless noted.)"
+          description: "{ schemaVersion, mode: 'active', candidateSet: { candidates: [revision with decisionId] } }. Revision workouts may add executionDisposition { state: 'DROPPED', reasonCode } and executionAdaptations [{ actionType, reasonCode }] after a reviewed Coach V2 reflow; clients that do not know the additive fields remain compatible. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): TENANT_SCOPE_REQUIRED."
         "404":

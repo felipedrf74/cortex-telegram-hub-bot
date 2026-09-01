@@ -252,6 +252,17 @@ describe('governed product learning', () => {
           42,
           42,
           {
+            idempotencyKey: 'reject-stale-learning-approval',
+            expectedVersion: created.item!.recordVersion + 1,
+            contextVersion: created.item!.contextVersion,
+          },
+        )).rejects.toMatchObject({ code: 'DECISION_VERSION_CONFLICT' });
+        await expect(performDecisionAction(
+          created.item!.decisionId,
+          'approve_product_learning_case',
+          42,
+          42,
+          {
             idempotencyKey: 'reject-apns-learning-approval',
             channel: 'apns',
             expectedVersion: created.item!.recordVersion,

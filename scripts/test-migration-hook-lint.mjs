@@ -8,7 +8,7 @@ import ts from 'typescript';
 import { root, walkTestFiles } from './lib/test-policy.mjs';
 
 export const approvedDirectMigrationReplays = new Map([
-  ['__tests__/migrations/decision-flow-v1.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 227.' }],
+  ['__tests__/migrations/decision-flow-v1.test.ts', { expectedCalls: 2, reason: 'One readiness-before-227 rehearsal and one historical 227-before-226 recovery rehearsal.' }],
   ['__tests__/migrations/training-plan-revision-v1.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 228.' }],
   ['__tests__/migrations/training-exercise-media-v1.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 229.' }],
   ['__tests__/migrations/training-adaptation-proposals-v1.test.ts', { expectedCalls: 1, reason: 'One empty-database production-runner rehearsal for migration 230.' }],

@@ -32,6 +32,11 @@ describe('isolated Training E2E harness', () => {
     expect(compose).toContain('DATABASE_PATH: "/app/training-e2e-state/data/training-e2e.db"');
     expect(compose).toContain('TRAINING_CALENDAR_WRITES_ENABLED: "false"');
     expect(compose).toContain('TRAINING_CALENDAR_SYNC_ENABLED: "false"');
+    expect(compose).toContain('TRAINING_PLAN_REVISION_V1_MODE_USER_2: "active"');
+    expect(compose).toContain('TRAINING_DECISION_FLOW_V1_ENFORCE_ENABLED_USER_2: "true"');
+    expect(compose).toContain('TRAINING_TYPED_WORKOUT_V1_ENABLED_USER_2: "true"');
+    expect(compose).toContain('TRAINING_ADAPTATION_V1_MODE_USER_2: "active"');
+    expect(compose).toContain('TRAINING_PROFILE_SNAPSHOT_ENCRYPTION_KEY: "training-e2e-revision-snapshot-key-20260830"');
     expect(compose).toContain('TRAINING_CALENDAR_CAPACITY_KERNEL_ENABLED: ${NEXUS_TRAINING_E2E_CAPACITY_KERNEL:-on}');
     expect(compose).not.toContain('./content-engine:/engine');
   });
@@ -179,9 +184,19 @@ describe('isolated Training E2E harness', () => {
 
     expect(flow).toContain('if (!inContainer && !env.NEXUS_TRAINING_E2E_GIT_DIR)');
     expect(flow).toContain('readCompletionFeedbackRows');
+    expect(flow).toContain("strongConfirmationText: 'CONFIRM'");
+    expect(flow).toContain("approvedDecisionItem?.decisionState === 'approved'");
+    expect(flow).toContain("approvedCandidateDecisionItem?.decisionState === 'approved'");
+    expect(flow).toContain("actionId: 'activate_training_plan_revision'");
+    expect(flow).toContain('expectedVersion: approvedCandidateDecisionItem.recordVersion');
+    expect(flow).toContain('contextVersion: approvedCandidateDecisionItem.contextVersion');
+    expect(flow).toContain('/api/v1/training/plan/candidates');
+    expect(flow).toContain('TRAINING_REVISION_PROFILE_REQUIRED');
+    expect(flow).toContain("'/api/v1/health-data/sync'");
+    expect(flow).not.toContain("'/api/v1/training/plan/generate'");
     expect(flow).toContain('flowAttemptId');
-    expect(flow).toContain('Generated plan was not persisted in the isolated database');
-    expect(flow).toContain('Generated plan sessions were not persisted in the isolated database');
+    expect(flow).toContain('Activated candidate plan was not persisted in the isolated database');
+    expect(flow).toContain('Activated candidate sessions were not persisted in the isolated database');
     expect(flow).toContain('noActiveSession !== true');
     expect(flow).toContain('calendarSyncRetry');
     expect(flow).toContain('[200, 409, 503]');
@@ -197,12 +212,14 @@ describe('isolated Training E2E harness', () => {
     expect(flow).toContain('partialSessionIds: [hardPartialSession.id]');
     expect(flow).toContain("painLocation: 'left knee'");
     expect(flow).toContain('sorenessLevel: 8');
-    expect(flow).toContain('skipSessionIds.length >= 3');
+    expect(flow).toContain('skipSessions.length >= 3');
     expect(flow).toContain("item.status === 'partial'");
     expect(flow).toContain('/reflow-preview');
+    expect(flow).toContain('revision_owned_legacy_reflow_guard');
     expect(flow).toContain('readTrainingPlanRowCount');
     expect(flow).toContain('FROM fitness_training_plans WHERE id = ?');
-    expect(flow).toContain('cancel_cleanup_and_no_plan_recovery');
+    expect(flow).toContain('revision_owned_legacy_cancel_guard');
+    expect(flow).toContain('TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED');
     expect(flow).toContain("'/api/v1/training/plan/cancel'");
   });
 

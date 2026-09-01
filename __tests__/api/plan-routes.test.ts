@@ -556,6 +556,18 @@ describe('plan routes', () => {
       weekStart: '2026-04-13',
       date: '2026-04-14',
     });
+
+    mockRecomputePlanningSnapshot.mockClear();
+    const headerReplay = await dispatch('POST', '/recompute', {
+      headers: { 'idempotency-key': 'plan-route-header-recompute-1' },
+      body: null as unknown as Record<string, unknown>,
+    });
+    expect(headerReplay.statusCode).toBe(200);
+    expect(mockRecomputePlanningSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: 'plan-route-header-recompute-1',
+      weekStart: undefined,
+      date: undefined,
+    }));
   });
 
   it('returns typed validation and idempotency-conflict errors from recompute', async () => {

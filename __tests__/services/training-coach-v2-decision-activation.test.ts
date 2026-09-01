@@ -260,13 +260,17 @@ describe('Training Coach V2 Decision Center activation', () => {
         FROM fitness_training_plans
        WHERE user_id = 44 AND tenant_id = 44 AND status = 'active'
     `).get() as { id: number; sourceRevisionId: string; adaptationRevision: number };
-    const target = testDb.prepare(`
+    const targets = testDb.prepare(`
       SELECT s.id AS sessionId, s.duration_minutes AS durationMinutes, w.id AS weekId
         FROM training_sessions s
         JOIN training_weeks w ON w.id = s.week_id
        WHERE s.plan_id = ? AND s.status IN ('pending', 'scheduled')
-       ORDER BY s.id LIMIT 1
-    `).get(projection.id) as { sessionId: number; durationMinutes: number; weekId: number };
+         AND w.week_number = 1
+       ORDER BY s.id LIMIT 2
+    `).all(projection.id) as Array<{ sessionId: number; durationMinutes: number; weekId: number }>;
+    expect(targets).toHaveLength(2);
+    const target = targets[0]!;
+    const dropTarget = targets[1]!;
 
     const proposal = createTrainingCoachV2Proposal({
       tenantId: 44,
@@ -278,12 +282,19 @@ describe('Training Coach V2 Decision Center activation', () => {
       request: {
         trigger: 'manual_reflow',
         sessionsToPreserve: [],
-        actions: [{
-          type: 'scale_volume',
-          sessionId: String(target.sessionId),
-          multiplier: 0.8,
-          reasonCode: 'reviewed_fatigue_adjustment',
-        }],
+        actions: [
+          {
+            type: 'scale_volume',
+            sessionId: String(target.sessionId),
+            multiplier: 0.8,
+            reasonCode: 'reviewed_fatigue_adjustment',
+          },
+          {
+            type: 'drop_session',
+            sessionId: String(dropTarget.sessionId),
+            reasonCode: 'reviewed_minimum_viable_week',
+          },
+        ],
         schedulingTimezone: 'UTC',
         syncTarget: 'none',
       },
@@ -341,7 +352,20 @@ describe('Training Coach V2 Decision Center activation', () => {
       sourceRevisionId: proposal.proposal.proposedRevisionId,
       adaptationRevision: 1,
     });
-    expect(testDb.prepare('SELECT duration_minutes AS durationMinutes FROM training_sessions WHERE id = ?')
-      .get(target.sessionId)).toEqual({ durationMinutes: Math.round(target.durationMinutes * 0.8) });
+    expect(testDb.prepare(`
+      SELECT duration_minutes AS durationMinutes, schedule_reason_code AS reasonCode
+        FROM training_sessions WHERE id = ?
+    `).get(target.sessionId)).toEqual({
+      durationMinutes: Math.round(target.durationMinutes * 0.8),
+      reasonCode: 'reviewed_fatigue_adjustment',
+    });
+    expect(testDb.prepare(`
+      SELECT status, schedule_status AS scheduleStatus, schedule_reason_code AS reasonCode
+        FROM training_sessions WHERE id = ?
+    `).get(dropTarget.sessionId)).toEqual({
+      status: 'skipped',
+      scheduleStatus: 'dropped',
+      reasonCode: 'reviewed_minimum_viable_week',
+    });
   });
 });

@@ -357,12 +357,15 @@ describe('splitter: CASE ... END is not the end of a trigger body', () => {
 describe('migration inventory', () => {
   it('covers every migration file, ordered, with byte digests', () => {
     const policy = loadProductionMigrationLineagePolicy({ root });
+    const migrationFiles = readdirSync(join(root, 'migrations'));
     const inventory = buildMigrationInventory({
-      readDir: (dir) => readdirSync(join(root, dir)),
+      // Exercise the inventory's deterministic ordering instead of relying on
+      // the host filesystem to return already-sorted directory entries.
+      readDir: () => [...migrationFiles].reverse(),
       readFile: (file) => readFileSync(join(root, file)),
       compatibilityExemptions: policy.release.compatibilityExemptions,
     });
-    const onDisk = readdirSync(join(root, 'migrations'))
+    const onDisk = migrationFiles
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
     expect(inventory).toHaveLength(297);
     expect(inventory).toHaveLength(onDisk.length);

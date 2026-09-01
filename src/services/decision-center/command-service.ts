@@ -1025,15 +1025,6 @@ async function performDecisionActionCore(
       );
     }
   }
-  if (opts.channel === 'apns' && !isDecisionActionAllowedFromApns(actionId)
-      && actionId !== 'dismiss' && actionId !== 'snooze' && actionId !== 'not_now') {
-    throw new DecisionActionError(
-      'APNS_ACTION_NOT_ALLOWED',
-      'This notification action must be confirmed inside Nexus before it can change source data.',
-      409,
-      { channel: 'apns', actionId },
-    );
-  }
   if (opts.contextVersion && opts.contextVersion !== decisionContextVersion(record)) {
     throw new DecisionActionError('DECISION_CONTEXT_CHANGED', 'Decision context changed and must be reviewed again.', 409, {
       currentContextVersion: decisionContextVersion(record),

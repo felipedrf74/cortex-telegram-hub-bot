@@ -53,6 +53,7 @@ import {
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
 import { runDecisionRecoveryNotices } from '../../src/services/decision-recovery-notifier';
+import { logger } from '../../src/utils/logger';
 
 function createLifecycleTable(): void {
   testDb.exec(`
@@ -391,5 +392,9 @@ describe('priority model shadow scoring', () => {
     expect(testDb.prepare(`
       SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notification_priority_shadow'
     `).get()).toBeUndefined();
+    expect(logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ intentId: result.intent.intentId }),
+      'priority shadow verdict not recorded',
+    );
   });
 });
