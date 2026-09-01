@@ -208,7 +208,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/api/routes/plan.ts:154-154",
+            "pattern": "src/api/routes/plan.ts:167-167",
             "anchor": "idempotencyKey: req.body?.idempotencyKey ?? headerIdempotencyKey,",
             "behavior": "The recompute route delegates one scoped locale and timezone-bound idempotent request to the coherent planning snapshot owner.",
             "replacementTest": "__tests__/api/plan-routes.test.ts",
