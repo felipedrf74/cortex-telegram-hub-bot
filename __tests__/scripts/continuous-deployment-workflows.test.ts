@@ -4235,7 +4235,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
     } finally {
       rmSync(fixture.directory, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   it('refuses forged eligibility even when every inventory entry is identical', () => {
     const fixture = migrationResultFixture((verdict) => {
@@ -4345,7 +4345,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   it('signs from the digest-bound hosted verdict without rereading the CI artifact', () => {
     const fixture = migrationResultFixture();

@@ -80,16 +80,6 @@
     },
     "exceptions": [
       {
-        "file": "src/services/database.ts",
-        "owner": "test-infrastructure",
-        "reason": "Legacy database facade baseline is ratcheted while extracted migration behavior remains independently governed.",
-        "expires": "2026-08-31",
-        "minimum": {
-          "lines": 25.28,
-          "branches": 26.08
-        }
-      },
-      {
         "file": "src/services/gemini-provider.ts",
         "owner": "provider-platform",
         "reason": "Preserve the observed provider fallback baseline while focused provider contracts close remaining branches.",
