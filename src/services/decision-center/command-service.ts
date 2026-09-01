@@ -3734,6 +3734,15 @@ export function reconcilePartialDecisionExecution(record: DecisionRecord): Decis
       });
     }
   })();
+  if (verification.outcome === 'applied') {
+    invalidatePlanningAfterVerifiedDecisionSourceMutation({
+      actionId: execution.actionId,
+      userId: record.userId,
+      status: 'reconciled',
+      readBackOk: true,
+      idempotent: true,
+    });
+  }
   emitDecisionLifecycleEvent({
     decisionId: record.itemId,
     userId: record.userId,
@@ -4252,6 +4261,20 @@ export function idempotentActionResult(
   tenantId: number,
   execution: any,
 ): DecisionActionResult {
+  if (execution?.status !== 'succeeded') {
+    throw new DecisionActionError(
+      'DECISION_EXECUTION_STATE_CONFLICT',
+      'Only a durably verified decision execution can be replayed as successful.',
+      409,
+    );
+  }
+  invalidatePlanningAfterVerifiedDecisionSourceMutation({
+    actionId,
+    userId,
+    status: 'idempotent',
+    readBackOk: true,
+    idempotent: true,
+  });
   if (typeof execution.decision_id === 'string' && execution.decision_id !== decisionId) {
     retireLogicalDuplicateDecision(decisionId, execution.decision_id, userId, tenantId);
   }

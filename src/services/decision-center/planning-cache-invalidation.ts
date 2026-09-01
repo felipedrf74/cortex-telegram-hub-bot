@@ -4,8 +4,11 @@ import { invalidatePlanningCaches } from '../cache-coherence-registry';
 
 /**
  * Only verified writes to sources consumed by weekly/daily planning retire the
- * authenticated user's plan projections. Decision lifecycle-only mutations,
- * navigation, failed attempts, and durable idempotent replays do not.
+ * authenticated user's plan projections. Re-running the invalidation for a
+ * durable verified replay is intentional: it closes the crash window between
+ * committing the successful execution ledger and retiring cached projections.
+ * Decision lifecycle-only mutations, navigation, failed attempts, and
+ * unverified outcomes do not invalidate.
  */
 const PLANNING_SOURCE_MUTATION_ACTIONS = new Set([
   'approve_script',
@@ -22,7 +25,7 @@ const PLANNING_SOURCE_MUTATION_ACTIONS = new Set([
 export interface DecisionPlanningInvalidationInput {
   actionId: string;
   userId: number;
-  status: 'succeeded' | 'failed' | 'blocked' | 'idempotent';
+  status: 'succeeded' | 'failed' | 'blocked' | 'idempotent' | 'reconciled';
   readBackOk: boolean;
   idempotent: boolean;
 }
@@ -30,9 +33,11 @@ export interface DecisionPlanningInvalidationInput {
 export function invalidatePlanningAfterVerifiedDecisionSourceMutation(
   input: DecisionPlanningInvalidationInput,
 ): boolean {
+  const durableVerifiedSuccess = (input.status === 'succeeded' && !input.idempotent)
+    || (input.status === 'idempotent' && input.idempotent)
+    || (input.status === 'reconciled' && input.idempotent);
   if (
-    input.status !== 'succeeded'
-    || input.idempotent
+    !durableVerifiedSuccess
     || !input.readBackOk
     || !PLANNING_SOURCE_MUTATION_ACTIONS.has(input.actionId)
   ) return false;
