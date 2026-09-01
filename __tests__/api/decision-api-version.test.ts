@@ -50,30 +50,52 @@ describe('Decision API version negotiation', () => {
   afterEach(() => {
     delete process.env.DECISION_API_V2_ENABLED;
     delete process.env.DECISION_API_V2_ENABLED_TENANT_17;
+    delete process.env.DECISION_API_V2_ENABLED_USER_7;
   });
 
   it('honors tenant-scoped v2 rollout for the same authenticated user', () => {
-    process.env.DECISION_API_V2_ENABLED_TENANT_17 = 'true';
+    process.env.DECISION_API_V2_ENABLED_TENANT_17 = 'false';
 
-    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v2');
-    expect(resolveDecisionApiVersion(reqWith('v2', 7, 18)).version).toBe('v1');
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v1');
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 18)).version).toBe('v2');
   });
 
-  it('defaults to v1 unless the client asks for v2 AND the flag is opt-in', () => {
+  it('defaults explicit v2 callers to v2 while preserving v1 for clients without the header', () => {
     expect(resolveDecisionApiVersion(reqWith()).version).toBe('v1');
 
-    // header v2 but flag OFF → still v1
+    // Explicit v2 callers receive v2 without a cohort flag.
+    expect(resolveDecisionApiVersion(reqWith('v2')).version).toBe('v2');
+
+    // An explicit kill switch affects only v2 callers; old clients remain v1.
+    process.env.DECISION_API_V2_ENABLED = 'false';
+    expect(resolveDecisionApiVersion(reqWith()).version).toBe('v1');
     expect(resolveDecisionApiVersion(reqWith('v2')).version).toBe('v1');
 
-    // flag ON but no header → v1
     process.env.DECISION_API_V2_ENABLED = 'true';
-    expect(resolveDecisionApiVersion(reqWith()).version).toBe('v1');
-
-    // header v2 + flag ON → v2
     const v2 = resolveDecisionApiVersion(reqWith('v2'));
     expect(v2.version).toBe('v2');
     expect(v2.schemaVersion).toBe('decision-center.v2');
     expect(resolveDecisionApiVersion(reqWith()).schemaVersion).toBe('decision-center.v1');
+  });
+
+  it('treats global off as an authoritative emergency kill switch', () => {
+    process.env.DECISION_API_V2_ENABLED = 'false';
+    process.env.DECISION_API_V2_ENABLED_TENANT_17 = 'true';
+    process.env.DECISION_API_V2_ENABLED_USER_7 = 'enabled';
+
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v1');
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 18)).version).toBe('v1');
+  });
+
+  it('retains accepted enabled/disabled synonyms at each scoped level', () => {
+    process.env.DECISION_API_V2_ENABLED = 'enabled';
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v2');
+
+    process.env.DECISION_API_V2_ENABLED_TENANT_17 = 'disabled';
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v1');
+
+    process.env.DECISION_API_V2_ENABLED_USER_7 = 'enabled';
+    expect(resolveDecisionApiVersion(reqWith('v2', 7, 17)).version).toBe('v2');
   });
 
   it('projects a full item to a compact v2 card', () => {
