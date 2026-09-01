@@ -319,6 +319,26 @@
         "reason": "The retained product-learning flow adds the now-required record and context versions, proves stale-version refusal, and continues to prove APNs refusal plus authenticated in-app execution."
       },
       {
+        "test": "__tests__/services/training-coach-v2-decision-activation.test.ts",
+        "replacementTests": [
+          "__tests__/services/training-coach-v2-decision-activation.test.ts"
+        ],
+        "sources": [
+          "src/services/training-plan-revision-activation.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-plan-revision-activation.ts:545-545",
+            "anchor": "if (workout.executionDisposition?.state === 'DROPPED') {",
+            "behavior": "Activating an approved immutable Training revision projects a dropped future session as skipped and dropped with its reviewed reason code while leaving pre-approval projection unchanged.",
+            "replacementTest": "__tests__/services/training-coach-v2-decision-activation.test.ts",
+            "ownerTestNamePattern": "stages and activates an immutable child revision without mutating the active projection before approval$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained activation suite expands immutable revision coverage to prove the newly supported drop-session executor and reviewed reason-code projection."
+      },
+      {
         "test": "__tests__/services/report-document-store.test.ts",
         "replacementTests": [
           "__tests__/services/report-document-store.test.ts"

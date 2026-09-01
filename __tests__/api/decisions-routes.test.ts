@@ -103,11 +103,13 @@ vi.mock('../../src/services/decision-center-daily-attention', () => ({
   materializeDecisionCenterDailyAttention: (...args: unknown[]) => mockMaterializeDecisionCenterDailyAttention(...args),
 }));
 
-vi.mock('../../src/services/decision-center/rank-snapshot-service', () => ({
+vi.mock('../../src/services/decision-center/rank-snapshot-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/decision-center/rank-snapshot-service')>()),
   readDecisionRankSnapshotPageFromCurrentDatabase: (...args: unknown[]) => mockReadDecisionRankSnapshotPage(...args),
 }));
 
-vi.mock('../../src/services/decision-center/command-receipts', () => ({
+vi.mock('../../src/services/decision-center/command-receipts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/decision-center/command-receipts')>()),
   executeDecisionMutationWithReceipt: (_command: unknown, mutate: () => unknown) => ({
     result: mutate(),
     idempotent: false,
