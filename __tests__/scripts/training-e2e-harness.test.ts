@@ -89,6 +89,10 @@ describe('isolated Training E2E harness', () => {
     expect(smoke).toContain('refusing to accept default local backend port');
     expect(smoke).toContain('Authorization: Bearer ${NEXUS_TRAINING_E2E_PORTAL_READ_TOKEN}');
     expect(smoke).toContain('/api/snapshot');
+    expect(smoke).toContain('SNAPSHOT_PATH="$(mktemp)"');
+    expect(smoke).toContain('--output "$SNAPSHOT_PATH"');
+    expect(smoke).toContain("JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))");
+    expect(smoke).not.toContain('"$SNAPSHOT"');
   });
 
   it('runs iOS against an explicit dedicated simulator without shutting down unrelated simulators', () => {
