@@ -17,10 +17,11 @@ describe('lean required CI contracts', () => {
     expect(workflow.match(/^\s{4}name: 🔨 Build$/gm)).toHaveLength(1);
   });
 
-  it('runs selected tests once on pull requests and main', () => {
+  it('runs one selected set as bounded coverage shards on pull requests and main', () => {
     expect(workflow).toContain('test_focused:');
     expect(workflow).toContain("needs.classify.outputs.vitest_mode == 'focused'");
     expect(workflow).toContain('scripts/risk-gate.sh \\');
+    expect(workflow).toContain('--coverage-shards 4');
     expect(workflow).not.toContain('changed_coverage:');
     expect(workflow).not.toContain('changed-coverage-gate.mjs');
     expect(workflow).not.toContain('test_full_shard:');
@@ -38,8 +39,30 @@ describe('lean required CI contracts', () => {
     // and finalized its coverage artifacts.
     expect(focusedJob).toContain('timeout-minutes: 75');
     expect(focusedJob).toContain('--coverage');
+    expect(focusedJob).toContain('--coverage-shards 4');
     expect(focusedJob).toContain('scripts/risk-gate.sh \\');
     expect(focusedJob).not.toContain('--skip-tests');
+  });
+
+  it('runs the isolated Training lifecycle lane for Training-classified changes', () => {
+    const lane = workflow.match(
+      /  training_e2e:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
+    )?.groups?.body ?? '';
+
+    expect(lane).toContain("contains(fromJSON(needs.classify.outputs.selected_groups), 'training')");
+    expect(lane).toContain('npm run training:e2e:up');
+    expect(lane).toContain('npm run training:e2e:smoke');
+    expect(lane).toContain('npm run training:e2e:flow');
+    expect(lane).toContain('npm run training:e2e:down');
+    const evidenceRoot = '.local/training-e2e/ci-${{ github.run_id }}-${{ github.run_attempt }}';
+    expect(lane).toContain(`${evidenceRoot}/metadata.json`);
+    expect(lane).toContain(`${evidenceRoot}/training-flow-evidence.json`);
+    expect(lane).toContain(`${evidenceRoot}/training-e2e-contract-evidence.json`);
+    expect(lane).not.toContain('path: .local/training-e2e/\n');
+    expect(lane).not.toContain('training-e2e.db');
+    expect(lane).not.toContain('local-ios-auth.json');
+    expect(lane).not.toContain('quality-ios-jwt-secret');
+    expect(workflow).toContain('TRAINING_E2E_RESULT: ${{ needs.training_e2e.result }}');
   });
 
   it('publishes exact selected-test metadata for the protected main SHA', () => {

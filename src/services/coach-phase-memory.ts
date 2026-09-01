@@ -20,7 +20,7 @@
  * narrative document the coach consults before interpreting this week's
  * signals.
  *
- * Storage: piggybacks on the existing `report_documents` table (type =
+ * Storage: piggybacks on the tenant-scoped report document store (type =
  * `coach_phase`). No new DB migration needed — the table already holds
  * JSON payloads scoped per user, and `getLatestByType` gives us the
  * "current" phase doc in O(1). The coach briefing generator can update
@@ -84,19 +84,24 @@ export interface CoachPhaseMemory {
  * Persist the current coach phase narrative for a user. Returns the
  * stored report id, or -1 if tenant scoping is invalid.
  *
- * Idempotent by nature of the underlying report_documents table:
+ * Idempotent by nature of the underlying report document store:
  * successive calls append new rows rather than updating in-place. This
  * is intentional — it preserves a narrative history so an auditor can
  * see how the coach's reading of the athlete has evolved. Readers use
  * `getCurrentCoachPhase()` which always returns the latest row.
  */
-export function writeCoachPhaseMemory(userId: number, memory: CoachPhaseMemory): number {
+export function writeCoachPhaseMemory(
+  userId: number,
+  memory: CoachPhaseMemory,
+  tenantId: number = userId,
+): number {
   const title = memory.weekInPhase && memory.phaseTotalWeeks
     ? `Coach phase: ${memory.phase} (week ${memory.weekInPhase}/${memory.phaseTotalWeeks})`
     : `Coach phase: ${memory.phase}`;
   const summary = memory.narrative.slice(0, 280);
   const id = storeReport({
     userId,
+    tenantId,
     type: 'coach_phase',
     title,
     summary,
@@ -120,8 +125,8 @@ export function writeCoachPhaseMemory(userId: number, memory: CoachPhaseMemory):
  * Callers should treat null as "no narrative available" and fall
  * back to stateless interpretation of this week's signals.
  */
-export function getCurrentCoachPhase(userId: number): CoachPhaseMemory | null {
-  const doc: ReportDocument | null = getLatestByType(userId, 'coach_phase');
+export function getCurrentCoachPhase(userId: number, tenantId: number = userId): CoachPhaseMemory | null {
+  const doc: ReportDocument | null = getLatestByType(userId, 'coach_phase', tenantId);
   if (!doc || !doc.documentJson) return null;
   const raw = doc.documentJson as Partial<CoachPhaseMemory> & { writtenAt?: string };
   if (typeof raw.phase !== 'string' || typeof raw.narrative !== 'string') return null;

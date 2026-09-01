@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   _resetCoachPlanStoreForTests,
+  clearStoredPlansForAthlete,
   getStoredPlanCoveringDate,
   getStoredPlanForWeek,
   getWeeklyPlanCoveringDate,
@@ -37,62 +38,67 @@ function makeAthlete(overrides: Partial<AthleteState> = {}): AthleteState {
 }
 
 describe('coach-plan-registry', () => {
+  const tenantId = 700;
+
   beforeEach(() => {
     _resetCoachPlanStoreForTests();
   });
 
-  it('returns the recorded plan by exact (athleteId, weekStart) key', () => {
+  it('returns the recorded plan by exact (tenantId, athleteId, weekStart) key', () => {
     const plan = makePlan();
-    recordWeeklyPlan(plan, makeAthlete());
+    recordWeeklyPlan(tenantId, plan, makeAthlete());
 
-    expect(getWeeklyPlanForWeek(42, '2026-04-13')).toEqual(plan);
+    expect(getWeeklyPlanForWeek(42, tenantId, '2026-04-13')).toEqual(plan);
   });
 
   it('returns null when no plan is stored for the given athlete', () => {
-    expect(getWeeklyPlanForWeek(42, '2026-04-13')).toBeNull();
-    expect(getStoredPlanForWeek(42, '2026-04-13')).toBeNull();
+    expect(getWeeklyPlanForWeek(42, tenantId, '2026-04-13')).toBeNull();
+    expect(getStoredPlanForWeek(42, tenantId, '2026-04-13')).toBeNull();
   });
 
   it('covers a mid-week date by scanning back up to 6 days to find the week-start', () => {
     // Monday plan covers Mon-Sun. Querying Wednesday must return it.
     const plan = makePlan({ weekStart: '2026-04-13' }); // Monday
-    recordWeeklyPlan(plan, makeAthlete());
+    recordWeeklyPlan(tenantId, plan, makeAthlete());
 
-    expect(getWeeklyPlanCoveringDate(42, '2026-04-15')?.athleteId).toBe(42);
-    expect(getWeeklyPlanCoveringDate(42, '2026-04-19')?.weekStart).toBe('2026-04-13');
+    expect(getWeeklyPlanCoveringDate(42, tenantId, '2026-04-15')?.athleteId).toBe(42);
+    expect(getWeeklyPlanCoveringDate(42, tenantId, '2026-04-19')?.weekStart).toBe('2026-04-13');
   });
 
   it('returns null when no plan covers the given date (cold start / restart)', () => {
     // Store a plan for a prior week, query a date > 6 days away.
-    recordWeeklyPlan(makePlan({ weekStart: '2026-04-06' }), makeAthlete());
+    recordWeeklyPlan(tenantId, makePlan({ weekStart: '2026-04-06' }), makeAthlete());
 
-    expect(getWeeklyPlanCoveringDate(42, '2026-04-20')).toBeNull();
+    expect(getWeeklyPlanCoveringDate(42, tenantId, '2026-04-20')).toBeNull();
   });
 
   it('scopes lookups per athlete so two users do not collide', () => {
     recordWeeklyPlan(
+      tenantId,
       makePlan({ athleteId: 1, weekStart: '2026-04-13' }),
       makeAthlete({ profile: { ...sampleMarathonAthlete.profile, athleteId: 1 } }),
     );
     recordWeeklyPlan(
+      tenantId,
       makePlan({ athleteId: 2, weekStart: '2026-04-13', phase: 'peak' }),
       makeAthlete({ profile: { ...sampleMarathonAthlete.profile, athleteId: 2 } }),
     );
 
-    expect(getWeeklyPlanForWeek(1, '2026-04-13')?.phase).toBe('build');
-    expect(getWeeklyPlanForWeek(2, '2026-04-13')?.phase).toBe('peak');
+    expect(getWeeklyPlanForWeek(1, tenantId, '2026-04-13')?.phase).toBe('build');
+    expect(getWeeklyPlanForWeek(2, tenantId, '2026-04-13')?.phase).toBe('peak');
   });
 
-  it('overwrites a prior plan for the same (athleteId, weekStart) on re-record', () => {
-    recordWeeklyPlan(makePlan(), makeAthlete());
+  it('overwrites a prior plan for the same (tenantId, athleteId, weekStart) on re-record', () => {
+    recordWeeklyPlan(tenantId, makePlan(), makeAthlete());
     recordWeeklyPlan(
+      tenantId,
       makePlan({
         guardrailResults: [{ ruleId: 'readiness', status: 'pass', adjusted: false, message: 'Rested.' }],
       }),
       makeAthlete(),
     );
 
-    const stored = getWeeklyPlanForWeek(42, '2026-04-13');
+    const stored = getWeeklyPlanForWeek(42, tenantId, '2026-04-13');
     expect(stored?.guardrailResults).toHaveLength(1);
     expect(stored?.guardrailResults[0].message).toBe('Rested.');
   });
@@ -103,20 +109,32 @@ describe('coach-plan-registry', () => {
     // frozen at generation time.
     const plan = makePlan();
     const athlete = makeAthlete();
-    recordWeeklyPlan(plan, athlete);
+    recordWeeklyPlan(tenantId, plan, athlete);
 
-    const entry = getStoredPlanForWeek(42, '2026-04-13');
+    const entry = getStoredPlanForWeek(42, tenantId, '2026-04-13');
     expect(entry).not.toBeNull();
     expect(entry!.plan).toEqual(plan);
     expect(entry!.athleteState.profile.athleteId).toBe(42);
   });
 
   it('returns the full stored entry when scanning by date', () => {
-    recordWeeklyPlan(makePlan({ weekStart: '2026-04-13' }), makeAthlete());
+    recordWeeklyPlan(tenantId, makePlan({ weekStart: '2026-04-13' }), makeAthlete());
 
-    const entry = getStoredPlanCoveringDate(42, '2026-04-16');
+    const entry = getStoredPlanCoveringDate(42, tenantId, '2026-04-16');
     expect(entry).not.toBeNull();
     expect(entry!.plan.weekStart).toBe('2026-04-13');
     expect(entry!.athleteState.profile.athleteId).toBe(42);
+  });
+
+  it('isolates the same athlete and week across tenants, including tenant-scoped clearing', () => {
+    recordWeeklyPlan(101, makePlan({ phase: 'build' }), makeAthlete());
+    recordWeeklyPlan(202, makePlan({ phase: 'peak' }), makeAthlete());
+
+    expect(getWeeklyPlanForWeek(42, 101, '2026-04-13')?.phase).toBe('build');
+    expect(getWeeklyPlanForWeek(42, 202, '2026-04-13')?.phase).toBe('peak');
+
+    expect(clearStoredPlansForAthlete(42, 101)).toBe(1);
+    expect(getWeeklyPlanForWeek(42, 101, '2026-04-13')).toBeNull();
+    expect(getWeeklyPlanForWeek(42, 202, '2026-04-13')?.phase).toBe('peak');
   });
 });

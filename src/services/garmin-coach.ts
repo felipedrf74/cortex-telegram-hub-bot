@@ -7,8 +7,6 @@
  * v2: Includes structured recommendations (JSON) that the bot can use to
  *     offer inline buttons for applying coach suggestions to the calendar.
  */
-import Anthropic from '@anthropic-ai/sdk';
-import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now, startOfDay, endOfDay } from '../utils/date-parser';
 import { escapeHtml, splitMessage } from '../utils/chat-html-formatter';
@@ -25,8 +23,7 @@ import {
 } from './training-plans';
 import { assertLegacyCalendarEventMutationAllowed } from './training-plan-revision-legacy-guard';
 import { getDomainSystemPrompt } from './anthropic';
-import { trackedCreate } from '../portal/anthropic-hook';
-import { completeOneShotWithFallback } from './gemini-provider';
+import { ensureActiveProvider, getActiveProvider } from './provider-registry';
 import { getLastCoachState } from '../domains/domain-handler';
 import { getUserTimezoneById } from './user-service';
 import { hasActiveGarminConnection } from './garmin-session-store';
@@ -44,11 +41,6 @@ import {
   type TrainingOperationLockLease,
 } from './training-operation-locks';
 import { getCurrentContext, runWithContext } from '../utils/request-context';
-
-const client = new Anthropic({
-  apiKey: config.anthropic.apiKey,
-  maxRetries: 0,
-});
 
 type AppleHealthCoachRow = {
   data_type: string;
@@ -346,9 +338,8 @@ export async function applyCoachRecommendation(
   scope: CoachRecommendationApplyScope = {},
 ): Promise<void> {
   if (rec.action === 'KEEP') return;
-  requireTenantIdParam(scope.userId, 'applyCoachRecommendation.actorUserId');
-  const dataUserId = requireTenantIdParam(scope.tenantId, 'applyCoachRecommendation.dataUserId');
-  const tenantId = dataUserId;
+  const dataUserId = requireTenantIdParam(scope.userId, 'applyCoachRecommendation.dataUserId');
+  const tenantId = requireTenantIdParam(scope.tenantId, 'applyCoachRecommendation.tenantId');
 
   if (scope.lease) {
     await applyCoachRecommendationUnderLease(rec, dataUserId, tenantId, scope.lease);
@@ -372,11 +363,10 @@ export async function applyCoachRecommendations(
   recommendationIds?: string[] | null,
   options: CoachRecommendationsApplyOptions = {},
 ): Promise<CoachApplyResult> {
-  const actorUserId = requireTenantIdParam(userId, 'applyCoachRecommendations.actorUserId');
-  const dataUserId = requireTenantIdParam(tenantId, 'applyCoachRecommendations.dataUserId');
-  const scopedTenantId = dataUserId;
+  const dataUserId = requireTenantIdParam(userId, 'applyCoachRecommendations.dataUserId');
+  const scopedTenantId = requireTenantIdParam(tenantId, 'applyCoachRecommendations.tenantId');
 
-  const coachState = getLastCoachState(dataUserId);
+  const coachState = getLastCoachState(dataUserId, scopedTenantId);
   if (!coachState || coachState.recommendations.length === 0) {
     throw new Error('No active coach recommendations found. Run /coach again first.');
   }
@@ -401,7 +391,7 @@ export async function applyCoachRecommendations(
     for (const rec of selected) {
       try {
         await applyCoachRecommendation(rec, {
-          userId: actorUserId,
+          userId: dataUserId,
           tenantId: scopedTenantId,
           lease,
         });
@@ -775,17 +765,13 @@ export async function runWithCoachBriefingAccountAdmissions<T>(
   opts: CoachBriefingOptions,
   operation: (abortSignal: AbortSignal) => Promise<T>,
 ): Promise<T> {
+  const dataOwnerId = requireTenantIdParam(userId, 'generateCoachBriefing.dataOwnerId');
   const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
-  if (userId != null && userId !== briefingTenantId) {
-    throw Object.assign(new Error('Coach data owner must match the validated briefing tenant.'), {
-      code: 'COACH_DATA_OWNER_SCOPE_MISMATCH',
-    });
-  }
   const meteringScope = resolveCoachAnalysisMeteringScope(
-    opts.meteringUserId ?? userId,
+    opts.meteringUserId ?? dataOwnerId,
     briefingTenantId,
   );
-  const accountIds = [...new Set([briefingTenantId, meteringScope.userId])]
+  const accountIds = [...new Set([dataOwnerId, meteringScope.userId])]
     .filter((accountId) => Number.isSafeInteger(accountId) && accountId > 0);
   return runCoachBriefingWithAccountAdmissions(accountIds, opts.abortSignal, operation);
 }
@@ -801,14 +787,10 @@ export async function runWithCoachBriefingAccountLifecycle<T>(
   opts: CoachBriefingOptions,
   consume: (briefing: CoachBriefingResult, abortSignal: AbortSignal) => T | Promise<T>,
 ): Promise<T> {
+  const dataOwnerId = requireTenantIdParam(userId, 'generateCoachBriefing.dataOwnerId');
   const briefingTenantId = requireTenantIdParam(opts.tenantId, 'generateCoachBriefing');
-  if (userId != null && userId !== briefingTenantId) {
-    throw Object.assign(new Error('Coach data owner must match the validated briefing tenant.'), {
-      code: 'COACH_DATA_OWNER_SCOPE_MISMATCH',
-    });
-  }
   const meteringScope = resolveCoachAnalysisMeteringScope(
-    opts.meteringUserId ?? userId,
+    opts.meteringUserId ?? dataOwnerId,
     briefingTenantId,
   );
   return runWithCoachBriefingAccountAdmissions(
@@ -819,12 +801,12 @@ export async function runWithCoachBriefingAccountLifecycle<T>(
       return runWithContext({
         requestId: parentContext?.requestId,
         source: parentContext?.source ?? 'manual',
-        userId: briefingTenantId,
+        userId: dataOwnerId,
         tenantId: briefingTenantId,
         garminSilent: opts.garminSilent ?? parentContext?.garminSilent,
       }, async () => {
         const briefing = await generateCoachBriefingAdmitted(
-          briefingTenantId,
+          dataOwnerId,
           opts,
           briefingTenantId,
           meteringScope,
@@ -957,7 +939,7 @@ async function generateCoachBriefingAdmitted(
     tomorrowScheduleContextCount: (dataPayload.tomorrow as any)?.scheduleContext?.count ?? 0,
   }, 'Coach: payload stats');
 
-  // Phase 4: AI analysis (Gemini primary, Anthropic fallback)
+  // Phase 4: AI analysis through the shared domain-provider router.
   const analysisStart = Date.now();
   try {
     const today = now().toFormat('cccc, LLLL dd yyyy');
@@ -979,12 +961,6 @@ ${payloadStr}
 9. Use displayTime for visible event times; do not print full ISO timestamps in TOMORROW'S PLAN
 10. At the END, include the structured COACH_RECS JSON block for calendar actions`;
 
-    // Gemini-first routing for cost reduction. coach_analysis is the single
-    // largest cost line in the system (~$1.62/wk on Sonnet 4.6 at 1 user).
-    // gemini-2.5-flash is ~9.5× cheaper for the same input/output volume and
-    // matches Sonnet quality for analytical prompts of this shape.
-    // Falls back to Anthropic if Gemini is not configured or fails. See
-    // audit P0-8.
     const meteringScopePayload = { userId: meteringScope.userId, tenantId: meteringScope.tenantId };
     const meteringUserId = meteringScopePayload.userId;
     const meteringTenantId = meteringScopePayload.tenantId;
@@ -1005,37 +981,45 @@ ${payloadStr}
     }
     const budgetRequestSource = opts.budgetRequestSource
       ?? (meteringUserId > 0 ? 'interactive' : 'system');
-    const { text: rawText, provider: analysisProvider } = await withAiBudgetReservation({
+    const routedAnalysis = await withAiBudgetReservation({
       userId: meteringUserId,
       requestSource: budgetRequestSource,
       baseCategory: 'coach_analysis',
       jobName: opts.budgetJobName ?? (budgetRequestSource === 'automation' ? 'garmin_coach' : 'coach_refresh'),
       automationPriority: budgetRequestSource === 'automation' ? 'coach' : undefined,
       runId: opts.budgetRunId ?? null,
-    }, () => completeOneShotWithFallback(
-        systemPrompt,
+    }, async () => {
+      const routingProvider = getActiveProvider() ?? ensureActiveProvider();
+      if (!routingProvider) {
+        throw Object.assign(new Error('Coach provider routing is unavailable'), {
+          code: 'COACH_PROVIDER_ROUTING_UNAVAILABLE',
+        });
+      }
+
+      const result = await routingProvider.callDomain(
+        'triathlon',
+        [],
         userPrompt,
-        'coach_analysis',
-        async () => {
-          const response = await trackedCreate(client, {
-            model: config.anthropic.model,
-            max_tokens: COACH_ANALYSIS_MAX_TOKENS,
-            // Fallback receives the exact same compact, block-complete prompt
-            // as Gemini; provider switching cannot restore the discarded bulk.
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userPrompt }],
-          }, 'coach_analysis', {
-            userId: meteringUserId,
-            tenantId: meteringTenantId,
-            abortSignal: accountAbortSignal,
-          });
-          return response.content
-            .filter((c): c is Anthropic.TextBlock => c.type === 'text')
-            .map((c) => c.text)
-            .join('');
+        systemPrompt,
+        {
+          filteredTools: [],
+          maxTokensOverride: coachAnalysisMeteringOptions.maxTokens,
+          userId: coachAnalysisMeteringOptions.userId,
+          tenantId: coachAnalysisMeteringOptions.tenantId,
+          abortSignal: coachAnalysisMeteringOptions.abortSignal,
+          containsPrivateData: coachAnalysisMeteringOptions.containsPrivateData,
+          allowCloudEscalation: coachAnalysisMeteringOptions.allowCloudEscalation,
+          ownerSkill: 'training',
+          executeIntent: false,
         },
-        coachAnalysisMeteringOptions,
-      ));
+      );
+      return {
+        text: result.text,
+        provider: result.routedProviderName ?? routingProvider.name,
+      };
+    });
+    const rawText = routedAnalysis.text;
+    const analysisProvider = routedAnalysis.provider;
 
     const analysisMs = Date.now() - analysisStart;
     logger.info(

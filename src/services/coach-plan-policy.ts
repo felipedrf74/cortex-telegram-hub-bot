@@ -24,11 +24,22 @@
  */
 
 import { getDb } from './database';
+import type Database from 'better-sqlite3';
 import { logger } from '../utils/logger';
 import type { CoachPlanPolicy } from './coach-kernel/types';
 
 /** Current schema version for persisted CoachPlanPolicy JSON. */
 export const COACH_PLAN_POLICY_SCHEMA_VERSION = 1;
+export const COACH_PLAN_POLICY_CONTRACT_VERSION = 'coach-plan-policy.v2' as const;
+
+export interface CoachPlanPolicySnapshot {
+  contractVersion: typeof COACH_PLAN_POLICY_CONTRACT_VERSION;
+  policy: CoachPlanPolicy;
+  version: number;
+  etag: string;
+}
+
+export class CoachPlanPolicyVersionConflictError extends Error {}
 
 /** Default policy applied when a plan has no persisted policy. */
 export const DEFAULT_COACH_PLAN_POLICY: CoachPlanPolicy = {
@@ -46,19 +57,33 @@ export const DEFAULT_COACH_PLAN_POLICY: CoachPlanPolicy = {
  * null when the plan itself doesn't exist.
  */
 export function getCoachPlanPolicy(planId: number): CoachPlanPolicy | null {
-  const db = getDb();
+  return getCoachPlanPolicySnapshot(planId)?.policy ?? null;
+}
+
+export function getCoachPlanPolicySnapshot(
+  planId: number,
+  db: Database.Database = getDb(),
+): CoachPlanPolicySnapshot | null {
   const row = db.prepare(
-    'SELECT coach_plan_policy_json FROM fitness_training_plans WHERE id = ?',
-  ).get(planId) as { coach_plan_policy_json: string | null } | undefined;
+    'SELECT coach_plan_policy_json, coach_plan_policy_version FROM fitness_training_plans WHERE id = ?',
+  ).get(planId) as { coach_plan_policy_json: string | null; coach_plan_policy_version: number } | undefined;
   if (!row) return null;
-  if (!row.coach_plan_policy_json) return { ...DEFAULT_COACH_PLAN_POLICY };
+  let policy: CoachPlanPolicy = { ...DEFAULT_COACH_PLAN_POLICY };
   try {
-    const parsed = JSON.parse(row.coach_plan_policy_json) as Partial<CoachPlanPolicy>;
-    return mergeWithDefaults(parsed);
+    if (row.coach_plan_policy_json) {
+      const parsed = JSON.parse(row.coach_plan_policy_json) as Partial<CoachPlanPolicy>;
+      policy = mergeWithDefaults(parsed);
+    }
   } catch (err) {
     logger.warn({ planId, err }, 'coach_plan_policy.parse_failed');
-    return { ...DEFAULT_COACH_PLAN_POLICY };
   }
+  const version = Math.max(1, Number(row.coach_plan_policy_version) || 1);
+  return {
+    contractVersion: COACH_PLAN_POLICY_CONTRACT_VERSION,
+    policy,
+    version,
+    etag: coachPlanPolicyEtag(version),
+  };
 }
 
 /**
@@ -66,15 +91,58 @@ export function getCoachPlanPolicy(planId: number): CoachPlanPolicy | null {
  * invalid input.
  */
 export function setCoachPlanPolicy(planId: number, partial: Partial<CoachPlanPolicy>): CoachPlanPolicy {
-  const validated = validateAndMerge(partial);
+  const current = getCoachPlanPolicy(planId);
+  if (!current) throw new Error(`Plan ${planId} does not exist`);
+  const validated = validateAndMerge(partial, current);
   const db = getDb();
   const result = db.prepare(
-    'UPDATE fitness_training_plans SET coach_plan_policy_json = ?, updated_at = datetime(\'now\') WHERE id = ?',
+    'UPDATE fitness_training_plans SET coach_plan_policy_json = ?, coach_plan_policy_version = COALESCE(coach_plan_policy_version, 1) + 1, updated_at = datetime(\'now\') WHERE id = ?',
   ).run(JSON.stringify(validated), planId);
   if (result.changes === 0) {
     throw new Error(`Plan ${planId} does not exist`);
   }
   return validated;
+}
+
+export function setCoachPlanPolicyCas(
+  planId: number,
+  partial: Partial<CoachPlanPolicy>,
+  expectedVersion: number,
+  db: Database.Database = getDb(),
+): CoachPlanPolicySnapshot {
+  const current = getCoachPlanPolicySnapshot(planId, db);
+  if (!current) throw new Error(`Plan ${planId} does not exist`);
+  if (current.version !== expectedVersion) {
+    throw new CoachPlanPolicyVersionConflictError('Coach policy version does not match If-Match.');
+  }
+  const validated = validateAndMerge(partial, current.policy);
+  const result = db.prepare(`
+    UPDATE fitness_training_plans
+    SET coach_plan_policy_json = ?,
+        coach_plan_policy_version = COALESCE(coach_plan_policy_version, 1) + 1,
+        updated_at = datetime('now')
+    WHERE id = ? AND COALESCE(coach_plan_policy_version, 1) = ?
+  `).run(JSON.stringify(validated), planId, expectedVersion);
+  if (result.changes !== 1) {
+    throw new CoachPlanPolicyVersionConflictError('Coach policy changed before the update could be applied.');
+  }
+  return getCoachPlanPolicySnapshot(planId, db)!;
+}
+
+export function previewCoachPlanPolicyPatch(
+  planId: number,
+  partial: Partial<CoachPlanPolicy>,
+): CoachPlanPolicySnapshot {
+  const current = getCoachPlanPolicySnapshot(planId);
+  if (!current) throw new Error(`Plan ${planId} does not exist`);
+  return {
+    ...current,
+    policy: validateAndMerge(partial, current.policy),
+  };
+}
+
+export function coachPlanPolicyEtag(version: number): string {
+  return `"coach-policy-${version}"`;
 }
 
 /**
@@ -104,7 +172,10 @@ const ALLOWED_DELOAD: ReadonlySet<string> = new Set(['scheduled', 'data_informed
 const ALLOWED_MISSED: ReadonlySet<string> = new Set(['drop_low_priority', 'preserve_key_sessions', 'ask_user']);
 const ALLOWED_TAPER: ReadonlySet<string> = new Set(['auto', 'short', 'standard', 'extended']);
 
-function validateAndMerge(partial: Partial<CoachPlanPolicy>): CoachPlanPolicy {
+function validateAndMerge(
+  partial: Partial<CoachPlanPolicy>,
+  base: CoachPlanPolicy = DEFAULT_COACH_PLAN_POLICY,
+): CoachPlanPolicy {
   if (
     partial.intensityDistributionPreference !== undefined &&
     !ALLOWED_DISTRIBUTION_PREFS.has(partial.intensityDistributionPreference)
@@ -149,5 +220,12 @@ function validateAndMerge(partial: Partial<CoachPlanPolicy>): CoachPlanPolicy {
       throw new Error(`adaptationRateLimits.perWeek must be a non-negative integer`);
     }
   }
-  return mergeWithDefaults(partial);
+  return mergeWithDefaults({
+    ...base,
+    ...partial,
+    adaptationRateLimits: {
+      ...(base.adaptationRateLimits ?? {}),
+      ...(partial.adaptationRateLimits ?? {}),
+    },
+  });
 }

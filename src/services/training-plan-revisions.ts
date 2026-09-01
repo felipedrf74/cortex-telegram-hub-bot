@@ -290,7 +290,10 @@ export function computeTrainingRevisionAuthoritativeContext(
            AND (items.expires_at IS NULL OR datetime(items.expires_at) > datetime('now'))
            AND NOT (
              intents.source_skill = 'training'
-             AND intents.related_entity_type = 'training_plan_revision'
+             AND intents.related_entity_type IN (
+               'training_plan_revision',
+               'training_coach_v2_proposal'
+             )
            )
          ORDER BY items.item_id
       `).all(scope.userId, scope.tenantId)

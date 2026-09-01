@@ -322,7 +322,7 @@ export function buildDefaultButtonsForChatDomain(
   }
 
   if (domain === 'triathlon' && userId && requestStartedAt) {
-    const coachState = getLastCoachState(userId);
+    const coachState = getLastCoachState(userId, tenantId ?? userId);
     if (coachState && coachState.timestamp >= requestStartedAt - 1000) {
       const buttons = buildCoachRecommendationButtons(
         coachState.recommendations,

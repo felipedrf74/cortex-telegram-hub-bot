@@ -94,9 +94,9 @@ function extractContextLine(summary: string, prefix: string): string | null {
   return line ? line.slice(prefix.length).trim() : null;
 }
 
-function getFreshCoachBriefingSnippet(userId: number): string | null {
+function getFreshCoachBriefingSnippet(userId: number, tenantId: number): string | null {
   try {
-    const report = getLatestByType(userId, 'coach_briefing');
+    const report = getLatestByType(userId, 'coach_briefing', tenantId);
     if (!report) return null;
 
     const createdAtMs = Date.parse(report.createdAt || '');
@@ -125,12 +125,16 @@ function getFreshCoachBriefingSnippet(userId: number): string | null {
   }
 }
 
-async function buildTrainingBusyFallback(language: string, userId: number): Promise<string | null> {
+async function buildTrainingBusyFallback(
+  language: string,
+  userId: number,
+  tenantId: number,
+): Promise<string | null> {
   const cachedDailyContext = getDailyContext(userId);
   const dailyContext = cachedDailyContext || await buildDailyContext(userId);
   const trainingLine = dailyContext ? extractContextLine(dailyContext, 'TRAINING:') : null;
   const readinessLine = dailyContext ? extractContextLine(dailyContext, 'READINESS:') : null;
-  const briefingSnippet = getFreshCoachBriefingSnippet(userId);
+  const briefingSnippet = getFreshCoachBriefingSnippet(userId, tenantId);
   const contextBits = [trainingLine, readinessLine].filter((value): value is string => !!value);
 
   if (isEnglish(language)) {
@@ -312,7 +316,11 @@ export async function buildAITemporarilyBusyResponse(domain: DomainName, userId?
   }
 
   if (domain === 'triathlon' && hasValidUserScope) {
-    const trainingFallback = await buildTrainingBusyFallback(language, userId);
+    const trainingFallback = await buildTrainingBusyFallback(
+      language,
+      userId,
+      scopedTenantId ?? userId,
+    );
     if (trainingFallback) {
       return {
         text: trainingFallback,

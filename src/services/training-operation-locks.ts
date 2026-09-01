@@ -11,8 +11,10 @@ export type TrainingOperationName =
   | 'calendar_sync'
   | 'calendar_reflow'
   | 'calendar_cancel'
+  | 'calendar_cleanup'
   | 'plan_activate'
   | 'plan_repair'
+  | 'adapt'
   | 'coach_apply';
 
 export interface TrainingOperationLockInput {
@@ -87,8 +89,10 @@ export const TRAINING_OPERATION_RESOURCES: Record<TrainingOperationName, Readonl
   calendar_sync: ['calendar'],
   calendar_reflow: ['plan', 'calendar'],
   calendar_cancel: ['plan', 'calendar'],
+  calendar_cleanup: ['calendar'],
   plan_activate: ['plan', 'calendar'],
   plan_repair: ['plan', 'calendar'],
+  adapt: ['plan', 'calendar'],
   coach_apply: ['plan', 'calendar'],
 };
 
@@ -223,8 +227,10 @@ const TRAINING_OPERATION_LOCK_TTL_MS_BY_OPERATION: Record<TrainingOperationName,
   calendar_sync: 15 * 60_000,
   calendar_reflow: 10 * 60_000,
   calendar_cancel: 15 * 60_000,
+  calendar_cleanup: 10 * 60_000,
   plan_activate: 10 * 60_000,
   plan_repair: 15 * 60_000,
+  adapt: 10 * 60_000,
   coach_apply: 10 * 60_000,
 };
 

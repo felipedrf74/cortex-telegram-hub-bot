@@ -65,6 +65,7 @@ function mockRes(): MockRes {
 }
 
 function mockReq(method: string, path: string, body: Record<string, unknown> = {}): Request {
+  const requestHeaders: Record<string, string> = {};
   return {
     method,
     url: path,
@@ -74,9 +75,43 @@ function mockReq(method: string, path: string, body: Record<string, unknown> = {
     body,
     query: {},
     params: {},
-    headers: {},
+    headers: requestHeaders,
+    header(name: string) { return requestHeaders[name.toLowerCase()]; },
+    get(name: string) { return requestHeaders[name.toLowerCase()]; },
     userId: 62,
+    tenantId: 62,
   } as any;
+}
+
+async function dispatchLifecycle(input: {
+  method: string;
+  path: string;
+  body?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  query?: Record<string, string>;
+  userId?: number;
+  tenantId?: number;
+}): Promise<MockRes> {
+  const router = healthDataRoutes();
+  const req = mockReq(input.method, input.path, input.body ?? {});
+  const normalizedHeaders = Object.fromEntries(
+    Object.entries(input.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+  (req as any).headers = normalizedHeaders;
+  (req as any).header = (name: string) => normalizedHeaders[name.toLowerCase()];
+  (req as any).get = (name: string) => normalizedHeaders[name.toLowerCase()];
+  (req as any).query = input.query ?? {};
+  (req as any).userId = input.userId ?? 62;
+  (req as any).tenantId = input.tenantId ?? input.userId ?? 62;
+  const res = mockRes();
+  await new Promise<void>((resolvePromise, reject) => {
+    (router as any).handle(req, res, (err: unknown) => {
+      if (err) reject(err);
+      else resolvePromise();
+    });
+    setImmediate(resolvePromise);
+  });
+  return res;
 }
 
 async function dispatchWithRouter(
@@ -88,6 +123,7 @@ async function dispatchWithRouter(
 ): Promise<MockRes> {
   const req = mockReq(method, path, body);
   (req as any).userId = userId;
+  (req as any).tenantId = userId;
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -315,6 +351,389 @@ describe('Health data routes', () => {
         latest_sync: expect.any(String),
       })],
     });
+  });
+
+  it('returns typed not_granted consent and validates bounded intake listing', async () => {
+    const consent = await dispatchLifecycle({ method: 'GET', path: '/consent' });
+    expect(consent.statusCode, JSON.stringify(consent.body)).toBe(200);
+    expect(consent.headers.ETag).toBe('"health-consent-0"');
+    expect(consent.body.data).toMatchObject({
+      schemaVersion: 'health-data-lifecycle.v1',
+      state: 'not_granted',
+      revision: 0,
+      activeScopes: [],
+      withdrawn: false,
+    });
+
+    const badLimit = await dispatchLifecycle({
+      method: 'GET',
+      path: '/structured-intakes',
+      query: { limit: 'abc' },
+    });
+    expect(badLimit.statusCode).toBe(400);
+    expect(badLimit.body.error.code).toBe('BAD_INPUT');
+  });
+
+  it('creates, replays, corrects, exports, withdraws, and deletes structured health data', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const create = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-create-1' },
+      body: {
+        date: today,
+        painScore: 8,
+        painLocation: 'knee',
+        consentScope: ['pain'],
+      },
+    });
+    expect(create.statusCode, JSON.stringify(create.body)).toBe(201);
+    expect(create.body.data).toMatchObject({
+      state: 'created',
+      intakeId: expect.any(Number),
+      intake: {
+        id: expect.any(Number),
+        safetyDisposition: { state: 'pause_hard_training' },
+      },
+    });
+    const intakeId = create.body.data.intakeId as number;
+
+    const replay = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-create-1' },
+      body: {
+        date: today,
+        painScore: 8,
+        painLocation: 'knee',
+        consentScope: ['pain'],
+      },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body.data).toMatchObject({ state: 'replayed', intakeId });
+
+    const keyConflict = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-create-1' },
+      body: { date: today, painScore: 2, consentScope: ['pain'] },
+    });
+    expect(keyConflict.statusCode).toBe(409);
+    expect(keyConflict.body.error.code).toBe('IDEMPOTENCY_CONFLICT');
+
+    const correction = await dispatchLifecycle({
+      method: 'POST',
+      path: `/structured-intakes/${intakeId}/corrections`,
+      headers: { 'Idempotency-Key': 'health-route-correction-1' },
+      body: {
+        patch: { painScore: 1, painLocation: null },
+        reason: 'entry corrected',
+        expectedVersion: 1,
+      },
+    });
+    expect(correction.statusCode, JSON.stringify(correction.body)).toBe(201);
+    expect(correction.body.data).toMatchObject({
+      state: 'corrected',
+      intakeId,
+      correctionId: expect.any(Number),
+      intake: { version: 2, safetyDisposition: { state: 'clear' } },
+    });
+    expect(correction.headers.ETag).toBe(`"health-intake-${intakeId}-2"`);
+
+    const correctionReplay = await dispatchLifecycle({
+      method: 'POST',
+      path: `/structured-intakes/${intakeId}/corrections`,
+      headers: { 'Idempotency-Key': 'health-route-correction-1' },
+      body: {
+        patch: { painScore: 1, painLocation: null },
+        reason: 'entry corrected',
+        expectedVersion: 1,
+      },
+    });
+    expect(correctionReplay.statusCode).toBe(200);
+    expect(correctionReplay.body.data).toMatchObject({ state: 'replayed', intakeId });
+
+    const staleCorrection = await dispatchLifecycle({
+      method: 'POST',
+      path: `/structured-intakes/${intakeId}/corrections`,
+      headers: { 'Idempotency-Key': 'health-route-correction-stale' },
+      body: { patch: { painScore: 2 }, reason: 'stale edit', expectedVersion: 1 },
+    });
+    expect(staleCorrection.statusCode).toBe(412);
+    expect(staleCorrection.body.error.code).toBe('HEALTH_INTAKE_VERSION_CONFLICT');
+
+    const exported = await dispatchLifecycle({ method: 'GET', path: '/export' });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.body.data).toMatchObject({
+      schemaVersion: 'health-data-lifecycle.v1',
+      signals: [expect.objectContaining({ id: intakeId })],
+      corrections: [expect.objectContaining({ signal_id: intakeId })],
+    });
+
+    const withdraw = await dispatchLifecycle({
+      method: 'PATCH',
+      path: '/consent',
+      headers: {
+        'If-Match': '"health-consent-1"',
+        'Idempotency-Key': 'health-route-withdraw-1',
+      },
+      body: { withdraw: true, reason: 'user withdrew consent' },
+    });
+    expect(withdraw.statusCode, JSON.stringify(withdraw.body)).toBe(200);
+    expect(withdraw.body.data).toMatchObject({ state: 'withdrawn', revision: 2, activeScopes: [] });
+
+    const deleted = await dispatchLifecycle({
+      method: 'DELETE',
+      path: `/structured-intakes/${intakeId}`,
+      headers: {
+        'If-Match': '2',
+        'Idempotency-Key': 'health-route-delete-one',
+      },
+      body: { expectedVersion: 2 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.body.data).toMatchObject({ state: 'deleted', deleted: true });
+    const deletedReplay = await dispatchLifecycle({
+      method: 'DELETE',
+      path: `/structured-intakes/${intakeId}`,
+      headers: {
+        'If-Match': '2',
+        'Idempotency-Key': 'health-route-delete-one',
+      },
+      body: { expectedVersion: 2 },
+    });
+    expect(deletedReplay.body.data).toMatchObject({ state: 'replayed', deleted: true });
+  });
+
+  it('requires health mutation CAS/idempotency and rejects active consent with no scopes', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const created = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-guard-create' },
+      body: { date: today, painScore: 4, consentScope: ['pain'] },
+    });
+    const intakeId = created.body.data.intakeId as number;
+
+    const missingCorrectionVersion = await dispatchLifecycle({
+      method: 'POST',
+      path: `/structured-intakes/${intakeId}/corrections`,
+      headers: { 'Idempotency-Key': 'health-route-guard-correction' },
+      body: { patch: { painScore: 2 }, reason: 'correction' },
+    });
+    expect(missingCorrectionVersion.statusCode).toBe(428);
+    expect(missingCorrectionVersion.body.error.code).toBe('PRECONDITION_REQUIRED');
+
+    const missingDeleteKey = await dispatchLifecycle({
+      method: 'DELETE',
+      path: `/structured-intakes/${intakeId}`,
+      headers: { 'If-Match': '1' },
+      body: { expectedVersion: 1 },
+    });
+    expect(missingDeleteKey.statusCode).toBe(428);
+    expect(missingDeleteKey.body.error.code).toBe('IDEMPOTENCY_REQUIRED');
+
+    const emptyConsent = await dispatchLifecycle({
+      method: 'PATCH',
+      path: '/consent',
+      headers: {
+        'If-Match': '"health-consent-1"',
+        'Idempotency-Key': 'health-route-empty-consent',
+      },
+      body: { withdraw: false, activeScopes: [] },
+    });
+    expect(emptyConsent.statusCode).toBe(422);
+    expect(emptyConsent.body.error.code).toBe('CONSENT_WITHDRAWAL_REQUIRED');
+
+    const deleteAllMissingKey = await dispatchLifecycle({ method: 'DELETE', path: '/structured-intakes' });
+    expect(deleteAllMissingKey.statusCode).toBe(428);
+    expect(deleteAllMissingKey.body.error.code).toBe('IDEMPOTENCY_REQUIRED');
+
+    const deleteAll = await dispatchLifecycle({
+      method: 'DELETE',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-delete-all' },
+    });
+    expect(deleteAll.statusCode).toBe(200);
+    expect(deleteAll.body.data).toMatchObject({ state: 'deleted', replayed: false, deletedCount: 1 });
+    const deleteAllReplay = await dispatchLifecycle({
+      method: 'DELETE',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-delete-all' },
+    });
+    expect(deleteAllReplay.statusCode).toBe(200);
+    expect(deleteAllReplay.body.data).toMatchObject({ state: 'replayed', replayed: true, deletedCount: 1 });
+  });
+
+  it('covers tenant, query, path, body-idempotency, ETag, and consent fallback boundaries', async () => {
+    const invalidTenant = await dispatchLifecycle({
+      method: 'GET',
+      path: '/structured-intakes',
+      userId: 62,
+      tenantId: 0,
+    });
+    expect(invalidTenant.statusCode).toBe(401);
+    expect(invalidTenant.body.error.code).toBe('UNAUTHORIZED');
+
+    for (const limit of ['0', '101', '1.5']) {
+      const response = await dispatchLifecycle({
+        method: 'GET',
+        path: '/structured-intakes',
+        query: { limit },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.body.error.code).toBe('BAD_INPUT');
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    const created = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      body: {
+        date: today,
+        expiresAt,
+        painScore: 3,
+        painLocation: 'ankle',
+        consentScope: ['pain'],
+        idempotencyKey: 'health-body-create',
+      },
+    });
+    expect(created.statusCode, JSON.stringify(created.body)).toBe(201);
+    const intakeId = created.body.data.intakeId as number;
+
+    for (const path of [
+      '/structured-intakes/not-a-number/corrections',
+      '/structured-intakes/0/corrections',
+    ]) {
+      const response = await dispatchLifecycle({ method: 'POST', path, body: {} });
+      expect(response.statusCode).toBe(400);
+      expect(response.body.error.code).toBe('BAD_INTAKE_ID');
+    }
+    const invalidDeleteId = await dispatchLifecycle({
+      method: 'DELETE',
+      path: '/structured-intakes/not-a-number',
+      body: {},
+    });
+    expect(invalidDeleteId.statusCode).toBe(400);
+    expect(invalidDeleteId.body.error.code).toBe('BAD_INTAKE_ID');
+
+    const corrected = await dispatchLifecycle({
+      method: 'POST',
+      path: `/structured-intakes/${intakeId}/corrections`,
+      headers: { 'If-Match': `"health-intake-${intakeId}-1"` },
+      body: {
+        painScore: 2,
+        painLocation: null,
+        reason: 'flat correction body',
+        idempotencyKey: 'health-body-correction',
+      },
+    });
+    expect(corrected.statusCode, JSON.stringify(corrected.body)).toBe(201);
+    expect(corrected.body.data.intake).toMatchObject({
+      version: 2,
+      signal: { painScore: 2 },
+    });
+
+    const badCorrectionEtag = await dispatchLifecycle({
+      method: 'POST',
+      path: `/structured-intakes/${intakeId}/corrections`,
+      headers: {
+        'If-Match': 'not-an-intake-etag',
+        'Idempotency-Key': 'health-bad-correction-etag',
+      },
+      body: { patch: { painScore: 1 }, reason: 7 },
+    });
+    expect(badCorrectionEtag.statusCode).toBe(428);
+    expect(badCorrectionEtag.body.error.code).toBe('PRECONDITION_REQUIRED');
+
+    const deleteCandidate = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-body-delete-create' },
+      body: { date: today, painScore: 1, consentScope: ['pain'] },
+    });
+    const deleteCandidateId = deleteCandidate.body.data.intakeId as number;
+    const bodyOnlyDelete = await dispatchLifecycle({
+      method: 'DELETE',
+      path: `/structured-intakes/${deleteCandidateId}`,
+      body: {
+        expectedVersion: 1,
+        idempotencyKey: 'health-body-only-delete',
+      },
+    });
+    expect(bodyOnlyDelete.statusCode, JSON.stringify(bodyOnlyDelete.body)).toBe(200);
+    expect(bodyOnlyDelete.body.data).toMatchObject({ state: 'deleted', deleted: true });
+
+    const missingConsentPrecondition = await dispatchLifecycle({
+      method: 'PATCH',
+      path: '/consent',
+      headers: { 'If-Match': 'not-a-consent-etag' },
+      body: { activeScopes: ['pain'], idempotencyKey: 'health-no-cas' },
+    });
+    expect(missingConsentPrecondition.statusCode).toBe(428);
+    expect(missingConsentPrecondition.body.error.code).toBe('PRECONDITION_REQUIRED');
+
+    const consentBodyMutation = {
+      expectedRevision: 1,
+      activeScopes: ['pain', 7],
+      withdraw: false,
+      reason: 'continue consent',
+      idempotencyKey: 'health-body-consent',
+    };
+    const revised = await dispatchLifecycle({
+      method: 'PATCH',
+      path: '/consent',
+      body: consentBodyMutation as unknown as Record<string, unknown>,
+    });
+    expect(revised.statusCode, JSON.stringify(revised.body)).toBe(200);
+    expect(revised.body.data).toMatchObject({
+      state: 'revised',
+      revision: 2,
+      activeScopes: ['pain'],
+      withdrawn: false,
+    });
+    const consentReplay = await dispatchLifecycle({
+      method: 'PATCH',
+      path: '/consent',
+      body: consentBodyMutation as unknown as Record<string, unknown>,
+    });
+    expect(consentReplay.statusCode).toBe(200);
+    expect(consentReplay.body.data.state).toBe('replayed');
+  });
+
+  it('fails closed on unsupported, future, and cross-tenant structured health access', async () => {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const future = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-future' },
+      body: { date: tomorrow, painScore: 4, consentScope: ['pain'] },
+    });
+    expect(future.statusCode).toBe(400);
+    expect(future.body.error.code).toBe('FUTURE_HEALTH_INPUT');
+
+    const menstrual = await dispatchLifecycle({
+      method: 'POST',
+      path: '/structured-intakes',
+      headers: { 'Idempotency-Key': 'health-route-menstrual' },
+      body: {
+        date: new Date().toISOString().slice(0, 10),
+        menstrualStatus: 'menses',
+        consentScope: ['pain'],
+      },
+    });
+    expect(menstrual.statusCode).toBe(422);
+    expect(menstrual.body.error.code).toBe('MENSTRUAL_COLLECTION_UNAVAILABLE');
+
+    const foreign = await dispatchLifecycle({
+      method: 'GET',
+      path: '/structured-intakes',
+      userId: 63,
+      tenantId: 63,
+    });
+    expect(foreign.statusCode).toBe(200);
+    expect(foreign.body.data.intakes).toEqual([]);
   });
 
   it('rate-limits latest reads per authenticated user without sharing the bucket', async () => {

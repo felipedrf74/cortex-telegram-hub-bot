@@ -63,6 +63,8 @@ import { runReactionRadar } from '../agents/reaction-radar-agent';
 import { runPerformanceAgent } from '../agents/performance-agent';
 import { runScheduledVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
+import { sweepExpiredStructuredHealthData } from './health-data-lifecycle';
+import { isTrainingCoachV2Enabled } from './training-coach-v2-rollout';
 import { seedBooksIfEmpty } from '../commands/books';
 import {
   releaseFreshReportScheduleClaim,
@@ -129,7 +131,13 @@ import { evaluateChatCoreV2AutoRevertPolicy } from './chat-core-v2/auto-revert-p
 import { applyAutoRevertDecision } from './chat-core-v2/auto-revert-executor';
 import { recordChatCoreV2GateCheck } from './chat-core-v2/gate-metrics-store';
 import { expireOldNexusPointCredits } from './nexus-points';
-import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } from './training-plans';
+import { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, getWeeksForPlan } from './training-plans';
+import {
+  bindTrainingCoachV2ProposalDecision,
+  createTrainingCoachV2Proposal,
+} from './training-coach-v2-proposals';
+import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
+import { getSciencePolicyVersion } from './coach-kernel/training-principles';
 import { calculateReadiness, persistReadinessScore } from './readiness-scorer';
 import {
   isAiAutomationAllowedForRuntime,
@@ -141,7 +149,6 @@ import {
   resolveAiAutomationEligibility,
 } from './ai-automation-policy';
 import { AiBudgetError } from './cost-guardrail';
-import { TrainingPlanRevisionError } from './training-plan-revision-errors';
 
 function safeErrorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
@@ -149,6 +156,17 @@ function safeErrorName(error: unknown): string {
 
 type ActiveUserTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'telegramId'>
   & Partial<Pick<AgentJobTenantTarget, 'userId'>>;
+
+type ActiveTrainingTarget = Pick<AgentJobTenantTarget, 'tenantId' | 'userId' | 'telegramId'>;
+
+function getActiveTrainingTargets(): ActiveTrainingTarget[] {
+  const users = getActiveUserTargets();
+  const telegramByUser = new Map(users.map((target) => [target.userId, target.telegramId]));
+  return getActiveTrainingScopes(users.map((target) => target.userId)).map((scope) => ({
+    ...scope,
+    telegramId: telegramByUser.get(scope.userId) ?? null,
+  }));
+}
 
 function registerJob(
   id: string,
@@ -350,6 +368,7 @@ function getActiveUserIds(): number[] {
 }
 
 type TaskSyncScope = { tenantId: number; userId: number; importProviders: boolean };
+export type TrainingSchedulerScope = { tenantId: number; userId: number };
 
 export function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
   const scopes = new Map<string, TaskSyncScope>();
@@ -384,6 +403,57 @@ export function getActiveTaskSyncScopes(userIds: number[]): TaskSyncScope[] {
   }
 
   return Array.from(scopes.values());
+}
+
+/**
+ * Enumerate every live Training scope explicitly from Training-owned state.
+ * A user may appear in multiple tenants; tenant identity is never inferred
+ * from the user id.
+ */
+export function getActiveTrainingScopes(userIds: number[]): TrainingSchedulerScope[] {
+  const scopes = new Map<string, TrainingSchedulerScope>();
+  const add = (tenantValue: unknown, userValue: unknown): void => {
+    const tenantId = Number(tenantValue);
+    const userId = Number(userValue);
+    if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return;
+    if (!Number.isSafeInteger(userId) || userId <= 0) return;
+    scopes.set(`${tenantId}:${userId}`, { tenantId, userId });
+  };
+
+  // `users` has no tenant membership column. Treating an active user id as a
+  // tenant id recreates the exact identity assumption this enumerator exists
+  // to remove. Live Training-owned rows below are the authoritative scope
+  // source; a user with no scoped Training state has no Training job to run.
+  void userIds;
+
+  const queries = [
+    `SELECT DISTINCT tenant_id, user_id
+       FROM fitness_training_plans
+      WHERE status IN ('active', 'paused')`,
+    `SELECT DISTINCT tenant_id, user_id
+       FROM training_active_plan_references`,
+    `SELECT DISTINCT tenant_id, owner_user_id AS user_id
+       FROM secretary_agenda_items
+      WHERE source_skill = 'training'
+        AND lifecycle_state IN ('proposed', 'scheduled', 'synced', 'reflowed', 'compressed', 'deferred')`,
+  ];
+
+  try {
+    const db = getDb();
+    for (const sql of queries) {
+      try {
+        const rows = db.prepare(sql).all() as Array<{ tenant_id: unknown; user_id: unknown }>;
+        for (const row of rows) add(row.tenant_id, row.user_id);
+      } catch (err) {
+        logUnexpectedTenantQueryError('getActiveTrainingScopes', err);
+      }
+    }
+  } catch (err) {
+    logUnexpectedTenantQueryError('getActiveTrainingScopes', err);
+  }
+
+  return [...scopes.values()].sort((left, right) =>
+    left.tenantId - right.tenantId || left.userId - right.userId);
 }
 
 /**
@@ -1907,7 +1977,7 @@ export function startScheduler(): void {
     const retentionTargets: Array<{ table: string; days: number; tsCol: string }> = [
       { table: 'video_transcripts', days: 90, tsCol: 'created_at' },
       { table: 'job_history',       days: 30, tsCol: 'ts' },
-      { table: 'report_schedule_ledger', days: 30, tsCol: 'fired_at' },
+      { table: 'report_schedule_ledger_scoped', days: 30, tsCol: 'fired_at' },
       { table: 'error_log',         days: 60, tsCol: 'ts' },
       { table: 'client_errors',     days: 90, tsCol: 'ts' },
       { table: 'api_usage',         days: 180, tsCol: 'ts' },
@@ -2028,9 +2098,9 @@ export function startScheduler(): void {
   // from their own workout_reminder_minutes preference.
   cron.schedule('*/5 * * * *', wrapJob('training_session_reminder', async () => {
     const { runTrainingSessionReminders } = require('./training-session-reminder');
-    const users = getActiveUserIds();
-    if (users.length === 0) return 'skipped';
-    const summary = await runTrainingSessionReminders(users);
+    const scopes = getActiveTrainingScopes(getActiveUserIds());
+    if (scopes.length === 0) return 'skipped';
+    const summary = await runTrainingSessionReminders(scopes);
     // A sweep that failed every send must not report as healthy. `notified === 0`
     // alone returned 'skipped', which wrapJob records as success with no
     // job_history row and no activity event — so a total push outage was
@@ -2751,11 +2821,11 @@ export function startScheduler(): void {
       // still gets that day's briefing instead of losing it to a consumed
       // claim (QA finding 3). The same gates remain inside
       // sendCoachBriefingForTarget as the backstop for manual triggers.
-      const due = resolveDueReportTargets('coach_briefing', getActiveUserTargets(), undefined, {
+      const due = resolveDueReportTargets('coach_briefing', getActiveTrainingTargets(), undefined, {
         eligible: (target) =>
-          hasPaidCoachBriefingEntitlement(target.tenantId)
-          && hasActiveCoachWorkoutPlan(target.tenantId)
-          && hasCoachableHealthDataForUser(target.tenantId),
+          hasPaidCoachBriefingEntitlement(target.userId)
+          && hasActiveCoachWorkoutPlan(target.userId, target.tenantId)
+          && hasCoachableHealthDataForUser(target.userId),
       });
       if (due.length === 0) return 'skipped';
       if (isGarminConfigured()) {
@@ -2810,7 +2880,7 @@ export function startScheduler(): void {
     // silently downgrading every user to adherence-only adjustments forever.
     logger.info('Training plan adjust starting — Garmin pre-auth runs per user (silent mode — no MFA email if a session is dead)');
 
-    for (const userId of getActiveUserIds()) {
+    for (const { userId, tenantId } of getActiveTrainingScopes(getActiveUserIds())) {
       // Hardening 2026-04-21: wrap the per-user iteration in a
       // request context so Garmin's per-user client resolution via
       // `getCurrentContext()?.userId` actually sees the iterating
@@ -2820,8 +2890,8 @@ export function startScheduler(): void {
       // then persisted as their own. Pure cross-tenant data poisoning
       // in a scheduled job. runWithContext scopes the AsyncLocalStorage
       // so all downstream reads see the correct userId.
-      await runWithContext({ source: 'cron:training_plan_adjust', userId }, async () => {
-      const plan = getActivePlan(userId, userId);
+      await runWithContext({ source: 'cron:training_plan_adjust', userId, tenantId }, async () => {
+      const plan = getActivePlan(userId, tenantId);
       if (!plan) return;
 
       const currentWeek = getCurrentWeek(plan.id);
@@ -2853,7 +2923,7 @@ export function startScheduler(): void {
       }
       if (garminAvailable) {
         try {
-          const readiness = await calculateReadiness(userId, { tenantId: userId, garminSilent: true });
+          const readiness = await calculateReadiness(userId, { tenantId, garminSilent: true });
           persistReadinessScore(userId, readiness);
           readinessScore = readiness.score;
           readinessRec = readiness.recommendation;
@@ -2871,67 +2941,78 @@ export function startScheduler(): void {
         recommendation.reason += ` + Low readiness (${readinessScore}/100): ${readinessRec}`;
       }
 
-      // Find next week and apply adjustment if needed
+      // Find next week and create an evidence-bound proposal if needed.
       const allWeeks = getWeeksForPlan(plan.id);
       const nextWeek = allWeeks.find((w: any) => w.week_number === currentWeek.week_number + 1);
 
-      // A 2% volume tweak pushing at active priority is exactly the noise
-      // that trains users to swipe everything away. Below a 15% change the
-      // adjustment is applied silently; the week view still shows it.
-      const MATERIAL_ADJUST_DELTA = 15;
-      const adjustIsMaterial = Math.abs(recommendation.adjustIntensity - 100) >= MATERIAL_ADJUST_DELTA;
-      if (nextWeek && recommendation.adjustIntensity !== 100) {
+      if (nextWeek && recommendation.adjustIntensity !== 100 && isTrainingCoachV2Enabled()) {
         try {
-          updateWeekAdjustment(nextWeek.id, recommendation.adjustIntensity, recommendation.reason);
-        } catch (err) {
-          if (err instanceof TrainingPlanRevisionError
-              && err.code === 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED') {
-            logger.info(
-              { userId, planId: plan.id, weekId: nextWeek.id },
-              'Skipped legacy weekly auto-adjust for a revision-owned Training week',
+          const version = getDb().prepare(`
+            SELECT COALESCE(adaptation_revision, 0) AS adaptationRevision
+            FROM fitness_training_plans
+            WHERE id = ? AND user_id = ? AND tenant_id = ? AND status IN ('active', 'paused')
+          `).get(plan.id, userId, tenantId) as { adaptationRevision: number } | undefined;
+          if (!version) {
+            logger.warn(
+              { userId, tenantId, planId: plan.id },
+              'Training weekly adjustment proposal skipped because scoped plan version was unavailable',
             );
             return;
           }
-          throw err;
-        }
-
-        if (adjustIsMaterial) {
-          const emoji = recommendation.adjustIntensity < 100 ? '📉' : '📈';
-          let msg = `${emoji} <b>Training Plan Auto-Adjust</b>\n\n`;
-          msg += `<b>${plan.name}</b> — Week ${currentWeek.week_number} review:\n`;
-          const partialLabel = (stats.partialSessions ?? 0) > 0
-            ? ` + ${stats.partialSessions} partial`
-            : '';
-          msg += `• Adherence: ${stats.adherenceRate}%  (${stats.completedSessions}${partialLabel}/${stats.totalSessions})\n`;
-          if (stats.avgRpe != null) msg += `• Avg RPE: ${stats.avgRpe}\n`;
-          if (stats.avgSoreness != null) msg += `• Avg Soreness: ${stats.avgSoreness}/10\n`;
-          if (stats.avgEnergy != null) msg += `• Avg Energy: ${stats.avgEnergy}/10\n`;
-          if (readinessScore != null) msg += `• Readiness: ${readinessScore}/100 (${readinessRec})\n`;
-          msg += `\n<b>Week ${currentWeek.week_number + 1} adjusted:</b> ${recommendation.adjustIntensity}% intensity\n`;
-          msg += `<i>Reason: ${recommendation.reason}</i>`;
-
-          try {
-            await createNotificationIntent({
-              userId,
-              tenantId: userId,
-              sourceSkill: 'training',
-              type: 'schedule_changed',
-              priority: 'active',
-              relatedEntityId: `training-plan-adjust:${plan.id}:${nextWeek.id}`,
-              relatedEntityType: 'training_week_adjustment',
-              title: 'Training week adjusted',
-              body: 'Nexus adjusted your next training week.',
-              sensitiveBody: safeHtmlNotificationBody(msg),
-              actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
-              deeplink: `nexus://training/plan/${plan.id}`,
-              dedupeKey: `training:plan_adjust:${userId}:${plan.id}:${nextWeek.id}:${recommendation.adjustIntensity}`,
-              requiresUserAction: false,
-              deliveryPolicy: 'auto',
-              privacyPolicy: 'health',
-            });
-          } catch (err) {
-            logger.warn({ err, userId, planId: plan.id, weekId: nextWeek.id }, 'Training adjustment notification intent emit failed');
+          const intensityPct = Math.max(60, Math.min(110, Math.round(recommendation.adjustIntensity)));
+          const reason = recommendation.reason.trim().slice(0, 500);
+          if (!reason) {
+            logger.warn(
+              { userId, tenantId, planId: plan.id, weekId: nextWeek.id },
+              'Training weekly adjustment proposal skipped because its reason was empty',
+            );
+            return;
           }
+          const proposal = createTrainingCoachV2Proposal({
+            tenantId,
+            userId,
+            kind: 'week_reflow',
+            planId: plan.id,
+            weekId: nextWeek.id,
+            expectedVersion: version.adaptationRevision,
+            request: {
+              trigger: 'scheduled_weekly_adjustment',
+              schedulingTimezone: config.app.timezone,
+              scheduledAdjustment: { intensityPct, reason },
+            },
+            evidence: {
+              schemaVersion: 'training-coach-v2.2',
+              sciencePolicyVersion: getSciencePolicyVersion(loadCoachKnowledge().principles),
+              source: 'scheduled_adherence_review',
+              currentWeekId: currentWeek.id,
+              adherenceRate: stats.adherenceRate,
+              reasonCodes: ['scheduled_weekly_adjustment'],
+            },
+            // One proposal per exact active-plan version/week. If evidence
+            // changes before approval, the same key conflicts closed instead
+            // of creating duplicate Decision Center cards after a crash.
+            idempotencyKey: `training-weekly-adjust:${tenantId}:${userId}:${plan.id}:${nextWeek.id}:${version.adaptationRevision}`,
+            ttlMinutes: 24 * 60,
+          });
+          const bound = await bindTrainingCoachV2ProposalDecision({
+            tenantId,
+            userId,
+            proposalId: proposal.proposal.proposalId,
+          });
+          logger.info({
+            userId,
+            tenantId,
+            planId: plan.id,
+            weekId: nextWeek.id,
+            proposalId: bound.proposalId,
+            decisionId: bound.decisionId,
+            replayed: proposal.replayed,
+          }, 'Training weekly adjustment proposed for Decision Center review');
+        } catch (err) {
+          logger.warn(
+            { err, userId, tenantId, planId: plan.id, weekId: nextWeek.id },
+            'Training weekly adjustment proposal creation failed; no plan state changed',
+          );
         }
       }
 
@@ -2955,7 +3036,7 @@ export function startScheduler(): void {
         try {
           await createNotificationIntent({
             userId,
-            tenantId: userId,
+            tenantId,
             sourceSkill: 'training',
             type: 'reminder',
             priority: 'active',
@@ -2966,7 +3047,7 @@ export function startScheduler(): void {
             sensitiveBody: safeHtmlNotificationBody(renewMsg),
             actionButtons: [{ id: 'open_detail', label: 'Open training', style: 'primary' }],
             deeplink: `nexus://training/plan/${plan.id}`,
-            dedupeKey: `training:plan_renewal:${userId}:${plan.id}`,
+            dedupeKey: `training:plan_renewal:${tenantId}:${userId}:${plan.id}`,
             requiresUserAction: false,
             deliveryPolicy: 'auto',
             privacyPolicy: 'health',
@@ -3160,6 +3241,15 @@ export function startScheduler(): void {
   cron.schedule('0 * * * *', wrapJob('expire_signals', async () => {
     const expired = expireStaleSignals();
     if (expired > 0) logger.info({ expired }, 'Expired stale intelligence bus signals');
+    const healthSweep = sweepExpiredStructuredHealthData({ limit: 250 });
+    if (healthSweep.deleted > 0 || healthSweep.hasMore) {
+      logger.info({
+        deletedCount: healthSweep.deleted,
+        scopesProcessed: healthSweep.scopesProcessed,
+        hasMore: healthSweep.hasMore,
+        limit: 250,
+      }, 'Expired structured Training health data');
+    }
   }), { timezone: tz });
 
   // Run signal expiry on startup
@@ -3634,9 +3724,9 @@ function hasPaidCoachBriefingEntitlement(userId: number): boolean {
   return allowed;
 }
 
-function hasActiveCoachWorkoutPlan(userId: number): boolean {
+function hasActiveCoachWorkoutPlan(userId: number, tenantId: number): boolean {
   try {
-    const plan = getActivePlan(userId, userId);
+    const plan = getActivePlan(userId, tenantId);
     const allowed = !!plan;
     if (!allowed) {
       logger.debug('[scheduler] coach briefing skipped: active workout plan required');
@@ -3655,36 +3745,36 @@ export interface CoachBriefingDispatchResult {
 }
 
 export async function sendCoachBriefingForTarget(
-  target: ActiveUserTarget,
+  target: ActiveTrainingTarget,
   options: { runId?: string | null } = {},
 ): Promise<CoachBriefingDispatchResult> {
   // Deliberate pre-flight replacing the old accidental gate (users without
   // health data used to throw inside generateCoachBriefing AFTER burning
   // calendar fetches). The serialized daily/monthly budget reservation wraps
   // the provider boundary below.
-  if (!hasPaidCoachBriefingEntitlement(target.tenantId)) {
+  if (!hasPaidCoachBriefingEntitlement(target.userId)) {
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  if (!hasActiveCoachWorkoutPlan(target.tenantId)) {
+  if (!hasActiveCoachWorkoutPlan(target.userId, target.tenantId)) {
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
-  if (!hasCoachableHealthDataForUser(target.tenantId)) {
+  if (!hasCoachableHealthDataForUser(target.userId)) {
     logger.debug('[scheduler] coach briefing skipped: no health data source for user');
     return { status: 'skipped', recommendations: 0, errors: 0 };
   }
   const coachOptions = {
     tenantId: target.tenantId,
-    meteringUserId: target.tenantId,
+    meteringUserId: target.userId,
     garminSilent: true,
     budgetRequestSource: 'automation' as const,
     budgetJobName: 'garmin_coach',
     ...(options.runId ? { budgetRunId: options.runId } : {}),
   };
-  return runWithCoachBriefingAccountAdmissions(target.tenantId, coachOptions, async (abortSignal) => (
-    runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
+  return runWithCoachBriefingAccountAdmissions(target.userId, coachOptions, async (abortSignal) => (
+    runWithContext({ source: 'cron:garmin_coach', userId: target.userId, tenantId: target.tenantId }, async () => {
       let result;
       try {
-        result = await generateCoachBriefing(target.tenantId, {
+        result = await generateCoachBriefing(target.userId, {
           ...coachOptions,
           abortSignal,
         });
@@ -3697,13 +3787,13 @@ export async function sendCoachBriefingForTarget(
             // The report dispatcher claimed this local date before starting
             // the job. Transient lock contention must release only that fresh
             // claim so the next scheduler tick can retry the same report.
-            releaseFreshReportScheduleClaim(target.tenantId, 'coach_briefing');
+            releaseFreshReportScheduleClaim(target.userId, 'coach_briefing', 10, target.tenantId);
           }
           const resetKey = err.decision.unblocksAt?.replace(/[^0-9]/g, '').slice(0, 12)
             || new Date().toISOString().slice(0, 10);
           try {
             await createNotificationIntent({
-              userId: target.tenantId,
+              userId: target.userId,
               tenantId: target.tenantId,
               sourceSkill: 'training',
               type: 'insight',
@@ -3718,7 +3808,7 @@ export async function sendCoachBriefingForTarget(
                   : 'Your next Coach report will resume when the daily AI allowance resets.',
               deeplink: 'nexus://training/coach',
               expiresAt: err.decision.unblocksAt,
-              dedupeKey: `training:coach_budget:${target.tenantId}:${err.decision.code}:${resetKey}`,
+              dedupeKey: `training:coach_budget:${target.tenantId}:${target.userId}:${err.decision.code}:${resetKey}`,
               privacyPolicy: 'health',
             });
           } catch (notificationErr) {
@@ -3741,25 +3831,31 @@ export async function sendCoachBriefingForTarget(
       // Store recommendations so Training follow-up actions can reference
       // the correct tenant-scoped coach state.
       if (result.recommendations.length > 0) {
-        setLastCoachState(target.tenantId, result.recommendations, result.message.substring(0, 500));
+        setLastCoachState(
+          target.userId,
+          result.recommendations,
+          result.message.substring(0, 500),
+          target.tenantId,
+        );
       }
 
-      addToConversation(target.tenantId, 'triathlon', 'assistant', result.message);
-      setLastActiveDomain(target.tenantId, 'triathlon');
+      addToConversation(target.userId, 'triathlon', 'assistant', result.message, target.tenantId);
+      setLastActiveDomain(target.userId, 'triathlon', target.tenantId);
 
       // Durable report + APNs push for the native app.
       try {
         let readinessData: any = null;
         try {
           const { calculateReadiness } = require('./readiness-scorer');
-          readinessData = await calculateReadiness(target.tenantId, {
+          readinessData = await calculateReadiness(target.userId, {
             tenantId: target.tenantId,
             garminSilent: true,
           });
         } catch { /* non-fatal */ }
 
         await storeAndPushReport({
-          userId: target.tenantId,
+          userId: target.userId,
+          tenantId: target.tenantId,
           type: 'coach_briefing' as const,
           title: '🏋️ Coach Report',
           summary: `${result.recommendations.length} recommendations`,
@@ -3813,15 +3909,19 @@ class CoachBriefingDispatchError extends Error {
 }
 
 function scheduledCoachBriefingAdapter(
-  target: ActiveUserTarget,
-): GovernedAgentJobAdapter<{ tenantId: number }, CoachBriefingDispatchResult> {
+  target: ActiveTrainingTarget,
+): GovernedAgentJobAdapter<{ tenantId: number; userId: number }, CoachBriefingDispatchResult> {
   return {
     jobId: 'garmin_coach',
     providerRouting: 'gemini-primary-openai-fallback-anthropic-gated-last-resort',
     prepare: () => ({
       kind: 'ready',
-      input: { tenantId: target.tenantId },
-      fingerprintMaterial: { tenantId: target.tenantId, gate: 'report_schedule_ledger' },
+      input: { tenantId: target.tenantId, userId: target.userId },
+      fingerprintMaterial: {
+        tenantId: target.tenantId,
+        userId: target.userId,
+        gate: 'report_schedule_ledger_scoped',
+      },
     }),
     async execute({ runId }) {
       const result = await sendCoachBriefingForTarget(target, { runId });
@@ -3830,6 +3930,7 @@ function scheduledCoachBriefingAdapter(
     },
     validateOutput(output, input) {
       if (input.tenantId !== target.tenantId
+          || input.userId !== target.userId
           || !['generated', 'skipped', 'deferred'].includes(output.status)
           || !Number.isSafeInteger(output.recommendations)
           || output.recommendations < 0
@@ -3843,16 +3944,16 @@ function scheduledCoachBriefingAdapter(
 }
 
 export async function runScheduledCoachBriefingForTarget(
-  target: ActiveUserTarget,
+  target: ActiveTrainingTarget,
 ): Promise<AgentJobOutcome<CoachBriefingDispatchResult>> {
   return runGovernedAgentJob(
     scheduledCoachBriefingAdapter(target),
-    { tenantId: target.tenantId, userId: target.tenantId },
+    { tenantId: target.tenantId, userId: target.userId },
   );
 }
 
 export async function sendCoachBriefings(): Promise<void> {
-  for (const target of getActiveUserTargets()) {
+  for (const target of getActiveTrainingTargets()) {
     await sendCoachBriefingForTarget(target);
   }
 }

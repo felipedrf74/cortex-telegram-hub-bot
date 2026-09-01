@@ -45,8 +45,8 @@ import {
 const FRIDAY = '2026-07-10';
 const utc = (iso: string) => DateTime.fromISO(iso, { zone: 'utc' });
 
-const USER = { tenantId: 42 };
-const OTHER = { tenantId: 43 };
+const USER = { tenantId: 42, userId: 42 };
+const OTHER = { tenantId: 43, userId: 43 };
 
 describe('report-schedule-dispatcher', () => {
   const OLD_ENV = process.env.REPORT_SCHEDULE_CATCHUP_MINUTES;
@@ -59,6 +59,30 @@ describe('report-schedule-dispatcher', () => {
     testDb.close();
     if (OLD_ENV === undefined) delete process.env.REPORT_SCHEDULE_CATCHUP_MINUTES;
     else process.env.REPORT_SCHEDULE_CATCHUP_MINUTES = OLD_ENV;
+  });
+
+  it('claims the same user independently in two explicit tenant scopes', () => {
+    const tenantA = { tenantId: 420, userId: 42 };
+    const tenantB = { tenantId: 421, userId: 42 };
+
+    expect(resolveDueReportTargets(
+      'morning_briefing',
+      [tenantA, tenantB],
+      utc(`${FRIDAY}T05:02:00Z`),
+    )).toEqual([tenantA, tenantB]);
+    expect(resolveDueReportTargets(
+      'morning_briefing',
+      [tenantA, tenantB],
+      utc(`${FRIDAY}T05:07:00Z`),
+    )).toEqual([]);
+    expect(testDb.prepare(`
+      SELECT tenant_id AS tenantId, user_id AS userId
+      FROM report_schedule_ledger_scoped
+      ORDER BY tenant_id
+    `).all()).toEqual([
+      { tenantId: 420, userId: 42 },
+      { tenantId: 421, userId: 42 },
+    ]);
   });
 
   it('fires the morning briefing at the global default when no preference is set', () => {
@@ -133,7 +157,7 @@ describe('report-schedule-dispatcher', () => {
     const due = resolveDueReportTargets('end_of_day', [USER], utc(`${FRIDAY}T23:15:00Z`));
     expect(due).toEqual([USER]);
     const ledger = testDb.prepare(
-      'SELECT fired_for_local_date FROM report_schedule_ledger WHERE user_id = ? AND job_type = ?',
+      'SELECT fired_for_local_date FROM report_schedule_ledger_scoped WHERE user_id = ? AND job_type = ?',
     ).get(USER.tenantId, 'end_of_day') as { fired_for_local_date: string };
     expect(ledger.fired_for_local_date).toBe(FRIDAY);
   });
@@ -145,7 +169,7 @@ describe('report-schedule-dispatcher', () => {
 
   it('isolates per-user failures so one bad profile cannot stall the tick', () => {
     // tenantId 0 fails scope assertion inside getOrCreateNotificationProfile.
-    const bad = { tenantId: 0 };
+    const bad = { tenantId: 0, userId: 0 };
     const due = resolveDueReportTargets('morning_briefing', [bad, USER], utc(`${FRIDAY}T05:02:00Z`));
     expect(due).toEqual([USER]);
   });
@@ -163,7 +187,7 @@ describe('report-schedule-dispatcher', () => {
   // ── QA finding 1: canonical user timezone, not the Lisbon schema default ──
 
   it('fires at the canonical users.timezone local time when no profile row exists', () => {
-    const SP_USER = { tenantId: 77 };
+    const SP_USER = { tenantId: 77, userId: 77 };
     // No profile row: resolution is read-only against users.timezone
     // (America/Sao_Paulo, UTC-3 in July). Default 06:00 → 09:00 UTC.
     expect(resolveDueReportTargets('morning_briefing', [SP_USER], utc(`${FRIDAY}T05:02:00Z`))).toEqual([]);
@@ -171,7 +195,7 @@ describe('report-schedule-dispatcher', () => {
   });
 
   it('a newly-created profile inherits users.timezone, so a 07:00 preference fires Sao Paulo-local', () => {
-    const SP_USER = { tenantId: 77 };
+    const SP_USER = { tenantId: 77, userId: 77 };
     const created = getOrCreateNotificationProfile(SP_USER.tenantId, SP_USER.tenantId);
     expect(created.timezone).toBe('America/Sao_Paulo');
     updateNotificationProfile(SP_USER.tenantId, SP_USER.tenantId, { morningBriefingTime: '07:00' });
@@ -181,7 +205,7 @@ describe('report-schedule-dispatcher', () => {
   });
 
   it('an explicit profile timezone preference is not overridden by users.timezone', () => {
-    const SP_USER = { tenantId: 77 };
+    const SP_USER = { tenantId: 77, userId: 77 };
     getOrCreateNotificationProfile(SP_USER.tenantId, SP_USER.tenantId);
     updateNotificationProfile(SP_USER.tenantId, SP_USER.tenantId, {
       timezone: 'Europe/Lisbon',
@@ -218,7 +242,7 @@ describe('report-schedule-dispatcher', () => {
     const eligible = () => healthy;
     // Due at 06:02 Lisbon but ineligible: no claim consumed.
     expect(resolveDueReportTargets('coach_briefing', [USER], utc(`${FRIDAY}T20:04:00Z`), { eligible })).toEqual([]);
-    expect(testDb.prepare('SELECT COUNT(*) AS n FROM report_schedule_ledger').get()).toMatchObject({ n: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS n FROM report_schedule_ledger_scoped').get()).toMatchObject({ n: 0 });
     // Apple Health syncs 40 minutes later — same catch-up window, fires.
     healthy = true;
     expect(resolveDueReportTargets('coach_briefing', [USER], utc(`${FRIDAY}T20:44:00Z`), { eligible })).toEqual([USER]);
@@ -248,7 +272,7 @@ describe('report-schedule-dispatcher', () => {
     expect(resolveDueReportTargets('morning_briefing', [USER], utc('2026-03-29T01:32:00Z'))).toEqual([USER]);
     expect(resolveDueReportTargets('morning_briefing', [USER], utc('2026-03-29T01:37:00Z'))).toEqual([]);
     const ledger = testDb.prepare(
-      "SELECT fired_for_local_date AS d FROM report_schedule_ledger WHERE job_type = 'morning_briefing'",
+      "SELECT fired_for_local_date AS d FROM report_schedule_ledger_scoped WHERE job_type = 'morning_briefing'",
     ).get() as { d: string };
     expect(ledger.d).toBe('2026-03-29');
   });
@@ -268,7 +292,7 @@ describe('report-schedule-dispatcher', () => {
     // Second occurrence of the same wall clock, same local date: no re-fire.
     expect(resolveDueReportTargets('end_of_day', [USER], utc('2026-10-25T01:32:00Z'))).toEqual([]);
     const rows = testDb.prepare(
-      "SELECT COUNT(*) AS n FROM report_schedule_ledger WHERE job_type = 'end_of_day' AND fired_for_local_date = '2026-10-25'",
+      "SELECT COUNT(*) AS n FROM report_schedule_ledger_scoped WHERE job_type = 'end_of_day' AND fired_for_local_date = '2026-10-25'",
     ).get() as { n: number };
     expect(rows.n).toBe(1);
   });

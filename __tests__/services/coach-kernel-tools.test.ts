@@ -80,8 +80,12 @@ describe('coach-kernel tools', () => {
     // home-view route can re-run fatigue adjustments later. The stored
     // entry exposes `.plan` for downstream code that only cares about
     // the WeeklyPlan.
-    savePlan(plan, sampleMarathonAthlete, store);
-    const stored = store.get(sampleMarathonAthlete.profile.athleteId, '2026-05-11');
+    savePlan(plan, sampleMarathonAthlete, sampleMarathonAthlete.profile.athleteId, store);
+    const stored = store.get(
+      sampleMarathonAthlete.profile.athleteId,
+      sampleMarathonAthlete.profile.athleteId,
+      '2026-05-11',
+    );
     const load = computeTrainingLoad(plan.sessions);
     const brief = generateDailyBrief(sampleMarathonAthlete, plan, 'tuesday');
     const calendarEvents = syncCalendar(plan);
@@ -92,5 +96,12 @@ describe('coach-kernel tools', () => {
     expect(brief.length).toBeGreaterThan(20);
     expect(calendarEvents.length).toBeGreaterThan(0);
   });
-});
 
+  it('rejects an invalid tenant before writing the plan store', () => {
+    const plan = buildWeekPlan(sampleMarathonAthlete, '2026-05-11');
+    const store = new InMemoryCoachPlanStore();
+
+    expect(() => savePlan(plan, sampleMarathonAthlete, 0, store)).toThrow(/TENANT_SCOPE_REQUIRED|validated tenantId/);
+    expect(store.get(sampleMarathonAthlete.profile.athleteId, 0, '2026-05-11')).toBeNull();
+  });
+});

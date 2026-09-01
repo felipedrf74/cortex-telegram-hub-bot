@@ -717,14 +717,6 @@ export const TOOLS: Anthropic.Tool[] = [
       notes: { type: 'string' },
     }, required: ['session_id'] },
   },
-  {
-    name: 'link_session_calendar', description: 'Link a training session to an existing calendar event (after creating the calendar blocker)',
-    input_schema: { type: 'object' as const, properties: {
-      session_id: { type: 'number' },
-      calendar_event_id: { type: 'string' },
-      calendar_source: { type: 'string', description: '"outlook" or "google"' },
-    }, required: ['session_id', 'calendar_event_id', 'calendar_source'] },
-  },
   // ── Finance tools ──
   {
     name: 'finance_add_transaction', description: 'Log a transaction (income, expense, or deduction).',

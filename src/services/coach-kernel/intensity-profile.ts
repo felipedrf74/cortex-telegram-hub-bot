@@ -120,10 +120,12 @@ function buildSteadySegments(
  *   - cooldown (15% of duration, recovery zone)
  *
  * The number of reps and work/recovery duration come from
- * INTERVAL_DEFAULTS keyed by the template's primaryZone. The N is
- * adjusted so the total interval block fits the remaining duration
- * after warmup + cooldown — proportional fitting, so longer total
- * durations get more reps automatically.
+ * INTERVAL_DEFAULTS keyed by the template's primaryZone. Canonical pairs
+ * are kept whole whenever at least one pair fits. Any positive time left
+ * after those pairs becomes aerobic steady work so the profile always
+ * closes to the requested duration. When even one pair cannot fit, one
+ * pair is proportionally shortened while preserving its work:recovery
+ * ratio.
  */
 function buildIntervalSegments(
   template: WorkoutTemplate,
@@ -136,8 +138,19 @@ function buildIntervalSegments(
 
   const defaults = INTERVAL_DEFAULTS[template.primaryZone] ?? INTERVAL_DEFAULTS.threshold!;
   const pairSec = defaults.workSec + defaults.recoverySec;
-  const repsFitsBudget = Math.max(1, Math.floor(intervalBudgetSec / pairSec));
-  const reps = Math.min(defaults.reps, repsFitsBudget);
+  const reps = Math.min(defaults.reps, Math.floor(intervalBudgetSec / pairSec));
+  const fittedPair = reps === 0 && intervalBudgetSec > 0
+    ? {
+        workSec: Math.round(intervalBudgetSec * (defaults.workSec / pairSec)),
+        recoverySec: 0,
+      }
+    : null;
+  if (fittedPair) {
+    // Assign rounding drift to recovery so the fitted pair is byte-for-byte
+    // duration-closed without changing the canonical work:recovery ratio by
+    // more than one second.
+    fittedPair.recoverySec = intervalBudgetSec - fittedPair.workSec;
+  }
 
   const segments: IntensitySegment[] = [];
   segments.push({
@@ -159,6 +172,34 @@ function buildIntervalSegments(
       modality: sportOf(template),
       durationSec: defaults.recoverySec,
       targetZone: defaults.recoveryZone,
+    });
+  }
+  if (fittedPair) {
+    if (fittedPair.workSec > 0) {
+      segments.push({
+        role: 'interval',
+        modality: sportOf(template),
+        durationSec: fittedPair.workSec,
+        reps: 1,
+        targetZone: template.primaryZone,
+      });
+    }
+    if (fittedPair.recoverySec > 0) {
+      segments.push({
+        role: 'recovery',
+        modality: sportOf(template),
+        durationSec: fittedPair.recoverySec,
+        targetZone: defaults.recoveryZone,
+      });
+    }
+  }
+  const residualSec = intervalBudgetSec - (reps * pairSec) - (fittedPair ? intervalBudgetSec : 0);
+  if (residualSec > 0) {
+    segments.push({
+      role: 'steady',
+      modality: sportOf(template),
+      durationSec: residualSec,
+      targetZone: 'aerobic',
     });
   }
   segments.push({

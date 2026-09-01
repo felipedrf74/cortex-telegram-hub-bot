@@ -16,6 +16,7 @@ import { getDb } from './database';
 import { emitDomainEvent } from './event-outbox';
 import { incrementTrainingGenerationCounter } from './training-generation-observability';
 import { trainingOperationLockPublicError } from './training-operation-locks';
+import { isTrainingCoachV2Enabled } from './training-coach-v2-rollout';
 import {
   buildSkillNotificationFixtureIntent,
   createNotificationIntent,
@@ -774,6 +775,7 @@ const MUTATING_ACTIONS = new Set([
   'undo_reflow',
   'accept_chat_action_fix',
   'activate_training_plan_revision',
+  'activate_training_coach_v2_proposal',
   'approve_product_learning_case',
 ]);
 const VERSIONED_DECISION_ACTIONS = new Set([
@@ -3986,7 +3988,8 @@ export async function performDecisionAction(
           ...privacySafeTransportErrorDetails(err),
           originalErrorLogged: true,
         });
-    if (actionId === 'activate_training_plan_revision'
+    if ((actionId === 'activate_training_plan_revision'
+          || actionId === 'activate_training_coach_v2_proposal')
         && isRetryableTrainingOperationDecisionError(error)
         && releaseRetryableTrainingActivationExecution(
           record,
@@ -8939,11 +8942,50 @@ function expectedExecutionStateForAttempt(
       expectedStatus: 'ACTIVE',
     };
   }
+  if (actionId === 'activate_training_coach_v2_proposal') {
+    return {
+      verifier: 'training_coach_v2_proposals',
+      targetRef: record.relatedEntityId,
+      expectedStatus: 'activated',
+    };
+  }
   return { verifier: 'registered_executor_readback', actionId };
 }
 
 function privacySafeStateHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex');
+}
+
+function privacySafeTrainingCoachV2Effect(
+  proposal: {
+    kind: string;
+    planId: number;
+    weekId: number | null;
+    state: string;
+  },
+  readbackValue: object,
+): Record<string, unknown> {
+  const readback = readbackValue as Record<string, unknown>;
+  const affectedSessionIds = Array.isArray(readback.affectedSessionIds)
+    ? readback.affectedSessionIds.filter((value) => Number.isSafeInteger(Number(value)))
+    : [];
+  return {
+    proposalState: proposal.state,
+    proposalKind: proposal.kind,
+    planId: proposal.planId,
+    weekId: proposal.weekId,
+    adaptationRevision: Number.isSafeInteger(Number(readback.adaptationRevision))
+      ? Number(readback.adaptationRevision)
+      : null,
+    policyVersion: Number.isSafeInteger(Number(readback.policyVersion))
+      ? Number(readback.policyVersion)
+      : null,
+    affectedSessionCount: affectedSessionIds.length,
+    propagationPending: readback.propagation != null
+      && typeof readback.propagation === 'object'
+      && !Array.isArray(readback.propagation)
+      && (readback.propagation as Record<string, unknown>).pending === true,
+  };
 }
 
 function reconcilePartialDecisionExecution(record: DecisionRecord): DecisionExecutionReconciliationOutcome {
@@ -9102,6 +9144,39 @@ function verifyUncertainDecisionExecution(
 ): { outcome: Exclude<DecisionExecutionReconciliationOutcome, 'none'>; actualEffect: Record<string, unknown> } {
   if (record.status === 'actioned' && record.actionResult?.actionId === actionId) {
     return { outcome: 'applied', actualEffect: { decisionProjectionAlreadyActioned: true } };
+  }
+  if (actionId === 'activate_training_coach_v2_proposal'
+      && record.relatedEntityType === 'training_coach_v2_proposal'
+      && record.relatedEntityId) {
+    const evidence = getDb().prepare(`
+      SELECT kind, plan_id AS planId, week_id AS weekId, state,
+             decision_id AS decisionId,
+             activation_result_json AS activationResultJson
+        FROM training_coach_v2_proposals
+       WHERE proposal_id = ? AND tenant_id = ? AND user_id = ?
+       LIMIT 1
+    `).get(record.relatedEntityId, record.tenantId, record.userId) as {
+      kind: string;
+      planId: number;
+      weekId: number | null;
+      state: string;
+      decisionId: string | null;
+      activationResultJson: string | null;
+    } | undefined;
+    if (!evidence || evidence.decisionId !== record.itemId) {
+      return { outcome: 'unknown', actualEffect: { proposalState: evidence?.state ?? 'missing' } };
+    }
+    if (evidence.state === 'activated' && evidence.activationResultJson) {
+      const stored = safeParseJson<Record<string, unknown>>(evidence.activationResultJson, {});
+      return {
+        outcome: 'applied',
+        actualEffect: privacySafeTrainingCoachV2Effect(evidence, stored),
+      };
+    }
+    if (evidence.state === 'proposal_created') {
+      return { outcome: 'not_applied', actualEffect: { proposalState: evidence.state } };
+    }
+    return { outcome: 'unknown', actualEffect: { proposalState: evidence.state, partialEvidence: true } };
   }
   if (actionId === 'activate_training_plan_revision'
       && record.relatedEntityType === 'training_plan_revision'
@@ -9741,6 +9816,87 @@ async function executeDecisionAction(
 
   if (action.id === 'accept_chat_action_fix') {
     return executeChatFixerDecision(record, userId, tenantId);
+  }
+
+  if (action.id === 'activate_training_coach_v2_proposal') {
+    if (!isTrainingCoachV2Enabled()) {
+      throw new DecisionActionError(
+        'TRAINING_COACH_V2_DISABLED',
+        'Coach V2 is currently off. The approved proposal remains pending and no plan state changed.',
+        409,
+      );
+    }
+    if (record.sourceSkill !== 'training'
+        || record.relatedEntityType !== 'training_coach_v2_proposal'
+        || !record.relatedEntityId
+        || !actionExecutionId) {
+      throw new DecisionActionError(
+        'TRAINING_COACH_V2_DECISION_CONTRACT_INVALID',
+        'This Training proposal decision is missing its exact activation contract.',
+        409,
+      );
+    }
+    const normalized = normalizeDecisionAction(decisionContextForRecord(record).normalizedAction);
+    const target = normalized?.targetEntities.find((entry) =>
+      entry.type === 'training_coach_v2_proposal' && entry.id === record.relatedEntityId);
+    if (!normalized || !target?.version) {
+      throw new DecisionActionError(
+        'TRAINING_COACH_V2_DECISION_CONTRACT_INVALID',
+        'This Training proposal decision cannot prove the approved proposal version.',
+        409,
+      );
+    }
+    const activation = await import('./training-coach-v2-proposal-activation');
+    try {
+      const revisionTarget = normalized.targetEntities.find((entry) =>
+        entry.type === 'training_plan_revision');
+      const outcome = await activation.executeTrainingCoachV2ProposalDecision({
+        tenantId,
+        userId,
+        proposalId: record.relatedEntityId,
+        decisionId: record.itemId,
+        expectedRequestHash: target.version,
+        decisionRecordVersion: expectedVersion ?? record.recordVersion,
+        actionExecutionId,
+        approvedRevisionContentHash: revisionTarget?.version,
+        approvedContextVersion: normalized.contextVersion,
+      });
+      const proposal = outcome.proposal;
+      const result = outcome.result;
+      const readBackOk = proposal.state === 'activated'
+        && proposal.proposalId === record.relatedEntityId
+        && proposal.decisionId === record.itemId;
+      const safeEffect = privacySafeTrainingCoachV2Effect({
+        kind: proposal.kind,
+        planId: proposal.planId,
+        weekId: proposal.weekId,
+        state: proposal.state,
+      }, result);
+      return persistProjectionAfterVerifiedSourceEffect('training_coach_v2_activation_effect', () => {
+        const projection = markDecisionActioned(record, action.id, safeEffect,
+          'The approved Training change was applied and verified.');
+        return {
+          readBackOk: readBackOk && projection.readBackOk,
+          expectedEffect: {
+            proposalState: 'activated',
+            proposalId: record.relatedEntityId,
+            decisionStatus: 'actioned',
+          },
+          actualEffect: { ...projection.actualEffect, ...safeEffect },
+          message: 'The approved Training change was applied and verified.',
+        };
+      });
+    } catch (error) {
+      const lockError = trainingOperationLockPublicError(error);
+      if (lockError) {
+        throw new DecisionActionError(lockError.code, lockError.message, lockError.status, lockError.details);
+      }
+      if (error instanceof activation.TrainingCoachV2ProposalStateError) {
+        const status = error.code === 'PROPOSAL_NOT_FOUND' ? 404 : 409;
+        throw new DecisionActionError(error.code, error.message, status);
+      }
+      throw error;
+    }
   }
 
   if (action.id === 'activate_training_plan_revision') {
@@ -10647,7 +10803,7 @@ function reconcileCompletedExecutionAfterResponseFailure(
 function isRetryableTrainingOperationDecisionError(error: DecisionActionError): boolean {
   return (error.code === 'TRAINING_OPERATION_LOCKED'
       || error.code === 'TRAINING_OPERATION_LOCK_UNAVAILABLE')
-    && error.details?.operation === 'plan_activate'
+    && (error.details?.operation === 'plan_activate' || error.details?.operation === 'adapt')
     && typeof error.details.retryAfterSeconds === 'number'
     && Number.isFinite(error.details.retryAfterSeconds);
 }

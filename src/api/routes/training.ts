@@ -37,6 +37,7 @@ import {
 } from '../../services/training-completion-contract';
 import {
   COACH_BRIEFING_TTL,
+  coachBriefingCacheKey,
   getCoachBriefingSnapshot,
   restoreCoachBriefingFromLatestReport,
   syncCoachStateForUser,
@@ -59,6 +60,7 @@ import {
   trainingPlanRevisionCapabilitiesForScope,
 } from './training-plan-revision-routes';
 import { registerTrainingAdaptationRoutes } from './training-adaptation-routes';
+import { registerTrainingCalendarCleanupRoutes } from './training-calendar-cleanup-routes';
 import { requireTenantIdParam } from '../../services/tenant-scope';
 import {
   isAiInteractiveAllowedForRuntime,
@@ -71,6 +73,7 @@ import {
   withTrainingCalendarOperationLock,
 } from '../../services/training-operation-locks';
 import { isSkillInferenceAccountDeletionError } from '../../services/skill-inference-service';
+import { buildCoachV2Capabilities } from './training-coach-v2-capabilities';
 
 export { looksLikeTrainingCalendarEvent } from './training-calendar-utils';
 
@@ -291,19 +294,20 @@ function throwIfCoachFallbackAccountAborted(abortSignal: AbortSignal): void {
 
 async function runAdmittedDeterministicCoachFallback<T>(
   dataUserId: number,
+  tenantId: number,
   meteringUserId: number,
   language: Lang,
   budgetJobName: 'coach_refresh_fallback' | 'coach_report_fallback',
   publish: (fallback: Record<string, unknown>) => T,
 ): Promise<T | null> {
   return runWithCoachBriefingAccountAdmissions(dataUserId, {
-    tenantId: dataUserId,
+    tenantId,
     meteringUserId,
     budgetRequestSource: 'interactive',
     budgetJobName,
   }, async (accountAbortSignal) => {
     throwIfCoachFallbackAccountAborted(accountAbortSignal);
-    const fallback = await buildDeterministicCoachFallback(dataUserId, dataUserId, language);
+    const fallback = await buildDeterministicCoachFallback(dataUserId, tenantId, language);
     // The deterministic reads can yield. Re-check the erasure signal before
     // the synchronous state/cache publication so no row is recreated after
     // the account lifecycle starts draining.
@@ -404,6 +408,7 @@ export function trainingRoutes(): Router {
       const revisionCapabilities = trainingPlanRevisionCapabilitiesForScope({ userId, tenantId });
       sendSuccess(res, {
         ...(cached as Record<string, unknown>),
+        coachV2Capabilities: buildCoachV2Capabilities(),
         ...(revisionCapabilities ? { revisionCapabilities } : {}),
       }, { cached: true });
       return;
@@ -421,6 +426,7 @@ export function trainingRoutes(): Router {
       const revisionCapabilities = trainingPlanRevisionCapabilitiesForScope({ userId, tenantId });
       sendSuccess(res, {
         ...payload,
+        coachV2Capabilities: buildCoachV2Capabilities(),
         ...(revisionCapabilities ? { revisionCapabilities } : {}),
       });
     } catch (err: any) {
@@ -530,7 +536,7 @@ export function trainingRoutes(): Router {
    * Read-only coach briefing — cache, persisted-report restore, or explicit miss.
    */
   router.get('/coach', async (req, res: Response) => {
-    const { tenantId } = req as AuthenticatedRequest;
+    const { userId, tenantId: requestTenantId } = req as AuthenticatedRequest;
     if (req.query.refresh === 'true') {
       sendError(
         res,
@@ -541,9 +547,9 @@ export function trainingRoutes(): Router {
       return;
     }
 
-    let dataUserId: number;
+    let tenantId: number;
     try {
-      dataUserId = requireTenantIdParam(tenantId, 'training.coach');
+      tenantId = requireTenantIdParam(requestTenantId, 'training.coach');
     } catch {
       sendError(res, 'TENANT_SCOPE_REQUIRED', 'Coach briefing requires a validated tenant scope.', 400);
       return;
@@ -553,19 +559,20 @@ export function trainingRoutes(): Router {
     // or restored report so a stale paid snapshot cannot bypass a downgrade.
     if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
 
-    const cacheKey = `coach-briefing:${dataUserId}`;
+    const dataUserId = userId;
+    const cacheKey = coachBriefingCacheKey(dataUserId, tenantId);
 
     const cached = getCached<Record<string, unknown>>(cacheKey);
     if (cached) {
       logger.debug('Returning SQLite-cached coach briefing (no AI call)');
-      const payload = syncCoachStateForUser(dataUserId, cached);
+      const payload = syncCoachStateForUser(dataUserId, tenantId, cached);
       sendSuccess(res, payload, { cached: true });
       return;
     }
 
-    const restored = restoreCoachBriefingFromLatestReport(dataUserId);
+    const restored = restoreCoachBriefingFromLatestReport(dataUserId, tenantId);
     if (restored) {
-      const payload = syncCoachStateForUser(dataUserId, restored);
+      const payload = syncCoachStateForUser(dataUserId, tenantId, restored);
       setCache(cacheKey, payload, COACH_BRIEFING_TTL);
       logger.debug('Restored coach briefing from latest report document');
       sendSuccess(res, payload, { cached: true });
@@ -589,7 +596,7 @@ export function trainingRoutes(): Router {
       sendError(res, 'TENANT_SCOPE_REQUIRED', 'Training coach report requires a validated tenant scope.', 400);
       return;
     }
-    const dataUserId = tenantId;
+    const dataUserId = userId;
     // The report endpoint shares the briefing cache/restore path, so it must
     // enforce the same current-request eligibility before either read.
     if (!requireCoachBriefingEligibility(req as AuthenticatedRequest, res)) return;
@@ -613,19 +620,19 @@ export function trainingRoutes(): Router {
     }
     const forceRefresh = reportBody.refresh === true;
     const allowSensitiveCloudRouting = reportBody.allowSensitiveCloudRouting === true;
-    const cacheKey = `coach-briefing:${dataUserId}`;
+    const cacheKey = coachBriefingCacheKey(dataUserId, tenantId);
     const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
     if (!forceRefresh) {
       const cached = getCached<Record<string, unknown>>(cacheKey);
       if (cached) {
-        const payload = syncCoachStateForUser(dataUserId, cached);
+        const payload = syncCoachStateForUser(dataUserId, tenantId, cached);
         sendSuccess(res, buildCoachReportResponse(payload, language), { cached: true });
         return;
       }
-      const restored = restoreCoachBriefingFromLatestReport(dataUserId);
+      const restored = restoreCoachBriefingFromLatestReport(dataUserId, tenantId);
       if (restored) {
-        const payload = syncCoachStateForUser(dataUserId, restored);
+        const payload = syncCoachStateForUser(dataUserId, tenantId, restored);
         setCache(cacheKey, payload, COACH_BRIEFING_TTL);
         sendSuccess(res, buildCoachReportResponse(payload, language), { cached: true });
         return;
@@ -634,13 +641,13 @@ export function trainingRoutes(): Router {
 
     try {
       const reportPayload = await runWithCoachBriefingAccountLifecycle(dataUserId, {
-        tenantId: dataUserId,
+        tenantId,
         meteringUserId: userId,
         budgetRequestSource: 'interactive',
         budgetJobName: 'coach_report',
         allowSensitiveCloudRouting,
       }, (briefing) => {
-        const payload = syncCoachStateForUser(dataUserId, {
+        const payload = syncCoachStateForUser(dataUserId, tenantId, {
           briefing: briefing?.message || 'No coach briefing available.',
           recommendations: briefing?.recommendations || [],
           garminData: null as unknown,
@@ -661,11 +668,12 @@ export function trainingRoutes(): Router {
       try {
         fallbackReport = await runAdmittedDeterministicCoachFallback(
           dataUserId,
+          tenantId,
           userId,
           language,
           'coach_report_fallback',
           (fallback) => buildCoachReportResponse(
-            syncCoachStateForUser(dataUserId, fallback),
+            syncCoachStateForUser(dataUserId, tenantId, fallback),
             language,
           ),
         );
@@ -1314,20 +1322,20 @@ export function trainingRoutes(): Router {
     const { userId, tenantId } = req as AuthenticatedRequest;
     const { recommendationIds } = req.body;
     try {
-      // Coach state, Training rows, provider credentials, and the operation
-      // lock all belong to the active data owner. The authenticated actor is
-      // passed separately for authorization/audit semantics.
-      const dataUserId = requireTenantIdParam(tenantId, 'training.coach.apply');
+      // Coach state and Training rows are scoped by both the authenticated
+      // data user and active tenant. A tenant id is never substituted for the
+      // user id when resolving credentials or owned rows.
+      const scopedTenantId = requireTenantIdParam(tenantId, 'training.coach.apply');
       const applied = await withTrainingCalendarOperationLock(
-        { userId: dataUserId, tenantId: dataUserId, operation: 'coach_apply' },
-        (lease) => applyCoachRecommendations(userId, dataUserId, recommendationIds, { lease }),
+        { userId, tenantId: scopedTenantId, operation: 'coach_apply' },
+        (lease) => applyCoachRecommendations(userId, scopedTenantId, recommendationIds, { lease }),
       );
       // Applying a coach recommendation changes the coach briefing and
       // training summary the client just read — clear those caches too,
       // otherwise the next read serves the pre-apply brief and the user
       // sees the same recommendation they just accepted. Mirrors the
       // cache-clear set used by /training/complete above.
-      invalidateTrainingScreenCaches(dataUserId);
+      invalidateTrainingScreenCaches(userId);
       sendSuccess(res, {
         applied: applied?.count || 0,
         message: `Calendar updated with ${applied?.count || 0} recommendation(s).`,
@@ -1347,6 +1355,7 @@ export function trainingRoutes(): Router {
   registerTrainingPlanRoutes(router, { invalidateTrainingScreenCaches });
   registerTrainingPlanRevisionRoutes(router);
   registerTrainingAdaptationRoutes(router);
+  registerTrainingCalendarCleanupRoutes(router);
 
   return router;
 }

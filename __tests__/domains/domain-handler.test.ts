@@ -190,6 +190,31 @@ describe('Coach state management', () => {
     expect(getLastCoachState(999)).toBeNull();
   });
 
+  it('rejects invalid coach-state scope before touching the LRU or durable store', () => {
+    const recs = [{ action: 'KEEP', eventId: 'invalid', source: 'google', originalTitle: 'Run', summary: 'Keep' }];
+
+    expect(() => setLastCoachState(123, recs as any, 'Invalid tenant', 0))
+      .toThrow(/TENANT_SCOPE_REQUIRED|validated tenantId/);
+    expect(() => getLastCoachState(123, 0))
+      .toThrow(/TENANT_SCOPE_REQUIRED|validated tenantId/);
+  });
+
+  it('isolates coach state for the same data user across active tenants', () => {
+    ensureUser(123);
+    const tenantOne = [{ action: 'KEEP', eventId: 'tenant-1', source: 'google', originalTitle: 'Run', summary: 'Keep' }];
+    const tenantTwo = [{ action: 'REST', eventId: 'tenant-2', source: 'outlook', originalTitle: 'Ride', summary: 'Rest' }];
+
+    setLastCoachState(123, tenantOne as any, 'Tenant one', 701);
+    setLastCoachState(123, tenantTwo as any, 'Tenant two', 702);
+
+    // Simulate a process restart: neither read may be satisfied by the LRU.
+    __resetLastCoachStateCacheForTests();
+
+    expect(getLastCoachState(123, 701)?.briefingSummary).toBe('Tenant one');
+    expect(getLastCoachState(123, 702)?.briefingSummary).toBe('Tenant two');
+    expect(getLastCoachState(123, 703)).toBeNull();
+  });
+
   it('returns null when state is expired', () => {
     const recs = [{ action: 'KEEP', eventId: 'e1', source: 'google', originalTitle: 'Swim', summary: 'Good to go' }];
     setLastCoachState(100, recs as any, 'All good');

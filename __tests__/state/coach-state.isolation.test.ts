@@ -35,13 +35,15 @@ const recommendation: CoachRecommendation = {
 
 function createSchema(): void {
   testDb.exec(`
-    CREATE TABLE coach_states (
-      user_id INTEGER PRIMARY KEY,
+    CREATE TABLE coach_states_scoped (
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
       recommendations_json TEXT NOT NULL,
       briefing_summary TEXT NOT NULL,
       created_at_ms INTEGER NOT NULL,
       expires_at_ms INTEGER NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, user_id)
     );
   `);
 }
@@ -87,6 +89,19 @@ describe('state/coach-state isolation contract', () => {
 
     expect(loadCoachState(1, NOW_MS + 1)?.briefingSummary).toBe('A briefing');
     expect(loadCoachState(2, NOW_MS + 1)?.briefingSummary).toBe('B briefing');
+  });
+
+  it('round-trips the same user independently across delegated tenants', () => {
+    saveCoachState(1, [recommendation], 'tenant-701', NOW_MS, TTL_MS, 701);
+    saveCoachState(1, [recommendation], 'tenant-702', NOW_MS, TTL_MS, 702);
+
+    expect(loadCoachState(1, NOW_MS + 1, 701)?.briefingSummary).toBe('tenant-701');
+    expect(loadCoachState(1, NOW_MS + 1, 702)?.briefingSummary).toBe('tenant-702');
+    expect(loadCoachState(1, NOW_MS + 1, 703)).toBeNull();
+
+    deleteCoachState(1, 701);
+    expect(loadCoachState(1, NOW_MS + 1, 701)).toBeNull();
+    expect(loadCoachState(1, NOW_MS + 1, 702)?.briefingSummary).toBe('tenant-702');
   });
 
   it('delete is idempotent and does not affect other users', () => {

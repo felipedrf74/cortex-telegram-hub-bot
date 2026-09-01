@@ -10,6 +10,8 @@ const mockGetQualityByAgent = vi.fn();
 const mockGetTaskExecutionSummary = vi.fn();
 const mockGetRecentExecutions = vi.fn();
 const mockGetTrainingGenerationObservabilitySnapshot = vi.fn();
+const mockGetTrainingCoachV2SoakSnapshot = vi.fn();
+const mockRecordTrainingCoachV2RuleReview = vi.fn();
 const mockGetContentWorkspaceObservabilitySnapshot = vi.fn();
 const mockListOperatorAlerts = vi.fn();
 const mockGetOperatorAlertDeliverySummary = vi.fn();
@@ -49,6 +51,15 @@ vi.mock('../../src/services/training-generation-observability', () => ({
   getTrainingGenerationObservabilitySnapshot: (...args: unknown[]) =>
     mockGetTrainingGenerationObservabilitySnapshot(...args),
 }));
+
+vi.mock('../../src/services/training-coach-v2-soak-metrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/training-coach-v2-soak-metrics')>();
+  return {
+    ...actual,
+    getTrainingCoachV2SoakSnapshot: (...args: unknown[]) => mockGetTrainingCoachV2SoakSnapshot(...args),
+    recordTrainingCoachV2RuleReview: (...args: unknown[]) => mockRecordTrainingCoachV2RuleReview(...args),
+  };
+});
 
 vi.mock('../../src/services/content-workspace-observability', () => ({
   getContentWorkspaceObservabilitySnapshot: (...args: unknown[]) =>
@@ -96,22 +107,23 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { registerPortalOperationsRoutes } from '../../src/portal/operations-routes';
 
-type Handler = (req: any, res: any) => unknown;
+type Handler = (req: any, res: any, next?: (err?: unknown) => void) => unknown;
 
 interface CapturedRoute {
   method: 'GET' | 'POST';
   path: string;
   handler: Handler;
+  handlers: Handler[];
 }
 
 function captureRoutes(): CapturedRoute[] {
   const routes: CapturedRoute[] = [];
   const app = {
     get(path: string, ...handlers: Handler[]) {
-      routes.push({ method: 'GET', path, handler: handlers[handlers.length - 1] });
+      routes.push({ method: 'GET', path, handler: handlers[handlers.length - 1], handlers });
     },
     post(path: string, ...handlers: Handler[]) {
-      routes.push({ method: 'POST', path, handler: handlers[handlers.length - 1] });
+      routes.push({ method: 'POST', path, handler: handlers[handlers.length - 1], handlers });
     },
   };
   registerPortalOperationsRoutes(app as any, {
@@ -155,6 +167,8 @@ describe('portal operations routes', () => {
     mockGetTaskExecutionSummary.mockReset();
     mockGetRecentExecutions.mockReset();
     mockGetTrainingGenerationObservabilitySnapshot.mockReset();
+    mockGetTrainingCoachV2SoakSnapshot.mockReset();
+    mockRecordTrainingCoachV2RuleReview.mockReset();
     mockGetContentWorkspaceObservabilitySnapshot.mockReset();
     mockListOperatorAlerts.mockReset();
     mockGetOperatorAlertDeliverySummary.mockReset();
@@ -180,12 +194,106 @@ describe('portal operations routes', () => {
       'GET /api/quality-scores',
       'GET /api/task-metrics',
       'GET /api/training-generation-metrics',
+      'GET /api/training-coach-v2-soak',
+      'POST /api/training-coach-v2-soak/reviews',
       'GET /api/content-workspace-metrics',
       'GET /api/operator-alerts',
       'POST /api/operator-alerts/:id/ack',
       'POST /api/operator-alerts/:id/resolve',
       'POST /api/operator-alerts/:id/retry-delivery',
     ]);
+  });
+
+  it('rate limits both Coach V2 soak routes before admin authorization', async () => {
+    const previousLimit = process.env.PORTAL_API_RATE_LIMIT;
+    process.env.PORTAL_API_RATE_LIMIT = '2';
+    try {
+      const routes = captureRoutes();
+      const soakRoutes = routes.filter((route) => route.path.startsWith('/api/training-coach-v2-soak'));
+      expect(soakRoutes).toHaveLength(2);
+      for (const route of soakRoutes) {
+        expect(route.handlers).toHaveLength(3);
+        expect(route.handlers[1]).toBe(mockRequirePortalAdminToken);
+      }
+
+      const limiter = soakRoutes[0]!.handlers[0]!;
+      const buildResponse = () => ({
+        statusCode: 200,
+        body: undefined as unknown,
+        headers: {} as Record<string, string | number>,
+        setHeader(name: string, value: string | number) {
+          this.headers[name] = value;
+          return this;
+        },
+        status(code: number) {
+          this.statusCode = code;
+          return this;
+        },
+        json(body: unknown) {
+          this.body = body;
+          return this;
+        },
+      });
+      const request = {
+        headers: {},
+        ip: '198.51.100.42',
+        socket: { remoteAddress: '198.51.100.42' },
+      };
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const next = vi.fn();
+        await limiter(request, buildResponse(), next);
+        expect(next).toHaveBeenCalledOnce();
+      }
+      const blocked = buildResponse();
+      const blockedNext = vi.fn();
+      await limiter(request, blocked, blockedNext);
+      expect(blockedNext).not.toHaveBeenCalled();
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.body).toMatchObject({ error: { code: 'RATE_LIMITED', retryAfter: 60 } });
+      expect(blocked.headers['Retry-After']).toBe(60);
+      expect(mockRequirePortalAdminToken).not.toHaveBeenCalled();
+    } finally {
+      if (previousLimit === undefined) delete process.env.PORTAL_API_RATE_LIMIT;
+      else process.env.PORTAL_API_RATE_LIMIT = previousLimit;
+    }
+  });
+
+  it('returns aggregate Coach V2 soak gates and records scoped reviewed firings', () => {
+    const snapshot = {
+      schemaVersion: 'training-coach-v2-soak.1',
+      generatedAt: '2026-08-31T12:00:00.000Z',
+      window: { from: '2026-08-17T12:00:00.000Z', to: '2026-08-31T12:00:00.000Z' },
+      rules: [{ ruleId: 'deload_applied', reviewedFirings: 100, incorrectReviewedFirings: 4, falsePositiveRate: 0.04, verdict: 'GO' }],
+      churn: { adaptedPlanWeeks: 100, churnedPlanWeeks: 20, churnRate: 0.2, verdict: 'GO' },
+      verdict: 'GO',
+    };
+    mockGetTrainingCoachV2SoakSnapshot.mockReturnValue(snapshot);
+    expect(invoke('/api/training-coach-v2-soak', {
+      req: { query: { from: '2026-08-17T12:00:00.000Z', to: '2026-08-31T12:00:00.000Z' } },
+    }).body).toEqual({ ok: true, coachV2Soak: snapshot });
+
+    mockRecordTrainingCoachV2RuleReview.mockReturnValue({ replayed: false });
+    const req = {
+      body: {
+        tenantId: 44,
+        userId: 44,
+        proposalId: 'tcv2_reviewed',
+        ruleId: 'deload_applied',
+        outcome: 'incorrect',
+        idempotencyKey: 'review-1',
+      },
+    };
+    const response = invoke('/api/training-coach-v2-soak/reviews', { method: 'POST', req });
+    expect(response.statusCode).toBe(201);
+    expect(response.body).toEqual({ ok: true, replayed: false });
+    expect(mockRecordTrainingCoachV2RuleReview).toHaveBeenCalledWith(req.body);
+    expect(mockLogPortalAdminMutation).toHaveBeenCalledWith(
+      req,
+      44,
+      'training_coach_v2.rule_review',
+      expect.objectContaining({ ruleId: 'deload_applied', outcome: 'incorrect' }),
+    );
   });
 
   it('returns error trends with the legacy ok wrapper', () => {

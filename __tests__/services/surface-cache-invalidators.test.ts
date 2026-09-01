@@ -60,7 +60,7 @@ describe('surface cache invalidators', () => {
 
     invalidateTrainingDerivedCaches(42);
 
-    expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('coach-briefing:');
     // Stronger F34 guarantee: the released route key is tenant-first
     // (`readiness:{tenantId}:{userId}`), so the legacy exact user key never
     // evicted a real snapshot. The canonical invalidator clears the family.
@@ -117,7 +117,7 @@ describe('surface cache invalidators', () => {
 
     invalidateOnboardingDerivedCaches(42, 'triathlon-running');
 
-    expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('coach-briefing:');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith(expect.arrayContaining([
       'training-home:',
       'training-summary:',
@@ -192,7 +192,7 @@ describe('surface cache invalidators', () => {
 
     invalidateIntegrationDerivedCaches(42, 'strava');
 
-    expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('coach-briefing:');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith(expect.arrayContaining([
       'training-history:',
       'training-load-snapshot:',

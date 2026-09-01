@@ -175,4 +175,9 @@ describe('R4 P2 — consumers route through session-status (no hand-rolled tuple
     );
     expect(src).toMatch(/isActionableSessionStatus/);
   });
+
+  it('Training E2E selects strength candidates from the complete actionable status set', () => {
+    const src = read('scripts/training-e2e-flow.mjs');
+    expect(src).toContain(`AND s.status IN (${actionableStatusesSqlList()})`);
+  });
 });

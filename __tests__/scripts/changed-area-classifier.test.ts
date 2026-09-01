@@ -92,6 +92,7 @@ describe('lean changed-area classification', () => {
     ['__tests__/services/standalone-tool-database.test.ts', 'platform-security'],
     ['src/services/chat-answer-contract.ts', 'chat-secretary'],
     ['src/services/training-plans.ts', 'training'],
+    ['src/services/cross-agent-learning/training-mesh-context.ts', 'training'],
     ['src/services/google-calendar.ts', 'calendar-health'],
     ['src/services/content-workflow.ts', 'content'],
     ['src/services/invoice-filer.ts', 'finance-billing'],

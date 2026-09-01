@@ -23,6 +23,7 @@ import {
   ensurePersonaUser,
   resolveQualityReadinessState,
   runTrainingE2EPersonaScenario,
+  trainingE2ECalendarFixtureDays,
   trainingE2EPersonaUserId,
   validateTrainingE2EPersonaProfiles,
 } from '../../scripts/training-e2e-quality';
@@ -41,11 +42,29 @@ const requiredLifecycleStepIds = [
   'plan_generate_activate',
   'today_plan_progress_read_models',
   'feedback_variants_and_repeated_skips',
-  'successful_fixture_reflow_swap',
+  'proposal_first_fixture_reflow_activation',
   'stale_readiness_degraded',
   'calendar_sync_provider_safe',
   'cancel_cleanup_and_no_plan_recovery',
 ] as const;
+
+describe('Training E2E calendar fixture horizon', () => {
+  it('covers the complete next full training week when today is midweek', () => {
+    expect(trainingE2ECalendarFixtureDays({
+      now: new Date('2026-09-01T10:00:00.000Z'),
+      startPolicy: 'next_full_week',
+      schedulingTimezone: 'Europe/Lisbon',
+    })).toEqual([
+      '2026-09-07',
+      '2026-09-08',
+      '2026-09-09',
+      '2026-09-10',
+      '2026-09-11',
+      '2026-09-12',
+      '2026-09-13',
+    ]);
+  });
+});
 
 function completeEvidence() {
   const runId = 'contract-test-run';
@@ -662,9 +681,9 @@ describe('Training E2E executable contract', () => {
       ...complete,
       lifecycleEvidence: {
         ...complete.lifecycleEvidence,
-        steps: complete.lifecycleEvidence.steps.filter((step) => step.step !== 'successful_fixture_reflow_swap'),
+        steps: complete.lifecycleEvidence.steps.filter((step) => step.step !== 'proposal_first_fixture_reflow_activation'),
       },
-    })).toThrow(/successful_fixture_reflow_swap/);
+    })).toThrow(/proposal_first_fixture_reflow_activation/);
 
     expect(() => assertCompleteEvidence({
       ...complete,

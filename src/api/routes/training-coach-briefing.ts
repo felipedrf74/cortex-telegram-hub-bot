@@ -9,6 +9,10 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/te
 
 export const COACH_BRIEFING_TTL = 6 * 3600;
 
+export function coachBriefingCacheKey(userId: number, tenantId: number): string {
+  return `coach-briefing:${tenantId}:${userId}`;
+}
+
 export interface CoachBriefingSnapshot {
   briefing: string;
   recommendations: CoachRecommendationInput[];
@@ -70,21 +74,22 @@ export function sanitizeTrainingCoachReportText(raw: string): string {
 
 export function restoreCoachBriefingFromLatestReport(
   userId: number,
+  tenantId: number,
   ttlSeconds = COACH_BRIEFING_TTL,
 ): CoachBriefingSnapshot | null {
-  if (!isValidTenantUserId(userId)) {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     recordTenantScopeAnomaly({
       layer: 'delivery',
       operation: 'restore_coach_briefing_from_report',
-      reason: 'invalid_user_scope',
+      reason: !isValidTenantUserId(userId) ? 'invalid_user_scope' : 'missing_tenant_scope',
       userId,
-      details: { reportType: 'coach_briefing' },
+      details: { reportType: 'coach_briefing', tenantId },
     });
     return null;
   }
 
   try {
-    const report = getLatestByType(userId, 'coach_briefing');
+    const report = getLatestByType(userId, 'coach_briefing', tenantId);
     if (!report?.documentJson) return null;
 
     const createdAtMs = Date.parse(report.createdAt || '');
@@ -122,6 +127,7 @@ export function restoreCoachBriefingFromLatestReport(
 
 export function syncCoachStateForUser(
   userId: number,
+  tenantId: number,
   payload: Record<string, unknown>,
 ): CoachBriefingSnapshot {
   const normalizedRecommendations = Array.isArray(payload.recommendations)
@@ -146,7 +152,7 @@ export function syncCoachStateForUser(
     ? sanitizeTrainingCoachReportText(payload.briefing.trim()) || 'Coach briefing available.'
     : 'Coach briefing available.';
 
-  setLastCoachState(userId, persistedRecommendations, briefing.slice(0, 500));
+  setLastCoachState(userId, persistedRecommendations, briefing.slice(0, 500), tenantId);
 
   return {
     ...payload,
@@ -158,18 +164,20 @@ export function syncCoachStateForUser(
 
 export function getCoachBriefingSnapshot(
   userId: number,
+  tenantId: number,
   ttlSeconds = COACH_BRIEFING_TTL,
 ): CoachBriefingSnapshot | null {
-  const cacheKey = `coach-briefing:${userId}`;
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) return null;
+  const cacheKey = coachBriefingCacheKey(userId, tenantId);
   const cached = getCached<Record<string, unknown>>(cacheKey);
   if (cached) {
-    return syncCoachStateForUser(userId, cached);
+    return syncCoachStateForUser(userId, tenantId, cached);
   }
 
-  const restored = restoreCoachBriefingFromLatestReport(userId, ttlSeconds);
+  const restored = restoreCoachBriefingFromLatestReport(userId, tenantId, ttlSeconds);
   if (!restored) return null;
 
-  const payload = syncCoachStateForUser(userId, restored);
+  const payload = syncCoachStateForUser(userId, tenantId, restored);
   setCache(cacheKey, payload, ttlSeconds);
   return payload;
 }

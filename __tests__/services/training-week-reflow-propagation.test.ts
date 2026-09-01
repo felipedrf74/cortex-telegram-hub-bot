@@ -56,7 +56,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { executeWeekReflowWithPropagation } from '../../src/services/training-week-reflow-propagation';
+import {
+  executeWeekReflowUnderExistingAdaptLock,
+  executeWeekReflowWithPropagation,
+} from '../../src/services/training-week-reflow-propagation';
 
 const USER_ID = 42;
 const TENANT_ID = 42;
@@ -259,6 +262,67 @@ describe('F24 — week reflow durable propagation boundary', () => {
     expect(testDb.prepare(
       'SELECT day_of_week FROM training_sessions WHERE id = ?',
     ).get(SESSION_ID)).toMatchObject({ day_of_week: 'Tuesday' });
+  });
+
+  it('uses an existing adapt lease and emits a plan-scoped request for an applied pause', () => {
+    const lease = { assertActive: vi.fn() };
+    const result = executeWeekReflowUnderExistingAdaptLock({
+      ...applyInput('f24-existing-adapt-lock'),
+      applyMutation: (db: Database.Database) => {
+        const update = db.prepare(`
+          UPDATE training_sessions SET status = 'canceled' WHERE id = ? AND plan_id = ?
+        `).run(SESSION_ID, PLAN_ID);
+        return {
+          mutatedRows: update.changes,
+          affectedSessionIds: [SESSION_ID],
+          perActionResults: [{
+            action: { type: 'pause_training' },
+            skipped: false,
+            mutatedRows: update.changes,
+          }],
+        };
+      },
+    }, lease);
+
+    expect(result).toMatchObject({
+      mutated: true,
+      propagation: { state: 'not_synced', pending: true },
+    });
+    expect(lease.assertActive).toHaveBeenCalled();
+    const row = testDb.prepare(`
+      SELECT payload_json FROM event_outbox
+      WHERE event_type = 'training.plan_calendar_sync.requested.v1'
+    `).get() as { payload_json: string };
+    expect(JSON.parse(row.payload_json)).toMatchObject({ reflowScope: 'plan' });
+  });
+
+  it('rejects preview mode at the existing-lock mutation seam', () => {
+    expect(() => executeWeekReflowUnderExistingAdaptLock({
+      ...applyInput('f24-existing-lock-preview'),
+      mode: 'preview',
+      applyMutation: undefined,
+    }, { assertActive: vi.fn() })).toThrow(/REQUIRES_APPLY/);
+  });
+
+  it('does not enqueue propagation when an existing-lock apply has no affected sessions', () => {
+    const result = executeWeekReflowUnderExistingAdaptLock({
+      ...applyInput('f24-existing-lock-noop'),
+      applyMutation: () => ({
+        mutatedRows: 0,
+        affectedSessionIds: [],
+        perActionResults: [],
+      }),
+    }, { assertActive: vi.fn() });
+
+    expect(result.propagation).toEqual({
+      state: 'not_synced',
+      pending: false,
+      adaptationRevision: 1,
+    });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS n FROM event_outbox
+      WHERE event_type = 'training.plan_calendar_sync.requested.v1'
+    `).get()).toMatchObject({ n: 0 });
   });
 
   it('keeps every production reflow entrypoint behind the durable propagation wrapper', () => {

@@ -86,8 +86,8 @@ type ReportSchedulePreferences = Pick<
   'morningBriefingTime' | 'coachBriefingTime' | 'endOfDayTime' | 'weeklyReviewReportDay' | 'weeklyReviewReportTime'
 > & { timezone: string };
 
-function loadSchedulePreferences(userId: number): ReportSchedulePreferences {
-  const profile = getNotificationProfileIfExists(userId, userId);
+function loadSchedulePreferences(userId: number, tenantId: number): ReportSchedulePreferences {
+  const profile = getNotificationProfileIfExists(userId, tenantId);
   if (profile) return profile;
   return {
     timezone: getUserTimezoneById(userId),
@@ -134,16 +134,16 @@ function preferredScheduleFor(
 // schema for existing databases.
 function ensureLedgerTable(db: ReturnType<typeof getDb>): void {
   db.exec(`
-    CREATE TABLE IF NOT EXISTS report_schedule_ledger (
+    CREATE TABLE IF NOT EXISTS report_schedule_ledger_scoped (
       user_id INTEGER NOT NULL,
       tenant_id INTEGER NOT NULL,
       job_type TEXT NOT NULL,
       fired_for_local_date TEXT NOT NULL,
       fired_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, job_type, fired_for_local_date)
+      PRIMARY KEY (tenant_id, user_id, job_type, fired_for_local_date)
     );
-    CREATE INDEX IF NOT EXISTS idx_report_schedule_ledger_fired_at
-      ON report_schedule_ledger(fired_at);
+    CREATE INDEX IF NOT EXISTS idx_report_schedule_ledger_scoped_fired_at
+      ON report_schedule_ledger_scoped(fired_at);
   `);
 }
 
@@ -167,7 +167,7 @@ export interface ResolveDueReportOptions<T> {
  * Per-user failures are logged and skipped so one bad profile can never
  * stall the whole dispatch tick.
  */
-export function resolveDueReportTargets<T extends { tenantId: number }>(
+export function resolveDueReportTargets<T extends { tenantId: number; userId: number }>(
   job: ScheduledReportJob,
   targets: T[],
   nowUtc: DateTime = DateTime.utc(),
@@ -177,7 +177,7 @@ export function resolveDueReportTargets<T extends { tenantId: number }>(
   const db = getDb();
   ensureLedgerTable(db);
   const claim = db.prepare(`
-    INSERT OR IGNORE INTO report_schedule_ledger (user_id, tenant_id, job_type, fired_for_local_date)
+    INSERT OR IGNORE INTO report_schedule_ledger_scoped (user_id, tenant_id, job_type, fired_for_local_date)
     VALUES (?, ?, ?, ?)
   `);
   const windowMs = catchupWindowMs(job);
@@ -185,7 +185,7 @@ export function resolveDueReportTargets<T extends { tenantId: number }>(
 
   for (const target of targets) {
     try {
-      const profile = loadSchedulePreferences(target.tenantId);
+      const profile = loadSchedulePreferences(target.userId, target.tenantId);
       const zone = resolveZone(profile);
       const schedule = preferredScheduleFor(job, profile);
       const { hour, minute } = parseTimeOfDay(schedule.time, schedule.time);
@@ -212,16 +212,16 @@ export function resolveDueReportTargets<T extends { tenantId: number }>(
           try {
             userEligible = options.eligible(target);
           } catch (err) {
-            logger.debug({ err, userId: target.tenantId, job }, 'Report schedule eligibility check failed (treating as eligible)');
+            logger.debug({ err, userId: target.userId, tenantId: target.tenantId, job }, 'Report schedule eligibility check failed (treating as eligible)');
           }
           if (!userEligible) break; // due but ineligible — leave unclaimed for later ticks
         }
-        const claimed = claim.run(target.tenantId, target.tenantId, job, candidateDay.toISODate());
+        const claimed = claim.run(target.userId, target.tenantId, job, candidateDay.toISODate());
         if (Number(claimed.changes) === 1) due.push(target);
         break; // at most one candidate per user per tick
       }
     } catch (err) {
-      logger.warn({ err, userId: target.tenantId, job }, 'Report schedule resolution failed for user (skipped this tick)');
+      logger.warn({ err, userId: target.userId, tenantId: target.tenantId, job }, 'Report schedule resolution failed for user (skipped this tick)');
     }
   }
   return due;
@@ -236,23 +236,24 @@ export function releaseFreshReportScheduleClaim(
   userId: number,
   job: ScheduledReportJob,
   maxAgeMinutes = 10,
+  tenantId: number = userId,
 ): boolean {
   try {
     const db = getDb();
     ensureLedgerTable(db);
     const result = db.prepare(`
-      DELETE FROM report_schedule_ledger
+      DELETE FROM report_schedule_ledger_scoped
        WHERE rowid = (
-         SELECT rowid FROM report_schedule_ledger
+         SELECT rowid FROM report_schedule_ledger_scoped
           WHERE user_id = ? AND tenant_id = ? AND job_type = ?
             AND fired_at >= datetime('now', ?)
           ORDER BY fired_at DESC
           LIMIT 1
        )
-    `).run(userId, userId, job, `-${Math.max(1, Math.floor(maxAgeMinutes))} minutes`);
+    `).run(userId, tenantId, job, `-${Math.max(1, Math.floor(maxAgeMinutes))} minutes`);
     return Number(result.changes) === 1;
   } catch (err) {
-    logger.warn({ err, userId, job }, 'Fresh report schedule claim release failed');
+    logger.warn({ err, userId, tenantId, job }, 'Fresh report schedule claim release failed');
     return false;
   }
 }

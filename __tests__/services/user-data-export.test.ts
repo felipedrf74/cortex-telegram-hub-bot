@@ -1218,6 +1218,7 @@ describe('deleteAllUserData', () => {
       'plan:week:u:1:t:17:2026-08-10',
       'script-v8:private-topic:scope:1:tenant:17',
       'coach-briefing:1',
+      'coach-briefing:17:1',
       'dashboard-readiness:1',
       'training:keep-original:1:2026-08-10',
       'chat-cmd:17:1:en-US:show-my-day',

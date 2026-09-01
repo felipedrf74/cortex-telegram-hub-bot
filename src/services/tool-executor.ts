@@ -1252,14 +1252,21 @@ export async function executeToolCall(
       case 'link_session_calendar': {
         const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
         if (!scope.ok) return { error: scope.error };
-        assertLegacySessionMutationAllowed(
-          { userId: scope.userId, tenantId: scope.tenantId },
-          scope.session.id,
+        logger.warn(
+          { userId: scope.userId, tenantId: scope.tenantId, sessionId: scope.session.id, toolName },
+          'Legacy Training calendar link tool invoked; returning governed calendar-sync handoff without writing',
         );
-        const linked = trainingPlans.linkSessionToCalendar(
-          input.session_id, input.calendar_event_id, input.calendar_source,
-        );
-        return { success: linked, session_id: input.session_id };
+        return {
+          success: false,
+          code: 'TRAINING_CALENDAR_LINK_COMPATIBILITY_ONLY',
+          error: 'Direct calendar linkage is retired. Use the governed Training calendar preview, confirmation, and sync flow.',
+          session_id: scope.session.id,
+          handoff: {
+            preview: `/api/v1/training/sessions/${scope.session.id}/reflow-preview`,
+            confirm: `/api/v1/training/sessions/${scope.session.id}/reflow-confirm`,
+            sync: '/api/v1/training/plan/sync-calendar',
+          },
+        };
       }
 
       // ── Finance tools ──

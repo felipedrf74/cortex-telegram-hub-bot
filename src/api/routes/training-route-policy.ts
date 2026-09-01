@@ -129,9 +129,18 @@ export const TRAINING_ROUTE_POLICY: readonly TrainingRoutePolicy[] = [
   // 404 COACH_V2_DISABLED unless config.coaching.periodizationV2Enabled.
   // Best entitlement coverage in the repo; no iOS caller (see F22 — that is a
   // product-adoption question, not a removal warrant).
+  { method: 'GET', path: '/week/travel', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: false },
   { method: 'POST', path: '/week/travel', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
+  { method: 'PATCH', path: '/week/travel/:id', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
+  { method: 'DELETE', path: '/week/travel/:id', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
   { method: 'POST', path: '/health-intake/red-flag', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
+  { method: 'POST', path: '/week/reflow/preview', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: false },
+  { method: 'POST', path: '/week/reflow/proposals', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
   { method: 'POST', path: '/week/:weekId/reflow', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
+  { method: 'GET', path: '/coach-policy', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: false },
+  { method: 'PATCH', path: '/coach-policy', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
+  { method: 'GET', path: '/coach/analysis', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: false },
+  { method: 'POST', path: '/calendar-cleanup/retry', auth: 'jwt', entitlement: SKILL, capability: 'none', mode: 'both', mutates: true },
   { method: 'GET', path: '/plans/:planId/coach-policy', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: false },
   { method: 'PATCH', path: '/plans/:planId/coach-policy', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: true },
   { method: 'GET', path: '/plans/:planId/coach-analysis', auth: 'jwt', entitlement: SKILL, capability: 'coach-periodization-v2', mode: 'both', mutates: false },
@@ -151,6 +160,7 @@ export const TRAINING_ROUTE_SOURCE_FILES: readonly string[] = [
   'training-plan-revision-routes.ts',
   'training-adaptation-routes.ts',
   'training-coach-v2.ts',
+  'training-calendar-cleanup-routes.ts',
   'training-exercise-media-routes.ts',
 ];
 
@@ -166,4 +176,12 @@ export const TRAINING_CONSTANT_REGISTERED_ROUTES: readonly string[] = [
 
 export function trainingRoutePolicyKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
+}
+
+/** Runtime lookup keeps policy consumers on the same normalized route key. */
+export function findTrainingRoutePolicy(method: string, path: string): TrainingRoutePolicy | null {
+  const key = trainingRoutePolicyKey(method, path);
+  return TRAINING_ROUTE_POLICY.find(
+    (entry) => trainingRoutePolicyKey(entry.method, entry.path) === key,
+  ) ?? null;
 }

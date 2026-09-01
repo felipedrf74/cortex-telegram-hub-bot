@@ -37,8 +37,16 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   computeTravelStressScore,
+  deleteTravelWindow,
+  deleteTravelWindowIdempotently,
   findTravelWindowsInRange,
+  getTravelWindowById,
+  listTravelWindows,
   recordTravelWindow,
+  TravelWindowIdempotencyConflictError,
+  TravelWindowVersionConflictError,
+  updateTravelWindow,
+  updateTravelWindowIdempotently,
 } from '../../src/services/travel-windows';
 import {
   clearWeekEquipmentOverride,
@@ -104,7 +112,7 @@ describe('recordTravelWindow', () => {
     })).toThrow(/startDate/);
   });
 
-  it('replays duplicate logical travel window for the same tenant', () => {
+  it('treats notes as part of travel identity and idempotency', () => {
     const first = recordTravelWindow({
       userId: 100,
       tenantId: 1000,
@@ -116,7 +124,7 @@ describe('recordTravelWindow', () => {
       availableSessionDurationMinutes: 30,
       notes: 'first note',
     });
-    const replay = recordTravelWindow({
+    const distinct = recordTravelWindow({
       userId: 100,
       tenantId: 1000,
       startDate: '2026-06-01',
@@ -125,14 +133,32 @@ describe('recordTravelWindow', () => {
       timeZoneShiftHours: 6,
       sleepDisruptionExpected: true,
       availableSessionDurationMinutes: 30,
-      notes: 'retry note should not create a new active window',
+      notes: 'second note creates an honestly distinct window',
     });
 
     const count = testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 100 AND tenant_id = 1000').get() as { n: number };
-    expect(replay.id).toBe(first.id);
+    expect(distinct.id).not.toBe(first.id);
     expect(first.alreadyExisted).toBe(false);
-    expect(replay.alreadyExisted).toBe(true);
-    expect(count.n).toBe(1);
+    expect(distinct.alreadyExisted).toBe(false);
+    expect(count.n).toBe(2);
+
+    const keyed = recordTravelWindow({
+      userId: 101,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      notes: 'original',
+      idempotencyKey: 'travel-notes-identity',
+    });
+    expect(() => recordTravelWindow({
+      userId: 101,
+      tenantId: 1000,
+      startDate: '2026-06-01',
+      endDate: '2026-06-08',
+      notes: 'changed',
+      idempotencyKey: 'travel-notes-identity',
+    })).toThrow(TravelWindowIdempotencyConflictError);
+    expect(keyed.alreadyExisted).toBe(false);
   });
 
   it('does not replay duplicate logical window across different tenants', () => {
@@ -204,6 +230,221 @@ describe('recordTravelWindow', () => {
     expect(overlap.id).not.toBe(first.id);
     expect(overlap.alreadyExisted).toBe(false);
     expect(testDb.prepare('SELECT COUNT(*) AS n FROM travel_windows WHERE user_id = 101 AND tenant_id = 1000').get()).toMatchObject({ n: 2 });
+  });
+});
+
+describe('travel-window lifecycle and bounded inputs', () => {
+  it('lists, reads, CAS-updates, and deletes a tenant-scoped window', () => {
+    const created = recordTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      startDate: '2026-09-01',
+      endDate: '2026-09-03',
+      idempotencyKey: 'travel-lifecycle-create',
+    });
+
+    expect(listTravelWindows(300, 3000, {
+      fromDate: '2026-09-02',
+      toDate: '2026-09-02',
+      limit: 10,
+    })).toHaveLength(1);
+    expect(getTravelWindowById(300, 3000, created.id)).toMatchObject({ version: 1 });
+    expect(getTravelWindowById(300, 4000, created.id)).toBeNull();
+    expect(updateTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      id: created.id,
+      expectedVersion: 1,
+      patch: {},
+    })).toMatchObject({
+      version: 2,
+      equipment_profile: null,
+      sleep_disruption_expected: 0,
+      walking_load_expected: 0,
+      heat_stress: 0,
+      available_session_duration_minutes: null,
+      notes: null,
+    });
+    expect(updateTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      id: 999_999,
+      expectedVersion: 1,
+      patch: {},
+    })).toBeNull();
+    expect(() => updateTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      id: created.id,
+      expectedVersion: 1,
+      patch: { notes: 'stale' },
+    })).toThrow(TravelWindowVersionConflictError);
+    expect(() => deleteTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      id: created.id,
+      expectedVersion: 1,
+    })).toThrow(TravelWindowVersionConflictError);
+    expect(deleteTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      id: created.id,
+      expectedVersion: 2,
+    })).toBe(true);
+    expect(deleteTravelWindow({
+      userId: 300,
+      tenantId: 3000,
+      id: created.id,
+      expectedVersion: 2,
+    })).toBe(false);
+  });
+
+  it('replays PATCH and DELETE receipts and rejects cross-operation key reuse', () => {
+    const created = recordTravelWindow({
+      userId: 301,
+      tenantId: 3001,
+      startDate: '2026-09-04',
+      endDate: '2026-09-05',
+      notes: 'original',
+      idempotencyKey: 'travel-receipt-create',
+    });
+    const patch = {
+      userId: 301,
+      tenantId: 3001,
+      id: created.id,
+      expectedVersion: 1,
+      patch: {
+        notes: 'updated',
+        sleepDisruptionExpected: true,
+        walkingLoadExpected: true,
+        heatStress: true,
+        availableSessionDurationMinutes: 45,
+      },
+      idempotencyKey: 'travel-receipt-patch',
+    };
+    const first = updateTravelWindowIdempotently(patch);
+    const replay = updateTravelWindowIdempotently(patch);
+    expect(first).toMatchObject({ replayed: false, window: { version: 2, notes: 'updated' } });
+    expect(replay).toMatchObject({ replayed: true, window: { version: 2, notes: 'updated' } });
+    expect(() => updateTravelWindowIdempotently({
+      ...patch,
+      patch: { ...patch.patch, notes: 'different request' },
+    })).toThrow(TravelWindowIdempotencyConflictError);
+    expect(() => deleteTravelWindowIdempotently({
+      userId: 301,
+      tenantId: 3001,
+      id: created.id,
+      expectedVersion: 2,
+      idempotencyKey: 'travel-receipt-patch',
+    })).toThrow(TravelWindowIdempotencyConflictError);
+
+    const deleted = deleteTravelWindowIdempotently({
+      userId: 301,
+      tenantId: 3001,
+      id: created.id,
+      expectedVersion: 2,
+      idempotencyKey: 'travel-receipt-delete',
+    });
+    const deletedReplay = deleteTravelWindowIdempotently({
+      userId: 301,
+      tenantId: 3001,
+      id: created.id,
+      expectedVersion: 2,
+      idempotencyKey: 'travel-receipt-delete',
+    });
+    expect(deleted).toEqual({ deleted: true, replayed: false });
+    expect(deletedReplay).toEqual({ deleted: true, replayed: true });
+
+    const missing = deleteTravelWindowIdempotently({
+      userId: 301,
+      tenantId: 3001,
+      id: 999_999,
+      expectedVersion: 1,
+      idempotencyKey: 'travel-receipt-delete-missing',
+    });
+    expect(missing).toEqual({ deleted: false, replayed: false });
+    expect(() => updateTravelWindowIdempotently({
+      userId: 301,
+      tenantId: 3001,
+      id: 999_998,
+      expectedVersion: 1,
+      patch: { notes: 'missing' },
+      idempotencyKey: 'travel-receipt-patch-missing',
+    })).toThrow(/TRAVEL_WINDOW_NOT_FOUND/);
+  });
+
+  it('fails CAS when a concurrent trigger suppresses the final update or delete', () => {
+    const updateTarget = recordTravelWindow({
+      userId: 304,
+      tenantId: 3004,
+      startDate: '2026-09-10',
+      endDate: '2026-09-11',
+    });
+    testDb.exec(`
+      CREATE TRIGGER travel_test_ignore_update
+      BEFORE UPDATE ON travel_windows
+      WHEN OLD.id = ${updateTarget.id}
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+    expect(() => updateTravelWindow({
+      userId: 304,
+      tenantId: 3004,
+      id: updateTarget.id,
+      expectedVersion: 1,
+      patch: { notes: 'lost race' },
+    })).toThrow(/changed before the update/);
+    testDb.exec('DROP TRIGGER travel_test_ignore_update;');
+
+    const deleteTarget = recordTravelWindow({
+      userId: 304,
+      tenantId: 3004,
+      startDate: '2026-09-12',
+      endDate: '2026-09-13',
+    });
+    testDb.exec(`
+      CREATE TRIGGER travel_test_ignore_delete
+      BEFORE DELETE ON travel_windows
+      WHEN OLD.id = ${deleteTarget.id}
+      BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+    expect(() => deleteTravelWindow({
+      userId: 304,
+      tenantId: 3004,
+      id: deleteTarget.id,
+      expectedVersion: 1,
+    })).toThrow(/changed before it could be deleted/);
+  });
+
+  it.each([
+    ['malformed date', { startDate: '09/01/2026', endDate: '2026-09-02' }],
+    ['impossible date', { startDate: '2026-02-30', endDate: '2026-03-02' }],
+    ['oversized window', { startDate: '2026-01-01', endDate: '2027-01-03' }],
+    ['blank equipment', { startDate: '2026-09-01', endDate: '2026-09-02', equipmentProfile: ' ' }],
+    ['long equipment', { startDate: '2026-09-01', endDate: '2026-09-02', equipmentProfile: 'x'.repeat(65) }],
+    ['long notes', { startDate: '2026-09-01', endDate: '2026-09-02', notes: 'x'.repeat(501) }],
+    ['timezone range', { startDate: '2026-09-01', endDate: '2026-09-02', timeZoneShiftHours: 15 }],
+    ['flight range', { startDate: '2026-09-01', endDate: '2026-09-02', flightDurationHours: -1 }],
+    ['duration integer', { startDate: '2026-09-01', endDate: '2026-09-02', availableSessionDurationMinutes: 30.5 }],
+    ['finite number', { startDate: '2026-09-01', endDate: '2026-09-02', timeZoneShiftHours: Number.POSITIVE_INFINITY }],
+  ])('rejects bounded input: %s', (_label, input) => {
+    expect(() => recordTravelWindow({ userId: 302, tenantId: 3002, ...input }))
+      .toThrow(/BAD_TRAVEL_INPUT/);
+  });
+
+  it('rejects empty and oversized mutation keys before changing a row', () => {
+    for (const idempotencyKey of [' ', 'x'.repeat(161)]) {
+      expect(() => deleteTravelWindowIdempotently({
+        userId: 303,
+        tenantId: 3003,
+        id: 1,
+        expectedVersion: 1,
+        idempotencyKey,
+      })).toThrow(TravelWindowIdempotencyConflictError);
+    }
   });
 });
 

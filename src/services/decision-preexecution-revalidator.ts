@@ -149,6 +149,57 @@ const preconditionAdapters = new Map<string, DecisionPreconditionAdapter>([
       'meal_plan_slot_state_changed',
     ),
   }],
+  ['training_plan_state', {
+    type: 'training_plan_state',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT COALESCE(plan_version, 1) AS planVersion,
+               COALESCE(adaptation_revision, 0) AS adaptationRevision
+          FROM fitness_training_plans
+         WHERE id = ? AND user_id = ? AND tenant_id = ? AND status = 'active'
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as {
+        planVersion: number;
+        adaptationRevision: number;
+      } | undefined;
+      const currentVersion = row
+        ? `plan:${row.planVersion}:adaptation:${row.adaptationRevision}`
+        : null;
+      return compareDomainRevision(precondition, currentVersion, 'training_plan_state_changed');
+    },
+  }],
+  ['training_adaptation_revision', {
+    type: 'training_adaptation_revision',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT COALESCE(adaptation_revision, 0) AS currentVersion
+          FROM fitness_training_plans
+         WHERE id = ? AND user_id = ? AND tenant_id = ? AND status = 'active'
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: number } | undefined;
+      return compareDomainRevision(
+        precondition,
+        row ? String(row.currentVersion) : null,
+        'training_adaptation_revision_changed',
+      );
+    },
+  }],
+  ['training_coach_policy_version', {
+    type: 'training_coach_policy_version',
+    validate: ({ scope, precondition }) => {
+      const row = getDb().prepare(`
+        SELECT COALESCE(coach_plan_policy_version, 1) AS currentVersion
+          FROM fitness_training_plans
+         WHERE id = ? AND user_id = ? AND tenant_id = ? AND status = 'active'
+         LIMIT 1
+      `).get(precondition.ref, scope.userId, scope.tenantId) as { currentVersion: number } | undefined;
+      return compareDomainRevision(
+        precondition,
+        row ? String(row.currentVersion) : null,
+        'training_coach_policy_version_changed',
+      );
+    },
+  }],
   ['training_revision_content', {
     type: 'training_revision_content',
     validate: ({ scope, precondition }) => {

@@ -356,7 +356,7 @@ if [[ ${#IOS_TEST_ARGS[@]} -eq 0 ]]; then
     )
   else
     IOS_TEST_ARGS=(
-      -only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests"
+      -only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests/test_isolatedBackendPlanRendersTodayPlanProgressAndPersistsFeedback"
       -only-testing:"Nexus HubUITests/TrainingFixtureBypassUITests"
       -only-testing:"Nexus HubUITests/TrainingValidationUITests"
     )

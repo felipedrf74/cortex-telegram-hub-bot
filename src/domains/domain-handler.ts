@@ -62,6 +62,7 @@ import { AITimeoutError } from '../utils/timeout';
 import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
 import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach-state';
+import { requireTenantIdParam } from '../services/tenant-scope';
 import { getChatToolRisk } from '../services/chat-tool-authorization';
 import { getCurrentRequestId } from '../utils/request-context';
 import { recordLegacyToolLoopCheckpoint } from '../services/chat-action-run-store';
@@ -149,7 +150,7 @@ function buildOnboardingPendingBlock(userId: number, message: string): string {
 // Phase 13 batch 71: `isTrainingPrescriptionIntent` moved to
 // `src/services/skills/training/intent-detectors.ts` and imported above.
 
-// ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
+// ─── Last Coach Briefing State (per-user + tenant, in-memory) ────────
 
 interface LastCoachState {
   recommendations: CoachRecommendation[];
@@ -157,36 +158,52 @@ interface LastCoachState {
   timestamp: number;
 }
 
-// LRU-bounded at 500 users. At 1 user that's ~1 entry; at multi-user scale
-// (up to 500 active) it's naturally bounded and the oldest user's coach
-// state gets evicted when a 501st arrives. Audit Month 2 #3.
+// LRU-bounded at 500 user+tenant scopes. At 1 identity tenant that's ~1 entry;
+// at multi-tenant scale the oldest scoped coach state is evicted when a 501st
+// scope arrives. Audit Month 2 #3.
 //
 // Size chosen: 500 > any plausible active-user count for a single-server
 // deployment. Each entry is ~a few KB (recommendations array + summary
 // string truncated to 500 chars), so 500 × ~2KB = ~1MB max footprint.
-const lastCoachStates = new LRUMap<number, LastCoachState>(500);
+const lastCoachStates = new LRUMap<string, LastCoachState>(500);
 const COACH_STATE_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
+function coachStateScopeKey(userId: number, tenantId: number): string {
+  const scopedUserId = requireTenantIdParam(userId, 'coachState.dataUserId');
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachState.tenantId');
+  return `${scopedTenantId}:${scopedUserId}`;
+}
+
 /** Store the latest coach briefing so the triathlon domain can reference it */
-export function setLastCoachState(userId: number, recs: CoachRecommendation[], summary: string): void {
+export function setLastCoachState(
+  userId: number,
+  recs: CoachRecommendation[],
+  summary: string,
+  tenantId: number = userId,
+): void {
   const timestamp = Date.now();
-  lastCoachStates.set(userId, { recommendations: recs, briefingSummary: summary, timestamp });
-  saveCoachState(userId, recs, summary, timestamp, COACH_STATE_TTL);
+  lastCoachStates.set(coachStateScopeKey(userId, tenantId), {
+    recommendations: recs,
+    briefingSummary: summary,
+    timestamp,
+  });
+  saveCoachState(userId, recs, summary, timestamp, COACH_STATE_TTL, tenantId);
 }
 
 /** Get the last coach state if it's still fresh (within TTL). */
-export function getLastCoachState(userId: number): LastCoachState | null {
-  const state = lastCoachStates.get(userId);
+export function getLastCoachState(userId: number, tenantId: number = userId): LastCoachState | null {
+  const key = coachStateScopeKey(userId, tenantId);
+  const state = lastCoachStates.get(key);
   if (state) {
     if (Date.now() - state.timestamp > COACH_STATE_TTL) {
-      lastCoachStates.delete(userId);
-      deleteCoachState(userId);
+      lastCoachStates.delete(key);
+      deleteCoachState(userId, tenantId);
       return null;
     }
     return state;
   }
 
-  const persisted = loadCoachState(userId);
+  const persisted = loadCoachState(userId, Date.now(), tenantId);
   if (!persisted) return null;
 
   const restored = {
@@ -194,7 +211,7 @@ export function getLastCoachState(userId: number): LastCoachState | null {
     briefingSummary: persisted.briefingSummary,
     timestamp: persisted.timestamp,
   };
-  lastCoachStates.set(userId, restored);
+  lastCoachStates.set(key, restored);
   return restored;
 }
 
@@ -351,9 +368,9 @@ function checkpointCompletedLegacyToolCalls(
  * plan" summary doesn't keep being surfaced as the current coach
  * read after the plan rows are gone.
  */
-export function clearLastCoachState(userId: number): void {
-  lastCoachStates.delete(userId);
-  deleteCoachState(userId);
+export function clearLastCoachState(userId: number, tenantId: number = userId): void {
+  lastCoachStates.delete(coachStateScopeKey(userId, tenantId));
+  deleteCoachState(userId, tenantId);
 }
 
 /**
@@ -393,7 +410,7 @@ export async function buildSimpleStateContext(
 
   // Inject last coach recommendations for triathlon domain
   if (includeScopedContext && domain === 'triathlon' && userId) {
-    const coachState = getLastCoachState(userId);
+    const coachState = getLastCoachState(userId, tenantId ?? userId);
     if (coachState && coachState.recommendations.length > 0) {
       parts.push(`\n[COACH RECOMMENDATIONS — ${new Date(coachState.timestamp).toISOString()}]`);
       parts.push('CRITICAL: These are recommendations for EXISTING calendar events based on Garmin data already analyzed (sleep, HRV, body battery, stress, training readiness).');

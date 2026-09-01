@@ -21,10 +21,23 @@ let mockGarminActivities: any[] = [];
 let mockAgendaDb: {
   hasTable: boolean;
   hasFailureCountColumn: boolean;
-  deadLetteredCount: number;
+  providerCounts: Record<'google' | 'outlook', {
+    deadLetteredCount: number;
+    retryingCount: number;
+    actionRequiredCount: number;
+  }>;
   throwOnAccess: boolean;
-  lastCountArgs: any[] | null;
-} = { hasTable: true, hasFailureCountColumn: true, deadLetteredCount: 0, throwOnAccess: false, lastCountArgs: null };
+  countArgs: any[][];
+} = {
+  hasTable: true,
+  hasFailureCountColumn: true,
+  providerCounts: {
+    google: { deadLetteredCount: 0, retryingCount: 0, actionRequiredCount: 0 },
+    outlook: { deadLetteredCount: 0, retryingCount: 0, actionRequiredCount: 0 },
+  },
+  throwOnAccess: false,
+  countArgs: [],
+};
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => {
@@ -35,14 +48,21 @@ vi.mock('../../src/services/database', () => ({
           if (sql.includes('sqlite_master')) {
             return mockAgendaDb.hasTable ? { name: 'secretary_agenda_items' } : undefined;
           }
-          if (sql.includes('COUNT(*)')) {
-            mockAgendaDb.lastCountArgs = args;
-            return { deadLetteredCount: mockAgendaDb.deadLetteredCount };
+          if (sql.includes('provider_sync_state')) {
+            mockAgendaDb.countArgs.push(args);
+            const provider = args.at(-1) as 'google' | 'outlook';
+            return mockAgendaDb.providerCounts[provider];
           }
           return undefined;
         },
         all: () => (mockAgendaDb.hasFailureCountColumn
-          ? [{ name: 'agenda_item_id' }, { name: 'provider_sync_failure_count' }]
+          ? [
+              { name: 'agenda_item_id' },
+              { name: 'provider_sync_failure_count' },
+              { name: 'provider_sync_failure_disposition' },
+              { name: 'provider_sync_retry_after_at' },
+              { name: 'provider_target' },
+            ]
           : [{ name: 'agenda_item_id' }]),
       }),
     };
@@ -136,9 +156,12 @@ describe('training-read-models', () => {
     mockAgendaDb = {
       hasTable: true,
       hasFailureCountColumn: true,
-      deadLetteredCount: 0,
+      providerCounts: {
+        google: { deadLetteredCount: 0, retryingCount: 0, actionRequiredCount: 0 },
+        outlook: { deadLetteredCount: 0, retryingCount: 0, actionRequiredCount: 0 },
+      },
       throwOnAccess: false,
-      lastCountArgs: null,
+      countArgs: [],
     };
   });
 
@@ -1135,21 +1158,44 @@ describe('training-read-models', () => {
       mockActivePlan = { ...basePlan };
       mockPlanWeeks = [{ id: 200, week_number: 1, focus: 'base' }];
       mockWeekSessions = [];
-      mockAgendaDb.deadLetteredCount = 2;
+      mockAgendaDb.providerCounts.google = {
+        deadLetteredCount: 2,
+        retryingCount: 0,
+        actionRequiredCount: 2,
+      };
 
       const result = await getAllPlanWeeks(42, 7);
 
-      expect(result.calendarCleanup).toEqual({ deadLetteredCount: 2 });
-      // user id, TEXT tenant id, dead-letter threshold — in bind order.
-      expect(mockAgendaDb.lastCountArgs).toEqual([42, '7', 5]);
+      expect(result.calendarCleanup).toEqual({
+        schemaVersion: 'training_calendar_cleanup.v2',
+        deadLetteredCount: 2,
+        retryingCount: 0,
+        providers: [
+          { provider: 'google', deadLetteredCount: 2, retryingCount: 0, actionRequiredCount: 2 },
+          { provider: 'outlook', deadLetteredCount: 0, retryingCount: 0, actionRequiredCount: 0 },
+        ],
+      });
+      expect(mockAgendaDb.countArgs).toEqual([
+        [5, 5, 5, 42, '7', 'google'],
+        [5, 5, 5, 42, '7', 'outlook'],
+      ]);
+
+      mockAgendaDb.providerCounts.google = {
+        deadLetteredCount: 0,
+        retryingCount: 2,
+        actionRequiredCount: 0,
+      };
+      const retryingOnly = await getAllPlanWeeks(42, 7);
+      expect(retryingOnly.calendarCleanup).toMatchObject({
+        deadLetteredCount: 0,
+        retryingCount: 2,
+      });
     });
 
     it('returns null calendarCleanup when nothing is dead-lettered', async () => {
       mockActivePlan = { ...basePlan };
       mockPlanWeeks = [{ id: 200, week_number: 1, focus: 'base' }];
       mockWeekSessions = [];
-      mockAgendaDb.deadLetteredCount = 0;
-
       const result = await getAllPlanWeeks(42, 42);
 
       expect(result.calendarCleanup).toBeNull();
@@ -1157,12 +1203,20 @@ describe('training-read-models', () => {
 
     it('still reports ghost events after the plan is gone (no-plan path)', async () => {
       mockActivePlan = null;
-      mockAgendaDb.deadLetteredCount = 1;
+      mockAgendaDb.providerCounts.outlook = {
+        deadLetteredCount: 1,
+        retryingCount: 0,
+        actionRequiredCount: 1,
+      };
 
       const result = await getAllPlanWeeks(42, 42);
 
       expect(result.plan).toBeNull();
-      expect(result.calendarCleanup).toEqual({ deadLetteredCount: 1 });
+      expect(result.calendarCleanup).toMatchObject({
+        schemaVersion: 'training_calendar_cleanup.v2',
+        deadLetteredCount: 1,
+        retryingCount: 0,
+      });
     });
 
     it.each([
@@ -1173,7 +1227,7 @@ describe('training-read-models', () => {
       mockActivePlan = { ...basePlan };
       mockPlanWeeks = [{ id: 200, week_number: 1, focus: 'base' }];
       mockWeekSessions = [];
-      mockAgendaDb.deadLetteredCount = 3;
+      mockAgendaDb.providerCounts.google.deadLetteredCount = 3;
       arrange();
 
       const result = await getAllPlanWeeks(42, 42);

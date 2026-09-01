@@ -16,11 +16,13 @@
  * Plan reference: Wave 1 workstream C8.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
   buildSecretaryWeeklySummary,
   buildWeeklyDecisionNotes,
+  buildWeekPlan,
   sampleHybridAthlete,
   type SecretaryAgendaSummaryInput,
   type WeeklyPlan,
@@ -143,5 +145,23 @@ describe('C8: buildWeeklyDecisionNotes with secretarySummary', () => {
     expect(secretaryLines[0]).toContain('compressed 1 session');
     // Non-auto note survives.
     expect(rebuilt).toContain('Random non-auto note that survives.');
+  });
+});
+
+describe('C8: planner dependency boundary', () => {
+  it('accepts an already-scoped Secretary summary without reading a database', () => {
+    const plan = buildWeekPlan(sampleHybridAthlete, '2026-05-04', {
+      secretaryWeeklySummary: 'reflowed 1',
+    });
+
+    expect(plan.notes).toContain('Secretary: reflowed 1.');
+  });
+
+  it('keeps the coach kernel free of Secretary storage imports and tenant fallbacks', () => {
+    const source = readFileSync('src/services/coach-kernel/planner-engine.ts', 'utf8');
+
+    expect(source).not.toContain('secretary-scheduling-arbitrator');
+    expect(source).not.toContain('listSecretaryAgendaItems');
+    expect(source).not.toMatch(/tenantId:\s*athleteId/);
   });
 });

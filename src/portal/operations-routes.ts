@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { Express, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { logger } from '../utils/logger';
 import { getErrorTrends } from '../services/error-monitor';
 import { getErrorDistribution } from '../services/error-categorizer';
@@ -9,6 +11,11 @@ import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-f
 import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
 import { getTrainingGenerationObservabilitySnapshot } from '../services/training-generation-observability';
+import {
+  getTrainingCoachV2SoakSnapshot,
+  recordTrainingCoachV2RuleReview,
+  TrainingCoachV2SoakMetricError,
+} from '../services/training-coach-v2-soak-metrics';
 import { getContentWorkspaceObservabilitySnapshot } from '../services/content-workspace-observability';
 import {
   acknowledgeOperatorAlert,
@@ -53,6 +60,28 @@ function portalActor(req: Request): string | undefined {
 }
 
 export function registerPortalOperationsRoutes(app: Express, deps: PortalOperationsRouteDeps = {}): void {
+  // The portal composition root already rate-limits every /api request. Keep
+  // these sensitive soak controls self-contained as well so a future direct
+  // mount cannot put authorization or metric storage ahead of abuse control.
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  const coachV2SoakRateLimitMiddleware = rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 180,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', retryAfter);
+      res.status(options.statusCode).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many portal requests from this IP. Slow down.',
+          retryAfter,
+        },
+      });
+    },
+  });
   app.get('/api/errors', (_req: Request, res: Response) => {
     try {
       const trends = getErrorTrends();
@@ -156,6 +185,65 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
           progression_state_counts: {},
         },
       });
+    }
+  });
+
+  app.get('/api/training-coach-v2-soak', coachV2SoakRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
+    try {
+      res.json({
+        ok: true,
+        coachV2Soak: getTrainingCoachV2SoakSnapshot({
+          from: typeof req.query?.from === 'string' ? req.query.from : undefined,
+          to: typeof req.query?.to === 'string' ? req.query.to : undefined,
+        }),
+      });
+    } catch (err) {
+      if (err instanceof TrainingCoachV2SoakMetricError) {
+        res.status(400).json({ ok: false, code: err.code, message: err.message });
+        return;
+      }
+      sendPortalInternalError(res, err, 'Coach V2 soak metrics unavailable', 'Portal: Coach V2 soak metrics failed');
+    }
+  });
+
+  app.post('/api/training-coach-v2-soak/reviews', coachV2SoakRateLimitMiddleware, requirePortalAdminToken, (req: Request, res: Response) => {
+    try {
+      const tenantId = Number(req.body?.tenantId);
+      const userId = Number(req.body?.userId);
+      const proposalId = typeof req.body?.proposalId === 'string' ? req.body.proposalId.trim() : '';
+      const ruleId = typeof req.body?.ruleId === 'string' ? req.body.ruleId : '';
+      const outcome = req.body?.outcome;
+      const idempotencyKey = typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : '';
+      if (!Number.isSafeInteger(tenantId) || tenantId <= 0
+          || !Number.isSafeInteger(userId) || userId <= 0
+          || !proposalId || proposalId.length > 160
+          || (outcome !== 'correct' && outcome !== 'incorrect')) {
+        res.status(400).json({ ok: false, code: 'BAD_REVIEW', message: 'A scoped proposal, rule, outcome, and idempotency key are required.' });
+        return;
+      }
+      const result = recordTrainingCoachV2RuleReview({
+        tenantId,
+        userId,
+        proposalId,
+        ruleId,
+        outcome,
+        idempotencyKey,
+      });
+      logPortalAdminMutation(req, userId, 'training_coach_v2.rule_review', {
+        tenantId,
+        proposalId,
+        ruleId: ruleId.trim().toLowerCase(),
+        outcome,
+        replayed: result.replayed,
+      });
+      res.status(result.replayed ? 200 : 201).json({ ok: true, replayed: result.replayed });
+    } catch (err) {
+      if (err instanceof TrainingCoachV2SoakMetricError) {
+        const status = err.code === 'RULE_FIRING_NOT_FOUND' ? 404 : 409;
+        res.status(status).json({ ok: false, code: err.code, message: err.message });
+        return;
+      }
+      sendPortalInternalError(res, err, 'Coach V2 rule review failed', 'Portal: Coach V2 rule review failed');
     }
   });
 

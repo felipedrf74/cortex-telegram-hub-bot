@@ -49,6 +49,7 @@ export function isReportType(value: unknown): value is ReportType {
 export interface ReportDocument {
   id: number;
   userId: number;
+  tenantId: number | null;
   type: ReportType;
   title: string;
   summary: string | null;
@@ -86,19 +87,22 @@ function reportInvalidReportScope(
  */
 export function storeReport(opts: {
   userId: number;
+  tenantId?: number;
   type: ReportType;
   title: string;
   summary?: string;
   documentJson: Record<string, any>;
   sourceJob?: string;
 }): number {
-  if (!isValidTenantUserId(opts.userId)) {
+  const tenantId = opts.tenantId ?? opts.userId;
+  if (!isValidTenantUserId(opts.userId) || !isValidTenantUserId(tenantId)) {
     recordTenantScopeAnomaly({
       layer: 'delivery',
       operation: 'store_report',
       reason: opts.userId == null ? 'missing_user_scope' : 'invalid_user_scope',
       userId: opts.userId ?? null,
       details: {
+        tenantId,
         reportType: opts.type,
         sourceJob: opts.sourceJob ?? null,
       },
@@ -108,9 +112,10 @@ export function storeReport(opts: {
 
   const db = getDb();
   const result = db.prepare(`
-    INSERT INTO report_documents (user_id, type, title, summary, document_json, source_job)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO report_documents_scoped (tenant_id, user_id, type, title, summary, document_json, source_job)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
+    tenantId,
     opts.userId,
     opts.type,
     opts.title,
@@ -119,7 +124,7 @@ export function storeReport(opts: {
     opts.sourceJob ?? null,
   );
   const id = Number(result.lastInsertRowid);
-  logger.info({ reportId: id, type: opts.type, userId: opts.userId }, 'Report document stored');
+  logger.info({ reportId: id, type: opts.type, userId: opts.userId, tenantId }, 'Report document stored');
   return id;
 }
 
@@ -129,6 +134,7 @@ export function storeReport(opts: {
  */
 export async function storeAndPushReport(opts: {
   userId: number;
+  tenantId?: number;
   type: ReportType;
   title: string;
   summary?: string;
@@ -136,6 +142,7 @@ export async function storeAndPushReport(opts: {
   sourceJob?: string;
   pushCategory?: string;
 }): Promise<number> {
+  const tenantId = opts.tenantId ?? opts.userId;
   const id = storeReport(opts);
   if (id <= 0) {
     return -1;
@@ -167,7 +174,7 @@ export async function storeAndPushReport(opts: {
 
     await createNotificationIntent({
       userId: opts.userId,
-      tenantId: opts.userId,
+      tenantId,
       sourceSkill: mapReportTypeToSourceSkill(opts.type),
       type: mapReportTypeToIntentType(opts.type),
       priority: mapReportTypeToPriority(opts.type),
@@ -198,19 +205,21 @@ export async function storeAndPushReport(opts: {
  */
 export function getRecentReports(
   userId: number,
-  opts: { type?: ReportType; limit?: number } = {},
+  opts: { type?: ReportType; limit?: number; tenantId?: number } = {},
 ): ReportDocument[] {
-  if (!isValidTenantUserId(userId)) {
+  const tenantId = opts.tenantId ?? userId;
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidReportScope('get_recent_reports', userId, {
       reportType: opts.type ?? null,
       limit: opts.limit ?? null,
+      tenantId,
     });
     return [];
   }
 
   const db = getDb();
-  const clauses = ['user_id = ?'];
-  const params: any[] = [userId];
+  const clauses = ['tenant_id = ?', 'user_id = ?'];
+  const params: any[] = [tenantId, userId];
 
   if (opts.type) {
     clauses.push('type = ?');
@@ -220,7 +229,7 @@ export function getRecentReports(
   params.push(opts.limit ?? 20);
 
   const rows = db.prepare(`
-    SELECT * FROM report_documents
+    SELECT * FROM report_documents_scoped
     WHERE ${clauses.join(' AND ')}
     ORDER BY created_at DESC
     LIMIT ?
@@ -232,19 +241,21 @@ export function getRecentReports(
 /**
  * Get a single report by ID (with user ownership check).
  */
-export function getReportById(reportId: number, userId?: number): ReportDocument | null {
-  if (userId !== undefined && !isValidTenantUserId(userId)) {
+export function getReportById(reportId: number, userId?: number, tenantId?: number): ReportDocument | null {
+  const scopedTenantId = userId === undefined ? undefined : (tenantId ?? userId);
+  if (userId !== undefined && (!isValidTenantUserId(userId) || !isValidTenantUserId(scopedTenantId))) {
     reportInvalidReportScope('get_report_by_id', userId, {
       reportId,
+      tenantId: scopedTenantId,
     });
     return null;
   }
 
   const db = getDb();
   const query = userId !== undefined
-    ? 'SELECT * FROM report_documents WHERE id = ? AND user_id = ?'
-    : 'SELECT * FROM report_documents WHERE id = ?';
-  const params = userId !== undefined ? [reportId, userId] : [reportId];
+    ? 'SELECT * FROM report_documents_scoped WHERE id = ? AND tenant_id = ? AND user_id = ?'
+    : 'SELECT * FROM report_documents_scoped WHERE id = ?';
+  const params = userId !== undefined ? [reportId, scopedTenantId, userId] : [reportId];
 
   const row = db.prepare(query).get(...params) as any;
   return row ? mapReport(row) : null;
@@ -254,10 +265,15 @@ export function getReportById(reportId: number, userId?: number): ReportDocument
  * Get the latest report of a given type for a user.
  * Used by the dashboard to show "today's briefing" without listing all.
  */
-export function getLatestByType(userId: number, type: ReportType): ReportDocument | null {
-  if (!isValidTenantUserId(userId)) {
+export function getLatestByType(
+  userId: number,
+  type: ReportType,
+  tenantId: number = userId,
+): ReportDocument | null {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidReportScope('get_latest_report_by_type', userId, {
       reportType: type,
+      tenantId,
     });
     return null;
   }
@@ -268,27 +284,27 @@ export function getLatestByType(userId: number, type: ReportType): ReportDocumen
   // would otherwise return in undefined order. Higher id = more recent
   // insert, which matches the caller's expectation of "latest".
   const row = db.prepare(`
-    SELECT * FROM report_documents
-    WHERE user_id = ? AND type = ?
+    SELECT * FROM report_documents_scoped
+    WHERE tenant_id = ? AND user_id = ? AND type = ?
     ORDER BY created_at DESC, id DESC
     LIMIT 1
-  `).get(userId, type) as any;
+  `).get(tenantId, userId, type) as any;
   return row ? mapReport(row) : null;
 }
 
 /**
  * Get unread report count for badge display.
  */
-export function getUnreadReportCount(userId: number): number {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidReportScope('get_unread_report_count', userId);
+export function getUnreadReportCount(userId: number, tenantId: number = userId): number {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidReportScope('get_unread_report_count', userId, { tenantId });
     return 0;
   }
 
   const db = getDb();
   const row = db.prepare(
-    "SELECT COUNT(*) as cnt FROM report_documents WHERE user_id = ? AND status = 'unread'",
-  ).get(userId) as any;
+    "SELECT COUNT(*) as cnt FROM report_documents_scoped WHERE tenant_id = ? AND user_id = ? AND status = 'unread'",
+  ).get(tenantId, userId) as any;
   return row?.cnt ?? 0;
 }
 
@@ -300,25 +316,28 @@ export function getUnreadReportCount(userId: number): number {
 export function getUnreadReportCountExcludingIds(
   userId: number,
   excludedIds: number[],
+  tenantId: number = userId,
 ): number {
-  if (!isValidTenantUserId(userId)) {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidReportScope('get_unread_report_count_excluding_ids', userId, {
       excludedCount: excludedIds.length,
+      tenantId,
     });
     return 0;
   }
 
   const ids = normalizePositiveIds(excludedIds);
-  if (ids.length === 0) return getUnreadReportCount(userId);
+  if (ids.length === 0) return getUnreadReportCount(userId, tenantId);
 
   const placeholders = ids.map(() => '?').join(',');
   const row = getDb().prepare(`
     SELECT COUNT(*) as cnt
-    FROM report_documents
-    WHERE user_id = ?
+    FROM report_documents_scoped
+    WHERE tenant_id = ?
+      AND user_id = ?
       AND status = 'unread'
       AND id NOT IN (${placeholders})
-  `).get(userId, ...ids) as any;
+  `).get(tenantId, userId, ...ids) as any;
   return row?.cnt ?? 0;
 }
 
@@ -329,18 +348,19 @@ export function getUnreadReportCountExcludingIds(
 /**
  * Mark a report as read.
  */
-export function markReportRead(reportId: number, userId: number): boolean {
-  if (!isValidTenantUserId(userId)) {
+export function markReportRead(reportId: number, userId: number, tenantId: number = userId): boolean {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
     reportInvalidReportScope('mark_report_read', userId, {
       reportId,
+      tenantId,
     });
     return false;
   }
 
   const db = getDb();
   const result = db.prepare(
-    "UPDATE report_documents SET status = 'read', read_at = datetime('now') WHERE id = ? AND user_id = ?",
-  ).run(reportId, userId);
+    "UPDATE report_documents_scoped SET status = 'read', read_at = datetime('now') WHERE id = ? AND tenant_id = ? AND user_id = ?",
+  ).run(reportId, tenantId, userId);
   return result.changes > 0;
 }
 
@@ -363,9 +383,13 @@ export function markReportRead(reportId: number, userId: number): boolean {
  * negative `userId` is rejected, not silently turned into a
  * cross-tenant wipe.
  */
-export function deleteReportsByType(userId: number, types: ReportType[]): number {
-  if (!isValidTenantUserId(userId)) {
-    reportInvalidReportScope('delete_reports_by_type', userId, { types });
+export function deleteReportsByType(
+  userId: number,
+  types: ReportType[],
+  tenantId: number = userId,
+): number {
+  if (!isValidTenantUserId(userId) || !isValidTenantUserId(tenantId)) {
+    reportInvalidReportScope('delete_reports_by_type', userId, { types, tenantId });
     return 0;
   }
   if (types.length === 0) return 0;
@@ -373,12 +397,12 @@ export function deleteReportsByType(userId: number, types: ReportType[]): number
   const db = getDb();
   const placeholders = types.map(() => '?').join(',');
   const result = db.prepare(
-    `DELETE FROM report_documents WHERE user_id = ? AND type IN (${placeholders})`,
-  ).run(userId, ...types);
+    `DELETE FROM report_documents_scoped WHERE tenant_id = ? AND user_id = ? AND type IN (${placeholders})`,
+  ).run(tenantId, userId, ...types);
 
   if (result.changes > 0) {
     logger.info(
-      { userId, types, removed: result.changes },
+      { userId, tenantId, types, removed: result.changes },
       'Deleted report documents by type',
     );
   }
@@ -391,7 +415,7 @@ export function deleteReportsByType(userId: number, types: ReportType[]): number
 export function getAllReports(limit = 50): ReportDocument[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT * FROM report_documents
+    SELECT * FROM report_documents_scoped
     ORDER BY created_at DESC
     LIMIT ?
   `).all(limit) as any[];
@@ -506,6 +530,7 @@ function mapReport(row: any): ReportDocument {
   return {
     id: row.id,
     userId: row.user_id,
+    tenantId: typeof row.tenant_id === 'number' ? row.tenant_id : null,
     type: row.type,
     title: row.title,
     summary: row.summary,

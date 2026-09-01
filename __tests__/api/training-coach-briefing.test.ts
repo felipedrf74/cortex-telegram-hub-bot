@@ -30,6 +30,23 @@ describe('training coach briefing helpers', () => {
     clearTenantScopeAnomaliesForTests();
   });
 
+  it('uses a distinct cache entry for the same user in each tenant', async () => {
+    const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
+    mockGetCached.mockImplementation((key: string) => ({
+      briefing: key === 'coach-briefing:101:12' ? 'Tenant 101 briefing' : 'Tenant 202 briefing',
+      recommendations: [],
+    }));
+
+    expect(getCoachBriefingSnapshot(12, 101)?.briefing).toBe('Tenant 101 briefing');
+    expect(getCoachBriefingSnapshot(12, 202)?.briefing).toBe('Tenant 202 briefing');
+    expect(mockGetCached.mock.calls.map(([key]) => key)).toEqual([
+      'coach-briefing:101:12',
+      'coach-briefing:202:12',
+    ]);
+    expect(mockSetLastCoachState).toHaveBeenNthCalledWith(1, 12, [], 'Tenant 101 briefing', 101);
+    expect(mockSetLastCoachState).toHaveBeenNthCalledWith(2, 12, [], 'Tenant 202 briefing', 202);
+  });
+
   it('normalizes cached payloads and syncs the persisted coach state', async () => {
     const { getCoachBriefingSnapshot } = await import('../../src/api/routes/training-coach-briefing');
     mockGetCached.mockReturnValue({
@@ -45,7 +62,7 @@ describe('training coach briefing helpers', () => {
       ],
     });
 
-    const snapshot = getCoachBriefingSnapshot(12);
+    const snapshot = getCoachBriefingSnapshot(12, 12);
 
     expect(snapshot).toMatchObject({
       briefing: 'Cached coach note',
@@ -69,6 +86,7 @@ describe('training coach briefing helpers', () => {
         }),
       ],
       'Cached coach note',
+      12,
     );
     expect(mockSetCache).not.toHaveBeenCalled();
   });
@@ -91,10 +109,10 @@ describe('training coach briefing helpers', () => {
       recommendations: [],
     });
 
-    const snapshot = getCoachBriefingSnapshot(12);
+    const snapshot = getCoachBriefingSnapshot(12, 12);
 
     expect(snapshot?.briefing).toBe('A light walk protects tomorrow.');
-    expect(mockSetLastCoachState).toHaveBeenCalledWith(12, [], 'A light walk protects tomorrow.');
+    expect(mockSetLastCoachState).toHaveBeenCalledWith(12, [], 'A light walk protects tomorrow.', 12);
   });
 
   it('drops provider error strings and bracketed debug tags from restored report summaries', async () => {
@@ -114,12 +132,12 @@ describe('training coach briefing helpers', () => {
       },
     });
 
-    const snapshot = getCoachBriefingSnapshot(12);
+    const snapshot = getCoachBriefingSnapshot(12, 12);
 
     expect(snapshot?.briefing).toBe('Keep today easy and protect the next key session.');
     expect(snapshot?.briefing).not.toMatch(/\[WARN\]|Google API|Microsoft Graph|HTTP code/i);
     expect(mockSetCache).toHaveBeenCalledWith(
-      'coach-briefing:12',
+      'coach-briefing:12:12',
       expect.objectContaining({ briefing: 'Keep today easy and protect the next key session.' }),
       21600,
     );
@@ -152,7 +170,7 @@ describe('training coach briefing helpers', () => {
       },
     });
 
-    const snapshot = getCoachBriefingSnapshot(18);
+    const snapshot = getCoachBriefingSnapshot(18, 18);
 
     expect(snapshot).toMatchObject({
       briefing: 'Coach update ready.',
@@ -167,7 +185,7 @@ describe('training coach briefing helpers', () => {
       },
     });
     expect(mockSetCache).toHaveBeenCalledWith(
-      'coach-briefing:18',
+      'coach-briefing:18:18',
       expect.objectContaining({ briefing: 'Coach update ready.' }),
       21600,
     );
@@ -176,7 +194,7 @@ describe('training coach briefing helpers', () => {
   it('fails closed when the user scope is invalid before reading report state', async () => {
     const { restoreCoachBriefingFromLatestReport } = await import('../../src/api/routes/training-coach-briefing');
 
-    expect(restoreCoachBriefingFromLatestReport(0)).toBeNull();
+    expect(restoreCoachBriefingFromLatestReport(0, 12)).toBeNull();
     expect(mockGetLatestByType).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies()).toEqual(
       expect.arrayContaining([
@@ -185,7 +203,7 @@ describe('training coach briefing helpers', () => {
           operation: 'restore_coach_briefing_from_report',
           reason: 'invalid_user_scope',
           userId: 0,
-          details: { reportType: 'coach_briefing' },
+          details: { reportType: 'coach_briefing', tenantId: 12 },
         }),
       ]),
     );
@@ -202,6 +220,14 @@ describe('training coach briefing helpers', () => {
       },
     });
 
-    expect(restoreCoachBriefingFromLatestReport(12, 60)).toBeNull();
+    expect(restoreCoachBriefingFromLatestReport(12, 12, 60)).toBeNull();
+  });
+
+  it('queries durable reports with both the data user and active tenant', async () => {
+    const { restoreCoachBriefingFromLatestReport } = await import('../../src/api/routes/training-coach-briefing');
+    mockGetLatestByType.mockReturnValue(null);
+
+    expect(restoreCoachBriefingFromLatestReport(12, 202)).toBeNull();
+    expect(mockGetLatestByType).toHaveBeenCalledWith(12, 'coach_briefing', 202);
   });
 });

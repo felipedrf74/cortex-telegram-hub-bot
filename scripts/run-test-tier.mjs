@@ -27,10 +27,21 @@ const reporter = valueOf('--reporter', 'dot');
 const jsonOutput = valueOf('--json-output');
 const shard = valueOf('--shard');
 const coverageBase = valueOf('--coverage-base');
+const coverageShardsRaw = valueOf('--coverage-shards', '1');
 const coverage = args.includes('--coverage');
 const listOnly = args.includes('--list');
 const noCache = args.includes('--no-cache');
 const requestedFiles = args.filter((value) => value.startsWith('__tests__/') && value.endsWith('.test.ts'));
+if (!/^[1-4]$/.test(coverageShardsRaw)) {
+  throw new Error('--coverage-shards must be an integer from 1 through 4');
+}
+const coverageShards = Number(coverageShardsRaw);
+if (coverageShards > 1 && !coverage) {
+  throw new Error('--coverage-shards requires --coverage');
+}
+if (coverageShards > 1 && shard) {
+  throw new Error('--coverage-shards cannot be combined with --shard');
+}
 
 function preparePrivateJsonOutput(requestedPath) {
   if (typeof requestedPath !== 'string'
@@ -117,24 +128,61 @@ function reporterArgs() {
   return resolved;
 }
 
-function coverageArgs() {
+function coverageArgs({
+  reportsDirectory = '.local/coverage/selected',
+  reporters = ['json', 'json-summary', 'lcov'],
+  includeTestTimeout = true,
+} = {}) {
   if (!coverage) return [];
   if (coverageBase && !/^[0-9a-f]{40}$/.test(coverageBase)) {
     throw new Error('--coverage-base must be an exact 40-character commit SHA');
   }
   return [
     '--coverage',
-    '--testTimeout=60000',
+    ...(includeTestTimeout ? ['--testTimeout=60000'] : []),
     ...(coverageBase ? [`--coverage.changed=${coverageBase}`] : []),
-    '--coverage.reporter=json',
-    '--coverage.reporter=json-summary',
-    '--coverage.reporter=lcov',
-    '--coverage.reportsDirectory=.local/coverage/selected',
+    ...reporters.map((coverageReporter) => `--coverage.reporter=${coverageReporter}`),
+    `--coverage.reportsDirectory=${reportsDirectory}`,
+    '--coverage.processingConcurrency=1',
     '--coverage.thresholds.lines=0',
     '--coverage.thresholds.branches=0',
     '--coverage.thresholds.functions=0',
     '--coverage.thresholds.statements=0',
   ];
+}
+
+function preparePrivateCoverageShardDirectory() {
+  const localRoot = path.join(root, '.local');
+  try {
+    const stat = fs.lstatSync(localRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('Coverage shard root must be a real directory');
+    }
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      throw new Error('Coverage shard root must be owned by the current user');
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    fs.mkdirSync(localRoot, { mode: 0o700 });
+  }
+  fs.chmodSync(localRoot, 0o700);
+  const directory = fs.mkdtempSync(path.join(localRoot, 'vitest-coverage-shards-'));
+  fs.chmodSync(directory, 0o700);
+  return directory;
+}
+
+function privateNonemptyShardBlob(blobPath) {
+  try {
+    const stat = fs.lstatSync(blobPath);
+    return stat.isFile()
+      && !stat.isSymbolicLink()
+      && stat.nlink === 1
+      && stat.size > 0
+      && (typeof process.getuid !== 'function' || stat.uid === process.getuid());
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 function childStatus(code, signal) {
@@ -159,6 +207,79 @@ async function runVitest(files, extra = [], envOverrides = {}, { maxSeconds = nu
     throw new Error(`Invalid elapsed-time target for tier ${tier}`);
   }
   const startedAt = process.hrtime.bigint();
+  if (coverageShards > 1) {
+    const shardDirectory = preparePrivateCoverageShardDirectory();
+    const blobDirectory = path.join(shardDirectory, 'blobs');
+    fs.mkdirSync(blobDirectory, { mode: 0o700 });
+    let status = 1;
+    try {
+      const template = prepareMigratedDatabaseTemplate(root);
+      const shardStatuses = [];
+      const blobPaths = [];
+      try {
+        for (let index = 1; index <= coverageShards; index += 1) {
+          const blobPath = path.join(blobDirectory, `shard-${index}.blob`);
+          blobPaths.push(blobPath);
+          process.stdout.write(`Coverage shard ${index}/${coverageShards}\n`);
+          const child = template.spawnChild(process.execPath, [
+            vitest,
+            'run',
+            '--reporter=blob',
+            `--outputFile=${blobPath}`,
+            ...(noCache ? ['--no-cache'] : []),
+            ...coverageArgs({
+              reportsDirectory: path.join(shardDirectory, `coverage-${index}`),
+              reporters: ['json-summary'],
+            }),
+            `--shard=${index}/${coverageShards}`,
+            ...extra,
+            ...files,
+          ], {
+            cwd: root,
+            stdio: 'inherit',
+            env: {
+              ...process.env,
+              NODE_ENV: 'test',
+              ...envOverrides,
+              ...template.env,
+            },
+          });
+          shardStatuses.push(await waitForChild(child));
+        }
+      } finally {
+        template.cleanup();
+      }
+
+      const missingBlob = blobPaths.find((blobPath) => !privateNonemptyShardBlob(blobPath));
+      if (missingBlob) {
+        process.stderr.write(`Coverage shard did not emit a private blob: ${missingBlob}\n`);
+        status = 1;
+      } else {
+        const merge = spawnSync(process.execPath, [
+          vitest,
+          `--merge-reports=${blobDirectory}`,
+          ...reporterArgs(),
+          ...coverageArgs({ includeTestTimeout: false }),
+        ], {
+          cwd: root,
+          stdio: 'inherit',
+          env: {
+            ...process.env,
+            NODE_ENV: 'test',
+            ...envOverrides,
+          },
+        });
+        const mergeStatus = merge.status ?? childStatus(null, merge.signal);
+        status = shardStatuses.every((shardStatus) => shardStatus === 0)
+          && mergeStatus === 0
+          ? 0
+          : 1;
+      }
+    } finally {
+      fs.rmSync(shardDirectory, { recursive: true, force: true });
+    }
+    process.exit(status);
+  }
   const template = prepareMigratedDatabaseTemplate(root);
   let status = 1;
   try {

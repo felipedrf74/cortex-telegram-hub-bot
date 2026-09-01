@@ -857,7 +857,7 @@ describe('Training API routes', () => {
   it('returns a structured sanitized coach report without raw debug fragments', async () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 12, status: 'active' });
     mockGetCached.mockImplementation((key: string) => {
-      if (key === 'coach-briefing:12') {
+      if (key === 'coach-briefing:12:12') {
         return {
           briefing: [
             'Keep today controlled.',
@@ -890,7 +890,7 @@ describe('Training API routes', () => {
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
 
-  it('generates coach reports against the active tenant while billing the authenticated actor', async () => {
+  it('generates coach reports for the authenticated data user inside the active tenant', async () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12, tenant_id: 34, status: 'active' });
     const res = await dispatch('POST', '/coach/report', {}, {
       refresh: true,
@@ -898,7 +898,7 @@ describe('Training API routes', () => {
     }, 12, {}, 34);
 
     expect(res.statusCode).toBe(200);
-    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(34, {
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledWith(12, {
       tenantId: 34,
       meteringUserId: 12,
       budgetRequestSource: 'interactive',
@@ -906,7 +906,7 @@ describe('Training API routes', () => {
       allowSensitiveCloudRouting: true,
     });
     expect(mockSetCache).toHaveBeenCalledWith(
-      'coach-briefing:34',
+      'coach-briefing:34:12',
       expect.any(Object),
       expect.any(Number),
     );
@@ -1057,7 +1057,7 @@ describe('Training API routes', () => {
       },
     ]);
     mockGetCached.mockImplementation((key: string) => {
-      if (key === 'coach-briefing:12') {
+      if (key === 'coach-briefing:12:12') {
         return {
           briefing: 'Cached coach briefing',
           recommendations: [],
@@ -1196,6 +1196,7 @@ describe('Training API routes', () => {
       id: 44,
       planVersion: 3,
       lifecycleState: 'active',
+      weekId: 78,
     }));
     expect(res.body.data.totalCount).toBe(3);
     expect(res.body.data.sessions).toEqual(expect.arrayContaining([
@@ -1266,6 +1267,33 @@ describe('Training API routes', () => {
       unknownFallback: { preservesRawIdentifier: true, newlyPrescribable: false },
     });
     expect(res.body.data.revisionCapabilities.canonicalSessionTypes).toHaveLength(21);
+  });
+
+  it('advertises Coach V2 independently from revision capabilities with health management always available', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetEvents.mockResolvedValue([]);
+
+    const res = await dispatch('GET', '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.revisionCapabilities).toBeUndefined();
+    expect(res.body.data.coachV2Capabilities).toMatchObject({
+      contractVersion: 'training-coach-v2.2',
+      mode: config.coaching.periodizationV2Enabled ? 'active' : 'off',
+      lifecycleSupport: { compatibility: true, revision: true },
+      operations: {
+        travel: { methods: ['GET', 'POST', 'PATCH', 'DELETE'] },
+        weekReflow: { proposalFirst: true, preview: true },
+        coachPolicy: { proposalFirst: true, cas: true },
+        coachAnalysis: { selectedWeek: true },
+        healthManagement: {
+          availability: 'active',
+          entitlementRequired: false,
+          corrections: true,
+          export: true,
+        },
+      },
+    });
   });
 
   it('surfaces wearable integration gaps honestly in the training home contract', async () => {
@@ -1366,6 +1394,7 @@ describe('Training API routes', () => {
         }),
       ],
       'Automatic coach update ready.',
+      12,
     );
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
   });
@@ -1427,7 +1456,7 @@ describe('Training API routes', () => {
     expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(12);
   });
 
-  it('locks and applies coach recommendations against the delegated data owner, not the actor', async () => {
+  it('locks and applies coach recommendations for the data user inside the active tenant', async () => {
     const res = await dispatch(
       'POST',
       '/coach/apply',
@@ -1440,7 +1469,7 @@ describe('Training API routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockWithTrainingCalendarOperationLock).toHaveBeenCalledWith(
-      { userId: 77, tenantId: 77, operation: 'coach_apply' },
+      { userId: 42, tenantId: 77, operation: 'coach_apply' },
       expect.any(Function),
     );
     expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(
@@ -1449,8 +1478,8 @@ describe('Training API routes', () => {
       ['rec-1'],
       { lease: expect.objectContaining({ signal: expect.anything(), assertActive: expect.any(Function) }) },
     );
-    expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(77);
-    expect(mockInvalidateTrainingDerivedCaches).not.toHaveBeenCalledWith(42);
+    expect(mockInvalidateTrainingDerivedCaches).toHaveBeenCalledWith(42);
+    expect(mockInvalidateTrainingDerivedCaches).not.toHaveBeenCalledWith(77);
   });
 
   it('sanitizes degraded coach report warnings when briefing generation fails', async () => {
@@ -1508,7 +1537,7 @@ describe('Training API routes', () => {
       expect.any(Function),
     );
     expect(mockSetCache).not.toHaveBeenCalledWith(
-      'coach-briefing:12',
+      'coach-briefing:12:12',
       expect.anything(),
       expect.anything(),
     );
@@ -4516,6 +4545,7 @@ describe('Training API routes', () => {
     });
     expect(res.body.data.weeks).toHaveLength(2);
     expect(res.body.data.weeks[0]).toMatchObject({
+      weekId: 771,
       weekNumber: 1,
       phase: 'base',
       activeSessionCount: 1,

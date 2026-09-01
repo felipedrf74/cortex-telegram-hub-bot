@@ -54,7 +54,8 @@ vi.mock('../../src/agents/pipeline-agent', () => ({
   runPipelineAgent: vi.fn(),
 }));
 
-vi.mock('../../src/services/scheduler', () => ({
+vi.mock('../../src/services/scheduler', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/scheduler')>()),
   decisionMetricsRollupDateForScheduler: vi.fn(),
   refreshConnectedGarminUsers: (...args: unknown[]) => hoisted.refreshConnectedGarminUsers(...args),
   refreshConnectedGarminUsersWithLease: (...args: unknown[]) =>

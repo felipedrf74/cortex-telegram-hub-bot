@@ -1,6 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { buildWeekPlan } from './coach-kernel/planner-engine';
+import {
+  buildSecretaryWeeklySummary,
+  type SecretaryAgendaSummaryInput,
+} from './coach-kernel/decision-trail';
 import { decideTaper } from './coach-kernel/taper';
 import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
 import { findNextRace, daysToRace, normalizeRacePriority } from './race-calendar';
@@ -29,8 +33,6 @@ import { scoreToReadinessLevel } from './coach-kernel/readiness-snapshot-adapter
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
 import {
-  readTrainingComplianceFromRecentHistory,
-  readTrainingHistoryFromCompletions,
   type RecentTrainingComplianceRead,
   type RealTrainingHistory,
 } from './training-history';
@@ -147,6 +149,18 @@ export interface CoachKernelTrainingPlanInput {
   recentlyAskedFollowUpIds?: string[] | null;
   resolvedFollowUpIds?: string[] | null;
   exerciseIdentityMode?: TrainingExerciseIdentityV1Mode;
+  /**
+   * Privacy-light, tenant-scoped Secretary snapshot captured once by the
+   * TrainingPlanGenerationOrchestrator. The pure coach kernel never reads
+   * Secretary storage directly.
+   */
+  secretaryAgendaItems?: ReadonlyArray<SecretaryAgendaSummaryInput>;
+  /**
+   * Immutable, tenant-scoped completion evidence captured by the generation
+   * orchestrator. The coach kernel is deliberately storage-blind.
+   */
+  realTrainingHistory?: RealTrainingHistory | null;
+  recentTrainingCompliance?: RecentTrainingComplianceRead | null;
 }
 
 const DAY_NAME_MAP: Record<DayOfWeek, string> = {
@@ -229,13 +243,17 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
 
     const weeklyPlan = buildWeekPlan(weekAthlete, weekStart, {
       exerciseIdentityMode: input.exerciseIdentityMode,
+      secretaryWeeklySummary: buildSecretaryWeeklySummary(
+        input.secretaryAgendaItems ?? [],
+        weekStart,
+      ),
     });
     rawWeeklyPlans.push(weeklyPlan);
     // Retain the raw WeeklyPlan (for guardrail reasoning) AND the
     // AthleteState that produced it (so the home-view route can re-run
     // `adjustForFatigue` with today's live readiness). The legacy
     // converter below discards both fields.
-    recordWeeklyPlan(weeklyPlan, weekAthlete);
+    recordWeeklyPlan(input.tenantId ?? input.userId, weeklyPlan, weekAthlete);
     rollingAthlete = rollAthleteStateForward(weekAthlete, weeklyPlan);
     return applyPreRaceStrengthCutoff(
       convertWeeklyPlanToLegacyWeek(weeklyPlan, weekNumber),
@@ -428,28 +446,12 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       inferredMinutes: cyclingHistoryResolution.value,
     }, 'Cycling weekly-minutes inferred from targets — no run_profile.weekly_hours bucket on profile; ACWR load math will use targets × 55min/session as the baseline');
   }
-  // Slice 4.E (audit Layer-8 Critical) — read REAL completion
-  // history per sport per week so ACWR math runs against actual
-  // adherence + duration, not 4 copies of one synthesized number.
-  // Read failure (DB hiccup) degrades to undefined so the synthesis
-  // fallback below keeps the planner alive.
-  let realHistory: RealTrainingHistory | undefined;
-  let recentCompliance: RecentTrainingComplianceRead | undefined;
-  try {
-    realHistory = readTrainingHistoryFromCompletions(input.userId, {
-      tenantId: input.tenantId,
-    });
-    recentCompliance = readTrainingComplianceFromRecentHistory(input.userId, {
-      tenantId: input.tenantId,
-    });
-  } catch (err) {
-    logger.warn(
-      { surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.realHistory', userId: input.userId, err },
-      'Failed to read real training history/compliance; falling back to synthesis',
-    );
-    realHistory = undefined;
-    recentCompliance = undefined;
-  }
+  // Slice 4.E — the orchestrator captures real completion/compliance evidence
+  // once under the authenticated tenant. The pure kernel never reads storage;
+  // direct callers that omit the snapshot retain the conservative synthesized
+  // history fallback below.
+  const realHistory = input.realTrainingHistory ?? undefined;
+  const recentCompliance = input.recentTrainingCompliance ?? undefined;
   if (realHistory && realHistory.hasAnyHistory) {
     logger.info(
       {

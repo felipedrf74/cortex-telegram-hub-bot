@@ -132,7 +132,13 @@ describe('isolated Training E2E harness', () => {
     // without accidentally resolving equipment before the athlete answers.
     expect(seed).toContain("available_equipment: omitPlanClarifications ? 'unknown' : 'Full gym'");
     expect(ios).not.toContain('simctl shutdown all');
-    expect(ios).toContain('-only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests"');
+    expect(ios).toContain(
+      '-only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests/test_isolatedBackendPlanRendersTodayPlanProgressAndPersistsFeedback"',
+    );
+    expect(ios).toContain(
+      '-only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests/test_isolatedBackendClarificationWritesProfileRepreviewsAndCreatesExactlyOnce"',
+    );
+    expect(ios).not.toContain('-only-testing:"Nexus HubUITests/TrainingIsolatedBackendE2EUITests"\n');
     expect(ios).toContain('-only-testing:"Nexus HubUITests/TrainingFixtureBypassUITests"');
     expect(ios).toContain('-only-testing:"Nexus HubUITests/TrainingValidationUITests"');
   });

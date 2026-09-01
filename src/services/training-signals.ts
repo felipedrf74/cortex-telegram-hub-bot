@@ -36,6 +36,7 @@ import {
 import { isTrainingCrossSkillSignalsEnabled } from './training-operational-switches';
 import { requireTenantIdParam } from './tenant-scope';
 import { logger } from '../utils/logger';
+import type Database from 'better-sqlite3';
 
 // ─── Source identifiers ─────────────────────────────────────────────
 
@@ -58,6 +59,7 @@ const TRAINING_SIGNAL_PRODUCER_VERSION = 'training-signals.v1';
 
 function writeTrainingSignal(
   signal: Omit<GovernedSignalWriteInput, 'provenance'>,
+  database?: Database.Database,
 ): number {
   if (!isTrainingCrossSkillSignalsEnabled()) {
     logger.warn(
@@ -77,7 +79,7 @@ function writeTrainingSignal(
       source: 'runtime',
       observedAt: new Date().toISOString(),
     },
-  });
+  }, database);
 }
 
 // ─── Publisher helpers (write path) ─────────────────────────────────
@@ -243,7 +245,7 @@ export function publishSafetyRedFlag(opts: {
   date: string;
   triggerType: string;
   source?: string;
-}): number {
+}, database?: Database.Database): number {
   return writeTrainingSignal({
     source_agent: opts.source ?? TRAINING_SOURCE.STRUCTURED_HEALTH_INTAKE,
     signal_type: 'safety_red_flag',
@@ -255,7 +257,7 @@ export function publishSafetyRedFlag(opts: {
     user_id: opts.userId,
     tenant_id: opts.tenantId,
     priority: 'urgent',
-  });
+  }, database);
 }
 
 function safetySignalCategory(triggerType: string): 'symptom' | 'illness' | 'injury' | 'energy_availability' {

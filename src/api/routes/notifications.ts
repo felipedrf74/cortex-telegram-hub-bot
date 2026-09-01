@@ -551,7 +551,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
       warningCode: 'REPORTS_UNAVAILABLE',
       warning: 'Reports are temporarily unavailable.',
       run: async () => {
-        const reports = getRecentReports(userId, { limit })
+        const reports = getRecentReports(userId, { limit, tenantId })
           .filter((r: any) => !bridgedReportIdSet.has(Number(r.id)));
         const items = reports.map((r: any) => ({
           kind: 'report' as const,
@@ -567,7 +567,7 @@ async function buildUnifiedInbox(userId: number, tenantId: number, limit: number
           action: 'open_report' as const,
           metadata: normalizeInboxMetadata({ sourceJob: r.sourceJob || null }),
         }));
-        return { items, unreadCount: getUnreadReportCountExcludingIds(userId, bridgedReportIds) };
+        return { items, unreadCount: getUnreadReportCountExcludingIds(userId, bridgedReportIds, tenantId) };
       },
     },
     {
@@ -850,7 +850,7 @@ async function buildUnifiedInboxSummary(userId: number, tenantId: number): Promi
       key: 'reports',
       warningCode: 'REPORTS_UNAVAILABLE',
       warning: 'Reports are temporarily unavailable.',
-      run: async () => getUnreadReportCountExcludingIds(userId, bridgedReportIds),
+      run: async () => getUnreadReportCountExcludingIds(userId, bridgedReportIds, tenantId),
     },
   ];
 

@@ -18,6 +18,7 @@ SKIP_TYPECHECK=false
 SKIP_PYTHON=false
 SKIP_MIGRATIONS=false
 COVERAGE=false
+COVERAGE_SHARDS=1
 REPORTER="${NEXUS_RISK_GATE_REPORTER:-dot}"
 JSON_OUTPUT="${NEXUS_RISK_GATE_JSON_OUTPUT:-}"
 SELECTION_OUTPUT="${NEXUS_TEST_SELECTION_OUTPUT:-.local/test-selection.json}"
@@ -36,6 +37,7 @@ Options:
   --skip-python       Skip conditional content-engine pytest.
   --skip-migrations   Skip conditional migration safety checks.
   --coverage          Collect coverage in the same selected Vitest invocation.
+  --coverage-shards N Split one selected coverage set into 1-4 merged shards.
   --dry-run           Print commands without executing them.
 
 Env:
@@ -63,11 +65,25 @@ while [ $# -gt 0 ]; do
     --skip-python) SKIP_PYTHON=true; shift ;;
     --skip-migrations) SKIP_MIGRATIONS=true; shift ;;
     --coverage) COVERAGE=true; shift ;;
+    --coverage-shards)
+      [ $# -ge 2 ] || { echo "--coverage-shards requires a count." >&2; exit 64; }
+      COVERAGE_SHARDS="$2"
+      shift 2
+      ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if ! [[ "$COVERAGE_SHARDS" =~ ^[1-4]$ ]]; then
+  echo "--coverage-shards must be an integer from 1 through 4." >&2
+  exit 64
+fi
+if [ "$COVERAGE_SHARDS" != "1" ] && [ "$COVERAGE" != "true" ]; then
+  echo "--coverage-shards requires --coverage." >&2
+  exit 64
+fi
 
 if [ "$STAGED_ONLY" = "true" ] && { [ -n "$BASE_REF" ] || [ -n "$EXPLICIT_FILES" ]; }; then
   echo "--staged cannot be combined with --base or --files." >&2
@@ -173,7 +189,10 @@ case "$VITEST_MODE" in
     if [ "$DRY_RUN" = "true" ]; then
       echo "▶ node scripts/select-vitest-files.mjs --base $BASE_FOR_CHANGED --classifier <classifier-json>"
       if [ "$COVERAGE" = "true" ]; then
-        echo "▶ npx vitest run --reporter=$REPORTER --coverage.changed=$BASE_FOR_CHANGED <core+owning-group-tests+static-dependents+changed-tests>"
+        echo "▶ node scripts/run-test-tier.mjs deterministic --reporter $REPORTER --coverage --coverage-base $BASE_FOR_CHANGED --coverage-shards $COVERAGE_SHARDS <core+owning-group-tests+static-dependents+changed-tests>"
+        if [ "$COVERAGE_SHARDS" != "1" ]; then
+          echo "▶ vitest --merge-reports=<private-shard-dir> --coverage"
+        fi
       else
         echo "▶ npx vitest run --reporter=$REPORTER <core+owning-group-tests+static-dependents+changed-tests>"
       fi
@@ -194,7 +213,11 @@ case "$VITEST_MODE" in
       fi
       tier_args=(node scripts/run-test-tier.mjs deterministic --reporter "$REPORTER")
       [ -z "$JSON_OUTPUT" ] || tier_args+=(--json-output "$JSON_OUTPUT")
-      [ "$COVERAGE" != "true" ] || tier_args+=(--coverage --coverage-base "$BASE_FOR_CHANGED")
+      [ "$COVERAGE" != "true" ] || tier_args+=(
+        --coverage
+        --coverage-base "$BASE_FOR_CHANGED"
+        --coverage-shards "$COVERAGE_SHARDS"
+      )
       run_cmd "${tier_args[@]}" "${SELECTED_FILES[@]}"
       if [ "$COVERAGE" = "true" ]; then
         run_cmd node scripts/changed-coverage-gate.mjs \

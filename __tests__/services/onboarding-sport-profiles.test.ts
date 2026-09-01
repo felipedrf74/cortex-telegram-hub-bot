@@ -348,8 +348,8 @@ describe('formatAthleteProfileBlock — database-backed', () => {
     const block = formatAthleteProfileBlock(5006);
     expect(block).toContain('[Fitness basics]');
     expect(block).toContain('Training experience: Advanced (3+ years)');
-    // "none" should be suppressed
-    expect(block).not.toContain('Injuries / limitations: none');
+    // An explicit "no injury" answer is a real safety fact, not a skip.
+    expect(block).toContain('Injuries / limitations: none');
     expect(block).toContain('[Strength profile]');
   });
 });

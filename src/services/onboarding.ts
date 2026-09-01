@@ -40,6 +40,15 @@ export interface QuestionnaireDefinition {
   steps: QuestionStep[];
 }
 
+const LEGACY_SYNTHETIC_SKIP_VALUES = new Set(['skipped', 'sem resposta']);
+
+/** Legacy clients used sentinel strings for skips; current clients omit the key. */
+export function isSyntheticSkippedOnboardingAnswer(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLocaleLowerCase('pt-PT');
+  return !normalized || LEGACY_SYNTHETIC_SKIP_VALUES.has(normalized);
+}
+
 export interface OnboardingSession {
   id: number;
   user_id: number;
@@ -603,9 +612,9 @@ export function startOrResume(userId: number, rawQuestionnaireId: string): Onboa
 export function answerStep(
   userId: number,
   rawQuestionnaireId: string,
-  answer: string,
-  options: { expectedStepIndex?: number } = {},
-): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean } {
+  answer: string | undefined,
+  options: { expectedStepIndex?: number; skip?: boolean } = {},
+): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean; skipped?: boolean } {
   const db = getDb();
   // Canonicalize like startOrResume so an alias-id answer addresses
   // the same session row the canonical start created.
@@ -616,7 +625,7 @@ export function answerStep(
   const session = getActiveSession(userId, questionnaireId);
   if (!session) throw new Error('No active session');
 
-  const { expectedStepIndex } = options;
+  const { expectedStepIndex, skip = false } = options;
   if (typeof expectedStepIndex === 'number') {
     if (expectedStepIndex < session.current_step) {
       // Client is re-sending a step the server already advanced past.
@@ -650,13 +659,19 @@ export function answerStep(
   const currentStep = def.steps[session.current_step];
   if (!currentStep) throw new Error('Session already at last step');
 
-  // Validate answer
-  if (currentStep.validation && !currentStep.validation.test(answer)) {
+  if (!skip && answer === undefined) {
+    throw new Error('Answer is required unless the step is explicitly skipped');
+  }
+
+  // Validate answered steps only. An explicit skip advances without storing a
+  // synthetic value, so unanswered and answered safety facts stay distinct.
+  if (!skip && currentStep.validation && !currentStep.validation.test(answer!)) {
     throw new Error(`Invalid answer format for ${currentStep.key}`);
   }
 
-  // Store answer
-  const answers = { ...session.answers, [currentStep.key]: answer };
+  const answers = skip
+    ? { ...session.answers }
+    : { ...session.answers, [currentStep.key]: answer! };
   const nextStepIdx = session.current_step + 1;
   const isComplete = nextStepIdx >= def.steps.length;
 
@@ -700,6 +715,7 @@ export function answerStep(
   return {
     nextStep: isComplete ? null : def.steps[nextStepIdx],
     session: updatedSession,
+    skipped: skip,
   };
 }
 
@@ -813,7 +829,8 @@ export function upsertProfileField(
   const canonicalType = canonicalProfileType(profileType);
   const existing = getProfile(userId, profileType);
   const data: Record<string, string> = { ...(existing?.data ?? {}) };
-  data[fieldKey] = value;
+  if (isSyntheticSkippedOnboardingAnswer(value)) delete data[fieldKey];
+  else data[fieldKey] = value;
   db.prepare(`
     INSERT INTO user_profiles (user_id, profile_type, data)
     VALUES (?, ?, ?)
@@ -836,7 +853,11 @@ export function getMissingProfileFields(
   const def = getQuestionnaire(profileType);
   if (!def) return [];
   const profile = getProfile(userId, profileType);
-  const answered = new Set(Object.keys(profile?.data ?? {}));
+  const answered = new Set(
+    Object.entries(profile?.data ?? {})
+      .filter(([, value]) => !isSyntheticSkippedOnboardingAnswer(value))
+      .map(([fieldKey]) => fieldKey),
+  );
   return def.steps.filter((step) => step.required !== false && !answered.has(step.key));
 }
 
@@ -999,8 +1020,8 @@ export function renderProfile(profile: UserProfile): string {
     // Skip empty, "none", or zero-valued numeric answers for clarity.
     // profile.data is typed as Record<string, string>, so all numeric
     // answers arrive as their string representation ("0", "0.0").
-    if (value === '' || value == null) continue;
-    if (value === 'none' || value === 'None') continue;
+    if (value === '' || value == null || isSyntheticSkippedOnboardingAnswer(value)) continue;
+    if (/^none$/i.test(value) && key !== 'injuries' && key !== 'injury_history') continue;
     if (value === '0' || value === '0.0') continue;
     lines.push(`- ${labelFor(key)}: ${value}`);
   }

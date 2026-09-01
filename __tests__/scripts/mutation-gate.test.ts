@@ -775,14 +775,11 @@ describe('changed-critical mutation gate', () => {
       };
     };
 
-    expect(policy.coverage.exceptions).toHaveLength(6);
+    expect(policy.coverage.exceptions).toHaveLength(5);
     const minimumFor = (file: string) => policy.coverage.exceptions.find(
       (exception) => exception.file === file,
     )?.minimum;
-    expect(minimumFor('src/services/database.ts')).toEqual({
-      lines: 25.28,
-      branches: 26.08,
-    });
+    expect(minimumFor('src/services/database.ts')).toBeUndefined();
     expect(minimumFor('src/services/gemini-provider.ts')).toEqual({
       lines: 88.42,
       branches: 67.5,

@@ -556,7 +556,7 @@ export function writeSignal(signal: SignalWriteInput): number {
  * persistence. Runtime producers must use `source: 'runtime'` unless they
  * genuinely possess one of the stronger evidence classes.
  */
-export function writeGovernedSignal(signal: GovernedSignalWriteInput): number {
+export function writeGovernedSignal(signal: GovernedSignalWriteInput, database?: DbLike): number {
   const validationFailure = governedSignalInvariantFailure(signal);
   if (validationFailure) {
     if (
@@ -582,15 +582,15 @@ export function writeGovernedSignal(signal: GovernedSignalWriteInput): number {
     throw new GovernedSignalWriteError(validationFailure, signal);
   }
 
-  const signalId = writeSignalInternal(signal);
+  const signalId = writeSignalInternal(signal, database);
   if (signalId < 1) {
     throw new GovernedSignalWriteError('write_rejected', signal);
   }
   return signalId;
 }
 
-function writeSignalInternal(signal: SignalWriteInput): number {
-  const d = db();
+function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): number {
+  const d = database ?? db();
   if (!d) return -1;
   try {
     if (!isAllowedSignalSourceAgent(signal.source_agent)) {

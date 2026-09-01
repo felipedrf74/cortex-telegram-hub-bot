@@ -350,17 +350,17 @@ async function cancelTrainingPlanForUserLocked(
   let clearedRegistry = 0;
   if (removedPlans > 0) {
     try {
-      removedReports = deleteReportsByType(userId, ['coach_briefing', 'coach_phase']);
+      removedReports = deleteReportsByType(userId, ['coach_briefing', 'coach_phase'], tenantId);
     } catch (err) {
       logger.warn({ err, userId, planIds }, 'Failed to purge coach reports during plan cancellation; UI may render stale coach copy');
     }
     try {
-      clearedRegistry = clearStoredPlansForAthlete(userId);
+      clearedRegistry = clearStoredPlansForAthlete(userId, tenantId);
     } catch (err) {
       logger.warn({ err, userId, planIds }, 'Failed to clear in-memory coach plan registry during plan cancellation');
     }
     try {
-      clearLastCoachState(userId);
+      clearLastCoachState(userId, tenantId);
     } catch (err) {
       logger.warn({ err, userId, planIds }, 'Failed to clear last-coach-state during plan cancellation');
     }

@@ -8,13 +8,14 @@ import type { AthleteState, WeeklyPlan } from '../types';
  *  readiness — without it we can only show guardrails frozen at
  *  plan-generation time. */
 export interface StoredCoachPlan {
+  tenantId: number;
   plan: WeeklyPlan;
   athleteState: AthleteState;
 }
 
 export interface CoachPlanStore {
   save(entry: StoredCoachPlan): StoredCoachPlan;
-  get(athleteId: number, weekStart: string): StoredCoachPlan | null;
+  get(athleteId: number, tenantId: number, weekStart: string): StoredCoachPlan | null;
   /**
    * Drop every stored entry for the given athlete. Used when a plan
    * is cancelled — leaving the registry primed with the cancelled
@@ -23,23 +24,23 @@ export interface CoachPlanStore {
    * DB rows were gone (production bug 2026-04-25). Returns the count
    * of removed entries so callers can audit what was cleaned.
    */
-  clearForAthlete(athleteId: number): number;
+  clearForAthlete(athleteId: number, tenantId: number): number;
 }
 
 export class InMemoryCoachPlanStore implements CoachPlanStore {
   private readonly store = new Map<string, StoredCoachPlan>();
 
   save(entry: StoredCoachPlan): StoredCoachPlan {
-    this.store.set(`${entry.plan.athleteId}:${entry.plan.weekStart}`, entry);
+    this.store.set(`${entry.tenantId}:${entry.plan.athleteId}:${entry.plan.weekStart}`, entry);
     return entry;
   }
 
-  get(athleteId: number, weekStart: string): StoredCoachPlan | null {
-    return this.store.get(`${athleteId}:${weekStart}`) ?? null;
+  get(athleteId: number, tenantId: number, weekStart: string): StoredCoachPlan | null {
+    return this.store.get(`${tenantId}:${athleteId}:${weekStart}`) ?? null;
   }
 
-  clearForAthlete(athleteId: number): number {
-    const prefix = `${athleteId}:`;
+  clearForAthlete(athleteId: number, tenantId: number): number {
+    const prefix = `${tenantId}:${athleteId}:`;
     let removed = 0;
     for (const key of Array.from(this.store.keys())) {
       if (key.startsWith(prefix)) {
@@ -50,4 +51,3 @@ export class InMemoryCoachPlanStore implements CoachPlanStore {
     return removed;
   }
 }
-

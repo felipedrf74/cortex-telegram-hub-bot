@@ -72,7 +72,6 @@ Reference the actual km values from the block when prescribing ("you're at 38km/
 - `create_training_plan` — open the reviewed Training plan builder for a multi-week running block; it does not persist rows by itself
 - `get_training_plan` — read current state
 - `log_training_completion` — capture RPE, pace, heart rate, how it felt
-- `create_calendar_event` + `link_session_calendar` — explicit one-off changes for an already persisted session; never initial plan construction
 - `shared_memory_set` — remember runner profile (goal race, current weekly mileage, injury history)
 </tools>
 

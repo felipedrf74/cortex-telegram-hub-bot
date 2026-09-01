@@ -548,7 +548,7 @@ describe('Training Plan Tool Handlers', () => {
       .get(sessionId)).toEqual({ title: 'Original', intensity_text: null });
   });
 
-  it('link_session_calendar links session to calendar event', async () => {
+  it('link_session_calendar is a non-writing compatibility handoff', async () => {
     const planId = seedPlan();
     const weekId = seedWeek(planId);
     const sessionId = seedSession(planId, weekId, 'Test');
@@ -556,7 +556,19 @@ describe('Training Plan Tool Handlers', () => {
     const result = await executeToolCall('link_session_calendar', {
       session_id: sessionId, calendar_event_id: 'AAMk456', calendar_source: 'outlook',
     }, testUserId);
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({
+      success: false,
+      code: 'TRAINING_CALENDAR_LINK_COMPATIBILITY_ONLY',
+      handoff: {
+        preview: `/api/v1/training/sessions/${sessionId}/reflow-preview`,
+        confirm: `/api/v1/training/sessions/${sessionId}/reflow-confirm`,
+        sync: '/api/v1/training/plan/sync-calendar',
+      },
+    });
+    expect(testDb.prepare(`
+      SELECT calendar_event_id AS calendarEventId, calendar_source AS calendarSource
+        FROM training_sessions WHERE id = ?
+    `).get(sessionId)).toEqual({ calendarEventId: null, calendarSource: null });
   });
 
   it('keeps completion/link behavior while raw content updates stay retired', async () => {
@@ -574,7 +586,10 @@ describe('Training Plan Tool Handlers', () => {
         session_id: sessionId, calendar_event_id: 'legacy-event', calendar_source: 'google',
       }, testUserId);
       expect(legacyUpdate).toMatchObject({ success: false, code: 'TRAINING_RAW_WRITER_DISABLED' });
-      expect(legacyLink.success).toBe(true);
+      expect(legacyLink).toMatchObject({
+        success: false,
+        code: 'TRAINING_CALENDAR_LINK_COMPATIBILITY_ONLY',
+      });
 
       testDb.prepare("UPDATE fitness_training_plans SET source_revision_id = 'revision-1' WHERE id = ?").run(planId);
       const blockedUpdate = await executeToolCall('update_training_session', {
@@ -592,7 +607,7 @@ describe('Training Plan Tool Handlers', () => {
       }
       expect(blockedLink).toMatchObject({
         success: false,
-        code: 'TRAINING_REVISION_MANAGED_LEGACY_MUTATION_BLOCKED',
+        code: 'TRAINING_CALENDAR_LINK_COMPATIBILITY_ONLY',
       });
       expect(testDb.prepare(`
         SELECT title, status, calendar_event_id AS calendarEventId, calendar_source AS calendarSource
@@ -600,8 +615,8 @@ describe('Training Plan Tool Handlers', () => {
       `).get(sessionId)).toEqual({
         title: 'Original',
         status: 'pending',
-        calendarEventId: 'legacy-event',
-        calendarSource: 'google',
+        calendarEventId: null,
+        calendarSource: null,
       });
 
       const completion = await executeToolCall('log_training_completion', {

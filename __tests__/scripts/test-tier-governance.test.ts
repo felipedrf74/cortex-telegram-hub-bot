@@ -117,7 +117,7 @@ describe('lean test-tier governance', () => {
   it('extends the deadline only for coverage instrumentation', () => {
     const runner = fs.readFileSync('scripts/run-test-tier.mjs', 'utf8');
     const coverageFunction = runner.match(
-      /function coverageArgs\(\) \{[\s\S]*?\n\}/,
+      /function coverageArgs\([\s\S]*?\n\} = \{\}\) \{[\s\S]*?\n\}/,
     )?.[0];
     expect(coverageFunction).toBeDefined();
     expect(coverageFunction).toContain('if (!coverage) return [];');
@@ -126,5 +126,13 @@ describe('lean test-tier governance', () => {
 
     const config = fs.readFileSync('vitest.config.ts', 'utf8');
     expect(config).toContain('testTimeout: 10000');
+  });
+
+  it('merges bounded coverage shards into one exact result', () => {
+    const runner = fs.readFileSync('scripts/run-test-tier.mjs', 'utf8');
+    expect(runner).toContain("valueOf('--coverage-shards', '1')");
+    expect(runner).toContain('--reporter=blob');
+    expect(runner).toContain('--merge-reports=');
+    expect(runner).toContain('Coverage shard');
   });
 });

@@ -375,6 +375,8 @@ describe('training operation conflict matrix (F35)', () => {
     const { TRAINING_OPERATION_RESOURCES } =
       await import('../../src/services/training-operation-locks');
     expect(TRAINING_OPERATION_RESOURCES.calendar_sync).toEqual(['calendar']);
+    expect(TRAINING_OPERATION_RESOURCES.calendar_cleanup).toEqual(['calendar']);
+    expect(TRAINING_OPERATION_RESOURCES.adapt).toEqual(['plan', 'calendar']);
     expect(TRAINING_OPERATION_RESOURCES.plan_activate).toEqual(['plan', 'calendar']);
   });
 

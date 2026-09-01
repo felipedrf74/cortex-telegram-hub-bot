@@ -42,8 +42,7 @@
       "tools": [
         "create_training_plan",
         "get_training_plan",
-        "log_training_completion",
-        "link_session_calendar"
+        "log_training_completion"
       ],
       "cronJobs": ["training_plan_adjust"]
     },

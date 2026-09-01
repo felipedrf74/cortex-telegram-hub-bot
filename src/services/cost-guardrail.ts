@@ -1316,7 +1316,7 @@ function hasSuccessfulCoachDeliveryInWindow(userId: number, start: string, end: 
   try {
     const row = getDb().prepare(`
       SELECT 1 AS delivered
-      FROM report_documents
+      FROM report_documents_scoped
       WHERE user_id = ?
         AND type = 'coach_briefing'
         AND source_job = 'garmin_coach'

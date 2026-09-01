@@ -364,7 +364,7 @@ describe('migration inventory', () => {
     });
     const onDisk = readdirSync(join(root, 'migrations'))
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(inventory).toHaveLength(293);
+    expect(inventory).toHaveLength(296);
     expect(inventory).toHaveLength(onDisk.length);
     expect(() => assertMigrationInventoryShape(inventory)).not.toThrow();
     for (const entry of inventory) {
@@ -372,10 +372,27 @@ describe('migration inventory', () => {
       expect(typeof entry.predecessorCompatible).toBe('boolean');
     }
     expect(inventory.at(-1)).toMatchObject({
-      file: '302_content_script_batch_validation_diagnostics.sql',
+      file: '305_training_coach_v2_soak_metrics.sql',
       kind: 'expand',
       predecessorCompatible: true,
     });
+    expect(inventory.slice(-3)).toMatchObject([
+      {
+        file: '303_training_coach_v2_contracts.sql',
+        kind: 'expand',
+        predecessorCompatible: true,
+      },
+      {
+        file: '304_training_coach_tenant_scope.sql',
+        kind: 'backfill',
+        predecessorCompatible: true,
+      },
+      {
+        file: '305_training_coach_v2_soak_metrics.sql',
+        kind: 'expand',
+        predecessorCompatible: true,
+      },
+    ]);
   });
 
   it('keeps 283 contract by default and admits only its exact governed bytes', () => {
@@ -466,7 +483,7 @@ describe('migration inventory', () => {
     // still-green zero-unknown assertion. Deliberate policy changes update this
     // exact snapshot together.
     const compatible = inventory.filter((entry) => entry.predecessorCompatible).length;
-    expect(compatible).toBe(165);
+    expect(compatible).toBe(168);
   });
 });
 
@@ -700,7 +717,7 @@ describe('second-round adversarial probes', () => {
     // block every release for a classifier gap rather than a real risk.
     const dir = join(process.cwd(), 'migrations');
     const files = readdirSync(dir).filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(files.length).toBe(293);
+    expect(files.length).toBe(296);
     const unknown = files.filter(
       (file) => classifyMigrationSql(readFileSync(join(dir, file), 'utf8')).kind === 'unknown',
     );

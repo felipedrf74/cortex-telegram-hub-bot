@@ -80,16 +80,6 @@
     },
     "exceptions": [
       {
-        "file": "src/services/database.ts",
-        "owner": "test-infrastructure",
-        "reason": "Legacy database facade baseline is ratcheted while extracted migration behavior remains independently governed.",
-        "expires": "2026-08-31",
-        "minimum": {
-          "lines": 25.28,
-          "branches": 26.08
-        }
-      },
-      {
         "file": "src/services/gemini-provider.ts",
         "owner": "provider-platform",
         "reason": "Preserve the observed provider fallback baseline while focused provider contracts close remaining branches.",
@@ -161,6 +151,7 @@
       "src/services/migration-runner.ts",
       "src/services/pm2-health.ts",
       "src/services/training-plan-generation-idempotency.ts",
+      "src/services/training-plan-generation-pipeline.ts",
       "src/services/training-plan-revision-activation.ts",
       "src/services/training-operation-locks.ts",
       "src/api/routes/training-plan-generation.ts",
@@ -287,26 +278,6 @@
           }
         ],
         "reason": "The legacy route assertions were replaced by an exact real-database atomic mapping contract plus retained route-level reflow and sync behavior."
-      },
-      {
-        "test": "__tests__/api/training-plan-generation.test.ts",
-        "replacementTests": [
-          "__tests__/api/training-plan-generation.test.ts"
-        ],
-        "sources": [
-          "src/api/routes/training-plan-generation.ts"
-        ],
-        "mutationTargets": [
-          {
-            "pattern": "src/api/routes/training-plan-generation.ts:426-428",
-            "anchor": "const normalizedGoalMode: TrainingGoalMode | null = raceDateOverridesRequestedMode",
-            "behavior": "A valid future race date selects event-based generation even when the request says continuous, keeping clamping and taper validation aligned.",
-            "replacementTest": "__tests__/api/training-plan-generation.test.ts",
-            "ownerTestNamePattern": "lets a valid future race date override continuous mode and discloses the decision \\(F12\\)$",
-            "minimumMutants": 1
-          }
-        ],
-        "reason": "The retained generation suite rewrites legacy response assertions around the approved race-date-wins contract and now proves the disclosed override end to end."
       },
       {
         "test": "__tests__/api/training-plan-persistence-slot-date.test.ts",
@@ -562,7 +533,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/onboarding.ts:840-840",
+            "pattern": "src/services/onboarding.ts:861-861",
             "anchor": "step.required !== false && !answered.has(step.key)",
             "behavior": "Optional canonical clarification targets never retroactively block completion of an existing sport profile.",
             "replacementTest": "__tests__/services/chat-triggered-onboarding.test.ts",
@@ -766,7 +737,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/training-date-utils.ts:124-127",
+            "pattern": "src/services/training-date-utils.ts:148-151",
             "anchor": "return candidate.isValid && candidate > today;",
             "behavior": "A race date is future only when its ISO calendar day is strictly later than the authenticated user's local day boundary.",
             "replacementTest": "__tests__/services/training-date-utils.test.ts",
@@ -908,7 +879,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/tool-executor.ts:854-860",
+            "pattern": "src/services/tool-executor.ts:856-860",
             "anchor": "Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row",
             "behavior": "The raw model tool cannot create an active plan projection and returns a reviewed Training Plan Builder handoff instead.",
             "replacementTest": "__tests__/services/training-plans-tools.test.ts",
@@ -1310,7 +1281,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/notification-contracts.ts:178-178",
+            "pattern": "src/services/notification-contracts.ts:184-184",
             "anchor": "return ['reconnect', 'open_detail'];",
             "behavior": "Sync-failure decisions stop advertising an unimplemented retry and instead expose an enabled navigation-only reconnect action.",
             "replacementTest": "__tests__/services/decision-center.test.ts",
@@ -1607,11 +1578,11 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/garmin-coach.ts:925-935",
+            "pattern": "src/services/garmin-coach.ts:911-918",
             "anchor": "if (opts.allowSensitiveCloudRouting !== true)",
             "behavior": "Ordinary coach reads return a deterministic local briefing before constructing or reserving any private cloud request.",
             "replacementTest": "__tests__/services/garmin-coach-user-scope.test.ts",
-            "ownerTestNamePattern": "returns a deterministic local briefing without constructing a cloud request by default$",
+            "ownerTestNamePattern": "keeps scheduled/default Coach analysis local unless sensitive cloud routing is explicitly authorized$",
             "minimumMutants": 1
           }
         ],
@@ -1667,7 +1638,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/user-data-export.ts:1935-1946",
+            "pattern": "src/services/user-data-export.ts:1949-1951",
             "anchor": "if (providerFilesPending !== 0)",
             "behavior": "Transactional account erasure refuses while any owner-scoped provider Batch file or upload intent lacks durable deletion proof.",
             "replacementTest": "__tests__/services/user-data-export.test.ts",
@@ -1696,6 +1667,206 @@
           }
         ],
         "reason": "The retained webhook suite replaces plaintext and broad signature assertions with exact encrypted ownership, scoped replay, and verifier behavior."
+      },
+      {
+        "test": "__tests__/api/training-coach-briefing.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-coach-briefing.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/training-coach-briefing.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/training-coach-briefing.ts:12-14",
+            "anchor": "return `coach-briefing:${tenantId}:${userId}`;",
+            "behavior": "Coach briefing cache identity includes the authenticated tenant before the user so one user's snapshots cannot collide across tenant scopes.",
+            "replacementTest": "__tests__/api/training-coach-briefing.test.ts",
+            "ownerTestNamePattern": "uses a distinct cache entry for the same user in each tenant$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained briefing test now proves tenant-scoped cache identity instead of accepting a user-only cache key."
+      },
+      {
+        "test": "__tests__/api/training-coach-v2-routes.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-coach-v2-routes.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/training-coach-v2.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/training-coach-v2.ts:802-807",
+            "anchor": "state: result.replayed ? 'replayed' : 'updated',",
+            "behavior": "A travel PATCH returns the exact CAS-updated or replayed versioned window only after the service validates the fully merged durable state.",
+            "replacementTest": "__tests__/api/training-coach-v2-routes.test.ts",
+            "ownerTestNamePattern": "validates the fully merged PATCH, then CAS-updates and replays the exact mutation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained route test replaces shallow PATCH acceptance with merged-state validation, CAS, tenant ownership, and exact replay evidence."
+      },
+      {
+        "test": "__tests__/api/training-read-models.test.ts",
+        "replacementTests": [
+          "__tests__/api/training-read-models.test.ts"
+        ],
+        "sources": [
+          "src/services/training-calendar-cleanup-recovery.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-calendar-cleanup-recovery.ts:62-68",
+            "anchor": "if (deadLetteredCount === 0 && retryingCount === 0) return null;",
+            "behavior": "Calendar cleanup read models aggregate both governed providers for the exact user and tenant and remain visible whenever dead-lettered or retrying work exists.",
+            "replacementTest": "__tests__/api/training-read-models.test.ts",
+            "ownerTestNamePattern": "exposes the dead-lettered count and scopes the query to the training user/tenant$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained read-model test replaces a single legacy count with provider-bucket aggregation and exact tenant-scoped query evidence."
+      },
+      {
+        "test": "__tests__/scripts/training-e2e-contract.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/training-e2e-contract.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/training-e2e-contract.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/training-e2e-contract.mjs:322-325",
+            "anchor": "if (!row) errors.push(`missing lifecycle step ${stepId}`);",
+            "behavior": "Training E2E evidence fails closed when any canonical lifecycle step is missing, non-passing, or duplicated.",
+            "replacementTest": "__tests__/scripts/training-e2e-contract.test.ts",
+            "ownerTestNamePattern": "rejects evidence missing any required lifecycle step or persona$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained contract test replaces label-only flow evidence with a complete, unique, passing lifecycle denominator."
+      },
+      {
+        "test": "__tests__/security/training-route-policy-manifest.test.ts",
+        "replacementTests": [
+          "__tests__/security/training-route-policy-manifest.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/training-route-policy.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/training-route-policy.ts:182-187",
+            "anchor": "const key = trainingRoutePolicyKey(method, path);",
+            "behavior": "Calendar cleanup recovery is classified as an authenticated, tenant-entitled Training mutation in both rollout modes.",
+            "replacementTest": "__tests__/security/training-route-policy-manifest.test.ts",
+            "ownerTestNamePattern": "governs calendar-cleanup retry as an authenticated Training mutation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained manifest test gives the new recovery mutation explicit auth, entitlement, mode, and write-governance ownership."
+      },
+      {
+        "test": "__tests__/services/cache-coherence-registry.test.ts",
+        "replacementTests": [
+          "__tests__/services/cache-coherence-registry.test.ts"
+        ],
+        "sources": [
+          "src/services/cache-coherence-registry.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/cache-coherence-registry.ts:354-358",
+            "anchor": "clearCacheByPrefix('coach-briefing:');",
+            "behavior": "Every Training mutation invalidates the bounded tenant-first coach briefing cache family before derived surfaces are reused.",
+            "replacementTest": "__tests__/services/cache-coherence-registry.test.ts",
+            "ownerTestNamePattern": "maps training writes to training, dashboard, and planning surfaces$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained cache test replaces a user-only key assumption with bounded tenant-first Training invalidation evidence."
+      },
+      {
+        "test": "__tests__/services/coach-plan-registry.test.ts",
+        "replacementTests": [
+          "__tests__/services/coach-plan-registry.test.ts"
+        ],
+        "sources": [
+          "src/services/coach-kernel/stores/in-memory-plan-store.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/coach-kernel/stores/in-memory-plan-store.ts:42-51",
+            "anchor": "const prefix = `${tenantId}:${athleteId}:`;",
+            "behavior": "Coach plan cleanup removes only the selected tenant and athlete while preserving the same athlete's stored plan in every other tenant.",
+            "replacementTest": "__tests__/services/coach-plan-registry.test.ts",
+            "ownerTestNamePattern": "isolates the same athlete and week across tenants, including tenant-scoped clearing$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained registry test replaces athlete-only in-memory ownership with tenant-plus-athlete save, lookup, and clearing evidence."
+      },
+      {
+        "test": "__tests__/services/notification-producers-phase2.test.ts",
+        "replacementTests": [
+          "__tests__/services/notification-producers-phase2.test.ts"
+        ],
+        "sources": [
+          "src/services/training-session-reminder.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/training-session-reminder.ts:157-159",
+            "anchor": "afterAgendaItemId = last.agendaItemId;",
+            "behavior": "Training reminder pagination advances by the ordered start-time and agenda-item cursor until the final partial page, delivering every due row exactly once.",
+            "replacementTest": "__tests__/services/notification-producers-phase2.test.ts",
+            "ownerTestNamePattern": "delivers every due reminder through deterministic pagination$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained producer test replaces first-page-only delivery with deterministic cursor pagination across more rows than the configured page size."
+      },
+      {
+        "test": "__tests__/services/report-schedule-dispatcher.test.ts",
+        "replacementTests": [
+          "__tests__/services/report-schedule-dispatcher.test.ts"
+        ],
+        "sources": [
+          "src/services/report-schedule-dispatcher.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/report-schedule-dispatcher.ts:219-220",
+            "anchor": "claim.run(target.userId, target.tenantId, job, candidateDay.toISODate())",
+            "behavior": "Scheduled reports claim independently for the same user in each explicit tenant while retaining at-most-once delivery per tenant-local day.",
+            "replacementTest": "__tests__/services/report-schedule-dispatcher.test.ts",
+            "ownerTestNamePattern": "claims the same user independently in two explicit tenant scopes$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained dispatcher test replaces the user-equals-tenant ledger assumption with explicit two-dimensional schedule claims."
+      },
+      {
+        "test": "__tests__/services/travel-windows-and-equipment.test.ts",
+        "replacementTests": [
+          "__tests__/services/travel-windows-and-equipment.test.ts"
+        ],
+        "sources": [
+          "src/services/travel-windows.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/travel-windows.ts:483-493",
+            "anchor": "if (receipt.operation !== operation || receipt.request_hash !== requestHash)",
+            "behavior": "A travel idempotency key replays only the same operation and request hash and rejects changed payloads or cross-operation reuse.",
+            "replacementTest": "__tests__/services/travel-windows-and-equipment.test.ts",
+            "ownerTestNamePattern": "replays PATCH and DELETE receipts and rejects cross-operation key reuse$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained lifecycle test replaces write-call assertions with durable receipt replay and conflicting-key refusal evidence."
       }
     ],
     "ownerTestMappings": [],

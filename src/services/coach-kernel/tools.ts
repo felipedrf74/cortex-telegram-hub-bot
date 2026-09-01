@@ -21,6 +21,7 @@ import { cyclingEngine } from './engines/cycling-engine';
 import { swimmingEngine } from './engines/swimming-engine';
 import { strengthEngine } from './engines/strength-engine';
 import { InMemoryCoachPlanStore, type CoachPlanStore } from './stores/in-memory-plan-store';
+import { requireTenantIdParam } from '../tenant-scope';
 
 export const defaultCoachPlanStore = new InMemoryCoachPlanStore();
 
@@ -180,8 +181,14 @@ export function scoreCompliance(weeklyPlan: WeeklyPlan, recentSessions: RecentSe
   };
 }
 
-export function savePlan(plan: WeeklyPlan, athleteState: AthleteState, store: CoachPlanStore = defaultCoachPlanStore): WeeklyPlan {
-  return store.save({ plan, athleteState }).plan;
+export function savePlan(
+  plan: WeeklyPlan,
+  athleteState: AthleteState,
+  tenantId: number,
+  store: CoachPlanStore = defaultCoachPlanStore,
+): WeeklyPlan {
+  const scopedTenantId = requireTenantIdParam(tenantId, 'coachKernel.savePlan');
+  return store.save({ tenantId: scopedTenantId, plan, athleteState }).plan;
 }
 
 export function generateDailyBrief(state: AthleteState, weeklyPlan: WeeklyPlan, dayOfWeek: Session['dayOfWeek']): string {

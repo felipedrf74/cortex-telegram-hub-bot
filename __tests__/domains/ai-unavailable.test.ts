@@ -118,12 +118,13 @@ describe('buildAITemporarilyBusyResponse', () => {
       createdAt: new Date().toISOString(),
     });
 
-    const response = await buildAITemporarilyBusyResponse('triathlon', 41);
+    const response = await buildAITemporarilyBusyResponse('triathlon', 41, 410);
 
     expect(response.domain).toBe('triathlon');
     expect(response.text).toContain('latest coach briefing');
     expect(response.text).toContain('Tempo ride (planned)');
     expect(response.text).toContain('68/100');
+    expect(mockGetLatestByType).toHaveBeenCalledWith(41, 'coach_briefing', 410);
   });
 
   it('builds daily context on demand when the cache is empty', async () => {

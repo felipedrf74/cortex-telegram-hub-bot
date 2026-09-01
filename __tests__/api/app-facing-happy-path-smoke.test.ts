@@ -1297,7 +1297,7 @@ describe('app-facing happy path smoke', () => {
         path: '/reports/401/read',
         assert: (body) => {
           expect(body.data).toMatchObject({ marked: true });
-          expect(mockMarkReportRead).toHaveBeenCalledWith(401, 7001);
+          expect(mockMarkReportRead).toHaveBeenCalledWith(401, 7001, 7001);
         },
       },
     ];

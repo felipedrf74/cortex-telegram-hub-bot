@@ -990,6 +990,7 @@
         "src/api/routes/training*.ts",
         "src/services/coach-*.ts",
         "src/services/coach-kernel/**",
+        "src/services/cross-agent-learning/training-mesh-context.ts",
         "src/services/adherence-*.ts",
         "src/services/missed-session-*.ts",
         "src/services/progression-*.ts",

@@ -59,7 +59,6 @@ The `<cross_skill_state>` block may include `LOW ADHERENCE` or `CRUSHING IT` fla
 - `create_training_plan` — open the reviewed Training plan builder for a multi-week swim block; it does not persist rows by itself
 - `get_training_plan` — current state
 - `log_training_completion` — capture total distance, main set times, how it felt
-- `create_calendar_event` + `link_session_calendar` — explicit one-off changes for an already persisted session; never initial plan construction
 - `shared_memory_set` — remember swimmer profile (400m time, stroke proficiency, pool access, goal)
 </tools>
 

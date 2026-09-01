@@ -93,6 +93,7 @@ const MUTATING_NOTIFICATION_ACTIONS = new Set([
   'undo_reflow',
   'accept_chat_action_fix',
   'activate_training_plan_revision',
+  'activate_training_coach_v2_proposal',
   'approve_product_learning_case',
 ]);
 
@@ -169,7 +170,12 @@ function supportedActionsFor(sourceSkill: NotificationSourceSkill, type: Notific
     return ['approve_script', 'request_rewrite', 'open_detail'];
   }
   if (sourceSkill === 'training' && type === 'approval_required') {
-    return ['activate_training_plan_revision', 'approve_product_learning_case', 'open_detail'];
+    return [
+      'activate_training_plan_revision',
+      'activate_training_coach_v2_proposal',
+      'approve_product_learning_case',
+      'open_detail',
+    ];
   }
   if (sourceSkill === 'chat' && type === 'decision_required') {
     return ['option_a', 'option_b', 'accept_chat_action_fix', 'open_detail', 'dismiss'];
