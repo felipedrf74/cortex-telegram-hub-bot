@@ -44,7 +44,7 @@ export interface DailyBriefingData {
   reminders: { message: string; time: string }[];
   unreadEmails: number;
   yesterdayCompleted: number;
-  automatedNotifications?: string[]; // e.g. fossa email, other scheduled emails
+  automatedNotifications?: string[];
 }
 
 // ─── Microsoft To Do Formatters ─────────────────────────────────────

@@ -446,6 +446,10 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '304_training_coach_tenant_scope.sql' }),
         expect.objectContaining({ file: '305_training_coach_v2_soak_metrics.sql' }),
         expect.objectContaining({ file: '306_decision_center_rewrite_foundation.sql' }),
+        expect.objectContaining({ file: '307_secretary_routine_profiles.sql' }),
+        expect.objectContaining({ file: '308_secretary_calendar_command_receipts.sql' }),
+        expect.objectContaining({ file: '309_secretary_calendar_mutation_receipts.sql' }),
+        expect.objectContaining({ file: '310_retire_fossa_email_metadata.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

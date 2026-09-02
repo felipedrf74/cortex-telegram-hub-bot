@@ -11,7 +11,7 @@ import { getDueReminders, markReminderFired, getRemindersForToday } from '../sta
 import * as msTodo from './microsoft-todo';
 import type { TodoTask } from './microsoft-todo';
 import { getEvents, getEventsWithDiagnostics, hasConnectedCalendarForUser, isAnyCalendarConfigured, type UnifiedCalendarEvent, type UnifiedCalendarFetchStatus } from './unified-calendar';
-import { getUnreadCountForUser, isOutlookMailConfiguredForUser, isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
+import { getUnreadCountForUser, isOutlookMailConfiguredForUser } from './outlook-mail';
 import { DailyBriefingData, escapeHtml } from '../utils/chat-html-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 // content-discovery.ts still exists for manual /discover but removed from scheduler
@@ -994,10 +994,6 @@ export async function buildDailyBriefingDataForUser(
     }
   }
 
-  if (todayNotifications.length > 0) {
-    data.automatedNotifications = [...todayNotifications];
-  }
-
   try {
     const localDate = today.toISODate()!;
     const canonicalBrief = await composeDailyBrief({
@@ -1226,14 +1222,9 @@ function weeklyCookingReviewProjection(plan: WeeklyPlanResponse): Record<string,
 const knownSharedTaskIdsByUser = new Map<number, Set<string>>();
 const sharedListSeededUsers = new Set<number>();
 
-// Track automated notifications for the morning briefing (cleared daily at midnight)
-const todayNotifications: string[] = [];
-export function getTodayNotifications(): string[] { return todayNotifications; }
-
 export function _resetSchedulerTenantStateForTesting(): void {
   knownSharedTaskIdsByUser.clear();
   sharedListSeededUsers.clear();
-  todayNotifications.length = 0;
 }
 
 function getKnownSharedTaskIds(userId: number): Set<string> {
@@ -1827,7 +1818,6 @@ export function startScheduler(): void {
   registerJob('fiscal_bundle',      'Fiscal Bundle Delivery','10 8 * * *',      'invoices');
   registerJob('amazon_collection',  'Amazon Collection',     '15 9 1 * *',      'invoices');
   registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *',      'invoices');
-  registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1',      'secretary');
   registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
   registerJob('secretary_agenda_sync', 'Secretary Agenda → Calendar Sync', '*/5 * * * *', 'secretary');
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '5,35 * * * *',    'triathlon');
@@ -2164,8 +2154,7 @@ export function startScheduler(): void {
     }
 
     msTodo.clearSelfCreatedTasks();
-    todayNotifications.length = 0;
-    logger.info('Cleared self-created task cache and daily notifications');
+    logger.info('Cleared self-created task cache');
 
     const retentionTargets: Array<{ table: string; days: number; tsCol: string }> = [
       { table: 'video_transcripts', days: 90, tsCol: 'created_at' },
@@ -2895,59 +2884,6 @@ export function startScheduler(): void {
     }
   }), { timezone: tz });
 
-  // ── Bi-weekly fossa email (Monday 07:30) ───────────────────────────
-  // Identity-safety: this cron sends a single-tenant home-services request
-  // with literal owner PII (full name, address, phone, account number).
-  // Gate behind an explicit FOSSA_EMAIL_ENABLED=1 env flag in addition to
-  // OUTLOOK availability so a different tenant configuring Outlook does
-  // NOT inherit this owner-specific automation.
-  const fossaTo = process.env.FOSSA_EMAIL_TO || 'smas.fossas@mun-montijo.pt';
-  const fossaEnabled = (process.env.FOSSA_EMAIL_ENABLED || '').trim() === '1';
-  if (fossaEnabled && isOutlookMailConfigured()) {
-    cron.schedule('30 7 * * 1', wrapJob('fossa_email', async () => {
-      const today = now();
-      const refDate = today.set({ year: 2026, month: 3, day: 23, hour: 0, minute: 0, second: 0, millisecond: 0 });
-      const daysDiff = Math.round(today.diff(refDate, 'days').days);
-      const weeksDiff = Math.floor(daysDiff / 7);
-      if (weeksDiff % 2 !== 0) {
-        logger.info({ weeksDiff }, 'Fossa email: skipping — not a send week');
-        return;
-      }
-
-      await sendEmail({
-        to: fossaTo,
-        subject: 'Limpeza Fossa Septica',
-        body: `Exmos. Senhores,\nVenho por este meio solicitar a limpeza da fossa séptica do seguinte imóvel:\n\nMorada: Rua José Quendera Miranda L4, 2870-684 Alto-Estanqueiro/Jardia\nNome: Felipe Dominguez Rodriguez Ferreira\nNúmero de Cliente: 3895417\nTelefone: 912 874 680\n\nAgradeço, por favor, que me informem sobre a disponibilidade para a realização do serviço.\n\nCom os melhores cumprimentos,\nFelipe Dominguez`,
-        source: 'fossa_email',
-      });
-
-      todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);
-      logger.info({ to: fossaTo }, 'Fossa email sent successfully');
-
-      // GAP-CAL-1 fix: durable in-app notification; Telegram was a no-op.
-      for (const userId of getOwnerUserIds()) {
-        try {
-          await createNotificationIntent({
-            userId,
-            tenantId: userId,
-            sourceSkill: 'secretary',
-            type: 'insight',
-            priority: 'passive',
-            relatedEntityId: `fossa_email:${new Date().toISOString().slice(0, 10)}`,
-            relatedEntityType: 'secretary_automated_email',
-            title: 'Automated email sent',
-            body: `Fossa septica cleaning request emailed to ${fossaTo}. Next send in 2 weeks.`,
-            deeplink: 'nexus://secretary/agenda',
-            dedupeKey: `secretary:fossa_email:${userId}:${new Date().toISOString().slice(0, 10)}`,
-            privacyPolicy: 'standard',
-          });
-        } catch (err) {
-          logger.warn({ err, userId }, 'Failed to create fossa email notification intent');
-        }
-      }
-    }), { timezone: tz });
-  }
-
   // ── Conflict detection (19:30) ─────────────────────────────────────
   cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
     for (const target of getActiveUserTargets()) {
@@ -3072,7 +3008,7 @@ export function startScheduler(): void {
     // The cron has no interactive user to answer an MFA code, so the
     // recovery path inside `ensureAuthenticated` must skip full re-login
     // — otherwise the garth library triggers `loginWithMfa` which sends
-    // a security passcode email to Felipe's inbox every Sunday at 19:00.
+    // a security passcode email to the operator inbox every Sunday at 19:00.
     // This mirrors the fix in the `garmin_coach` cron above (see the
     // matching block on the daily coach briefing — same reasoning, same
     // pattern).
@@ -3911,7 +3847,7 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (5,35), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), garmin-keepalive (5,35), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 
@@ -4272,10 +4208,15 @@ export async function sendDailyBriefingForTarget(
 // Loops every active user regardless of per-user schedule — used by the
 // portal manual trigger and tests. Scheduled delivery goes through the
 // leased report scheduler, which calls the ForTarget variant per due user.
-export async function sendDailyBriefing(): Promise<void> {
+export async function sendDailyBriefing(): Promise<boolean> {
+  // Manual portal callbacks must honor the same parent/sub-skill gate as the
+  // cron and DST-recovery callbacks. Otherwise disabling Secretary (or only
+  // briefings) still allowed an operator click to create reports and pushes.
+  if (!isCronJobEnabled('daily_briefing')) return false;
   for (const target of getActiveUserTargets()) {
     await sendDailyBriefingForTarget(target);
   }
+  return true;
 }
 
 function isChatCoreV2AutoRevertEvalCronEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

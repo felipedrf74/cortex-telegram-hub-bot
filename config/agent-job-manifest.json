@@ -977,30 +977,6 @@
       }
     },
     {
-      "id": "fossa_email",
-      "name": "Fossa Email",
-      "schedule": "30 7 * * 1",
-      "domain": "secretary",
-      "lifecycle": "active",
-      "policyOwner": "secretary",
-      "jobVersion": "1.0.0",
-      "tenantScope": "owner-mailbox",
-      "overlapPolicy": "durable-database-lease",
-      "retryPolicy": "next-scheduled-run",
-      "providerUsage": "none",
-      "providerRouting": "not-applicable-no-model-provider",
-      "costPolicy": "no-model-provider-cost",
-      "latencyPolicy": "callback-owned-no-model-budget",
-      "outputPolicy": "job-specific-validated-write",
-      "notificationPolicy": "job-specific",
-      "inputFingerprint": {
-        "enforcement": "not-applicable-no-provider",
-        "unchangedInputProviderCalls": 0,
-        "evidence": "source-audit:no-model-provider-boundary",
-        "tests": []
-      }
-    },
-    {
       "id": "friday_weekly",
       "name": "Friday Weekly Package",
       "schedule": "41 18 * * 5",

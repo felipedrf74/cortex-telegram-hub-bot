@@ -38,7 +38,7 @@ describe('CapabilityManifest high-level consolidation', () => {
       version: skill.version,
       requiredTier: skill.requiredTier ?? 'pro',
     }))).toEqual([
-      { name: 'secretary', version: '2.0.0', requiredTier: 'free' },
+      { name: 'secretary', version: '2.2.0', requiredTier: 'free' },
       { name: 'triathlon', version: '3.0.0', requiredTier: 'pro' },
       { name: 'content', version: '2.0.0', requiredTier: 'pro' },
       { name: 'finance', version: '1.0.0', requiredTier: 'pro' },

@@ -60,8 +60,29 @@ export function getGeminiRoutingEnvOverride(env: RuntimeEnv = process.env): bool
   return parseOptionalBoolean(env.GEMINI_ROUTING_ENABLED);
 }
 
+export interface SecretaryPrimaryRouteEnvOverride {
+  value: boolean | null;
+  source: 'primary' | 'legacy' | null;
+}
+
+export function resolveSecretaryPrimaryRouteEnvOverride(
+  env: RuntimeEnv = process.env,
+): SecretaryPrimaryRouteEnvOverride {
+  const primary = parseOptionalBoolean(env.SECRETARY_PRIMARY_ROUTE_ENABLED);
+  if (primary !== null) return { value: primary, source: 'primary' };
+
+  const legacy = parseOptionalBoolean(env.GEMINI_INCLUDE_SECRETARY);
+  if (legacy !== null) return { value: legacy, source: 'legacy' };
+  return { value: null, source: null };
+}
+
+export function getSecretaryPrimaryRouteEnvOverride(env: RuntimeEnv = process.env): boolean | null {
+  return resolveSecretaryPrimaryRouteEnvOverride(env).value;
+}
+
+/** @deprecated One-release read alias; use SECRETARY_PRIMARY_ROUTE_ENABLED. */
 export function getGeminiIncludeSecretaryEnvOverride(env: RuntimeEnv = process.env): boolean | null {
-  return parseOptionalBoolean(env.GEMINI_INCLUDE_SECRETARY);
+  return getSecretaryPrimaryRouteEnvOverride(env);
 }
 
 export function getGeminiDomainAllowlist(env: RuntimeEnv = process.env): string[] {

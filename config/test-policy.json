@@ -1140,7 +1140,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/skills/skill-config.ts:158-161",
+            "pattern": "src/skills/skill-config.ts:158-165",
             "anchor": "'create_training_plan', 'get_training_plan', 'log_training_completion'",
             "behavior": "The Training skill exposes reviewed handoff, readback, completion, and calendar linkage without raw week, session, or update writers.",
             "replacementTest": "__tests__/skills/training-plans-skill.test.ts",

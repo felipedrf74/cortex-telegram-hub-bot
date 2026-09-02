@@ -102,8 +102,14 @@ describe('Secretary manifest.json (v2 format)', () => {
   it('includes briefings sub-skill', () => {
     const briefings = manifest.subSkills.find((s: any) => s.module_name === 'briefings');
     expect(briefings).toBeDefined();
-    expect(briefings.cronJobs).toEqual(['daily_briefing', 'weekly_review']);
+    expect(briefings.cronJobs).toEqual(['daily_briefing', 'weekly_review', 'end_of_day']);
     expect(briefings.tools).toEqual([]);
+  });
+
+  it('matches the authoritative runtime capability version and provider-neutral requirements', () => {
+    expect(manifest.version).toBe('2.2.0');
+    expect(manifest.version).toBe(DEFAULT_SKILLS.secretary.version);
+    expect(manifest.requiredApiKeys).toEqual([]);
   });
 
   it('all sub-skills are enabled by default', () => {
@@ -112,10 +118,9 @@ describe('Secretary manifest.json (v2 format)', () => {
     }
   });
 
-  it('tasks sub-skill owns end_of_day and shared_list crons', () => {
+  it('tasks sub-skill owns shared_list cron', () => {
     const tasks = manifest.subSkills.find((s: any) => s.module_name === 'tasks');
-    expect(tasks.cronJobs).toContain('end_of_day');
-    expect(tasks.cronJobs).toContain('shared_list');
+    expect(tasks.cronJobs).toEqual(['shared_list']);
   });
 
   it('reminders sub-skill owns reminders cron', () => {
@@ -123,14 +128,19 @@ describe('Secretary manifest.json (v2 format)', () => {
     expect(reminders.cronJobs).toContain('reminders');
   });
 
-  it('email sub-skill owns fossa_email cron', () => {
+  it('email sub-skill has no scheduled job', () => {
     const email = manifest.subSkills.find((s: any) => s.module_name === 'email');
-    expect(email.cronJobs).toContain('fossa_email');
+    expect(email.cronJobs).toEqual([]);
   });
 
-  it('calendar sub-skill owns conflict_detection cron', () => {
+  it('calendar sub-skill owns every calendar scheduling job', () => {
     const calendar = manifest.subSkills.find((s: any) => s.module_name === 'calendar');
-    expect(calendar.cronJobs).toContain('conflict_detection');
+    expect(calendar.cronJobs).toEqual([
+      'conflict_detection',
+      'secretary_agenda_sync',
+      'travel_window_notify',
+      'commitment_start_reminder',
+    ]);
   });
 });
 
@@ -147,15 +157,17 @@ describe('SkillConfig — cron job mappings', () => {
   it('briefings sub-skill exists with correct cron jobs', () => {
     const briefings = DEFAULT_SKILLS.secretary.subSkills.find((s: any) => s.name === 'briefings');
     expect(briefings).toBeDefined();
-    expect(briefings.cronJobs).toEqual(['daily_briefing', 'weekly_review']);
+    expect(briefings.cronJobs).toEqual(['daily_briefing', 'weekly_review', 'end_of_day']);
     expect(briefings.tools).toEqual([]);
   });
 
   it('getCronJobOwner returns correct owner for secretary crons', () => {
-    expect(getCronJobOwner('end_of_day')).toEqual({ domain: 'secretary', subSkill: 'tasks' });
+    expect(getCronJobOwner('end_of_day')).toEqual({ domain: 'secretary', subSkill: 'briefings' });
     expect(getCronJobOwner('shared_list')).toEqual({ domain: 'secretary', subSkill: 'tasks' });
     expect(getCronJobOwner('conflict_detection')).toEqual({ domain: 'secretary', subSkill: 'calendar' });
-    expect(getCronJobOwner('fossa_email')).toEqual({ domain: 'secretary', subSkill: 'email' });
+    expect(getCronJobOwner('secretary_agenda_sync')).toEqual({ domain: 'secretary', subSkill: 'calendar' });
+    expect(getCronJobOwner('travel_window_notify')).toEqual({ domain: 'secretary', subSkill: 'calendar' });
+    expect(getCronJobOwner('commitment_start_reminder')).toEqual({ domain: 'secretary', subSkill: 'calendar' });
     expect(getCronJobOwner('reminders')).toEqual({ domain: 'secretary', subSkill: 'reminders' });
     expect(getCronJobOwner('daily_briefing')).toEqual({ domain: 'secretary', subSkill: 'briefings' });
     expect(getCronJobOwner('weekly_review')).toEqual({ domain: 'secretary', subSkill: 'briefings' });
@@ -168,9 +180,22 @@ describe('SkillConfig — cron job mappings', () => {
 
   it('getAllCronJobMappings returns all secretary cron mappings', () => {
     const map = getAllCronJobMappings();
-    expect(map.size).toBeGreaterThanOrEqual(7); // 7 secretary crons
-    expect(map.get('end_of_day')).toEqual({ domain: 'secretary', subSkill: 'tasks' });
-    expect(map.get('daily_briefing')).toEqual({ domain: 'secretary', subSkill: 'briefings' });
+    const secretaryJobs = [...map]
+      .filter(([, owner]) => owner.domain === 'secretary')
+      .map(([jobId]) => jobId)
+      .sort();
+
+    expect(secretaryJobs).toEqual([
+      'commitment_start_reminder',
+      'conflict_detection',
+      'daily_briefing',
+      'end_of_day',
+      'reminders',
+      'secretary_agenda_sync',
+      'shared_list',
+      'travel_window_notify',
+      'weekly_review',
+    ]);
   });
 
   it('getSubSkillNames includes briefings', () => {
@@ -232,12 +257,12 @@ describe('SkillManager — isCronJobEnabled', () => {
     expect(isCronJobEnabled('reminders')).toBe(false);
   });
 
-  it('disabling tasks sub-skill blocks end_of_day and shared_list', async () => {
+  it('disabling tasks sub-skill blocks shared_list only', async () => {
     const { seedDefaultSkills, disableSubSkill, isCronJobEnabled } = await import('../../src/skills/skill-manager');
     seedDefaultSkills();
     disableSubSkill('secretary', 'tasks');
-    expect(isCronJobEnabled('end_of_day')).toBe(false);
     expect(isCronJobEnabled('shared_list')).toBe(false);
+    expect(isCronJobEnabled('end_of_day')).toBe(true);
   });
 
   it('disabling briefings sub-skill blocks daily_briefing and weekly_review', async () => {
@@ -251,20 +276,22 @@ describe('SkillManager — isCronJobEnabled', () => {
   it('re-enabling sub-skill restores cron job access', async () => {
     const { seedDefaultSkills, disableSubSkill, enableSubSkill, isCronJobEnabled } = await import('../../src/skills/skill-manager');
     seedDefaultSkills();
-    disableSubSkill('secretary', 'email');
-    expect(isCronJobEnabled('fossa_email')).toBe(false);
-    enableSubSkill('secretary', 'email');
-    expect(isCronJobEnabled('fossa_email')).toBe(true);
+    disableSubSkill('secretary', 'calendar');
+    expect(isCronJobEnabled('secretary_agenda_sync')).toBe(false);
+    enableSubSkill('secretary', 'calendar');
+    expect(isCronJobEnabled('secretary_agenda_sync')).toBe(true);
   });
 
-  it('continues to gate mapped jobs by sub-skill state when only the parent is disabled', async () => {
+  it('disabling the parent blocks every child job and callback', async () => {
     const { seedDefaultSkills, disableSkill, isCronJobEnabled } = await import('../../src/skills/skill-manager');
     seedDefaultSkills();
     disableSkill('secretary');
 
-    expect(isCronJobEnabled('end_of_day')).toBe(true);
-    expect(isCronJobEnabled('daily_briefing')).toBe(true);
-    expect(isCronJobEnabled('reminders')).toBe(true);
+    for (const [jobId, owner] of getAllCronJobMappings()) {
+      if (owner.domain === 'secretary') {
+        expect(isCronJobEnabled(jobId)).toBe(false);
+      }
+    }
   });
 
   it('disables every mapped cron when all sub-skills are disabled and restores only one owner', async () => {
@@ -322,7 +349,7 @@ describe('Telemetry — wrapJob respects sub-skill gating', () => {
   });
 
   it('wrapJob skips execution when job is disabled', async () => {
-    const { setJobEnabledChecker, registerJob, wrapJob } = await import('../../src/portal/telemetry');
+    const { getJobMap, setJobEnabledChecker, registerJob, wrapJob } = await import('../../src/portal/telemetry');
 
     // Register a checker that disables 'test_job'
     setJobEnabledChecker((name) => name !== 'test_disabled_job');
@@ -331,6 +358,10 @@ describe('Telemetry — wrapJob respects sub-skill gating', () => {
     const fn = vi.fn().mockResolvedValue(undefined);
     const wrapped = wrapJob('test_disabled_job', fn);
     await wrapped();
+    // DST recovery reuses the callback stored by wrapJob. Re-invoking that
+    // exact callback must pass through the same parent/sub-skill gate rather
+    // than bypassing a disabled Secretary switch.
+    await getJobMap().get('test_disabled_job')?.wrappedFn?.();
 
     expect(fn).not.toHaveBeenCalled();
   });

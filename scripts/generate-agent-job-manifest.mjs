@@ -182,7 +182,6 @@ export const JOB_POLICIES = Object.freeze({
     outputPolicy: 'stage-deduped-tenant-scoped-tax-deadline-notification',
   }),
   fiscal_bundle: noProvider('finance', 'active-fiscal-profile-tenant', { retryPolicy: 'next-due-check-with-durable-delivery-state' }),
-  fossa_email: noProvider('secretary', 'owner-mailbox', { retryPolicy: 'next-scheduled-run' }),
   friday_weekly: providerCapable('content', 'eligible-active-tenant-loop', {
     enforcement: 'output-inventory-gate',
     evidence: 'rollout-independent seven-day pending inventory requests only missing output and skips when full',

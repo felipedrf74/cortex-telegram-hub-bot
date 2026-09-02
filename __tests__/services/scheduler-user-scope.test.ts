@@ -1998,7 +1998,7 @@ describe('scheduler tenant scoping', () => {
       prepare: vi.fn(() => ({ all: vi.fn(() => []) })),
     });
 
-    await expect(sendDailyBriefing()).resolves.toBeUndefined();
+    await expect(sendDailyBriefing()).resolves.toBe(true);
 
     expect(mockStoreAndPushReport).not.toHaveBeenCalled();
     expect(mockGetOwnerBootstrapTarget).not.toHaveBeenCalled();

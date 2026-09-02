@@ -5,6 +5,7 @@ const mockIsGarminConfigured = vi.fn();
 const mockClearAllConversations = vi.fn();
 const mockPushEvent = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
+const mockSendDailyBriefing = vi.fn();
 
 vi.mock('../../src/config', () => ({
   config: {
@@ -84,7 +85,9 @@ vi.mock('../../src/services/outlook-calendar', () => ({ isOutlookCalendarConfigu
 vi.mock('../../src/services/outlook-mail', () => ({ isOutlookMailConfigured: vi.fn(() => false) }));
 vi.mock('../../src/services/microsoft-todo', () => ({ isOutlookTodoConfigured: vi.fn(() => false) }));
 vi.mock('../../src/services/invoice-queue', () => ({ getPendingCount: vi.fn(() => 0) }));
-vi.mock('../../src/services/scheduler', () => ({ sendDailyBriefing: vi.fn() }));
+vi.mock('../../src/services/scheduler', () => ({
+  sendDailyBriefing: (...args: unknown[]) => mockSendDailyBriefing(...args),
+}));
 vi.mock('../../src/state/content-references', () => ({
   getAllChannels: vi.fn(() => []),
   removeChannel: vi.fn(),
@@ -169,6 +172,7 @@ describe('portal owner bootstrap hardening', () => {
       })),
     });
     mockIsGarminConfigured.mockReturnValue(true);
+    mockSendDailyBriefing.mockResolvedValue(true);
   });
 
   it('getPortalTrainingStatsUserId resolves the canonical owner bootstrap tenant', () => {
@@ -220,5 +224,24 @@ describe('portal owner bootstrap hardening', () => {
     recordPortalAction('trigger-briefing');
 
     expect(isPortalActionRateLimited('trigger-briefing')).toBe(true);
+  });
+
+  it('reports the manual briefing as disabled when the scheduler parent/sub-skill gate rejects it', async () => {
+    mockSendDailyBriefing.mockResolvedValue(false);
+
+    const result = await handleAction('trigger-briefing');
+
+    expect(result).toEqual({ ok: false, message: 'Secretary briefings are disabled' });
+    expect(mockPushEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'auth',
+      summary: expect.stringContaining('disabled'),
+    }));
+  });
+
+  it('reports success only after the gated manual briefing executes', async () => {
+    const result = await handleAction('trigger-briefing');
+
+    expect(result).toEqual({ ok: true, message: 'Morning briefing stored and pushed' });
+    expect(mockSendDailyBriefing).toHaveBeenCalledTimes(1);
   });
 });

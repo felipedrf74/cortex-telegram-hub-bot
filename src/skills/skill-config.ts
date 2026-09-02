@@ -91,7 +91,7 @@ const SECRETARY_SKILL: SkillDefinition = {
         'ms_todo_get_checklist', 'ms_todo_add_checklist_item',
         'ms_todo_get_lists', 'ms_todo_create_list', 'ms_todo_delete_list',
       ],
-      cronJobs: ['end_of_day', 'shared_list'],
+      cronJobs: ['shared_list'],
     },
     {
       name: 'calendar',
@@ -101,7 +101,12 @@ const SECRETARY_SKILL: SkillDefinition = {
         'get_calendar_events', 'create_calendar_event',
         'update_calendar_event', 'delete_calendar_event',
       ],
-      cronJobs: ['conflict_detection'],
+      cronJobs: [
+        'conflict_detection',
+        'secretary_agenda_sync',
+        'travel_window_notify',
+        'commitment_start_reminder',
+      ],
     },
     {
       name: 'email',
@@ -111,7 +116,7 @@ const SECRETARY_SKILL: SkillDefinition = {
         'search_outlook_emails', 'read_outlook_email',
         'send_outlook_email', 'reply_outlook_email', 'get_outlook_unread',
       ],
-      cronJobs: ['fossa_email'],
+      cronJobs: [],
     },
     {
       name: 'reminders',
@@ -137,7 +142,7 @@ const SECRETARY_SKILL: SkillDefinition = {
       description: 'Morning briefing, weekly review, and daily digest',
       enabledByDefault: true,
       tools: [],
-      cronJobs: ['daily_briefing', 'weekly_review'],
+      cronJobs: ['daily_briefing', 'weekly_review', 'end_of_day'],
     },
   ],
 };
@@ -775,14 +780,21 @@ export function _resetRegistry(): void {
 
 /** Find which domain+sub-skill owns a given cron job ID. Returns null if not mapped. */
 export function getCronJobOwner(jobId: string): { domain: DomainName; subSkill: string } | null {
+  let owner: { domain: DomainName; subSkill: string } | null = null;
   for (const [domain, skill] of _skillRegistry.entries()) {
     for (const sub of skill.subSkills) {
       if (sub.cronJobs?.includes(jobId)) {
-        return { domain: domain as DomainName, subSkill: sub.name };
+        const candidate = { domain: domain as DomainName, subSkill: sub.name };
+        if (owner) {
+          throw new Error(
+            `Duplicate cron job ownership for ${jobId}: ${owner.domain}.${owner.subSkill} and ${candidate.domain}.${candidate.subSkill}`,
+          );
+        }
+        owner = candidate;
       }
     }
   }
-  return null;
+  return owner;
 }
 
 /** Get all cron job IDs owned by sub-skills across all domains. */
@@ -791,7 +803,14 @@ export function getAllCronJobMappings(): Map<string, { domain: DomainName; subSk
   for (const [domain, skill] of _skillRegistry.entries()) {
     for (const sub of skill.subSkills) {
       for (const jobId of sub.cronJobs ?? []) {
-        map.set(jobId, { domain: domain as DomainName, subSkill: sub.name });
+        const owner = { domain: domain as DomainName, subSkill: sub.name };
+        const existing = map.get(jobId);
+        if (existing) {
+          throw new Error(
+            `Duplicate cron job ownership for ${jobId}: ${existing.domain}.${existing.subSkill} and ${owner.domain}.${owner.subSkill}`,
+          );
+        }
+        map.set(jobId, owner);
       }
     }
   }
