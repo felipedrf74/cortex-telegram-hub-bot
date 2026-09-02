@@ -1816,7 +1816,6 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'report_document_dispatch_receipts', column: 'user_id' },
   { table: 'scheduled_report_completion_receipts', column: 'user_id' },
   { table: 'planning_recompute_receipts', column: 'user_id' },
-  { table: 'report_documents_scoped', column: 'user_id' },
   { table: 'report_documents', column: 'user_id' },
   { table: 'report_documents_scoped', column: 'user_id' },
   { table: 'push_preferences', column: 'user_id' },

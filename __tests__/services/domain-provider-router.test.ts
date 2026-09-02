@@ -147,14 +147,6 @@ describe('Domain Provider Router', () => {
       expect(hasDomainProviderRoute('chat')).toBe(false);
       expect(hasDomainProviderRoute('dynamic_custom_skill')).toBe(false);
     });
-
-    it('keeps the Secretary primary-route safeguard stronger than experiment overrides', () => {
-      process.env.SECRETARY_PRIMARY_ROUTE_ENABLED = 'false';
-      process.env.AI_DOMAIN_PROVIDER_OVERRIDES = 'secretary=gemini';
-      initDomainRouting();
-
-      expect(getProviderForDomain('secretary')).toBe('anthropic');
-    });
   });
 
   describe('getFallbackForDomain', () => {

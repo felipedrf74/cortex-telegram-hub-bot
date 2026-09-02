@@ -264,6 +264,10 @@ describe('plan routes', () => {
     expect(response.body.ok).toBe(true);
     expect(response.body.data.weekStart).toBe('2026-04-13');
     expect(response.headers['Server-Timing']).toEqual(expect.stringContaining('weekly_plan;dur='));
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      forceRefresh: true,
+      cacheMode: 'bypass',
+    }));
   });
 
   it('returns the daily plan route with stable coordination data and honors If-None-Match', async () => {
@@ -279,6 +283,10 @@ describe('plan routes', () => {
     expect(first.headers.ETag).toBeTruthy();
     expect(first.headers['Server-Timing']).toEqual(expect.stringContaining('daily_brief;dur='));
     expect(second.statusCode).toBe(304);
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      forceRefresh: true,
+      cacheMode: 'bypass',
+    }));
   });
 
   it('keys implicit daily and weekly route caches in the authenticated user timezone', async () => {

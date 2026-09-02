@@ -170,6 +170,8 @@ async function collectCanonicalPlanningContext(
       weekStart: context.weekStart,
       language: context.language,
       context,
+      forceRefresh: true,
+      cacheMode: 'bypass',
     }), COLLECTOR_TIMEOUT_MS);
     const snapshot = buildSecretaryDaySnapshot({ context, week });
     const brief = await withTimeout(composeDailyBrief({
@@ -180,6 +182,8 @@ async function collectCanonicalPlanningContext(
       context,
       weekPlan: week,
       daySnapshot: snapshot,
+      forceRefresh: true,
+      cacheMode: 'bypass',
     }), COLLECTOR_TIMEOUT_MS);
     const coordination = brief.coordination;
     const projection = {

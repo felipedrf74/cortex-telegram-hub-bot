@@ -48,6 +48,8 @@ export async function composeSecretaryScheduledPlanningSnapshot(scope: {
     weekStart: context.weekStart,
     language: context.language,
     context,
+    forceRefresh: true,
+    cacheMode: 'bypass',
   });
   const today = buildSecretaryDaySnapshot({ context, week });
   // forceRefresh prevents an independently cached Today response from winning
@@ -61,6 +63,7 @@ export async function composeSecretaryScheduledPlanningSnapshot(scope: {
     weekPlan: week,
     daySnapshot: today,
     forceRefresh: true,
+    cacheMode: 'bypass',
   });
   return { context, week, today, daily };
 }

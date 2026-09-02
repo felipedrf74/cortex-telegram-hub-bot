@@ -54,6 +54,8 @@ export function planRoutes(): Router {
           weekStart: context.weekStart,
           language: context.language,
           context,
+          forceRefresh: true,
+          cacheMode: 'bypass',
         })),
         send: (data, meta) => {
           sendConditionalApiSuccess(res, req, meta.cached && !meta.fresh ? markWeeklyPlanSourcesStale(data) : data, {
@@ -88,6 +90,8 @@ export function planRoutes(): Router {
           date: context.targetDate,
           language: context.language,
           context,
+          forceRefresh: true,
+          cacheMode: 'bypass',
         })),
         send: (data, meta) => {
           sendConditionalApiSuccess(res, req, meta.cached && !meta.fresh ? markDailyPlanSourcesStale(data) : data, {

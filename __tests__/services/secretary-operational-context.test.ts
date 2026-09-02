@@ -255,13 +255,21 @@ describe('secretary operational context', () => {
     expect(evidence).not.toContain('4.2');
     expect(mocks.composeWeeklyPlan).toHaveBeenCalledTimes(1);
     expect(mocks.composeDailyBrief).toHaveBeenCalledTimes(1);
+    expect(mocks.composeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      forceRefresh: true,
+      cacheMode: 'bypass',
+    }));
     const canonicalWeek = await mocks.composeWeeklyPlan.mock.results[0]?.value;
     const dailyInput = mocks.composeDailyBrief.mock.calls[0]?.[0] as {
       weekPlan?: unknown;
       daySnapshot?: { week?: unknown };
+      forceRefresh?: boolean;
+      cacheMode?: string;
     };
     expect(dailyInput.weekPlan).toBe(canonicalWeek);
     expect(dailyInput.daySnapshot?.week).toBe(canonicalWeek);
+    expect(dailyInput.forceRefresh).toBe(true);
+    expect(dailyInput.cacheMode).toBe('bypass');
     expect(mocks.getAllPendingTasks).not.toHaveBeenCalled();
     expect(mocks.getEventsWithDiagnostics).not.toHaveBeenCalled();
     expect(mocks.getUnreadMailSummaryForUser).not.toHaveBeenCalled();

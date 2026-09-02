@@ -159,6 +159,8 @@ describe('Secretary scheduled report snapshot', () => {
       weekStart: '2026-08-31',
       language: 'en-US',
       context,
+      forceRefresh: true,
+      cacheMode: 'bypass',
     });
     expect(mockBuildSecretaryDaySnapshot).toHaveBeenCalledOnce();
     const dayInput = mockBuildSecretaryDaySnapshot.mock.calls[0]?.[0];
@@ -174,6 +176,7 @@ describe('Secretary scheduled report snapshot', () => {
       weekPlan: week,
       daySnapshot: today,
       forceRefresh: true,
+      cacheMode: 'bypass',
     });
     expect(result).toEqual({ context, week, today, daily });
   });
