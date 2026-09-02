@@ -79,10 +79,11 @@ active-link swap, so a lifecycle-script descendant or retained descriptor
 cannot mutate code after it becomes root-owned or executable by release units.
 
 Before its initial canonical-source fetch, the builder pins Git transport to
-`protocol.version=0`. It has no interactive credential helper; this avoids a
-protocol-v2 negotiation that can spuriously request credentials for the public
-canonical remote. The immediately following protected-SHA equality check still
-binds the staged checkout to the owner-reviewed source.
+`protocol.version=0` and `http.version=HTTP/1.1`. It has no interactive
+credential helper; this avoids protocol-v2 or HTTP/2 negotiation that can
+spuriously request credentials for the public canonical remote. The immediately
+following protected-SHA equality check still binds the staged checkout to the
+owner-reviewed source.
 
 The lifecycle-controlled Git directory is not publication evidence: the
 installer first binds a root-held exact tracked-file manifest to the reviewed

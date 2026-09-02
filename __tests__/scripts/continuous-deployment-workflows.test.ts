@@ -1376,6 +1376,9 @@ fi
     expect(provision).toContain("SOURCE_REF='refs/heads/main'");
     expect(provision).toContain('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]');
     expect(provision).toContain(
+      '/usr/bin/git -C "$STAGE_DIR" -c protocol.version=0 -c http.version=HTTP/1.1 fetch',
+    );
+    expect(provision).not.toContain(
       '/usr/bin/git -C "$STAGE_DIR" -c protocol.version=0 fetch',
     );
     expect(provision).not.toContain(
@@ -1541,7 +1544,9 @@ fi
       controlLockIdentity,
     );
     const resumeAdmission = provision.indexOf('RESUME_TRANSACTION=0');
-    const buildFetch = provision.indexOf('-c protocol.version=0 fetch --quiet --no-tags --depth=1');
+    const buildFetch = provision.indexOf(
+      '-c protocol.version=0 -c http.version=HTTP/1.1 fetch --quiet --no-tags --depth=1',
+    );
     expect(controlLock).toBeGreaterThan(-1);
     expect(controlLockIdentity).toBeGreaterThan(controlLock);
     expect(releaseLockPreparation).toBeGreaterThan(controlLockIdentity);
