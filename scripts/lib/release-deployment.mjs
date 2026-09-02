@@ -1685,7 +1685,219 @@ export async function runReleaseDeployment({
   });
   const payload = verified.payload;
   const releaseId = verified.releaseId;
-  if (canonicalJson(payload.controlPlane) !== canonicalJson(controlPlane)) {
+  if (resumingAcceptedPayload
+      && (releaseId !== state.active.releaseId
+        || payload.source.sha !== state.active.sourceSha
+        || payload.compose.digest !== state.active.payload.composeDigest
+        || !imagePairMatches(payload.images, state.active.images)
+        || releaseEvidenceDigest({
+          manifestPayload: payload,
+          manifestDigest: verified.manifestDigest,
+          keyId: policy.trust.signingKeyId,
+          releasePayloadDigest: payloadDigest,
+        }) !== state.active.evidenceDigest)) {
+    fail('resumed payload does not match accepted pre-production state');
+  }
+  const verifyProtectedHeadFor = (expectedSha) => {
+    try {
+      const result = protectedHead.verify({ expectedSha });
+      if (!result || !Object.values(PROTECTED_HEAD_RESULTS).includes(result.result)) {
+        return { result: PROTECTED_HEAD_RESULTS.UNAVAILABLE, headSha: null };
+      }
+      return result;
+    } catch {
+      return { result: PROTECTED_HEAD_RESULTS.UNAVAILABLE, headSha: null };
+    }
+  };
+  async function retireAcceptedPreProduction({
+    composeFile,
+    planDir,
+    images,
+    releaseIdentity,
+    blockReason = null,
+  }) {
+    const latest = store.readState();
+    const accepted = latest.active?.releaseId === releaseId
+      && [RELEASE_STATUSES.ELIGIBLE, RELEASE_STATUSES.STAGING_HEALTHY]
+        .includes(latest.active.status);
+    if (!accepted) return { accepted: false, result: null };
+
+    let teardown;
+    try {
+      teardown = registry.composeDown({
+        composeFile,
+        planDir,
+        environment: 'staging',
+        images,
+        releaseIdentity,
+      });
+    } catch {
+      teardown = { status: 1 };
+    }
+    if (!teardown || teardown.status !== 0) {
+      store.block({
+        releaseId,
+        reason: BLOCK_REASONS.PREPRODUCTION_TEARDOWN_FAILED,
+      });
+      await notifier.send({
+        kind: RELEASE_NOTIFICATION_KINDS.FAILURE,
+        release: {
+          releaseId,
+          sourceSha: payload.source.sha,
+          phase: 'preproduction_teardown',
+          outcome: 'blocked',
+          failureCode: FAILURE_CODES.PREPRODUCTION_TEARDOWN,
+          rollbackResult: 'not_required',
+          actionRequired: 'inspect and remove the exact staging project before resuming',
+        },
+      });
+      return {
+        accepted: true,
+        result: {
+          outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
+          reason: 'preproduction_teardown_failed',
+          releaseId,
+        },
+      };
+    }
+    store.retirePreProduction({ releaseId, blockReason });
+    return { accepted: true, result: null };
+  }
+  const controlPlaneMatches = canonicalJson(payload.controlPlane) === canonicalJson(controlPlane);
+  if (!controlPlaneMatches && resumingAcceptedPayload && state.predecessor !== null) {
+    // An accepted pre-production candidate can outlive the controller that
+    // admitted it. A newer installed controller must not deploy that candidate,
+    // but it also must not wedge behind it forever after protected main advances.
+    // Retirement is allowed only when three independent facts agree: the old
+    // signed payload is the exact accepted state, public protected main differs,
+    // and the moving pointer is a different, fresh signed payload for that exact
+    // head whose control-plane identity matches this installed controller.
+    const retainedHead = verifyProtectedHeadFor(payload.source.sha);
+    if (retainedHead.result === PROTECTED_HEAD_RESULTS.UNAVAILABLE) {
+      log(`release ${releaseId} protected-head supersession proof is unavailable; deferring`);
+      return {
+        outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+        reason: 'protected_head_unavailable',
+        releaseId,
+      };
+    }
+    if (retainedHead.result === PROTECTED_HEAD_RESULTS.CURRENT) {
+      log(`release ${releaseId} remains protected main and requires its matching controller; deferring`);
+      return {
+        outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+        reason: 'control_plane_mismatch',
+        releaseId,
+      };
+    }
+
+    let superseding;
+    try {
+      registry.pull(releaseRef);
+      const supersedingDigest = registry.resolveDigest(releaseRef);
+      if (supersedingDigest === payloadDigest) {
+        fail('moving release pointer still resolves to the accepted payload');
+      }
+      const supersedingRef = `${policy.registry.releaseImage}@${supersedingDigest}`;
+      const supersedingDir = path.join(
+        policy.paths.workDir,
+        supersedingDigest.replace('sha256:', ''),
+      );
+      const extractedSuperseding = registry.extractReleasePayload({
+        reference: supersedingRef,
+        destinationDir: supersedingDir,
+      });
+      const supersedingEnvelope = parseReleaseManifestBytes({
+        bytes: extractedSuperseding.manifestBytes,
+        policy,
+      });
+      const verifiedSuperseding = verifyReleaseManifest({
+        envelope: supersedingEnvelope,
+        policy,
+        schemaPolicy,
+        nowMs: clock(),
+        verificationMode: RELEASE_MANIFEST_VERIFICATION_MODES.CANDIDATE,
+      });
+      if (!state.lastAcceptedRunId
+          || BigInt(verifiedSuperseding.payload.source.runId)
+            <= BigInt(state.lastAcceptedRunId)
+          || verifiedSuperseding.payload.source.sha !== retainedHead.headSha
+          || verifiedSuperseding.releaseId === releaseId
+          || canonicalJson(verifiedSuperseding.payload.controlPlane)
+            !== canonicalJson(controlPlane)) {
+        fail('moving release pointer is not the installed protected-head successor');
+      }
+      verifyComposeBytes({
+        payload: verifiedSuperseding.payload,
+        bytes: extractedSuperseding.composeBytes,
+        policy,
+      });
+      superseding = {
+        digest: supersedingDigest,
+        releaseId: verifiedSuperseding.releaseId,
+        sourceSha: verifiedSuperseding.payload.source.sha,
+      };
+    } catch {
+      log(`release ${releaseId} has no verified installed-controller successor; deferring`);
+      return {
+        outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+        reason: 'protected_head_supersession_unavailable',
+        releaseId,
+      };
+    }
+
+    // Only the exact accepted staging project may be touched here. Production
+    // has not entered a mutation-admitting state, so no backup, migration, image
+    // switch, or rollback is permitted on this controller-transition path.
+    verifyComposeBytes({ payload, bytes: extracted.composeBytes, policy });
+    if (typeof extracted.payloadDir !== 'string' || extracted.payloadDir !== workDir) {
+      fail('release payload materialization directory does not match its immutable digest root');
+    }
+    const retainedPlanDir = materializeMigrationPlan({
+      payload,
+      releaseId,
+      payloadDir: extracted.payloadDir,
+    });
+    const retainedImages = {
+      backend: { ...payload.images.backend },
+      contentEngine: { ...payload.images.contentEngine },
+    };
+    const retainedReleaseIdentity = {
+      releaseId,
+      sourceSha: payload.source.sha,
+      backendImageDigest: retainedImages.backend.digest,
+    };
+    const successorHead = verifyProtectedHeadFor(superseding.sourceSha);
+    if (successorHead.result !== PROTECTED_HEAD_RESULTS.CURRENT
+        || successorHead.headSha !== superseding.sourceSha) {
+      log(`release ${releaseId} successor no longer matches protected main; deferring`);
+      return {
+        outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+        reason: 'protected_head_supersession_unavailable',
+        releaseId,
+      };
+    }
+    const retired = await retireAcceptedPreProduction({
+      composeFile: extracted.composePath,
+      planDir: retainedPlanDir,
+      images: retainedImages,
+      releaseIdentity: retainedReleaseIdentity,
+    });
+    if (retired.result) return retired.result;
+    if (!retired.accepted) {
+      return {
+        outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+        reason: 'accepted_preproduction_state_changed',
+        releaseId,
+      };
+    }
+    return {
+      outcome: DEPLOYMENT_OUTCOMES.SUPERSEDED,
+      reason: 'signed_current_pointer_superseded_incompatible_candidate',
+      releaseId,
+      supersededBy: superseding.releaseId,
+    };
+  }
+  if (!controlPlaneMatches) {
     log(`release ${releaseId} requires an attended control-plane upgrade; deferring`);
     return {
       outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
@@ -1739,20 +1951,6 @@ export async function runReleaseDeployment({
   // but no deployment state, application image, or Compose operation occurs
   // until that signed comparison has finished.
   prunePayloadDiscoveryArtifacts();
-  if (resumingAcceptedPayload
-      && (releaseId !== state.active.releaseId
-        || payload.source.sha !== state.active.sourceSha
-        || payload.compose.digest !== state.active.payload.composeDigest
-        || !imagePairMatches(payload.images, state.active.images)
-        || releaseEvidenceDigest({
-          manifestPayload: payload,
-          manifestDigest: verified.manifestDigest,
-          keyId: policy.trust.signingKeyId,
-          releasePayloadDigest: payloadDigest,
-        }) !== state.active.evidenceDigest)) {
-    fail('resumed payload does not match accepted pre-production state');
-  }
-
   const composeFile = extracted.composePath;
   if (typeof extracted.payloadDir !== 'string' || extracted.payloadDir !== workDir) {
     fail('release payload materialization directory does not match its immutable digest root');
@@ -1773,63 +1971,19 @@ export async function runReleaseDeployment({
   };
 
   function verifyProtectedHead() {
-    try {
-      const result = protectedHead.verify({ expectedSha: payload.source.sha });
-      if (!result || !Object.values(PROTECTED_HEAD_RESULTS).includes(result.result)) {
-        return { result: PROTECTED_HEAD_RESULTS.UNAVAILABLE, headSha: null };
-      }
-      return result;
-    } catch {
-      return { result: PROTECTED_HEAD_RESULTS.UNAVAILABLE, headSha: null };
-    }
+    return verifyProtectedHeadFor(payload.source.sha);
   }
 
   async function abandonPreProduction({ bootstrapTarget, supersededBy = null, reason }) {
-    const latest = store.readState();
-    const accepted = latest.active?.releaseId === releaseId
-      && [RELEASE_STATUSES.ELIGIBLE, RELEASE_STATUSES.STAGING_HEALTHY]
-        .includes(latest.active.status);
-    if (accepted) {
-      let teardown;
-      try {
-        teardown = registry.composeDown({
-          composeFile,
-          planDir,
-          environment: 'staging',
-          images,
-          releaseIdentity: candidateReleaseIdentity,
-        });
-      } catch {
-        teardown = { status: 1 };
-      }
-      if (!teardown || teardown.status !== 0) {
-        store.block({
-          releaseId,
-          reason: BLOCK_REASONS.PREPRODUCTION_TEARDOWN_FAILED,
-        });
-        await notifier.send({
-          kind: RELEASE_NOTIFICATION_KINDS.FAILURE,
-          release: {
-            releaseId,
-            sourceSha: payload.source.sha,
-            phase: 'preproduction_teardown',
-            outcome: 'blocked',
-            failureCode: FAILURE_CODES.PREPRODUCTION_TEARDOWN,
-            rollbackResult: 'not_required',
-            actionRequired: 'inspect and remove the exact staging project before resuming',
-          },
-        });
-        return {
-          outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
-          reason: 'preproduction_teardown_failed',
-          releaseId,
-        };
-      }
-      store.retirePreProduction({
-        releaseId,
-        blockReason: bootstrapTarget ? BLOCK_REASONS.BOOTSTRAP_TARGET_ABANDONED : null,
-      });
-    } else if (bootstrapTarget) {
+    const retired = await retireAcceptedPreProduction({
+      composeFile,
+      planDir,
+      images,
+      releaseIdentity: candidateReleaseIdentity,
+      blockReason: bootstrapTarget ? BLOCK_REASONS.BOOTSTRAP_TARGET_ABANDONED : null,
+    });
+    if (retired.result) return retired.result;
+    if (!retired.accepted && bootstrapTarget) {
       // A one-shot owner authorization that is stale or unverifiable must not
       // silently become authorization for a later head. Bind a durable owner
       // action even when first acceptance has not yet written active state.
