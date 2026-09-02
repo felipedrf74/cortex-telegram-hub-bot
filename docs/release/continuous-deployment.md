@@ -60,6 +60,12 @@ deadlines still bound migrators, backup, health, observation, and rollback, whil
 systemd cannot kill the process merely because individually valid discovery and
 mutation phases exceeded a guessed aggregate.
 
+When a controller transition retires an accepted staging candidate, a failed
+`compose down` is accepted as an idempotent no-op only after Docker proves that
+both containers and networks bearing that exact governed Compose-project label
+are absent. A partial project, a different project, or an unavailable Docker
+enumeration remains a hard teardown failure and blocks further deployment.
+
 The immutable host control plane is built only in its transient staging tree.
 Each Git, npm, and Node builder command runs as the dedicated non-login build
 account in a collected systemd `Type=exec` service with
