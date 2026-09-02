@@ -78,6 +78,12 @@ proofs precede the root `chown`, write-bit removal, immutable-version move, and
 active-link swap, so a lifecycle-script descendant or retained descriptor
 cannot mutate code after it becomes root-owned or executable by release units.
 
+Before its initial canonical-source fetch, the builder pins Git transport to
+`protocol.version=0`. It has no interactive credential helper; this avoids a
+protocol-v2 negotiation that can spuriously request credentials for the public
+canonical remote. The immediately following protected-SHA equality check still
+binds the staged checkout to the owner-reviewed source.
+
 The lifecycle-controlled Git directory is not publication evidence: the
 installer first binds a root-held exact tracked-file manifest to the reviewed
 commit, re-proves every tracked byte and rejects all extras except governed
