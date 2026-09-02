@@ -189,11 +189,20 @@ protected ref, workflow name and key id are the governed ones, then verifies the
 Compose bytes hash to the signed digest.
 
 The installed controller computes the same governed identity from its immutable
-checkout. A mismatch returns `control_plane_mismatch` and defers before any
-deployment state, Compose, application-image retention, or existing discovery
-cache mutation. The owner must first install the exact signed control plane with
-the attended upgrade transaction; an older controller cannot silently operate a
-newer release policy.
+checkout. A mismatch normally returns `control_plane_mismatch` and defers before
+any deployment state, Compose, application-image retention, or existing
+discovery-cache mutation. The owner must first install the exact signed control
+plane with the attended upgrade transaction; an older controller cannot silently
+operate a newer release policy. The sole post-upgrade exception can retire an
+already-accepted `eligible` or `staging_healthy` candidate, never deploy it: its
+retained payload must still exactly bind state, an established predecessor must
+exist, the old source must no longer be protected `main`, and a different fresh
+signed `:main` payload must have a strictly newer run id, matching installed
+control plane, verified Compose bytes, and a final exact protected-head proof.
+Only then may the old candidate's own signed staging topology be torn down and
+atomically marked superseded. No backup, database read/migration, production
+Compose, receipt, accepted-run update, or cache pruning occurs on that bridge;
+any missing or changing proof leaves the old candidate deferred.
 
 Manifest evolution is governed by
 `ops/nexus-release/release-manifest-schema-policy.json`. The policy names the
@@ -748,6 +757,12 @@ pre-production and crash-recovery payloads reverify at the active state's
 immutable `startedAt`, never its retry-mutated `updatedAt`; a quiet completed
 payload is proven by its immutable receipt and state. A different stale payload
 is still rejected.
+
+If an attended controller upgrade makes that retained pre-production payload
+incompatible, the poller preserves the normal defer unless the bounded
+post-upgrade supersession proof above succeeds. This prevents an older accepted
+payload from wedging a newer verifier while keeping a mutable registry tag from
+authorizing a teardown on its own.
 
 `docs/release/release-state.json` is retained only as a **non-authoritative**
 projection. `npm run release:cd:state` prints a fresh host-derived view to stdout;

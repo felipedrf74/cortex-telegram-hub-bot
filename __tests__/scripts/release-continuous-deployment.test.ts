@@ -2049,6 +2049,367 @@ describe('release state and locking', () => {
     ))).toEqual([]);
   });
 
+  it.each([
+    RELEASE_STATUSES.ELIGIBLE,
+    RELEASE_STATUSES.STAGING_HEALTHY,
+  ])('retires accepted %s controller-incompatible evidence only for a signed protected-head successor', async (status) => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const acceptedPayload = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const acceptedReleaseId = releaseIdFor(acceptedPayload);
+    store.recordStatus({
+      manifestPayload: acceptedPayload,
+      releaseId: acceptedReleaseId,
+      status,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(acceptedPayload),
+    });
+    store.recordAcceptedRunId(acceptedPayload.source.runId);
+    const successorPayload = payloadFor({ sha: NEWER_SHA, runId: '4243' });
+    const protectedHeadCalls: string[] = [];
+
+    const deployed = await deploy({
+      store,
+      envelope: signed(acceptedPayload),
+      script: {
+        payloadDigests: [NEWER_PAYLOAD_DIGEST],
+        newerPayload: {
+          digest: NEWER_PAYLOAD_DIGEST,
+          envelope: signed(successorPayload),
+        },
+      },
+      protectedHead: {
+        verify: ({ expectedSha }) => {
+          protectedHeadCalls.push(expectedSha);
+          if (expectedSha === NEWER_SHA) {
+            return {
+              result: PROTECTED_HEAD_RESULTS.CURRENT,
+              expectedSha,
+              headSha: NEWER_SHA,
+            };
+          }
+          return {
+            result: PROTECTED_HEAD_RESULTS.MISMATCH,
+            expectedSha,
+            headSha: NEWER_SHA,
+          };
+        },
+      },
+    });
+
+    expect(deployed.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.SUPERSEDED,
+      reason: 'signed_current_pointer_superseded_incompatible_candidate',
+      releaseId: acceptedReleaseId,
+      supersededBy: releaseIdFor(successorPayload),
+    });
+    expect(protectedHeadCalls).toEqual([acceptedPayload.source.sha, NEWER_SHA]);
+    expect(store.readState().active).toBeNull();
+    expect(store.readState().history[0]).toMatchObject({
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.SUPERSEDED,
+    });
+    expect(deployed.registryHarness.calls).toContainEqual(expect.objectContaining({
+      kind: 'composeDown', environment: 'staging',
+    }));
+    expect(deployed.registryHarness.calls.some((call) => (
+      ['composeUp', 'composeRunMigrator'].includes(call.kind)
+    ))).toBe(false);
+    expect(deployed.databaseProbe.ledgerCalls).toEqual([]);
+    expect(deployed.registryHarness.calls.filter((call) => (
+      ['pruneImages', 'pruneWorkDirs'].includes(call.kind)
+    ))).toEqual([]);
+  });
+
+  it.each([
+    ['wrong source', () => ({
+      envelope: signed(payloadFor({ runId: '4243' })),
+      composeBytes: COMPOSE_BYTES,
+    })],
+    ['wrong controller', () => ({
+      envelope: signed(payloadFor({
+        sha: NEWER_SHA,
+        runId: '4243',
+        controlPlane: { ...CONTROL_PLANE, digest: 'f'.repeat(64) },
+      })),
+      composeBytes: COMPOSE_BYTES,
+    })],
+    ['invalid signature', () => ({
+      envelope: {
+        ...signed(payloadFor({ sha: NEWER_SHA, runId: '4243' })),
+        signature: 'not-a-valid-signature',
+      },
+      composeBytes: COMPOSE_BYTES,
+    })],
+    ['wrong Compose bytes', () => ({
+      envelope: signed(payloadFor({ sha: NEWER_SHA, runId: '4243' })),
+      composeBytes: Buffer.from('services:\n  backend:\n    image: tampered\n'),
+    })],
+    ['non-monotonic run id', () => ({
+      envelope: signed(payloadFor({ sha: NEWER_SHA, runId: '4242' })),
+      composeBytes: COMPOSE_BYTES,
+    })],
+  ])('retains an accepted candidate when its apparent successor has %s', async (
+    _label,
+    buildSuccessor,
+  ) => {
+    const successor = buildSuccessor();
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const acceptedPayload = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const acceptedReleaseId = releaseIdFor(acceptedPayload);
+    store.recordStatus({
+      manifestPayload: acceptedPayload,
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.STAGING_HEALTHY,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(acceptedPayload),
+    });
+    store.recordAcceptedRunId(acceptedPayload.source.runId);
+
+    const deployed = await deploy({
+      store,
+      envelope: signed(acceptedPayload),
+      script: {
+        payloadDigests: [NEWER_PAYLOAD_DIGEST],
+        newerPayload: {
+          digest: NEWER_PAYLOAD_DIGEST,
+          envelope: successor.envelope,
+        },
+        candidateComposeBytes: successor.composeBytes,
+      },
+      protectedHead: {
+        verify: ({ expectedSha }) => (expectedSha === NEWER_SHA
+          ? {
+            result: PROTECTED_HEAD_RESULTS.CURRENT,
+            expectedSha,
+            headSha: NEWER_SHA,
+          }
+          : {
+            result: PROTECTED_HEAD_RESULTS.MISMATCH,
+            expectedSha,
+            headSha: NEWER_SHA,
+          }),
+      },
+    });
+
+    expect(deployed.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+      reason: 'protected_head_supersession_unavailable',
+      releaseId: acceptedReleaseId,
+    });
+    expect(store.readState().active).toMatchObject({
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.STAGING_HEALTHY,
+    });
+    expect(deployed.registryHarness.calls.some((call) => call.kind === 'composeDown'))
+      .toBe(false);
+    expect(deployed.registryHarness.calls.some((call) => (
+      ['composeUp', 'composeRunMigrator'].includes(call.kind)
+    ))).toBe(false);
+  });
+
+  it.each([
+    [PROTECTED_HEAD_RESULTS.CURRENT, 'control_plane_mismatch'],
+    [PROTECTED_HEAD_RESULTS.UNAVAILABLE, 'protected_head_unavailable'],
+  ])('does not inspect a pointer or tear down when old protected-head proof is %s', async (
+    headResult,
+    reason,
+  ) => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const acceptedPayload = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const acceptedReleaseId = releaseIdFor(acceptedPayload);
+    store.recordStatus({
+      manifestPayload: acceptedPayload,
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.STAGING_HEALTHY,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(acceptedPayload),
+    });
+    store.recordAcceptedRunId(acceptedPayload.source.runId);
+
+    const deployed = await deploy({
+      store,
+      envelope: signed(acceptedPayload),
+      protectedHead: {
+        verify: ({ expectedSha }) => ({
+          result: headResult,
+          expectedSha,
+          headSha: headResult === PROTECTED_HEAD_RESULTS.CURRENT ? expectedSha : null,
+        }),
+      },
+    });
+
+    expect(deployed.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+      reason,
+      releaseId: acceptedReleaseId,
+    });
+    expect(store.readState().active?.releaseId).toBe(acceptedReleaseId);
+    expect(deployed.registryHarness.calls.filter((call) => (
+      call.kind === 'pull' && call.reference?.endsWith(`:${policy.registry.releaseTag}`)
+    ))).toEqual([]);
+    expect(deployed.registryHarness.calls.some((call) => call.kind === 'composeDown'))
+      .toBe(false);
+  });
+
+  it('rejects substituted accepted state before protected-head or pointer inspection', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const acceptedPayload = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const acceptedReleaseId = releaseIdFor(acceptedPayload);
+    store.recordStatus({
+      manifestPayload: acceptedPayload,
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.ELIGIBLE,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(acceptedPayload),
+    });
+    store.recordAcceptedRunId(acceptedPayload.source.runId);
+    const substituted = payloadFor({
+      sha: NEWER_SHA,
+      controlPlane: oldControlPlane,
+      runId: '4243',
+    });
+    const protectedHeadCalls: string[] = [];
+
+    const deployed = deploy({
+      store,
+      envelope: signed(substituted),
+      protectedHead: {
+        verify: ({ expectedSha }) => {
+          protectedHeadCalls.push(expectedSha);
+          return {
+            result: PROTECTED_HEAD_RESULTS.MISMATCH,
+            expectedSha,
+            headSha: NEWER_SHA,
+          };
+        },
+      },
+    });
+
+    await expect(deployed).rejects.toThrow(/resumed payload does not match accepted pre-production state/i);
+    expect(protectedHeadCalls).toEqual([]);
+  });
+
+  it('retains accepted evidence when protected main changes after successor-pointer proof', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const acceptedPayload = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const acceptedReleaseId = releaseIdFor(acceptedPayload);
+    store.recordStatus({
+      manifestPayload: acceptedPayload,
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.STAGING_HEALTHY,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(acceptedPayload),
+    });
+    store.recordAcceptedRunId(acceptedPayload.source.runId);
+    const successorPayload = payloadFor({ sha: NEWER_SHA, runId: '4243' });
+    let protectedChecks = 0;
+
+    const deployed = await deploy({
+      store,
+      envelope: signed(acceptedPayload),
+      script: {
+        payloadDigests: [NEWER_PAYLOAD_DIGEST],
+        newerPayload: {
+          digest: NEWER_PAYLOAD_DIGEST,
+          envelope: signed(successorPayload),
+        },
+      },
+      protectedHead: {
+        verify: ({ expectedSha }) => {
+          protectedChecks += 1;
+          return protectedChecks === 1
+            ? {
+              result: PROTECTED_HEAD_RESULTS.MISMATCH,
+              expectedSha,
+              headSha: NEWER_SHA,
+            }
+            : {
+              result: PROTECTED_HEAD_RESULTS.MISMATCH,
+              expectedSha,
+              headSha: 'c'.repeat(40),
+            };
+        },
+      },
+    });
+
+    expect(deployed.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.DEFERRED,
+      reason: 'protected_head_supersession_unavailable',
+      releaseId: acceptedReleaseId,
+    });
+    expect(store.readState().active?.releaseId).toBe(acceptedReleaseId);
+    expect(deployed.registryHarness.calls.some((call) => call.kind === 'composeDown'))
+      .toBe(false);
+  });
+
+  it('hard-blocks instead of retiring accepted evidence when controller-transition teardown fails', async () => {
+    const store = makeStore();
+    seedPredecessor(store);
+    const oldControlPlane = { ...CONTROL_PLANE, digest: 'd'.repeat(64) };
+    const acceptedPayload = payloadFor({ controlPlane: oldControlPlane, runId: '4242' });
+    const acceptedReleaseId = releaseIdFor(acceptedPayload);
+    store.recordStatus({
+      manifestPayload: acceptedPayload,
+      releaseId: acceptedReleaseId,
+      status: RELEASE_STATUSES.ELIGIBLE,
+      payloadDigest: PAYLOAD_DIGEST,
+      ...stateEvidenceFor(acceptedPayload),
+    });
+    store.recordAcceptedRunId(acceptedPayload.source.runId);
+    const successorPayload = payloadFor({ sha: NEWER_SHA, runId: '4243' });
+
+    const deployed = await deploy({
+      store,
+      envelope: signed(acceptedPayload),
+      script: {
+        payloadDigests: [NEWER_PAYLOAD_DIGEST],
+        newerPayload: {
+          digest: NEWER_PAYLOAD_DIGEST,
+          envelope: signed(successorPayload),
+        },
+        composeDownFailures: { staging: 1 },
+      },
+      protectedHead: {
+        verify: ({ expectedSha }) => (expectedSha === NEWER_SHA
+          ? {
+            result: PROTECTED_HEAD_RESULTS.CURRENT,
+            expectedSha,
+            headSha: NEWER_SHA,
+          }
+          : {
+            result: PROTECTED_HEAD_RESULTS.MISMATCH,
+            expectedSha,
+            headSha: NEWER_SHA,
+          }),
+      },
+    });
+
+    expect(deployed.result).toMatchObject({
+      outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
+      reason: 'preproduction_teardown_failed',
+      releaseId: acceptedReleaseId,
+    });
+    expect(store.readState().active?.releaseId).toBe(acceptedReleaseId);
+    expect(store.readState().blocked?.reason)
+      .toBe(BLOCK_REASONS.PREPRODUCTION_TEARDOWN_FAILED);
+    expect(store.readState().history.some((entry) => (
+      entry.status === RELEASE_STATUSES.SUPERSEDED
+    ))).toBe(false);
+    expect(deployed.registryHarness.calls.some((call) => (
+      ['composeUp', 'composeRunMigrator'].includes(call.kind)
+    ))).toBe(false);
+  });
+
   it('requires installed backup authority proof before candidate admission', async () => {
     const store = makeStore();
     seedPredecessor(store);

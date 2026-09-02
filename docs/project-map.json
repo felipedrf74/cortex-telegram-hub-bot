@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "6388a9bacd3f1ac3a5706c92f68b96b55a5aeee3c87b6d837dabee3ecb3704e2",
-    "baseCommit": "813e9c369889c07b9a3207f25efa4c35bdcfe1b4",
-    "baseCommitTimestamp": "2026-09-02T18:56:04+01:00",
+    "sourceDigest": "7b2d9caaf87f3d9f914a0eabb1756a93193b1d09d52431d5cd70249bba41b3e4",
+    "baseCommit": "27db86572efab284cab8bc060ce93b53a90a1848",
+    "baseCommitTimestamp": "2026-09-02T19:17:01+01:00",
     "trackedFiles": 3529,
     "sourceFiles": 1236
   },
@@ -6058,6 +6058,11 @@
       "generated": true
     },
     {
+      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
+      "bytes": 317728,
+      "generated": false
+    },
+    {
       "path": "catalog/training/exercise-media/v1/media-localizations.json",
       "bytes": 315882,
       "generated": false
@@ -6075,11 +6080,6 @@
     {
       "path": "__tests__/api/chat-routes.test.ts",
       "bytes": 307342,
-      "generated": false
-    },
-    {
-      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
-      "bytes": 304976,
       "generated": false
     },
     {
