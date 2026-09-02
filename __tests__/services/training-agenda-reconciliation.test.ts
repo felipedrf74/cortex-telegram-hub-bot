@@ -55,7 +55,11 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { reconcileOrphanedTrainingAgendaEvents, _resetLegacyMarkerScanGateForTests } from '../../src/services/training-agenda-reconciliation';
+import {
+  reconcileOrphanedTrainingAgendaEvents,
+  resolveTrainingTenantIdFromAgendaScope,
+  _resetLegacyMarkerScanGateForTests,
+} from '../../src/services/training-agenda-reconciliation';
 
 function legacyTrainingMarkerEvent(id: string, planId = 43) {
   return {
@@ -70,6 +74,16 @@ function legacyTrainingMarkerEvent(id: string, planId = 43) {
 
 describe('training-agenda-reconciliation', () => {
   let db: Database.Database;
+
+  it('accepts canonical numeric tenant scopes and rejects opaque or ambiguous Secretary scopes', () => {
+    expect(resolveTrainingTenantIdFromAgendaScope(42)).toBe(42);
+    expect(resolveTrainingTenantIdFromAgendaScope('42')).toBe(42);
+    expect(resolveTrainingTenantIdFromAgendaScope('tenant-acme')).toBeNull();
+    expect(resolveTrainingTenantIdFromAgendaScope('042')).toBeNull();
+    expect(resolveTrainingTenantIdFromAgendaScope('0')).toBeNull();
+    expect(resolveTrainingTenantIdFromAgendaScope(Number.MAX_SAFE_INTEGER + 1)).toBeNull();
+    expect(resolveTrainingTenantIdFromAgendaScope(String(Number.MAX_SAFE_INTEGER + 1))).toBeNull();
+  });
 
   beforeEach(() => {
     // Reset one-shot implementations as well as call history. The isolated-

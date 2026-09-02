@@ -1838,7 +1838,11 @@ export function getDecisionMetricsDaily(tenantId: number, opts: {
  * the in-memory list filter hides); unimplementedActionableCtas is a tripwire — computeActionability
  * downgrades not-implemented primaries to read_only, so this is 0 unless that invariant regresses.
  */
-export function getDecisionReleaseGateStatus(userId: number, tenantId = userId): DecisionReleaseGateStatus {
+export function getDecisionReleaseGateStatus(
+  userId: number,
+  tenantId = userId,
+  badgeBaseline: { expectedBadgeCount?: number; canonicalUnreadCount?: number } = {},
+): DecisionReleaseGateStatus {
   assertScope(userId, tenantId, 'decision_release_gate_status', {});
   ensureDecisionCenterTables();
   const expiredButVisible = (getDb().prepare(`
@@ -1855,10 +1859,23 @@ export function getDecisionReleaseGateStatus(userId: number, tenantId = userId):
     const primary = item.recommendedAction;
     return Boolean(actionable && primary && !isDecisionActionExecutable(primary.id));
   }).length;
-  const notificationReliability = getNotificationReliabilityDashboard(userId, tenantId);
+  // The client badge represents the unified inbox, while Decision Center can
+  // synchronously count only its own notification_center_items. A caller that
+  // has already built the unified inbox summary may supply that contract-
+  // aligned baseline; otherwise badge health is deliberately not evaluated by
+  // this synchronous gate. The notifications reliability HTTP route remains
+  // the authoritative unified-badge check.
+  const hasContractAlignedBadgeBaseline = Number.isInteger(badgeBaseline.expectedBadgeCount);
+  const notificationReliability = getNotificationReliabilityDashboard(
+    userId,
+    tenantId,
+    hasContractAlignedBadgeBaseline ? badgeBaseline : {},
+  );
   const unsupportedNotificationActions = notificationReliability.quality.unsupportedActionBlockedCount;
   const deadDeeplinks = notificationReliability.quality.deadDeeplinkCount;
-  const badgeDrift = notificationReliability.badge.drift;
+  const badgeDrift = hasContractAlignedBadgeBaseline
+    ? notificationReliability.badge.drift
+    : null;
   const genericMutatingActionSuccesses = notificationReliability.quality.genericMutatingActionSuccessCount;
   const apnsMutatingActionsExposed = listNotificationApnsActionExposures()
     .filter((entry) => !isDecisionActionAllowedFromApns(entry.actionId))
