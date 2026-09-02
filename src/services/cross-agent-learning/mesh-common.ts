@@ -103,7 +103,7 @@ function eventDateInTimezone(value: string, timezone?: string | null): string | 
   const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
   const parsed = DateTime.fromISO(
     raw,
-    hasExplicitZone ? { setZone: true } : { zone: resolveTrainingTimezone() },
+    hasExplicitZone ? { setZone: true } : { zone: resolveTrainingTimezone(timezone) },
   );
   if (!parsed.isValid) return null;
   return parsed.setZone(resolveTrainingTimezone(timezone)).toISODate();
@@ -122,18 +122,24 @@ export function roundTo(value: number, digits: number): number {
   return Math.round(value * factor) / factor;
 }
 
-export function safely<T>(fn: () => T, fallback: T): T {
+export function safely<T>(fn: () => T, fallback: T, onError?: (error: unknown) => void): T {
   try {
     return fn();
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return fallback;
   }
 }
 
-export async function safelyAsync<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+export async function safelyAsync<T>(
+  fn: () => Promise<T>,
+  fallback: T,
+  onError?: (error: unknown) => void,
+): Promise<T> {
   try {
     return await fn();
-  } catch {
+  } catch (error) {
+    onError?.(error);
     return fallback;
   }
 }

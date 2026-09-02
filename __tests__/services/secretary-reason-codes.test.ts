@@ -17,6 +17,8 @@ describe('SecretaryReasonCode union', () => {
       'compressed_to_fit_capacity',
       'deferred_due_to_current_capacity',
       'unscheduled_no_capacity',
+      'removed_from_calendar_by_user',
+      'priority_preempted_by_higher_rank',
     ];
     for (const code of outcomes) {
       expect(isKnownReasonCode(code)).toBe(true);
@@ -58,6 +60,7 @@ describe('SecretaryReasonCode union', () => {
       'high_priority_intent',
       'deadline_present',
       'priority_preemption_candidate',
+      'priority_preemption_applied',
     ];
     for (const code of modifiers) {
       expect(isKnownReasonCode(code)).toBe(true);

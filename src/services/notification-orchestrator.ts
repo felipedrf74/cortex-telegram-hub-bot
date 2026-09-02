@@ -54,6 +54,12 @@ import {
 // content-notification-store only imports this module lazily (await import),
 // so this static edge does not create a require cycle.
 import { listUnreadContentNotificationIdsByTypes } from './content-notification-store';
+import {
+  claimScheduledJobExecution,
+  completeScheduledJobExecution,
+  isScheduledJobExecutionLeaseActive,
+  renewScheduledJobExecution,
+} from './scheduled-job-execution-state';
 
 export type NotificationSourceSkill =
   | 'secretary'
@@ -578,6 +584,32 @@ function appNowIso(): string {
 export function ensureNotificationTables(): void {
   const db = getDb();
   db.exec(`
+    -- Migration 275 owns this shared operational table in production. Keep
+    -- the same additive definition here because this service's isolated test
+    -- databases are intentionally bootstrapped through ensureNotificationTables.
+    CREATE TABLE IF NOT EXISTS scheduled_job_execution_state (
+      job_name TEXT NOT NULL CHECK (length(job_name) BETWEEN 1 AND 120),
+      scope_key TEXT NOT NULL CHECK (length(scope_key) BETWEEN 1 AND 240),
+      lease_owner TEXT,
+      lease_token TEXT,
+      lease_expires_at TEXT,
+      last_started_at TEXT,
+      last_completed_at TEXT,
+      last_succeeded_at TEXT,
+      last_result TEXT CHECK (last_result IS NULL OR last_result IN ('success', 'skipped', 'failed')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (job_name, scope_key),
+      CHECK (
+        (lease_owner IS NULL AND lease_token IS NULL AND lease_expires_at IS NULL)
+        OR
+        (lease_owner IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+      )
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_job_execution_active_lease
+      ON scheduled_job_execution_state(lease_expires_at)
+      WHERE lease_token IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_scheduled_job_execution_checkpoint
+      ON scheduled_job_execution_state(job_name, last_succeeded_at);
     CREATE TABLE IF NOT EXISTS notification_profiles (
       user_id INTEGER NOT NULL,
       tenant_id INTEGER NOT NULL,
@@ -1373,6 +1405,82 @@ function sourceSkillEventForIntent(intent: NotificationIntentRecord): { sourceSk
   return null;
 }
 
+const NOTIFICATION_DELIVERY_JOB_NAME = 'notification:deliver_intent';
+const NOTIFICATION_DELIVERY_LEASE_TTL_MS = 10 * 60_000;
+const NOTIFICATION_DELIVERY_LEASE_HEARTBEAT_MS = Math.floor(
+  NOTIFICATION_DELIVERY_LEASE_TTL_MS / 3,
+);
+
+export function notificationIntentDeliveryScopeKey(
+  intentId: string,
+  userId: number,
+  tenantId = userId,
+): string {
+  assertScope(userId, tenantId, 'notification_intent_delivery_scope', { intentId });
+  if (typeof intentId !== 'string' || intentId.trim() === '') {
+    throw new Error('notification delivery intentId is required');
+  }
+  const intentHash = createHash('sha256').update(intentId).digest('hex').slice(0, 32);
+  return `tenant:${tenantId}:user:${userId}:intent:${intentHash}`;
+}
+
+async function withNotificationIntentDeliveryLease<T>(
+  intentId: string,
+  userId: number,
+  tenantId: number,
+  work: () => Promise<T>,
+): Promise<T> {
+  ensureNotificationTables();
+  const db = getDb();
+  const claim = claimScheduledJobExecution({
+    jobName: NOTIFICATION_DELIVERY_JOB_NAME,
+    scopeKey: notificationIntentDeliveryScopeKey(intentId, userId, tenantId),
+    leaseTtlMs: NOTIFICATION_DELIVERY_LEASE_TTL_MS,
+  }, db);
+  if (claim.kind !== 'claimed') {
+    throw new Error(`notification delivery already in progress for ${intentId}`);
+  }
+
+  const heartbeatState = { leaseLost: false };
+  const heartbeat = setInterval(() => {
+    if (heartbeatState.leaseLost) return;
+    try {
+      heartbeatState.leaseLost = !renewScheduledJobExecution(
+        claim,
+        db,
+        new Date(),
+        NOTIFICATION_DELIVERY_LEASE_TTL_MS,
+      );
+    } catch {
+      heartbeatState.leaseLost = true;
+    }
+  }, NOTIFICATION_DELIVERY_LEASE_HEARTBEAT_MS);
+  heartbeat.unref();
+
+  try {
+    const result = await work();
+    if (
+      heartbeatState.leaseLost
+      || !isScheduledJobExecutionLeaseActive(claim, db)
+      || !completeScheduledJobExecution(claim, 'success', db)
+    ) {
+      throw new Error(`notification delivery lease lost for ${intentId}`);
+    }
+    return result;
+  } catch (error) {
+    try {
+      if (!completeScheduledJobExecution(claim, 'failed', db)) {
+        logger.warn({ intentId, userId, tenantId }, 'Notification delivery lease was replaced before failure checkpoint');
+      }
+    } catch (completionError) {
+      logger.warn({ err: completionError, intentId, userId, tenantId }, 'Notification delivery lease failure checkpoint could not be written');
+    }
+    throw error;
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
 export async function evaluateNotificationIntent(
   intentId: string,
   userId: number,
@@ -1701,6 +1809,220 @@ export function resumeNotificationIntentDelivery(
   });
 }
 
+export interface NotificationIntentDeliveryResult {
+  intentId: string;
+  status: 'evaluated' | 'already_processed' | 'deferred' | 'retry_succeeded' | 'terminal';
+  centerItemCount: number;
+  acceptedPushCount: number;
+}
+
+function isTransientNotificationAttempt(attempt: DeliveryAttempt | null): boolean {
+  return attempt?.status === 'failed'
+    && (attempt.errorCode === 'apns_delivery_transient' || attempt.errorCode === 'apns_delivery_exception');
+}
+
+/**
+ * Process one durable delivery job without sweeping unrelated users or
+ * intents. The first evaluation owns center-item creation; retries reuse that
+ * exact item and only retry provider failures known to be transient.
+ */
+export function processNotificationIntentDelivery(
+  intentId: string,
+  userId: number,
+  tenantId = userId,
+): Promise<NotificationIntentDeliveryResult> {
+  assertScope(userId, tenantId, 'process_notification_intent_delivery', { intentId });
+  if (typeof intentId !== 'string' || intentId.trim() === '') {
+    throw new Error('notification delivery intentId is required');
+  }
+
+  return withUserEvaluationLock(userId, tenantId, () => withNotificationIntentDeliveryLease(
+    intentId,
+    userId,
+    tenantId,
+    async () => {
+      const db = getDb();
+      const intentRow = db.prepare(`
+        SELECT * FROM notification_intents
+         WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+      `).get(intentId, userId, tenantId) as any;
+      if (!intentRow) throw new Error('notification intent not found for authenticated user');
+      const intent = mapIntent(intentRow);
+
+    const counts = (): { centerItemCount: number; acceptedPushCount: number } => {
+      const center = db.prepare(`
+        SELECT COUNT(*) AS count FROM notification_center_items
+         WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+      `).get(intentId, userId, tenantId) as { count: number };
+      const accepted = db.prepare(`
+        SELECT COUNT(*) AS count FROM notification_delivery_attempts
+         WHERE intent_id = ? AND user_id = ? AND tenant_id = ? AND status = 'sent'
+      `).get(intentId, userId, tenantId) as { count: number };
+      return { centerItemCount: center.count, acceptedPushCount: accepted.count };
+    };
+
+    let currentCounts = counts();
+    if (currentCounts.acceptedPushCount > 0) {
+      return { intentId, status: 'already_processed', ...currentCounts };
+    }
+
+    const itemRow = db.prepare(`
+      SELECT * FROM notification_center_items
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(intentId, userId, tenantId) as any;
+    const logRow = db.prepare(`
+      SELECT * FROM notification_decision_logs
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(intentId, userId, tenantId) as any;
+
+    if (!logRow) {
+      const precommittedItem = itemRow
+        ? getNotificationCenterItem(itemRow.item_id, userId, tenantId) ?? undefined
+        : undefined;
+      const evaluated = await evaluateNotificationIntent(
+        intentId,
+        userId,
+        tenantId,
+        {},
+        precommittedItem,
+      );
+      if (evaluated.deliveryAttempts.some((attempt) => isTransientNotificationAttempt(attempt))) {
+        throw new Error(`notification delivery retryable provider failure for ${intentId}`);
+      }
+      currentCounts = counts();
+      return { intentId, status: 'evaluated', ...currentCounts };
+    }
+
+    const log = mapDecisionLog(logRow);
+    if (!itemRow || log.decision !== 'apns_delivery_failed') {
+      return {
+        intentId,
+        status: log.decision === 'quiet_hours_delayed' || log.decision === 'digest'
+          ? 'deferred'
+          : 'terminal',
+        ...currentCounts,
+      };
+    }
+
+    const latestAttemptRow = db.prepare(`
+      SELECT * FROM notification_delivery_attempts
+       WHERE intent_id = ? AND user_id = ? AND tenant_id = ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(intentId, userId, tenantId) as any;
+    const latestAttempt = latestAttemptRow ? mapDeliveryAttempt(latestAttemptRow) : null;
+    if (!isTransientNotificationAttempt(latestAttempt)) {
+      return { intentId, status: 'terminal', ...currentCounts };
+    }
+
+    const item = mapCenterItem(itemRow);
+    const profile = getOrCreateNotificationProfile(userId, tenantId);
+    const blockCause = notificationPushBlockCause(intent, profile);
+    if (isRetryablePushBlock(blockCause)) {
+      throw new Error(`notification delivery retryable suppression-state failure for ${intentId}`);
+    }
+
+    const updateLog = (
+      decision: NotificationDecision,
+      reason: string,
+      scheduledFor: string | null,
+      sentAt: string | null,
+      attemptIds: string[],
+    ): void => {
+      db.prepare(`
+        UPDATE notification_decision_logs
+           SET decision = ?, reason = ?, scheduled_for = ?, sent_at = ?, delivery_attempt_ids_json = ?
+         WHERE decision_log_id = ? AND user_id = ? AND tenant_id = ? AND sent_at IS NULL
+      `).run(
+        decision,
+        reason,
+        scheduledFor,
+        sentAt,
+        JSON.stringify(attemptIds),
+        log.decisionLogId,
+        userId,
+        tenantId,
+      );
+    };
+    const priorAttemptIds = log.deliveryAttemptIds;
+
+    if (!profile.pushEnabled || blockCause !== null) {
+      updateLog(
+        'in_app_only',
+        !profile.pushEnabled
+          ? 'delivery retry withheld: push disabled by user preference'
+          : `delivery retry withheld: ${pushBlockReason(blockCause!, intent)}`,
+        null,
+        null,
+        priorAttemptIds,
+      );
+      return { intentId, status: 'terminal', ...counts() };
+    }
+
+    const effectivePriority = normalizePriorityForPolicy(intent.priority, profile);
+    const quietHours = quietHoursDecision(profile, intent, effectivePriority);
+    if (quietHours.delayed) {
+      updateLog('quiet_hours_delayed', quietHours.reason, quietHours.scheduledFor, null, priorAttemptIds);
+      return { intentId, status: 'deferred', ...counts() };
+    }
+
+    const interruptBudget = evaluateInterruptBudget(intent, effectivePriority, profile);
+    if (!interruptBudget.allowed) {
+      updateLog(
+        'digest',
+        `delivery retry deferred: interrupt budget: ${interruptBudget.reason}`,
+        nextDigestTime(profile, intent.type).toISO(),
+        null,
+        priorAttemptIds,
+      );
+      return { intentId, status: 'deferred', ...counts() };
+    }
+
+    const copyLanguage = notificationCopyLanguage(userId);
+    const payload = {
+      title: safeNotificationTitle(intent, copyLanguage),
+      body: buildPrivacySafeBody(intent, copyLanguage),
+      deeplink: intent.deeplink,
+      actions: intent.actionButtons,
+      interruptionLevel: interruptionLevelForPriority(effectivePriority),
+    };
+    const retryAttempt = await attemptPushDelivery(
+      intent,
+      item.itemId,
+      payload,
+      profile,
+      `retry:${priorAttemptIds.length}`,
+    );
+    const attemptIds = retryAttempt.attemptId === null
+      ? priorAttemptIds
+      : [...priorAttemptIds, retryAttempt.attemptId];
+
+    if (retryAttempt.status === 'sent') {
+      updateLog('sent_push', 'APNs accepted privacy-safe payload on durable retry', null, retryAttempt.sentAt, attemptIds);
+      return { intentId, status: 'retry_succeeded', ...counts() };
+    }
+    if (retryAttempt.status === 'failed' && isTransientNotificationAttempt(retryAttempt)) {
+      updateLog('apns_delivery_failed', 'transient APNs delivery failure; durable retry retained', null, null, attemptIds);
+      throw new Error(`notification delivery retryable provider failure for ${intentId}`);
+    }
+
+    updateLog(
+      retryAttempt.status === 'blocked_missing_device_token'
+        ? 'blocked_missing_device_token'
+        : 'in_app_only',
+      retryAttempt.status === 'blocked_missing_device_token'
+        ? 'durable retry found no active device token'
+        : 'durable retry could not reach APNs',
+      null,
+      null,
+      attemptIds,
+    );
+      return { intentId, status: 'terminal', ...counts() };
+    },
+  ));
+}
+
 // Engagement gate config: suppress daily-digest pushes after this many
 // consecutive unread digests (0 disables). Reading any digest resets the
 // streak naturally.
@@ -1762,11 +2084,11 @@ export interface NotificationReleaseSweepSummary {
   failed: number;
 }
 
-// Single-flight latch for the release sweep (NOTIF-RELEASE-CAS). Both the
-// */15 cron and every deliver_notification event job call
-// releaseDueNotificationDeliveries() in the same PM2 process; without the
-// latch two overlapping sweeps can SELECT the same due decision-log rows and
-// double-push them before either UPDATE lands.
+// Process-local single-flight latch for the periodic delayed/digest release
+// sweep (NOTIF-RELEASE-CAS). Exact deliver_notification event jobs bypass this
+// sweep and process only their durable intentId; the sweep still needs a latch
+// because overlapping cron/manual invocations could otherwise SELECT the same
+// due decision-log rows before either UPDATE lands.
 let releaseSweepInFlight: Promise<NotificationReleaseSweepSummary> | null = null;
 
 export async function releaseDueNotificationDeliveries(now = new Date()): Promise<NotificationReleaseSweepSummary> {
@@ -1921,7 +2243,7 @@ async function runReleaseDueNotificationDeliveriesSweep(now: Date): Promise<Noti
       const digestIntent = mapIntent(carrier);
       const payload = assembleDailyDigest(
         carrier.user_id, carrier.tenant_id, pushable.length, now,
-        typeof reportRow?.body === 'string' ? reportRow.body : null,
+        reportRow ? buildPrivacySafeBody(digestIntent) : null,
       );
       // The old sweep sent "N Nexus updates are ready" based on the number of
       // QUEUED LOG ROWS, so a user who cleared everything overnight still got
@@ -2156,6 +2478,7 @@ export interface NotificationRetentionSummary {
   reliabilityEvents: number;
   engagementEvents: number;
   priorityShadow: number;
+  deliveryExecutionStates: number;
 }
 
 export const NOTIFICATION_RETENTION_DAYS = {
@@ -2172,6 +2495,7 @@ export const NOTIFICATION_RETENTION_DAYS = {
    * without bound (~480 B/row including migration 270's two indexes).
    */
   priorityShadow: 90,
+  deliveryExecutionStates: 30,
 } as const;
 
 /**
@@ -2195,7 +2519,7 @@ export function pruneNotificationRetention(now = new Date()): NotificationRetent
   const summary: NotificationRetentionSummary = {
     centerItems: 0, intents: 0, decisionLogs: 0,
     deliveryAttempts: 0, reliabilityEvents: 0, engagementEvents: 0,
-    priorityShadow: 0,
+    priorityShadow: 0, deliveryExecutionStates: 0,
   };
 
   const run = (label: keyof NotificationRetentionSummary, sql: string, ...params: unknown[]): void => {
@@ -2232,6 +2556,14 @@ export function pruneNotificationRetention(now = new Date()): NotificationRetent
   run('priorityShadow',
     `DELETE FROM notification_priority_shadow WHERE created_at < ?`,
     cutoff(NOTIFICATION_RETENTION_DAYS.priorityShadow));
+  run('deliveryExecutionStates',
+    `DELETE FROM scheduled_job_execution_state
+      WHERE job_name = ?
+        AND updated_at < ?
+        AND (lease_token IS NULL OR lease_expires_at <= ?)`,
+    NOTIFICATION_DELIVERY_JOB_NAME,
+    cutoff(NOTIFICATION_RETENTION_DAYS.deliveryExecutionStates),
+    now.toISOString());
 
   const itemCutoff = cutoff(NOTIFICATION_RETENTION_DAYS.terminalItems);
   run('centerItems',
@@ -4231,8 +4563,16 @@ function defaultNotificationExpiryHours(type: NotificationIntentType, priority: 
 function effectiveNotificationPrivacyPolicy(
   requested: NotificationPrivacyPolicy | undefined,
   contractPolicy: NotificationPrivacyPolicy,
+  type?: NotificationIntentType,
 ): NotificationPrivacyPolicy {
   if (!requested) return contractPolicy;
+  // A report producer may opt into public lock-screen copy only for the two
+  // composed digest types. The body is still truncated by
+  // buildPrivacySafeBody; every other standard contract continues to reject
+  // a caller-requested privacy downgrade.
+  if ((type === 'daily_digest' || type === 'weekly_review') && requested === 'public') {
+    return 'public';
+  }
   if (contractPolicy === 'public') return requested;
   if (contractPolicy === 'standard') return requested === 'public' ? 'standard' : requested;
   return requested === contractPolicy ? requested : contractPolicy;
@@ -4333,7 +4673,11 @@ function normalizeIntent(input: NotificationIntentInput): NotificationIntentReco
     requiresUserAction,
     decisionDeadline: input.decisionDeadline ?? null,
     deliveryPolicy: missingActionSourceScope ? 'digest_only' : input.deliveryPolicy ?? deliveryPolicyForNotificationContract(contract),
-    privacyPolicy: effectiveNotificationPrivacyPolicy(input.privacyPolicy, contract.privacySafeCopyPolicy),
+    privacyPolicy: effectiveNotificationPrivacyPolicy(
+      input.privacyPolicy,
+      contract.privacySafeCopyPolicy,
+      input.type,
+    ),
     promotional: input.promotional === true,
     decisionContext,
     status: 'pending',
@@ -4424,9 +4768,9 @@ function rowWithIntentJoinAliases(row: any, intent: NotificationIntentRecord): a
 
 /**
  * True when the user has at least one push-capable device token. Uses the
- * same lookup as attemptPushDelivery's no-token branch so producer-side
- * gates (e.g. report-document-store behind
- * NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN) agree with the orchestrator.
+ * same lookup as attemptPushDelivery's no-token branch. Producers must not
+ * use this to suppress NotificationIntent creation: the orchestrator owns
+ * push eligibility while the intent remains the canonical center item.
  * Fails open: on lookup errors the orchestrator keeps making the call.
  */
 export function userHasActivePushDeviceToken(userId: number): boolean {
@@ -4627,14 +4971,6 @@ async function attemptPushDelivery(
       });
       return completedAttempt;
     }
-    if (result.unregistered.length > 0) {
-      return completeCanonicalPushDeliveryAttempt(
-        deliveryClaim.attemptId,
-        'failed',
-        '410',
-        'apns_token_unregistered',
-      );
-    }
     if (result.skipped > 0) {
       if (expirationAt && Date.parse(expirationAt) <= Date.now()) {
         return completeCanonicalPushDeliveryAttempt(
@@ -4649,6 +4985,27 @@ async function attemptPushDelivery(
         'blocked_missing_credentials',
         null,
         'apns_credentials_missing',
+      );
+    }
+    if (result.retriable > 0) {
+      return completeCanonicalPushDeliveryAttempt(
+        deliveryClaim.attemptId,
+        'failed',
+        'retryable',
+        'apns_delivery_transient',
+      );
+    }
+    // A fan-out can retire one device with 410 while another device fails
+    // transiently. The 410 token has already been revoked above, so preserve
+    // the durable retry for the still-active companion instead of making the
+    // aggregate attempt terminal. On retry the sender loads active tokens
+    // again, which excludes the revoked token and avoids re-addressing it.
+    if (result.unregistered.length > 0) {
+      return completeCanonicalPushDeliveryAttempt(
+        deliveryClaim.attemptId,
+        'failed',
+        '410',
+        'apns_token_unregistered',
       );
     }
     return completeCanonicalPushDeliveryAttempt(
@@ -5149,18 +5506,17 @@ function hasDecisionSourceScope(intent: NotificationIntentRecord): boolean {
   return intent.type === 'sync_failure' || intent.type === 'security_account';
 }
 
-/** Digest bodies are assembled server-side from counts and schedule facts. */
+/**
+ * Digest copy may bypass the ordinary skill redaction only when its producer
+ * explicitly classifies it as public. Scheduled report summaries are private
+ * authenticated-app content, so their intent uses `sensitive` and is rewritten
+ * before both immediate and deferred APNs delivery.
+ */
 const DIGEST_BODY_TYPES = new Set<NotificationIntentType>(['daily_digest', 'weekly_review']);
 
 function buildPrivacySafeBody(intent: NotificationIntentRecord, lang?: Lang): string {
   const language = lang ?? notificationCopyLanguage(intent.userId);
-  // A digest body is composed by assembleDailyDigest from counts and clock
-  // times — never from a producer's free text, an email subject, a task title
-  // or an amount. It is therefore already privacy-safe by construction, and
-  // rewriting it to a fixed string is what made the digest say nothing useful
-  // ("3 Nexus updates are ready"). The composition rules are the guarantee
-  // here, so this branch is only safe while assembleDailyDigest owns the copy.
-  if (DIGEST_BODY_TYPES.has(intent.type)) {
+  if (DIGEST_BODY_TYPES.has(intent.type) && intent.privacyPolicy === 'public') {
     return truncate(intent.body, 120);
   }
   if (intent.privacyPolicy === 'financial' || intent.sourceSkill === 'finance') {

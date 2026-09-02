@@ -41,6 +41,11 @@ const mockMarkReportRead = vi.fn();
 const mockSetPushPreference = vi.fn();
 const mockGetPushPreferences = vi.fn();
 const mockCreateCalendarEvent = vi.fn();
+const mockExecuteSecretaryCalendarCommand = vi.fn();
+const mockInspectSecretaryCalendarCommandReplay = vi.fn();
+const mockExecuteSecretaryCalendarMutation = vi.fn();
+const mockInspectSecretaryCalendarMutationReplay = vi.fn();
+const mockNoteLegacySecretaryCalendarMutationWithoutKey = vi.fn();
 const mockUpdateCalendarEvent = vi.fn();
 const mockDeleteCalendarEvent = vi.fn();
 const mockTaskProvider = {
@@ -222,6 +227,20 @@ vi.mock('../../src/services/unified-calendar', () => ({
   isAnyCalendarConfigured: vi.fn(() => false),
   hasConnectedCalendarForUser: vi.fn(() => true),
   hasWritableCalendarForUser: vi.fn(() => true),
+}));
+
+vi.mock('../../src/services/secretary-calendar-command-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/secretary-calendar-command-service')>()),
+  SecretaryCalendarCommandError: class SecretaryCalendarCommandError extends Error {},
+  executeSecretaryCalendarCommand: (...args: unknown[]) => mockExecuteSecretaryCalendarCommand(...args),
+  inspectSecretaryCalendarCommandReplay: (...args: unknown[]) => mockInspectSecretaryCalendarCommandReplay(...args),
+  executeSecretaryCalendarMutation: (...args: unknown[]) => mockExecuteSecretaryCalendarMutation(...args),
+  inspectSecretaryCalendarMutationReplay: (...args: unknown[]) => mockInspectSecretaryCalendarMutationReplay(...args),
+  noteLegacySecretaryCalendarMutationWithoutKey: (...args: unknown[]) => mockNoteLegacySecretaryCalendarMutationWithoutKey(...args),
+  resolveSecretaryCalendarIdempotencyKey: (value: unknown) => ({
+    idempotencyKey: typeof value === 'string' && value.trim() ? value.trim() : 'legacy-smoke-key',
+    legacyMissingKey: !(typeof value === 'string' && value.trim()),
+  }),
 }));
 
 vi.mock('../../src/services/task-store/task-router', () => ({
@@ -511,6 +530,11 @@ describe('app-facing happy path smoke', () => {
     mockSetPushPreference.mockReset();
     mockGetPushPreferences.mockReset();
     mockCreateCalendarEvent.mockReset();
+    mockExecuteSecretaryCalendarCommand.mockReset();
+    mockInspectSecretaryCalendarCommandReplay.mockReset();
+    mockExecuteSecretaryCalendarMutation.mockReset();
+    mockInspectSecretaryCalendarMutationReplay.mockReset();
+    mockNoteLegacySecretaryCalendarMutationWithoutKey.mockReset();
     mockUpdateCalendarEvent.mockReset();
     mockDeleteCalendarEvent.mockReset();
     Object.values(mockTaskProvider).forEach((fn) => fn.mockReset());
@@ -682,6 +706,35 @@ describe('app-facing happy path smoke', () => {
       end: `${todayIso}T10:00:00.000Z`,
       source: 'google',
       color: '#34C759',
+    });
+    mockInspectSecretaryCalendarCommandReplay.mockReturnValue(null);
+    mockInspectSecretaryCalendarMutationReplay.mockReturnValue(null);
+    mockExecuteSecretaryCalendarCommand.mockResolvedValue({
+      status: 'succeeded',
+      replayed: false,
+      warningCodes: [],
+      event: {
+        id: 'evt-new',
+        summary: 'Bloco de foco',
+        start: `${todayIso}T09:00:00.000Z`,
+        end: `${todayIso}T10:00:00.000Z`,
+        source: 'google',
+        color: '#34C759',
+      },
+    });
+    mockExecuteSecretaryCalendarMutation.mockImplementation(async (input: any) => {
+      if (input.operation === 'delete') {
+        await mockDeleteCalendarEvent(input.eventId, input.source, input.userId);
+        return { status: 'succeeded', replayed: false, deleted: true, warningCodes: [] };
+      }
+      const event = await mockUpdateCalendarEvent({
+        event_id: input.eventId,
+        new_title: input.title,
+        new_start: input.start,
+        new_end: input.end,
+        new_description: input.description,
+      }, input.source, input.userId);
+      return { status: 'succeeded', replayed: false, event, warningCodes: [] };
     });
     mockUpdateCalendarEvent.mockResolvedValue({
       id: 'evt-1',
@@ -1148,10 +1201,14 @@ describe('app-facing happy path smoke', () => {
             source: 'google',
             color: '#34C759',
           });
-          expect(mockCreateCalendarEvent).toHaveBeenCalledWith(
-            expect.objectContaining({ title: 'Bloco de foco' }),
-            'google',
-            7001,
+          expect(mockExecuteSecretaryCalendarCommand).toHaveBeenCalledWith(
+            expect.objectContaining({
+              userId: 7001,
+              tenantId: 7001,
+              idempotencyKey: 'legacy-smoke-key',
+              title: 'Bloco de foco',
+              source: 'google',
+            }),
           );
         },
       },

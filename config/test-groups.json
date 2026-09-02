@@ -1078,6 +1078,7 @@
         "__tests__/api/content*.test.ts",
         "__tests__/integration/content*.test.ts",
         "__tests__/services/content*.test.ts",
+        "__tests__/services/mesh-common.test.ts",
         "__tests__/services/channel-learner-*.test.ts",
         "__tests__/services/creator-config-eval.test.ts",
         "__tests__/services/cross-agent-learning-contract.test.ts",

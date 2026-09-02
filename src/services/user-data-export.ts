@@ -577,6 +577,91 @@ export interface FullUserExport {
     createdAt: string;
     updatedAt: string;
   }>;
+  secretaryRoutineProfile: Array<{
+    status: 'configured';
+    version: number;
+    timezone: string;
+    workingWindows: unknown[];
+    preferredFocusWindows: unknown[];
+    protectedRoutines: unknown[];
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  secretaryRoutineIdempotencyReceipts: Array<{
+    idempotencyKey: string;
+    response: unknown;
+    createdAt: string;
+    expiresAt: string;
+  }>;
+  secretaryCalendarCommandReceipts: Array<{
+    idempotencyKey: string;
+    providerSource: string;
+    command: unknown;
+    state: string;
+    response: unknown;
+    createdAt: string;
+    updatedAt: string;
+    expiresAt: string;
+  }>;
+  secretaryCalendarCommandPayloads: Array<{
+    agendaItemId: string;
+    command: unknown;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  secretaryCalendarMutationReceipts: Array<{
+    idempotencyKey: string;
+    operation: string;
+    providerSource: string;
+    command: unknown;
+    state: string;
+    response: unknown;
+    createdAt: string;
+    updatedAt: string;
+    expiresAt: string;
+  }>;
+  reportDocumentDispatchReceipts: Array<{
+    reportType: string;
+    dispatchKey: string;
+    reportDocumentId: number;
+    createdAt: string;
+  }>;
+  scheduledReportCompletionReceipts: Array<{
+    jobId: string;
+    reportJob: string;
+    localDate: string;
+    attempts: number;
+    completedAt: string;
+    createdAt: string;
+  }>;
+  planningRecomputeReceipts: Array<{
+    idempotencyKeyHash: string;
+    requestFingerprint: string;
+    status: string;
+    snapshotId: string | null;
+    response: unknown;
+    lastErrorCode: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  reportScheduleExecutionState: Array<{
+    jobName: string;
+    scopeKey: string;
+    lastStartedAt: string | null;
+    lastCompletedAt: string | null;
+    lastSucceededAt: string | null;
+    lastResult: string | null;
+    updatedAt: string;
+  }>;
+  notificationDeliveryExecutionState: Array<{
+    jobName: string;
+    scopeKey: string;
+    lastStartedAt: string | null;
+    lastCompletedAt: string | null;
+    lastSucceededAt: string | null;
+    lastResult: string | null;
+    updatedAt: string;
+  }>;
   skillMemories: Array<{
     memoryId: string;
     skillId: string;
@@ -1121,6 +1206,152 @@ export function exportAllUserData(userId: number): FullUserExport {
     WHERE owner_user_id = ?
     ORDER BY created_at
   `, userId);
+  const secretaryRoutineProfile = safeAll(db, `
+    SELECT 'configured' as status,
+           profile.version,
+           account_user.timezone as timezone,
+           profile.working_windows_json as workingWindows,
+           profile.preferred_focus_windows_json as preferredFocusWindows,
+           profile.protected_routines_json as protectedRoutines,
+           profile.created_at as createdAt,
+           profile.updated_at as updatedAt
+      FROM secretary_routine_profiles profile
+      JOIN users account_user ON account_user.id = profile.user_id
+     WHERE profile.user_id = ? AND profile.tenant_id = ?
+  `, userId, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    workingWindows: parseExportJson(row.workingWindows),
+    preferredFocusWindows: parseExportJson(row.preferredFocusWindows),
+    protectedRoutines: parseExportJson(row.protectedRoutines),
+  })) as FullUserExport['secretaryRoutineProfile'];
+  const secretaryRoutineIdempotencyReceipts = safeAll(db, `
+    SELECT idempotency_key as idempotencyKey,
+           response_json as response,
+           created_at as createdAt,
+           expires_at as expiresAt
+      FROM secretary_routine_idempotency_receipts
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY created_at
+  `, userId, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    response: parseExportJson(row.response),
+  })) as FullUserExport['secretaryRoutineIdempotencyReceipts'];
+  const secretaryCalendarCommandReceipts = safeAll(db, `
+    SELECT idempotency_key as idempotencyKey,
+           provider_source as providerSource,
+           command_json as command,
+           state,
+           response_json as response,
+           created_at as createdAt,
+           updated_at as updatedAt,
+           expires_at as expiresAt
+      FROM secretary_calendar_command_receipts
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY created_at
+  `, userId, String(userId)).map((row: Record<string, unknown>) => ({
+    ...row,
+    command: parseExportJson(row.command),
+    response: parseExportJson(row.response),
+  })) as FullUserExport['secretaryCalendarCommandReceipts'];
+  const secretaryCalendarCommandPayloads = safeAll(db, `
+    SELECT agenda_item_id as agendaItemId,
+           command_json as command,
+           created_at as createdAt,
+           updated_at as updatedAt
+      FROM secretary_calendar_command_payloads
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY created_at
+  `, userId, String(userId)).map((row: Record<string, unknown>) => ({
+    ...row,
+    command: parseExportJson(row.command),
+  })) as FullUserExport['secretaryCalendarCommandPayloads'];
+  const secretaryCalendarMutationReceipts = safeAll(db, `
+    SELECT idempotency_key as idempotencyKey,
+           operation,
+           provider_source as providerSource,
+           command_json as command,
+           state,
+           response_json as response,
+           created_at as createdAt,
+           updated_at as updatedAt,
+           expires_at as expiresAt
+      FROM secretary_calendar_mutation_receipts
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY created_at
+  `, userId, String(userId)).map((row: Record<string, unknown>) => ({
+    ...row,
+    command: parseExportJson(row.command),
+    response: parseExportJson(row.response),
+  })) as FullUserExport['secretaryCalendarMutationReceipts'];
+  const reportDocumentDispatchReceipts = safeAll(db, `
+    SELECT report_type as reportType,
+           dispatch_key as dispatchKey,
+           report_document_id as reportDocumentId,
+           created_at as createdAt
+      FROM report_document_dispatch_receipts
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY created_at, report_document_id
+  `, userId, userId) as FullUserExport['reportDocumentDispatchReceipts'];
+  const scheduledReportCompletionReceipts = safeAll(db, `
+    SELECT job_id as jobId,
+           report_job as reportJob,
+           local_date as localDate,
+           attempts,
+           completed_at as completedAt,
+           created_at as createdAt
+      FROM scheduled_report_completion_receipts
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY local_date, report_job
+  `, userId, userId) as FullUserExport['scheduledReportCompletionReceipts'];
+  const planningRecomputeReceipts = safeAll(db, `
+    SELECT idempotency_key_hash as idempotencyKeyHash,
+           request_fingerprint as requestFingerprint,
+           status,
+           snapshot_id as snapshotId,
+           response_json as response,
+           last_error_code as lastErrorCode,
+           created_at as createdAt,
+           updated_at as updatedAt
+      FROM planning_recompute_receipts
+     WHERE user_id = ? AND tenant_id = ?
+     ORDER BY created_at
+  `, userId, userId).map((row: Record<string, unknown>) => ({
+    ...row,
+    response: parseExportJson(row.response),
+  })) as FullUserExport['planningRecomputeReceipts'];
+  // Report scheduler rows have no ownership column because the lease store is
+  // shared by many system jobs. Secretary report scopes use a strict grammar,
+  // so disclose only this account's report:* rows and never expose live lease
+  // owners or tokens.
+  const reportScheduleExecutionState = safeAll(db, `
+    SELECT job_name as jobName,
+           scope_key as scopeKey,
+           last_started_at as lastStartedAt,
+           last_completed_at as lastCompletedAt,
+           last_succeeded_at as lastSucceededAt,
+           last_result as lastResult,
+           updated_at as updatedAt
+      FROM scheduled_job_execution_state
+     WHERE job_name LIKE 'report:%'
+       AND scope_key LIKE ?
+     ORDER BY job_name, scope_key
+  `, reportScheduleScopePattern(userId)) as FullUserExport['reportScheduleExecutionState'];
+  // Exact-intent notification leases use a hashed intent suffix. Export the
+  // account-owned lifecycle metadata, but never disclose live lease owners or
+  // tokens (the same privacy boundary as report execution state above).
+  const notificationDeliveryExecutionState = safeAll(db, `
+    SELECT job_name as jobName,
+           scope_key as scopeKey,
+           last_started_at as lastStartedAt,
+           last_completed_at as lastCompletedAt,
+           last_succeeded_at as lastSucceededAt,
+           last_result as lastResult,
+           updated_at as updatedAt
+      FROM scheduled_job_execution_state
+     WHERE job_name = 'notification:deliver_intent'
+       AND scope_key LIKE ?
+     ORDER BY scope_key
+  `, notificationDeliveryScopePattern(userId)) as FullUserExport['notificationDeliveryExecutionState'];
   const skillMemories = safeAll(db, `
     SELECT memory_id as memoryId,
            skill_id as skillId,
@@ -1479,6 +1710,16 @@ export function exportAllUserData(userId: number): FullUserExport {
     encryptionMeta,
     legalConsents,
     secretaryAgendaItems,
+    secretaryRoutineProfile,
+    secretaryRoutineIdempotencyReceipts,
+    secretaryCalendarCommandReceipts,
+    secretaryCalendarCommandPayloads,
+    secretaryCalendarMutationReceipts,
+    reportDocumentDispatchReceipts,
+    scheduledReportCompletionReceipts,
+    planningRecomputeReceipts,
+    reportScheduleExecutionState,
+    notificationDeliveryExecutionState,
     skillMemories,
     trainingFeedbackDecisions,
     secretarySourceSkillFeedback,
@@ -1521,6 +1762,15 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'native_tasks', column: 'user_id' },
   { table: 'native_task_lists', column: 'user_id' },
   { table: 'reminders', column: 'user_id' },
+  // Secretary privacy state is listed explicitly even though the runtime also
+  // discovers newly added user-owned tables. Keep durable command payloads and
+  // receipts ahead of the agenda ledger they describe, and idempotency
+  // receipts ahead of the routine profile they protect.
+  { table: 'secretary_calendar_command_payloads', column: 'user_id' },
+  { table: 'secretary_calendar_command_receipts', column: 'user_id' },
+  { table: 'secretary_calendar_mutation_receipts', column: 'user_id' },
+  { table: 'secretary_routine_idempotency_receipts', column: 'user_id' },
+  { table: 'secretary_routine_profiles', column: 'user_id' },
   { table: 'secretary_agenda_items', column: 'owner_user_id' },
   { table: 'skill_memories', column: 'user_id' },
   { table: 'training_feedback_decisions', column: 'user_id' },
@@ -1563,6 +1813,10 @@ export const ACCOUNT_DELETION_TABLES: Array<{ table: string; column: string }> =
   { table: 'chat_pending_actions', column: 'user_id' },
   { table: 'chat_action_telemetry', column: 'user_id' },
   { table: 'user_legal_consents', column: 'user_id' },
+  { table: 'report_document_dispatch_receipts', column: 'user_id' },
+  { table: 'scheduled_report_completion_receipts', column: 'user_id' },
+  { table: 'planning_recompute_receipts', column: 'user_id' },
+  { table: 'report_documents_scoped', column: 'user_id' },
   { table: 'report_documents', column: 'user_id' },
   { table: 'report_documents_scoped', column: 'user_id' },
   { table: 'push_preferences', column: 'user_id' },
@@ -1849,6 +2103,36 @@ function countAccountOwnedApiCacheRows(db: any, userId: number): number {
   return row.count;
 }
 
+function reportScheduleScopePattern(userId: number): string {
+  return `tenant:${userId}:user:${userId}:local-date:%`;
+}
+
+function notificationDeliveryScopePattern(userId: number): string {
+  return `tenant:${userId}:user:${userId}:intent:%`;
+}
+
+function countAccountOwnedReportScheduleRows(db: any, userId: number): number {
+  if (!tableExistsForDeletion(db, 'scheduled_job_execution_state')) return 0;
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+      FROM scheduled_job_execution_state
+     WHERE job_name LIKE 'report:%'
+       AND scope_key LIKE ?
+  `).get(reportScheduleScopePattern(userId)) as { count: number };
+  return row.count;
+}
+
+function countAccountOwnedNotificationDeliveryRows(db: any, userId: number): number {
+  if (!tableExistsForDeletion(db, 'scheduled_job_execution_state')) return 0;
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+      FROM scheduled_job_execution_state
+     WHERE job_name = 'notification:deliver_intent'
+       AND scope_key LIKE ?
+  `).get(notificationDeliveryScopePattern(userId)) as { count: number };
+  return row.count;
+}
+
 export function getAccountDeletionInventoryForUser(userId: number): AccountDeletionInventory {
   const db = getDb();
   const deletableTables: Record<string, number> = {};
@@ -1862,6 +2146,8 @@ export function getAccountDeletionInventoryForUser(userId: number): AccountDelet
   Object.assign(deletableTables, countOwnedTrainingCompatibilityChildren(db, userId));
   Object.assign(deletableTables, ownedLocalInferenceCascadeChildState(db, userId).counts);
   deletableTables.api_cache = countAccountOwnedApiCacheRows(db, userId);
+  deletableTables.scheduled_job_execution_state_reports = countAccountOwnedReportScheduleRows(db, userId);
+  deletableTables.scheduled_job_execution_state_notification_deliveries = countAccountOwnedNotificationDeliveryRows(db, userId);
   const kvRow = db.prepare('SELECT COUNT(*) AS count FROM kv_store WHERE key LIKE ?')
     .get(`config:${userId}:%`) as { count: number };
   deletableTables.kv_store_settings = kvRow.count;
@@ -2085,6 +2371,24 @@ export function deleteAllUserData(
       counts.api_cache = 0;
     }
 
+    if (tableExistsForDeletion(db, 'scheduled_job_execution_state')) {
+      const scheduledReportRows = db.prepare(`
+        DELETE FROM scheduled_job_execution_state
+         WHERE job_name LIKE 'report:%'
+           AND scope_key LIKE ?
+      `).run(reportScheduleScopePattern(userId));
+      counts.scheduled_job_execution_state_reports = scheduledReportRows.changes;
+      const notificationDeliveryRows = db.prepare(`
+        DELETE FROM scheduled_job_execution_state
+         WHERE job_name = 'notification:deliver_intent'
+           AND scope_key LIKE ?
+      `).run(notificationDeliveryScopePattern(userId));
+      counts.scheduled_job_execution_state_notification_deliveries = notificationDeliveryRows.changes;
+    } else {
+      counts.scheduled_job_execution_state_reports = 0;
+      counts.scheduled_job_execution_state_notification_deliveries = 0;
+    }
+
     // Delete user record last
     const userResult = db.prepare('DELETE FROM users WHERE id = ? OR telegram_id = ?').run(userId, userId);
     counts['users'] = userResult.changes;
@@ -2105,6 +2409,12 @@ export function deleteAllUserData(
     }
     if (countAccountOwnedApiCacheRows(db, userId) !== 0) {
       throw new Error('Account deletion left user-owned API cache rows.');
+    }
+    if (countAccountOwnedReportScheduleRows(db, userId) !== 0) {
+      throw new Error('Account deletion left user-owned report schedule rows.');
+    }
+    if (countAccountOwnedNotificationDeliveryRows(db, userId) !== 0) {
+      throw new Error('Account deletion left user-owned notification delivery rows.');
     }
     const remainingUsers = db.prepare('SELECT COUNT(*) AS count FROM users WHERE id = ? OR telegram_id = ?')
       .get(userId, userId) as { count: number };

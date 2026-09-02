@@ -503,6 +503,17 @@ vi.mock('../../src/services/unified-calendar', async () => {
     ...actual,
     createEvent: (...args: unknown[]) => calendarMocks.createEvent(...args),
     getEventsForSources: (...args: unknown[]) => calendarMocks.getEventsForSources(...args),
+    getEventsWithDiagnostics: async (...args: unknown[]) => {
+      const events = await calendarMocks.getEventsForSources(...args);
+      const sources = ((args[3] as { sources?: Array<'google' | 'outlook'> } | undefined)?.sources ?? ['google']);
+      return {
+        events,
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+        sources: { configured: sources, fulfilled: sources, failed: [] },
+      };
+    },
   };
 });
 

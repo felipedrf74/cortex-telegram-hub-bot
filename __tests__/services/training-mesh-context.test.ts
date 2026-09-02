@@ -369,4 +369,17 @@ describe('readTrainingMeshContext', () => {
       focus: 'Threshold',
     });
   });
+
+  it('marks Training degraded when an optional projection read falls back', async () => {
+    mockGetLatestCompletionForPlan.mockImplementationOnce(() => {
+      throw new Error('completion read failed');
+    });
+
+    const context = await readTrainingMeshContext({ userId: 42, weekStart: '2026-04-13' });
+
+    expect(context.sourceHealth).toEqual(expect.objectContaining({
+      status: 'degraded',
+      warningCodes: ['TRAINING_STATE_DEGRADED'],
+    }));
+  });
 });

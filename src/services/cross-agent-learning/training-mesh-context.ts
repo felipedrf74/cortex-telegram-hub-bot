@@ -25,6 +25,11 @@ import {
 } from '../training-plans';
 import { resolveTrainingPlanTimezone, resolveTrainingTimezone } from '../training-date-utils';
 import { isValidTenantUserId } from '../tenant-scope-observability';
+import {
+  degradedPlanSource,
+  readyPlanSource,
+  unavailablePlanSource,
+} from '../secretary-planning-context';
 import type {
   MeshSignalDraft,
   TrainingMeshContext,
@@ -231,6 +236,10 @@ export function createEmptyTrainingMeshContext(opts: { userId: number; weekStart
     adherence: null,
     secretaryFeedback: null,
     coachPhaseMemory: null,
+    sourceHealth: unavailablePlanSource(
+      'TRAINING_STATE_UNAVAILABLE',
+      'Training planning state is unavailable.',
+    ),
     derivedSignals: [],
   };
 }
@@ -246,13 +255,19 @@ export async function readTrainingMeshContext(opts: {
   }
 
   const tenantId = opts.tenantId ?? opts.userId;
+  const readFailures = new Set<string>();
+  const recordReadFailure = (source: string) => () => { readFailures.add(source); };
   const activePlanMatch = findActivePlanForWeek(opts.userId, tenantId, opts.weekStart);
   const timezone = activePlanMatch?.timezone ?? resolveTrainingTimezone();
   const window = resolveWeekWindow(opts.weekStart, timezone);
   const trainingContext = readTrainingContextAll({ userId: opts.userId, tenantId });
   const coachBriefing = getLatestByType(opts.userId, 'coach_briefing', tenantId);
   const latestCompletion = activePlanMatch
-    ? safely(() => getLatestCompletionForPlan(activePlanMatch.plan.id), null)
+    ? safely(
+        () => getLatestCompletionForPlan(activePlanMatch.plan.id),
+        null,
+        recordReadFailure('latest_completion'),
+      )
     : null;
   const currentSecretaryFeedback = activePlanMatch
     ? safely(() => listCurrentTrainingSecretaryFeedbackDecisionsForPlan({
@@ -260,7 +275,7 @@ export async function readTrainingMeshContext(opts: {
         tenantId,
         planId: activePlanMatch.plan.id,
         planVersion: normalizedPlanVersion(activePlanMatch.plan),
-      }), [] as TrainingSecretaryFeedbackDecision[])
+      }), [] as TrainingSecretaryFeedbackDecision[], recordReadFailure('secretary_feedback'))
     : [];
   const secretaryFeedback = activePlanMatch
     ? safeSecretaryFeedbackForContext(activePlanMatch.plan.id, currentSecretaryFeedback)
@@ -446,7 +461,11 @@ export async function readTrainingMeshContext(opts: {
   // taper / recovery + adherence trend + recent deloads) so consumers
   // can interpret this week's signals in the context of the athlete's
   // arc rather than each week as an isolated snapshot.
-  const coachPhase = safely(() => getCurrentCoachPhase(opts.userId, tenantId), null);
+  const coachPhase = safely(
+    () => getCurrentCoachPhase(opts.userId, tenantId),
+    null,
+    recordReadFailure('coach_phase'),
+  );
   const coachPhaseMemory = coachPhase
     ? {
         phase: coachPhase.phase,
@@ -473,6 +492,12 @@ export async function readTrainingMeshContext(opts: {
     adherence,
     secretaryFeedback,
     coachPhaseMemory,
+    sourceHealth: readFailures.size > 0
+      ? degradedPlanSource(
+          'TRAINING_STATE_DEGRADED',
+          'Some Training planning state is unavailable.',
+        )
+      : readyPlanSource(),
     derivedSignals,
   };
 }

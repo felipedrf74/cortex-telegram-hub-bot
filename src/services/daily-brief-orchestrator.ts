@@ -1,31 +1,42 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DateTime } from 'luxon';
-import { config } from '../config';
 import { getCached, setCache } from './cache-store';
 import { composeWeeklyPlan, type WeeklyPlanDay, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
 import {
   buildSecretaryCoordination,
   type SecretaryCoordinationModel,
+  type SecretaryTodayEntryModel,
   type SecretaryTodayDecisionSignals,
   type SecretaryTodaySummaryModel,
 } from './secretary-orchestrator';
-import { getDecisionOverview } from './decision-center';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { logger } from '../utils/logger';
-import { getUserLanguageById, getUserTimezoneById } from './user-service';
-import { resolveTrainingTimezone } from './training-date-utils';
-import type { PlanningSnapshotIdentity } from './planning-snapshot-contract';
 import {
-  createDecisionPlanningContext,
-  type DecisionPlanningContext,
-} from './decision-planning-context';
+  assertSecretaryPlanningContextMatches,
+  mergePlanWarnings,
+  resolveSecretaryPlanningContext,
+  SecretaryPlanningContextError,
+  unavailablePlanSource,
+  type DailyPlanSourceHealth,
+  type PlanSourceHealth,
+  type SecretaryPlanningContext,
+} from './secretary-planning-context';
+import {
+  buildSecretaryDaySnapshot,
+  unavailableWeeklyPlanSourceHealth,
+  withDecisionCenterHealth,
+  type SecretaryDaySnapshot,
+} from './secretary-planning-snapshot';
+import { readSecretaryDecisionProjection } from './secretary-decision-center-read-adapter';
 
 export interface DailyBriefResponse {
   date: string;
   generatedAt: string;
-  /** Exact weekly snapshot from which this daily projection was built. */
-  planningSnapshot?: PlanningSnapshotIdentity;
+  timezone: string;
+  warningCodes: string[];
+  warnings: string[];
+  sourceHealth: DailyPlanSourceHealth;
   degraded: boolean;
   gated: { skills: string[] };
   garmin_stale: boolean;
@@ -35,8 +46,8 @@ export interface DailyBriefResponse {
   coordination: SecretaryCoordinationModel;
 }
 
-function buildEmptyDailyBriefDay(date: string, language?: string): WeeklyPlanDay {
-  const localizedWeekday = localizedDailyBriefWeekday(date, language);
+function buildEmptyDailyBriefDay(date: string, language?: string, timezone = 'Europe/Lisbon'): WeeklyPlanDay {
+  const localizedWeekday = localizedDailyBriefWeekday(date, language, timezone);
   return {
     date,
     weekday: localizedWeekday,
@@ -88,10 +99,19 @@ function buildEmptyDailyBriefResponse(opts: {
   language?: string;
   timezone?: string;
 }): DailyBriefResponse {
-  const targetDate = resolveTargetDate(opts.date, opts.timezone);
+  const timezone = opts.timezone ?? 'Europe/Lisbon';
+  const targetDate = resolveTargetDate(opts.date, timezone);
+  const sourceHealth = withDecisionCenterHealth(
+    unavailableWeeklyPlanSourceHealth(),
+    unavailablePlanSource('DECISION_CENTER_UNAVAILABLE', 'Decision Center state is unavailable.'),
+  );
   return {
     date: targetDate,
     generatedAt: new Date().toISOString(),
+    timezone,
+    warningCodes: ['PLANNING_COMPOSITION_UNAVAILABLE'],
+    warnings: ['Planning state is unavailable because the canonical composition did not complete.'],
+    sourceHealth,
     degraded: true,
     gated: { skills: [] },
     garmin_stale: false,
@@ -100,7 +120,7 @@ function buildEmptyDailyBriefResponse(opts: {
       headline: '',
       note: '',
     },
-    day: buildEmptyDailyBriefDay(targetDate, opts.language),
+    day: buildEmptyDailyBriefDay(targetDate, opts.language, timezone),
     coordination: {
       topPriority: null,
       executionOrder: [],
@@ -155,8 +175,8 @@ function buildEmptyDailyBriefResponse(opts: {
   };
 }
 
-function buildUnavailableDailyBriefDay(date: string, language?: string): WeeklyPlanDay {
-  const localizedWeekday = localizedDailyBriefWeekday(date, language);
+function buildUnavailableDailyBriefDay(date: string, language?: string, timezone = 'Europe/Lisbon'): WeeklyPlanDay {
+  const localizedWeekday = localizedDailyBriefWeekday(date, language, timezone);
   return {
     date,
     weekday: localizedWeekday,
@@ -208,12 +228,13 @@ function buildUnavailableDailyBriefResponse(opts: {
   language?: string;
   timezone?: string;
 }): DailyBriefResponse {
-  const targetDate = resolveTargetDate(opts.date, opts.timezone);
+  const timezone = opts.timezone ?? 'Europe/Lisbon';
+  const targetDate = resolveTargetDate(opts.date, timezone);
   return {
     ...buildEmptyDailyBriefResponse(opts),
     date: targetDate,
     generatedAt: new Date().toISOString(),
-    day: buildUnavailableDailyBriefDay(targetDate, opts.language),
+    day: buildUnavailableDailyBriefDay(targetDate, opts.language, timezone),
     coordination: {
       topPriority: null,
       executionOrder: [],
@@ -274,89 +295,91 @@ export async function composeDailyBrief(opts: {
   date?: string;
   language?: string;
   timezone?: string;
+  context?: SecretaryPlanningContext;
+  daySnapshot?: SecretaryDaySnapshot;
   forceRefresh?: boolean;
   cacheMode?: 'read-write' | 'bypass';
   /** Recompute supplies its exact weekly snapshot so daily never re-reads. */
   weekPlan?: WeeklyPlanResponse;
-  planningSnapshot?: PlanningSnapshotIdentity;
-  planningContext?: DecisionPlanningContext;
 }): Promise<DailyBriefResponse> {
-  const fallbackTimezone = resolveTrainingTimezone(opts.timezone ?? config.app.timezone);
-  if (!isValidTenantUserId(opts.userId)) {
-    recordTenantScopeAnomaly({
-      layer: 'orchestration',
-      operation: 'compose_daily_brief',
-      reason: 'invalid_user_scope',
-      userId: opts.userId ?? null,
-      details: {
-        date: opts.date ?? null,
-      },
-    });
-    return buildEmptyDailyBriefResponse({ ...opts, timezone: fallbackTimezone });
-  }
-  if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
-    recordTenantScopeAnomaly({
-      layer: 'orchestration',
-      operation: 'compose_daily_brief_tenant_scope',
-      reason: 'invalid_user_scope',
-      userId: opts.userId,
-      details: {
+  let context: SecretaryPlanningContext;
+  try {
+    if (opts.context) {
+      assertSecretaryPlanningContextMatches(opts.context, opts);
+      context = opts.context;
+    } else {
+      context = resolveSecretaryPlanningContext({
+        userId: opts.userId,
         tenantId: opts.tenantId,
+        date: opts.date,
+        language: opts.language,
+      });
+    }
+  } catch (error) {
+    if (!(error instanceof SecretaryPlanningContextError)
+      || !['INVALID_SCOPE', 'TENANT_SCOPE_MISMATCH'].includes(error.code)) {
+      throw error;
+    }
+    recordTenantScopeAnomaly({
+      layer: 'orchestration',
+      operation: error.code === 'TENANT_SCOPE_MISMATCH'
+        ? 'compose_daily_brief_tenant_scope'
+        : 'compose_daily_brief',
+      reason: error.code === 'TENANT_SCOPE_MISMATCH' ? 'tenant_mismatch' : 'invalid_user_scope',
+      userId: isValidTenantUserId(opts.userId) ? opts.userId : opts.userId ?? null,
+      details: {
+        tenantId: opts.tenantId ?? null,
         date: opts.date ?? null,
       },
     });
-    return buildEmptyDailyBriefResponse({ ...opts, timezone: fallbackTimezone });
+    throw error;
   }
-  const tenantId = opts.tenantId ?? opts.userId;
-  const requestedTimezone = resolveDailyBriefTimezone(opts.userId, opts.timezone);
-
-  const planningContext = opts.planningContext ?? createDecisionPlanningContext({
-    userId: opts.userId,
-    tenantId,
-    timezone: requestedTimezone,
-    locale: resolveDailyBriefLanguage(opts.userId, opts.language),
-  });
-  if (planningContext.userId !== opts.userId || planningContext.tenantId !== tenantId) {
-    throw new Error('PLANNING_CONTEXT_SCOPE_MISMATCH');
+  const tenantId = context.tenantId;
+  const targetDate = context.targetDate;
+  const suppliedWeekPlan = opts.weekPlan ?? opts.daySnapshot?.week;
+  if (opts.daySnapshot && suppliedWeekPlan) {
+    assertDaySnapshotMatchesContext(opts.daySnapshot, context, suppliedWeekPlan);
   }
-  const timezone = planningContext.timezone;
-  const targetDate = resolveTargetDate(opts.date, timezone, planningContext.localDate);
-  const languageBucket = resolveLanguageBucket(planningContext.locale);
-  const cacheKey = `plan:today:u:${opts.userId}:t:${tenantId}:${targetDate}:tz:${timezone}:${languageBucket}`;
+  const cacheKey = [
+    'plan', 'today', 'u', opts.userId, 't', tenantId, targetDate,
+    'tz', context.timezone, 'lang', context.language,
+  ].join(':');
   const ownsCache = opts.cacheMode !== 'bypass';
-  if (ownsCache && !opts.forceRefresh) {
+  // A caller-supplied week is the canonical input for this composition. Do not
+  // let an independently cached Today response replace that exact snapshot.
+  if (ownsCache && !opts.forceRefresh && !opts.weekPlan && !opts.daySnapshot) {
     const cached = getCached<DailyBriefResponse>(cacheKey);
     if (cached) {
-      return cached;
+      return normalizeCachedDailyBrief(cached, context);
     }
   }
 
   try {
-    const weekPlan = opts.weekPlan ?? await composeWeeklyPlan({
+    const weekPlan = suppliedWeekPlan ?? await composeWeeklyPlan({
       userId: opts.userId,
       tenantId,
-      weekStart: weekStartForDate(targetDate, timezone),
-      timezone,
+      weekStart: context.weekStart,
+      language: context.language,
+      context,
       forceRefresh: opts.forceRefresh,
       cacheMode: opts.cacheMode,
-      planningContext,
     });
-    const planningSnapshot = opts.planningSnapshot ?? weekPlan.planningSnapshot;
-    if (planningSnapshot && planningSnapshot.snapshotId !== weekPlan.planningSnapshot?.snapshotId) {
-      throw new Error('PLANNING_SNAPSHOT_DAILY_WEEK_MISMATCH');
-    }
-
-    const fallbackDay = buildUnavailableDailyBriefDay(targetDate, planningContext.locale);
-    const day = weekPlan.days.find((entry) => entry.date === targetDate) ?? fallbackDay;
-    const conflicts = weekPlan.conflicts.filter((conflict) => conflict.date === targetDate);
-    const secretaryTodaySignals = readSecretaryTodayDecisionSignals(opts.userId, tenantId);
+    const snapshot = opts.daySnapshot ?? buildSecretaryDaySnapshot({ context, week: weekPlan });
+    const fallbackDay = buildUnavailableDailyBriefDay(targetDate, context.language, context.timezone);
+    const day = snapshot.day ?? fallbackDay;
+    const conflicts = snapshot.conflicts;
+    const decisionState = readSecretaryDecisionProjection(opts.userId, tenantId);
+    const sourceHealth = withDecisionCenterHealth(snapshot.sourceHealth, decisionState.health);
+    const warningMetadata = mergePlanWarnings(context, sourceHealth, {
+      warningCodes: snapshot.warningCodes,
+      warnings: snapshot.warnings,
+    });
     let coordination = buildUnavailableDailyBriefResponse({
-      userId: opts.userId,
-      date: targetDate,
-      language: planningContext.locale,
-      timezone,
+      ...opts,
+      language: context.language,
+      timezone: context.timezone,
     }).coordination;
-    let coordinationDegraded = day === fallbackDay;
+    let coordinationDegraded = snapshot.day == null;
 
     if (!coordinationDegraded) {
       try {
@@ -365,9 +388,10 @@ export async function composeDailyBrief(opts: {
           day,
           weekPlan,
           conflicts,
-          language: planningContext.locale,
-          secretaryTodaySignals,
+          language: context.language,
+          secretaryTodaySignals: decisionState.signals,
         });
+        coordination = applySourceHealthToCoordination(coordination, sourceHealth, context.language);
       } catch (err) {
         coordinationDegraded = true;
         logger.warn(
@@ -379,9 +403,12 @@ export async function composeDailyBrief(opts: {
 
     const response: DailyBriefResponse = {
       date: targetDate,
-      generatedAt: planningSnapshot?.generatedAt ?? weekPlan.generatedAt,
-      planningSnapshot,
-      degraded: weekPlan.degraded || coordinationDegraded,
+      generatedAt: weekPlan.generatedAt ?? new Date().toISOString(),
+      timezone: context.timezone,
+      warningCodes: warningMetadata.warningCodes,
+      warnings: warningMetadata.warnings,
+      sourceHealth,
+      degraded: weekPlan.degraded || coordinationDegraded || decisionState.health.status !== 'ready',
       gated: weekPlan.gated,
       garmin_stale: weekPlan.garmin_stale,
       conflicts,
@@ -393,17 +420,75 @@ export async function composeDailyBrief(opts: {
     if (ownsCache) setCache(cacheKey, response, 1800);
     return response;
   } catch (err) {
+    // Scope/date contract errors are caller errors, not source-health
+    // degradation. Returning a fallback here would hide a cross-account
+    // snapshot mismatch and let an internal caller treat the request as a
+    // successful (albeit degraded) plan.
+    if (err instanceof SecretaryPlanningContextError) throw err;
     logger.warn(
       { err, userId: opts.userId, date: targetDate },
       'daily brief weekly-plan compose failed — returning degraded fallback',
     );
     return buildUnavailableDailyBriefResponse({
-      userId: opts.userId,
-      date: targetDate,
-      language: planningContext.locale,
-      timezone,
+      ...opts,
+      language: context.language,
+      timezone: context.timezone,
     });
   }
+}
+
+function assertDaySnapshotMatchesContext(
+  snapshot: SecretaryDaySnapshot,
+  context: SecretaryPlanningContext,
+  weekPlan: WeeklyPlanResponse,
+): void {
+  if (snapshot.week !== weekPlan
+      || snapshot.context.userId !== context.userId
+      || snapshot.context.tenantId !== context.tenantId
+      || snapshot.context.timezone !== context.timezone
+      || snapshot.context.language !== context.language
+      || snapshot.date !== context.targetDate) {
+    throw new SecretaryPlanningContextError(
+      'TENANT_SCOPE_MISMATCH',
+      'Secretary day snapshot does not match the active planning context.',
+    );
+  }
+}
+
+function normalizeCachedDailyBrief(
+  cached: DailyBriefResponse,
+  context: SecretaryPlanningContext,
+): DailyBriefResponse {
+  const legacy = cached as DailyBriefResponse & {
+    timezone?: string;
+    warningCodes?: string[];
+    warnings?: string[];
+    sourceHealth?: DailyPlanSourceHealth;
+  };
+  if (legacy.timezone && legacy.warningCodes && legacy.warnings && legacy.sourceHealth) {
+    return cached;
+  }
+  const sourceHealth = legacy.sourceHealth ?? withDecisionCenterHealth(
+    unavailableWeeklyPlanSourceHealth(),
+    unavailablePlanSource(
+      'DECISION_CENTER_STATE_UNAVAILABLE',
+      'Decision Center state is unavailable.',
+    ),
+  );
+  return {
+    ...cached,
+    timezone: legacy.timezone ?? context.timezone,
+    warningCodes: [...new Set([
+      ...(legacy.warningCodes ?? []),
+      'PLANNING_SOURCE_HEALTH_UNAVAILABLE',
+    ])],
+    warnings: [...new Set([
+      ...(legacy.warnings ?? []),
+      'Cached planning data predates source-health metadata and cannot be treated as fully current.',
+    ])],
+    sourceHealth,
+    degraded: true,
+  };
 }
 
 function buildDailyCoordination(opts: {
@@ -425,6 +510,7 @@ function buildDailyCoordination(opts: {
     conflicts: opts.conflicts,
     language: opts.language,
     secretaryTodaySignals: opts.secretaryTodaySignals,
+    sourceHealth: opts.weekPlan.sourceHealth,
   });
 
   return {
@@ -457,29 +543,119 @@ function buildDailyCoordination(opts: {
   };
 }
 
-function readSecretaryTodayDecisionSignals(userId: number, tenantId: number): SecretaryTodayDecisionSignals | undefined {
-  try {
-    const overview = getDecisionOverview(userId, tenantId, { limit: 30, handledLimit: 10 });
-    const secretaryOpen = overview.items.filter((item) => item.sourceSkill === 'secretary');
-    const secretaryHandled = overview.handled.filter((item) => item.sourceSkill === 'secretary');
-    return {
-      handledCount: secretaryHandled.length,
-      handledTitles: secretaryHandled
-        .map((item) => item.explanation?.result ?? item.summary ?? item.title)
-        .filter((value): value is string => Boolean(value && value.trim().length > 0))
-        .slice(0, 3),
-      needsUserCount: secretaryOpen.length,
-      needsUserTitles: secretaryOpen
-        .map((item) => item.explanation?.userAction ?? item.summary ?? item.title)
-        .filter((value): value is string => Boolean(value && value.trim().length > 0))
-        .slice(0, 3),
-      staleCount: secretaryOpen.filter((item) => item.analysis.sourceFreshness === 'stale' || item.sourceTrace?.dataFreshness === 'cached').length,
-      topUserAction: secretaryOpen[0]?.explanation?.userAction ?? secretaryOpen[0]?.recommendedActionLabel ?? null,
-    };
-  } catch (err) {
-    logger.warn({ err, userId, tenantId }, 'daily brief secretary-today Decision Center signals unavailable');
-    return undefined;
+function applySourceHealthToCoordination(
+  coordination: DailyBriefResponse['coordination'],
+  sourceHealth: DailyPlanSourceHealth,
+  language: string,
+): DailyBriefResponse['coordination'] {
+  const calendarReady = sourceHealth.calendar.status === 'ready';
+  const tasksReady = sourceHealth.tasks.status === 'ready';
+  const mailReady = sourceHealth.mail.status === 'ready';
+  const checked = coordination.secretaryToday.checked.filter((entry) => {
+    if (!calendarReady && (entry.id === 'agenda-sync' || entry.id === 'conflict-scan')) return false;
+    if ((!tasksReady || !mailReady) && entry.id === 'reminder-pressure') return false;
+    return true;
+  });
+  const waiting = [...coordination.secretaryToday.waitingOnSource];
+  const healthEntries = Object.entries(sourceHealth)
+    .filter(([, health]) => health.status !== 'ready' && !isGatedHealth(health))
+    .map(([source, health]) => sourceHealthWaitingEntry(source, health, language));
+  for (const entry of healthEntries) {
+    if (!waiting.some((existing) => existing.id === entry.id)) waiting.push(entry);
   }
+  const sourceStateIncomplete = healthEntries.length > 0;
+  const secretaryToday = {
+    ...coordination.secretaryToday,
+    checked,
+    waitingOnSource: waiting,
+    summary: sourceStateIncomplete
+      ? localizeDailyBriefFallback(
+          language,
+          'A Secretary montou o melhor estado possível, mas uma ou mais fontes ainda precisam de confirmar dados.',
+          'A Secretary montou o melhor estado possível, mas uma ou mais fontes ainda precisam confirmar dados.',
+          'Secretary built the best available state, but one or more sources still need to confirm data.',
+        )
+      : coordination.secretaryToday.summary,
+    counts: {
+      ...coordination.secretaryToday.counts,
+      checked: checked.length,
+      waitingOnSource: waiting.length,
+    },
+  };
+
+  return {
+    ...coordination,
+    confidence: sourceStateIncomplete ? 'low' : coordination.confidence,
+    secretaryToday,
+    dayOrchestration: !calendarReady
+      ? {
+          ...coordination.dayOrchestration,
+          title: localizeDailyBriefFallback(
+            language,
+            'O plano de hoje precisa de confirmação da agenda.',
+            'O plano de hoje precisa de confirmação da agenda.',
+            'Today’s plan needs calendar confirmation.',
+          ),
+          summary: localizeDailyBriefFallback(
+            language,
+            'A agenda atual não pôde ser confirmada, por isso nenhuma janela livre é tratada como segura.',
+            'A agenda atual não pôde ser confirmada, por isso nenhuma janela livre é tratada como segura.',
+            'Current calendar state could not be confirmed, so no free window is treated as safe.',
+          ),
+          confidence: 'low',
+          mainThing: null,
+        }
+      : sourceStateIncomplete
+        ? { ...coordination.dayOrchestration, confidence: 'low' }
+        : coordination.dayOrchestration,
+    weekOrchestration: sourceStateIncomplete
+      ? { ...coordination.weekOrchestration, confidence: 'low' }
+      : coordination.weekOrchestration,
+  };
+}
+
+function sourceHealthWaitingEntry(
+  source: string,
+  health: PlanSourceHealth,
+  language: string,
+): SecretaryTodayEntryModel {
+  const label = localizeDailyBriefFallback(
+    language,
+    `${sourceHealthLabel(source, 'pt')} por confirmar`,
+    `${sourceHealthLabel(source, 'pt')} por confirmar`,
+    `${sourceHealthLabel(source, 'en')} needs confirmation`,
+  );
+  return {
+    id: `source-health-${source}`,
+    label,
+    detail: health.warnings[0] ?? localizeDailyBriefFallback(
+      language,
+      'Esta fonte ainda não tem estado atual fiável.',
+      'Esta fonte ainda não tem estado atual confiável.',
+      'This source does not have reliable current state yet.',
+    ),
+    status: 'waiting_on_source',
+    source: 'source_health',
+  };
+}
+
+function sourceHealthLabel(source: string, language: 'pt' | 'en'): string {
+  const labels: Record<string, { pt: string; en: string }> = {
+    calendar: { pt: 'Agenda', en: 'Calendar' },
+    tasks: { pt: 'Tarefas', en: 'Tasks' },
+    mail: { pt: 'Email', en: 'Mail' },
+    focus: { pt: 'Foco', en: 'Focus' },
+    training: { pt: 'Treino', en: 'Training' },
+    cooking: { pt: 'Cozinha', en: 'Cooking' },
+    content: { pt: 'Conteúdo', en: 'Content' },
+    finance: { pt: 'Finanças', en: 'Finance' },
+    decision_center: { pt: 'Centro de Decisões', en: 'Decision Center' },
+  };
+  return labels[source]?.[language] ?? source;
+}
+
+function isGatedHealth(health: PlanSourceHealth): boolean {
+  return health.warningCodes.some((code) => code.endsWith('_SKILL_GATED'));
 }
 
 function emptySecretaryTodaySummary(language?: string): SecretaryTodaySummaryModel {
@@ -509,38 +685,13 @@ function compact(values: Array<string | null | undefined>): string[] {
   return values.filter((value): value is string => Boolean(value && value.trim().length > 0));
 }
 
-function resolveTargetDate(date?: string, timezone?: string, fallbackLocalDate?: string): string {
-  const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
+function resolveTargetDate(date?: string, timezone = 'Europe/Lisbon', fallbackLocalDate?: string): string {
+  const zone = timezone;
   const parsed = date
     ? DateTime.fromISO(date, { zone }).startOf('day')
     : DateTime.fromISO(fallbackLocalDate ?? '', { zone }).startOf('day');
   return (parsed.isValid ? parsed : DateTime.now().setZone(zone)).toISODate()!;
 }
-
-function weekStartForDate(date: string, timezone?: string): string {
-  const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
-  const parsed = DateTime.fromISO(date, { zone }).startOf('day');
-  return (parsed.isValid ? parsed : DateTime.now().setZone(zone)).startOf('week').toISODate()!;
-}
-
-function resolveDailyBriefTimezone(userId: number, requested?: string | null): string {
-  if (requested) return resolveTrainingTimezone(requested);
-  try {
-    return resolveTrainingTimezone(getUserTimezoneById(userId));
-  } catch {
-    return resolveTrainingTimezone(config.app.timezone);
-  }
-}
-
-function resolveDailyBriefLanguage(userId: number, requested?: string | null): string {
-  if (requested?.trim()) return requested.trim();
-  try {
-    return getUserLanguageById(userId);
-  } catch {
-    return 'en';
-  }
-}
-
 function resolveLanguageBucket(language?: string): string {
   if (typeof language !== 'string' || language.trim().length === 0) return 'en';
   const normalized = language.trim().toLowerCase();
@@ -556,8 +707,8 @@ function localizeDailyBriefFallback(language: string | undefined, ptPt: string, 
   return en;
 }
 
-function localizedDailyBriefWeekday(date: string, language?: string): string {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+function localizedDailyBriefWeekday(date: string, language?: string, timezone = 'Europe/Lisbon'): string {
+  const zone = timezone;
   const parsed = DateTime.fromISO(date, { zone }).startOf('day');
   const locale = resolveLanguageBucket(language) === 'pt-br'
     ? 'pt-BR'

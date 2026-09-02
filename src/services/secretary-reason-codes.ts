@@ -24,6 +24,7 @@ export type SecretaryOutcomeReasonCode =
   | 'compressed_to_fit_capacity'
   | 'deferred_due_to_current_capacity'
   | 'unscheduled_no_capacity'
+  | 'removed_from_calendar_by_user'
   | 'priority_preempted_by_higher_rank';
 
 // Validation failures (terminal — arbitration stops)
@@ -77,6 +78,7 @@ const KNOWN_REASON_CODES = new Set<string>([
   'compressed_to_fit_capacity',
   'deferred_due_to_current_capacity',
   'unscheduled_no_capacity',
+  'removed_from_calendar_by_user',
   'priority_preempted_by_higher_rank',
   // validation
   'invalid_owner_scope',

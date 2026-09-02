@@ -208,7 +208,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/api/routes/plan.ts:167-167",
+            "pattern": "src/api/routes/plan.ts:118-118",
             "anchor": "idempotencyKey: req.body?.idempotencyKey ?? headerIdempotencyKey,",
             "behavior": "The recompute route delegates one scoped locale and timezone-bound idempotent request to the coherent planning snapshot owner.",
             "replacementTest": "__tests__/api/plan-routes.test.ts",
@@ -308,7 +308,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/notification-orchestrator.ts:5688-5688",
+            "pattern": "src/services/notification-orchestrator.ts:6044-6044",
             "anchor": "logger.debug({ err, intentId: intent.intentId }, 'priority shadow verdict not recorded');",
             "behavior": "A normal request persists exactly one notification item while optional shadow instrumentation failure remains non-fatal and never repairs schema on the request path.",
             "replacementTest": "__tests__/services/notification-recovery-and-consent.test.ts",
@@ -368,7 +368,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/report-document-store.ts:516-516",
+            "pattern": "src/services/report-document-store.ts:508-508",
             "anchor": "return false;",
             "behavior": "A missing push-preference schema fails closed instead of defaulting delivery on or creating the table from a request.",
             "replacementTest": "__tests__/services/report-document-store.test.ts",
@@ -388,8 +388,8 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/weekly-plan-orchestrator.ts:284-284",
-            "anchor": "if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {",
+            "pattern": "src/services/weekly-plan-orchestrator.ts:214-219",
+            "anchor": "context = resolveSecretaryPlanningContext({",
             "behavior": "An explicitly invalid tenant scope returns a degraded empty plan before any cache, user, or mesh read can occur.",
             "replacementTest": "__tests__/services/weekly-plan-orchestrator.test.ts",
             "ownerTestNamePattern": "fails closed before cache or mesh reads when an explicit tenant is invalid$",
@@ -601,7 +601,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:222-222",
+            "pattern": "src/services/event-backbone-worker.ts:219-219",
             "anchor": "jobType: 'training_plan_calendar_sync'",
             "behavior": "The wildcard event router converts a Training calendar-sync request into the dedicated durable worker job without performing provider work itself.",
             "replacementTest": "__tests__/services/training-plan-calendar-sync-worker.test.ts",
@@ -1079,7 +1079,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:199-199",
+            "pattern": "src/services/event-backbone-worker.ts:196-196",
             "anchor": "jobType: 'project_read_models'",
             "behavior": "Projectable Training revision events enqueue exactly one idempotent read-model projection job and no calendar worker job.",
             "replacementTest": "__tests__/services/training-plan-revision-outbox.test.ts",
@@ -1878,7 +1878,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/user-data-export.ts:1949-1951",
+            "pattern": "src/services/user-data-export.ts:2235-2237",
             "anchor": "if (providerFilesPending !== 0)",
             "behavior": "Transactional account erasure refuses while any owner-scoped provider Batch file or upload intent lacks durable deletion proof.",
             "replacementTest": "__tests__/services/user-data-export.test.ts",
@@ -2098,8 +2098,8 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/report-schedule-dispatcher.ts:239-240",
-            "anchor": "claim.run(schedule.userId, schedule.tenantId, job, schedule.localDate)",
+            "pattern": "src/services/report-schedule-dispatcher.ts:334-340",
+            "anchor": "scopeKey: `tenant:${schedule.tenantId}:user:${schedule.userId}:local-date:${schedule.localDate}`",
             "behavior": "Scheduled reports claim independently for the same user in each explicit tenant while retaining at-most-once delivery per tenant-local day.",
             "replacementTest": "__tests__/services/report-schedule-dispatcher.test.ts",
             "ownerTestNamePattern": "claims the same user independently in two explicit tenant scopes$",

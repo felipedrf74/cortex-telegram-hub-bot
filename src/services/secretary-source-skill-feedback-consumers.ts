@@ -111,6 +111,10 @@ export function recordSecretarySourceSkillFeedback(
       hints_json = excluded.hints_json,
       updated_at = excluded.updated_at
     WHERE excluded.agenda_version > secretary_source_skill_feedback.agenda_version
+       OR (
+         excluded.agenda_version = secretary_source_skill_feedback.agenda_version
+         AND excluded.agenda_item_id = secretary_source_skill_feedback.agenda_item_id
+       )
   `).run(
     feedback.ownerUserId,
     tenantId,

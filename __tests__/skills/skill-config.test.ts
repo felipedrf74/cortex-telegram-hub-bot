@@ -399,6 +399,19 @@ describe('SkillConfig — dynamic skill registration', () => {
     expect(names).toEqual(['ledgers', 'audits']);
   });
 
+  it('fails closed when a dynamic skill claims an already-owned cron job', () => {
+    registerSkill({
+      ...ACCOUNTING_SKILL,
+      subSkills: [{
+        ...ACCOUNTING_SKILL.subSkills[0],
+        cronJobs: ['shared_list'],
+      }],
+    });
+
+    expect(() => getCronJobOwner('shared_list')).toThrow(/Duplicate cron job ownership/);
+    expect(() => getAllCronJobMappings()).toThrow(/Duplicate cron job ownership/);
+  });
+
   it('enabledSkills filter works with dynamic skills', () => {
     registerSkill(ACCOUNTING_SKILL);
     const routes = getPatternRoutes(new Set(['accounting', 'secretary']));

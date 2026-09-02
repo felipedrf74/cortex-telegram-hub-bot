@@ -1401,6 +1401,24 @@ describe('Chat Core v2 deterministic read route', () => {
     ]);
   });
 
+  it('does not describe an empty local agenda ledger as a clear provider calendar', () => {
+    vi.mocked(listSecretaryAgendaItems).mockReturnValue([]);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: "What's on my agenda today?",
+      userId: 42,
+      tenantId: 84,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result?.response.text).toContain('No local Secretary commitments are active.');
+    expect(result?.response.text).toContain('did not verify the provider calendar');
+    expect(result?.response.text).not.toContain('agenda is clear');
+  });
+
 
   it('answers Decision Center summary questions through the filtered Decision Center facade', () => {
     vi.mocked(getDecisionSummary).mockReturnValue({

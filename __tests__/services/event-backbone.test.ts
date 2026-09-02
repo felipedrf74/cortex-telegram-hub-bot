@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let testDb: Database.Database;
-const mockReleaseDueNotificationDeliveries = vi.hoisted(() => vi.fn());
-const mockResumeNotificationIntentDelivery = vi.hoisted(() => vi.fn());
+const mockProcessNotificationIntentDelivery = vi.hoisted(() => vi.fn());
 const mockConsumeCookingProviderSyncCompleted = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
@@ -67,8 +66,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/notification-orchestrator', () => ({
-  releaseDueNotificationDeliveries: (...args: unknown[]) => mockReleaseDueNotificationDeliveries(...args),
-  resumeNotificationIntentDelivery: (...args: unknown[]) => mockResumeNotificationIntentDelivery(...args),
+  processNotificationIntentDelivery: (...args: unknown[]) => mockProcessNotificationIntentDelivery(...args),
 }));
 
 vi.mock('../../src/services/cooking-calendar-sync-completion', () => ({
@@ -124,19 +122,14 @@ function moveEventFixtureToDeadLetter(eventId: string, db: Database.Database): v
 describe('event backbone foundation', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
-    mockReleaseDueNotificationDeliveries.mockReset();
-    mockResumeNotificationIntentDelivery.mockReset();
+    mockProcessNotificationIntentDelivery.mockReset();
     mockConsumeCookingProviderSyncCompleted.mockReset();
     mockConsumeCookingProviderSyncCompleted.mockResolvedValue(undefined);
-    mockReleaseDueNotificationDeliveries.mockResolvedValue({
-      inspected: 0, released: 0, blocked: 0, failed: 0,
-    });
-    mockResumeNotificationIntentDelivery.mockResolvedValue({
+    mockProcessNotificationIntentDelivery.mockResolvedValue({
       intentId: 'intent-delivery-1',
-      notificationId: 'notification-delivery-1',
-      decisionLogId: 'decision-log-delivery-1',
-      decision: 'in_app_only',
-      replayed: false,
+      status: 'already_processed',
+      centerItemCount: 1,
+      acceptedPushCount: 1,
     });
     ensureEventOutboxTables();
     ensureBackgroundJobTables();
@@ -624,7 +617,7 @@ describe('event backbone foundation', () => {
     });
   });
 
-  it('processes deliver_notification jobs through the notification release handler', async () => {
+  it('processes deliver_notification jobs for their exact scoped intent', async () => {
     enqueueJob({
       tenantId: 7,
       userId: 7,
@@ -636,6 +629,7 @@ describe('event backbone foundation', () => {
     const result = await processPendingJobs(defaultJobHandlers, { limit: 1 });
 
     expect(result.completed).toBe(1);
+    expect(mockProcessNotificationIntentDelivery).toHaveBeenCalledWith('intent-delivery-1', 7, 7);
     const row = testDb.prepare(`
       SELECT entity_type AS entityType, entity_id AS entityId, decision_type AS decisionType, decision_json AS decisionJson
         FROM product_decision_logs
@@ -648,15 +642,17 @@ describe('event backbone foundation', () => {
       decisionType: 'notification_delivery_release',
     });
     expect(JSON.parse(row.decisionJson)).toMatchObject({
-      inspected: 0, released: 0, blocked: 0, failed: 0,
-      exact: { intentId: 'intent-delivery-1', replayed: false },
+      intentId: 'intent-delivery-1',
+      status: 'already_processed',
+      centerItemCount: 1,
+      acceptedPushCount: 1,
     });
   });
 
-  it('fails and retries a deliver_notification job when its release sweep reports failure', async () => {
-    mockReleaseDueNotificationDeliveries.mockResolvedValueOnce({
-      inspected: 1, released: 0, blocked: 1, failed: 1,
-    });
+  it('fails and retries a deliver_notification job when its exact delivery is transient', async () => {
+    mockProcessNotificationIntentDelivery.mockRejectedValueOnce(
+      new Error('notification delivery retryable provider failure for intent-delivery-failed'),
+    );
     const job = enqueueJob({
       tenantId: 7,
       userId: 7,
@@ -673,14 +669,43 @@ describe('event backbone foundation', () => {
     `).get(job.jobId) as { status: string; lastError: string };
     expect(failedJob).toMatchObject({
       status: 'failed',
-      lastError: 'notification delivery release: 1 delivery operation(s) failed',
+      lastError: 'notification delivery retryable provider failure for intent-delivery-failed',
     });
-    const audit = testDb.prepare(`
-      SELECT decision_json AS decisionJson FROM product_decision_logs
-       WHERE decision_type = 'notification_delivery_release'
-       ORDER BY rowid DESC LIMIT 1
-    `).get() as { decisionJson: string };
-    expect(JSON.parse(audit.decisionJson)).toMatchObject({ failed: 1 });
+    expect(mockProcessNotificationIntentDelivery).toHaveBeenCalledWith(
+      'intent-delivery-failed',
+      7,
+      7,
+    );
+  });
+
+  it('dead-letters an exact notification delivery only after its bounded transient retries are exhausted', async () => {
+    mockProcessNotificationIntentDelivery.mockRejectedValue(
+      new Error('notification delivery retryable provider failure for intent-delivery-exhausted'),
+    );
+    const job = enqueueJob({
+      tenantId: 7,
+      userId: 7,
+      jobType: 'deliver_notification',
+      payload: { intentId: 'intent-delivery-exhausted' },
+      idempotencyKey: 'deliver-notification-exhausted',
+      maxAttempts: 3,
+    });
+
+    const first = await processPendingJobs(defaultJobHandlers, { limit: 1 });
+    expect(first).toMatchObject({ failed: 1, deadLetter: 0 });
+    testDb.prepare("UPDATE background_jobs SET not_before = datetime('now', '-1 second') WHERE job_id = ?")
+      .run(job.jobId);
+    const second = await processPendingJobs(defaultJobHandlers, { limit: 1 });
+    expect(second).toMatchObject({ failed: 1, deadLetter: 0 });
+    testDb.prepare("UPDATE background_jobs SET not_before = datetime('now', '-1 second') WHERE job_id = ?")
+      .run(job.jobId);
+    const third = await processPendingJobs(defaultJobHandlers, { limit: 1 });
+
+    expect(third).toMatchObject({ completed: 0, failed: 0, deadLetter: 1 });
+    expect(testDb.prepare(`
+      SELECT status, attempts FROM background_jobs WHERE job_id = ?
+    `).get(job.jobId)).toEqual({ status: 'dead_letter', attempts: 3 });
+    expect(mockProcessNotificationIntentDelivery).toHaveBeenCalledTimes(3);
   });
 
   it('processPendingJobs only claims job types handled by the worker', async () => {

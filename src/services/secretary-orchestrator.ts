@@ -3,6 +3,7 @@
 import { DateTime } from 'luxon';
 import { config } from '../config';
 import { secretaryTodayLabels, secretaryTodayText } from './secretary-today-copy';
+import type { WeeklyPlanSourceHealth } from './secretary-planning-context';
 import type { WeeklyPlanDay, WeeklyPlanResponse } from './weekly-plan-orchestrator';
 
 export type SecretarySkillId = 'secretary' | 'training' | 'content' | 'cooking' | 'finance';
@@ -189,6 +190,7 @@ export interface SecretaryOrchestrationInput {
   conflicts: WeeklyPlanResponse['conflicts'];
   language?: string;
   secretaryTodaySignals?: SecretaryTodayDecisionSignals;
+  sourceHealth?: Pick<WeeklyPlanSourceHealth, 'calendar' | 'tasks' | 'mail'>;
 }
 
 interface DerivedDaySignals {
@@ -308,8 +310,11 @@ function buildSecretaryTodaySummary(opts: {
   const { input, signals, blockers, nextBestAction, language } = opts;
   const decisionSignals = input.secretaryTodaySignals ?? {};
   const copy = secretaryTodayLabels(language);
+  const calendarReady = input.sourceHealth?.calendar.status === 'ready';
+  const operationalSourcesReady = input.sourceHealth?.tasks.status === 'ready'
+    && input.sourceHealth?.mail.status === 'ready';
   const checked = compactEntries([
-    entry({
+    calendarReady ? entry({
       id: 'agenda-sync',
       label: secretaryTodayText(language, 'Agenda verificada', 'Agenda verificada', 'Agenda checked'),
       detail: signals.hasWritableCalendar
@@ -317,8 +322,8 @@ function buildSecretaryTodaySummary(opts: {
         : secretaryTodayText(language, 'A agenda foi lida, mas a escrita no calendário ainda não está disponível.', 'A agenda foi lida, mas a escrita no calendário ainda não está disponível.', 'Agenda was read, but calendar write access is not available yet.'),
       status: 'checked',
       source: 'agenda_sync',
-    }),
-    entry({
+    }) : null,
+    calendarReady ? entry({
       id: 'conflict-scan',
       label: secretaryTodayText(language, 'Conflitos verificados', 'Conflitos verificados', 'Conflicts checked'),
       detail: input.conflicts.length > 0
@@ -326,8 +331,8 @@ function buildSecretaryTodaySummary(opts: {
         : secretaryTodayText(language, 'Nenhum conflito de agenda crítico foi encontrado para este dia.', 'Nenhum conflito de agenda crítico foi encontrado para este dia.', 'No critical schedule conflict was found for this day.'),
       status: 'checked',
       source: 'conflict_scan',
-    }),
-    entry({
+    }) : null,
+    operationalSourcesReady ? entry({
       id: 'reminder-pressure',
       label: secretaryTodayText(language, 'Pressão operacional lida', 'Pressão operacional lida', 'Operational pressure read'),
       detail: secretaryTodayText(
@@ -338,7 +343,7 @@ function buildSecretaryTodaySummary(opts: {
       ),
       status: 'checked',
       source: 'reminders',
-    }),
+    }) : null,
     entry({
       id: 'coordination-sequence',
       label: text(language, 'Sequência preparada', 'Sequência preparada', 'Sequence prepared'),
@@ -373,10 +378,24 @@ function buildSecretaryTodaySummary(opts: {
     })] : []),
   ]);
   const waitingOnSource = compactEntries([
-    !signals.hasWritableCalendar ? entry({
-      id: 'calendar-write-unavailable',
-      label: secretaryTodayText(language, 'Calendário só leitura', 'Calendário só leitura', 'Calendar read-only'),
-      detail: secretaryTodayText(language, 'Nexus pode explicar a agenda, mas não deve prometer reflow automático sem escrita.', 'Nexus pode explicar a agenda, mas não deve prometer reflow automático sem escrita.', 'Nexus can explain the agenda but should not promise automatic reflow without write access.'),
+    !calendarReady ? entry({
+      id: 'source-health-calendar',
+      label: secretaryTodayText(language, 'Agenda a confirmar', 'Agenda a confirmar', 'Agenda needs confirmation'),
+      detail: secretaryTodayText(language, 'A fonte canónica da agenda não está pronta, por isso conflitos e tempo livre não estão confirmados.', 'A fonte canónica da agenda não está pronta, por isso conflitos e tempo livre não estão confirmados.', 'The canonical agenda source is not ready, so conflicts and free time are not confirmed.'),
+      status: 'waiting_on_source',
+      source: 'source_health',
+    }) : null,
+    input.sourceHealth?.tasks.status !== 'ready' ? entry({
+      id: 'source-health-tasks',
+      label: secretaryTodayText(language, 'Tarefas a confirmar', 'Tarefas a confirmar', 'Tasks need confirmation'),
+      detail: secretaryTodayText(language, 'A fonte de tarefas ainda não está pronta; contagens zero não são tratadas como estado limpo.', 'A fonte de tarefas ainda não está pronta; contagens zero não são tratadas como estado limpo.', 'The task source is not ready; zero counts are not treated as an all-clear.'),
+      status: 'waiting_on_source',
+      source: 'source_health',
+    }) : null,
+    input.sourceHealth?.mail.status !== 'ready' ? entry({
+      id: 'source-health-mail',
+      label: secretaryTodayText(language, 'Email a confirmar', 'Email a confirmar', 'Mail needs confirmation'),
+      detail: secretaryTodayText(language, 'A fonte de email ainda não está pronta; contagens zero não são tratadas como estado limpo.', 'A fonte de email ainda não está pronta; contagens zero não são tratadas como estado limpo.', 'The mail source is not ready; zero counts are not treated as an all-clear.'),
       status: 'waiting_on_source',
       source: 'source_health',
     }) : null,
@@ -493,7 +512,9 @@ function deriveSignals(day: WeeklyPlanDay): DerivedDaySignals {
   const hasHighTaskPressure = overdueCount > 0 || taskCountForDate >= 3 || day.secretary.pendingTasks >= 6 || mailUnreadTotal >= 12;
   const hasOverduePressure = overdueCount > 0;
   const hasFocusBlock = Boolean(day.secretary.focusBlock);
-  const hasWritableCalendar = day.secretary.writableCalendar ?? true;
+  // Read health and write authorization are separate. Older snapshots may not
+  // carry this optional capability bit; absence must never authorize reflow.
+  const hasWritableCalendar = day.secretary.writableCalendar === true;
   const hasTrainingCommitment = day.training.status !== 'gated' && (hasText(day.training.title) || hasText(day.training.reason));
 
   const activeSkills = dedupeSkills([

@@ -11,6 +11,13 @@ import {
   type JobRecord,
   type JobStatus,
 } from './background-job-queue';
+import {
+  claimScheduledJobExecution,
+  completeScheduledJobExecution,
+  isScheduledJobExecutionLeaseActive,
+  renewScheduledJobExecution,
+  type ScheduledJobExecutionClaim,
+} from './scheduled-job-execution-state';
 import { getDb } from './database';
 import {
   resolveDueReportSchedule,
@@ -21,6 +28,10 @@ import { logger } from '../utils/logger';
 
 const REPORT_JOB_PREFIX = 'scheduled_report_delivery';
 const CLAIM_BATCH_LIMIT = 50;
+const REPORT_EXECUTION_LEASE_TTL_MS = 15 * 60_000;
+const REPORT_EXECUTION_HEARTBEAT_MS = Math.floor(REPORT_EXECUTION_LEASE_TTL_MS / 3);
+
+type ClaimedReportExecution = Extract<ScheduledJobExecutionClaim, { kind: 'claimed' }>;
 
 export interface ScheduledReportLease<T> {
   target: T;
@@ -33,6 +44,8 @@ export interface ScheduledReportLease<T> {
     capturedAt: string;
   };
   jobRecord: JobRecord;
+  /** Inner local-date fence; the background job remains the durable dispatch owner. */
+  executionClaim: ClaimedReportExecution;
 }
 
 export interface ScheduledReportCompletionReceipt {
@@ -65,6 +78,35 @@ function reportJobType(job: ScheduledReportJob): string {
 
 function reportIdempotencyKey(job: ScheduledReportJob, localDate: string): string {
   return `${job}:${localDate}`;
+}
+
+function reportExecutionScopeKey(schedule: ScheduledReportLease<unknown>['schedule']): string {
+  return `tenant:${schedule.tenantId}:user:${schedule.userId}:local-date:${schedule.localDate}`;
+}
+
+/**
+ * Yield an outer queue lease when the exact local-date effect is already
+ * fenced by another worker. This is coordination, not a failed attempt: keep
+ * the job pending and do not burn its bounded retry budget while the inner
+ * lease is active.
+ */
+function deferOverlappingReportJob(record: JobRecord, db: ReturnType<typeof getDb>): boolean {
+  const result = db.prepare(`
+    UPDATE background_jobs
+       SET status = 'pending',
+           attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
+           not_before = datetime('now', '+30 seconds'),
+           locked_at = NULL,
+           lock_owner = NULL,
+           fencing_token = NULL,
+           lease_expires_at = NULL
+     WHERE job_id = ?
+       AND status = 'processing'
+       AND lock_owner = ?
+       AND fencing_token = ?
+       AND lease_expires_at > datetime('now')
+  `).run(record.jobId, record.lockOwner, record.fencingToken);
+  return Number(result.changes) === 1;
 }
 
 function reportTargetScope(target: { tenantId: number; userId?: number }): string {
@@ -240,10 +282,45 @@ export function claimDueScheduledReportLeaseBatch<T extends { tenantId: number; 
       });
       return [];
     }
+    let executionClaim: ClaimedReportExecution;
+    try {
+      const claim = claimScheduledJobExecution({
+        jobName: `report:${job}`,
+        scopeKey: reportExecutionScopeKey(schedule),
+        leaseTtlMs: REPORT_EXECUTION_LEASE_TTL_MS,
+      }, db);
+      if (claim.kind !== 'claimed') {
+        if (!deferOverlappingReportJob(jobRecord, db)) {
+          throw new Error('SCHEDULED_REPORT_OVERLAP_DEFERRAL_NOT_WRITTEN');
+        }
+        logger.debug({
+          job,
+          userId: schedule.userId,
+          tenantId: schedule.tenantId,
+          localDate: schedule.localDate,
+          overlapKind: claim.kind,
+        }, 'Scheduled report queue lease deferred behind its local-date fence');
+        return [];
+      }
+      executionClaim = claim;
+    } catch (error) {
+      try {
+        markJobFailed(jobRecord, error, db);
+      } catch {
+        // A lost outer fence is already retryable by the queue after expiry.
+      }
+      failures.push({
+        userId: schedule.userId,
+        tenantId: schedule.tenantId,
+        errorName: safeErrorName(error),
+      });
+      return [];
+    }
     return [{
       target,
       schedule,
       jobRecord,
+      executionClaim,
     }];
   });
   return { leases, failures };
@@ -275,6 +352,9 @@ export function completeScheduledReportLease<T>(lease: ScheduledReportLease<T>):
     if (Number(receipt.changes) !== 1) {
       throw new Error('SCHEDULED_REPORT_COMPLETION_RECEIPT_NOT_WRITTEN');
     }
+    if (!completeScheduledJobExecution(lease.executionClaim, 'success', db)) {
+      throw new Error('SCHEDULED_REPORT_EXECUTION_CHECKPOINT_NOT_WRITTEN');
+    }
     return true;
   })();
 }
@@ -286,10 +366,18 @@ export function failScheduledReportLease<T>(
   // Report/provider failures may contain private report copy or raw provider
   // text. The durable queue needs a retry disposition, not that payload.
   const errorName = safeErrorName(error);
-  return markJobFailed(
-    lease.jobRecord,
-    new Error(`Scheduled report generation failed (${errorName})`),
-  );
+  const db = getDb();
+  return db.transaction(() => {
+    const status = markJobFailed(
+      lease.jobRecord,
+      new Error(`Scheduled report generation failed (${errorName})`),
+      db,
+    );
+    if (!completeScheduledJobExecution(lease.executionClaim, 'failed', db)) {
+      throw new Error('SCHEDULED_REPORT_FAILURE_CHECKPOINT_NOT_WRITTEN');
+    }
+    return status;
+  })();
 }
 
 /** Keep a claimed report fenced while provider/generation work is in flight. */
@@ -297,7 +385,35 @@ export function startScheduledReportLeaseHeartbeat<T>(
   lease: ScheduledReportLease<T>,
   heartbeatIntervalMs?: number,
 ): ScheduledReportLeaseHeartbeat {
-  return startJobLeaseHeartbeat(lease.jobRecord, getDb(), heartbeatIntervalMs);
+  const db = getDb();
+  const outer = startJobLeaseHeartbeat(lease.jobRecord, db, heartbeatIntervalMs);
+  const state = { leaseLost: false };
+  const timer = setInterval(() => {
+    if (state.leaseLost) return;
+    try {
+      state.leaseLost = !renewScheduledJobExecution(
+        lease.executionClaim,
+        db,
+        new Date(),
+        REPORT_EXECUTION_LEASE_TTL_MS,
+      );
+    } catch {
+      state.leaseLost = true;
+    }
+  }, Math.min(heartbeatIntervalMs ?? REPORT_EXECUTION_HEARTBEAT_MS, REPORT_EXECUTION_HEARTBEAT_MS));
+  timer.unref();
+  return {
+    assertActive(): void {
+      outer.assertActive();
+      if (state.leaseLost || !isScheduledJobExecutionLeaseActive(lease.executionClaim, db)) {
+        throw new Error('SCHEDULED_REPORT_EXECUTION_LEASE_LOST');
+      }
+    },
+    stop(): void {
+      outer.stop();
+      clearInterval(timer);
+    },
+  };
 }
 
 export function getScheduledReportCompletionReceipt(input: {

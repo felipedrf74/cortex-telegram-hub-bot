@@ -26,6 +26,7 @@ import {
   assertTrainingCalendarSourceWritesEnabled,
   TrainingOperationDisabledError,
 } from './training-operational-switches';
+import { getSecretaryCalendarCommandPayloadForAgendaItem } from './secretary-calendar-command-store';
 
 export type SecretaryCalendarProviderSource = 'google' | 'outlook';
 
@@ -45,6 +46,11 @@ export interface SecretaryProviderEventInput {
   lifecycleState: string;
   decisionReasonCodes: string[];
   sourceShapeHash: string;
+  description?: string;
+  location?: string;
+  attendees?: string[];
+  categories?: string[];
+  recurrence?: unknown;
 }
 
 export interface SecretaryProviderEvent {
@@ -2214,7 +2220,8 @@ function isKnownNoEffectCreateFailure(error: unknown): boolean {
   const code = String(candidate?.code ?? '').toUpperCase();
   if (['VALIDATION_ERROR', 'PROVIDER_VALIDATION_FAILED', 'INVALID_ARGUMENT', 'RATE_LIMITED'].includes(code)) return true;
   const status = providerFailureStatus(candidate);
-  return status === 400 || status === 409 || status === 422 || status === 429;
+  return status === 400 || status === 401 || status === 403
+    || status === 409 || status === 422 || status === 429;
 }
 
 function providerFailureStatus(candidate: {
@@ -2780,10 +2787,11 @@ function isProviderCallBudgetExhaustedError(error: unknown): boolean {
   return (error as { code?: unknown } | null)?.code === 'SECRETARY_PROVIDER_SYNC_CALL_BUDGET_EXHAUSTED';
 }
 
-function toProviderEventInput(agendaItem: SecretaryAgendaItem): SecretaryProviderEventInput {
+export function toProviderEventInput(agendaItem: SecretaryAgendaItem): SecretaryProviderEventInput {
   if (!agendaItem.startAt || !agendaItem.endAt) {
     throw new Error('Secretary agenda item cannot be provider-synced without start/end times');
   }
+  const command = getSecretaryCalendarCommandPayloadForAgendaItem(agendaItem.agendaItemId);
   return {
     agendaItemId: agendaItem.agendaItemId,
     sourceIntentId: agendaItem.sourceIntentId,
@@ -2800,6 +2808,11 @@ function toProviderEventInput(agendaItem: SecretaryAgendaItem): SecretaryProvide
     lifecycleState: agendaItem.lifecycleState,
     decisionReasonCodes: agendaItem.decisionReasonCodes,
     sourceShapeHash: agendaItem.sourceShapeHash,
+    ...(command?.description ? { description: command.description } : {}),
+    ...(command?.location ? { location: command.location } : {}),
+    ...(command?.attendees ? { attendees: command.attendees } : {}),
+    ...(command?.categories ? { categories: command.categories } : {}),
+    ...(command?.recurrence != null ? { recurrence: command.recurrence } : {}),
   };
 }
 

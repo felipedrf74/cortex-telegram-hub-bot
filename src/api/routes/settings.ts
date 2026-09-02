@@ -8,7 +8,7 @@ import { config } from '../../config';
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { setUserLanguage, setUserTimezone } from '../../services/user-service';
+import { setUserLanguage } from '../../services/user-service';
 import { IANAZone } from 'luxon';
 import { getDb } from '../../services/database';
 import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
@@ -28,6 +28,13 @@ import {
   normalizePrimaryMailProvider,
   setProviderPreferences,
 } from '../../services/provider-preferences';
+import {
+  getSecretaryRoutineProfile,
+  putSecretaryRoutineProfile,
+  SecretaryRoutineProfileError,
+  synchronizeCanonicalUserTimezone,
+} from '../../services/secretary-routine-profile';
+import { invalidatePlanningCaches } from '../../services/cache-coherence-registry';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
   if (typeof language !== 'string') return null;
@@ -49,6 +56,12 @@ function parseExportJson(value: unknown): unknown {
 
 function safeErrorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
+}
+
+function sendSecretaryRoutineProfileError(res: Response, error: unknown): boolean {
+  if (!(error instanceof SecretaryRoutineProfileError)) return false;
+  sendError(res, error.code, error.message, error.status, error.details);
+  return true;
 }
 
 export function settingsRoutes(): Router {
@@ -227,7 +240,7 @@ export function settingsRoutes(): Router {
    * schedule anchoring, which is the exact defect class F11 exists to fix.
    */
   router.post('/timezone', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId } = req as AuthenticatedRequest;
     if (!ensureValidSettingsUserScope(res, userId, 'settings_route_timezone')) return;
     const timezone = typeof req.body?.timezone === 'string' ? req.body.timezone.trim() : '';
 
@@ -237,11 +250,58 @@ export function settingsRoutes(): Router {
     }
 
     try {
-      setUserTimezone(userId, timezone);
-      sendSuccess(res, { timezone });
+      // Auth middleware supplies tenantId. The fallback keeps direct route
+      // harnesses compatible; the shared writer still enforces equality
+      // before resolving the database or executing SQL.
+      const result = synchronizeCanonicalUserTimezone(
+        { userId, tenantId: tenantId ?? userId },
+        timezone,
+      );
+      if (result.changed) invalidatePlanningCaches(userId);
+      sendSuccess(res, { timezone: result.timezone });
     } catch (err: any) {
+      if (sendSecretaryRoutineProfileError(res, err)) return;
       logger.error({ errorName: safeErrorName(err) }, 'iOS set timezone failed');
       sendInternalError(res, 'Unable to save timezone right now.');
+    }
+  });
+
+  /** GET /api/v1/settings/secretary-routine */
+  router.get('/secretary-routine', async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_secretary_routine_get')) return;
+    try {
+      sendSuccess(res, getSecretaryRoutineProfile({ userId, tenantId }));
+    } catch (err: any) {
+      if (sendSecretaryRoutineProfileError(res, err)) return;
+      logger.error(
+        { errorName: safeErrorName(err), userId, tenantId },
+        'iOS Secretary routine profile load failed',
+      );
+      sendInternalError(res, 'Unable to load the Secretary routine profile right now.');
+    }
+  });
+
+  /** PUT /api/v1/settings/secretary-routine */
+  router.put('/secretary-routine', async (req, res: Response) => {
+    const { userId, tenantId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_secretary_routine_put')) return;
+    const headerIdempotencyKey = req.header('x-idempotency-key');
+    try {
+      const result = putSecretaryRoutineProfile(
+        { userId, tenantId },
+        req.body,
+        headerIdempotencyKey,
+      );
+      if (result.changed) invalidatePlanningCaches(userId);
+      sendSuccess(res, result.profile);
+    } catch (err: any) {
+      if (sendSecretaryRoutineProfileError(res, err)) return;
+      logger.error(
+        { errorName: safeErrorName(err), userId, tenantId },
+        'iOS Secretary routine profile save failed',
+      );
+      sendInternalError(res, 'Unable to save the Secretary routine profile right now.');
     }
   });
 
@@ -343,6 +403,135 @@ export function settingsRoutes(): Router {
         const allQ = onboarding.getAllQuestionnaires?.() || [];
         userData.profiles = allQ.map((q: any) => onboarding.getProfile(userId, q.id)).filter(Boolean);
       } catch { userData.profiles = []; }
+      userData.secretaryRoutineProfile = safeAll(`
+        SELECT 'configured' AS status,
+               profile.version,
+               user.timezone,
+               profile.working_windows_json AS workingWindows,
+               profile.preferred_focus_windows_json AS preferredFocusWindows,
+               profile.protected_routines_json AS protectedRoutines,
+               profile.created_at AS createdAt,
+               profile.updated_at AS updatedAt
+          FROM secretary_routine_profiles profile
+          JOIN users user ON user.id = profile.user_id
+         WHERE profile.user_id = ? AND profile.tenant_id = ?
+      `, userId, tenantId).map((row: any) => ({
+        ...row,
+        workingWindows: parseExportJson(row.workingWindows),
+        preferredFocusWindows: parseExportJson(row.preferredFocusWindows),
+        protectedRoutines: parseExportJson(row.protectedRoutines),
+      }));
+      userData.secretaryRoutineIdempotencyReceipts = safeAll(`
+        SELECT idempotency_key AS idempotencyKey,
+               response_json AS response,
+               created_at AS createdAt,
+               expires_at AS expiresAt
+          FROM secretary_routine_idempotency_receipts
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY created_at
+      `, userId, tenantId).map((row: any) => ({
+        ...row,
+        response: parseExportJson(row.response),
+      }));
+      userData.secretaryCalendarCommandReceipts = safeAll(`
+        SELECT idempotency_key AS idempotencyKey,
+               provider_source AS providerSource,
+               command_json AS command,
+               state,
+               response_json AS response,
+               created_at AS createdAt,
+               updated_at AS updatedAt,
+               expires_at AS expiresAt
+          FROM secretary_calendar_command_receipts
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY created_at
+      `, userId, String(tenantId)).map((row: any) => ({
+        ...row,
+        command: parseExportJson(row.command),
+        response: parseExportJson(row.response),
+      }));
+      userData.secretaryCalendarCommandPayloads = safeAll(`
+        SELECT agenda_item_id AS agendaItemId,
+               command_json AS command,
+               created_at AS createdAt,
+               updated_at AS updatedAt
+          FROM secretary_calendar_command_payloads
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY created_at
+      `, userId, String(tenantId)).map((row: any) => ({
+        ...row,
+        command: parseExportJson(row.command),
+      }));
+      userData.secretaryCalendarMutationReceipts = safeAll(`
+        SELECT idempotency_key AS idempotencyKey,
+               operation,
+               provider_source AS providerSource,
+               command_json AS command,
+               state,
+               response_json AS response,
+               created_at AS createdAt,
+               updated_at AS updatedAt,
+               expires_at AS expiresAt
+          FROM secretary_calendar_mutation_receipts
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY created_at
+      `, userId, String(tenantId)).map((row: any) => ({
+        ...row,
+        command: parseExportJson(row.command),
+        response: parseExportJson(row.response),
+      }));
+      userData.reportDocumentDispatchReceipts = safeAll(`
+        SELECT report_type AS reportType,
+               dispatch_key AS dispatchKey,
+               report_document_id AS reportDocumentId,
+               created_at AS createdAt
+          FROM report_document_dispatch_receipts
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY created_at, report_document_id
+      `, userId, tenantId);
+      userData.scheduledReportCompletionReceipts = safeAll(`
+        SELECT job_id AS jobId,
+               report_job AS reportJob,
+               local_date AS localDate,
+               attempts,
+               completed_at AS completedAt,
+               created_at AS createdAt
+          FROM scheduled_report_completion_receipts
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY local_date, report_job
+      `, userId, tenantId);
+      userData.planningRecomputeReceipts = safeAll(`
+        SELECT idempotency_key_hash AS idempotencyKeyHash,
+               request_fingerprint AS requestFingerprint,
+               status,
+               snapshot_id AS snapshotId,
+               response_json AS response,
+               last_error_code AS lastErrorCode,
+               created_at AS createdAt,
+               updated_at AS updatedAt
+          FROM planning_recompute_receipts
+         WHERE user_id = ? AND tenant_id = ?
+         ORDER BY created_at
+      `, userId, tenantId).map((row: any) => ({
+        ...row,
+        response: parseExportJson(row.response),
+      }));
+      // Report leases share a system table. Secretary report scopes encode the
+      // authenticated tenant and user, so export only matching report:* rows
+      // and never disclose the live lease owner, token, or expiry.
+      userData.reportScheduleExecutionState = safeAll(`
+        SELECT job_name AS jobName,
+               scope_key AS scopeKey,
+               last_started_at AS lastStartedAt,
+               last_completed_at AS lastCompletedAt,
+               last_succeeded_at AS lastSucceededAt,
+               last_result AS lastResult,
+               updated_at AS updatedAt
+          FROM scheduled_job_execution_state
+         WHERE job_name LIKE 'report:%'
+           AND scope_key LIKE ?
+         ORDER BY job_name, scope_key
+      `, `tenant:${tenantId}:user:${userId}:local-date:%`);
 
       // ── Content workspace ──
       // The canonical export discovers every schema-present Content table with

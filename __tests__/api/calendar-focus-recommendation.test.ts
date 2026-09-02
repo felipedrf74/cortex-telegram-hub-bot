@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 import { DateTime } from 'luxon';
 
-const mockGetEvents = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
 const mockCalculateReadiness = vi.fn();
@@ -13,7 +13,7 @@ const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
 
 vi.mock('../../src/services/unified-calendar', () => ({
-  getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   isAnyCalendarConfigured: (...args: unknown[]) => mockIsAnyCalendarConfigured(...args),
 }));
@@ -98,7 +98,7 @@ function mockReq(url: string): Request {
     params: {},
     headers: {},
     userId: 12,
-    tenantId: 1200,
+    tenantId: 12,
   } as any;
 }
 
@@ -120,7 +120,7 @@ async function dispatch(url: string): Promise<MockRes> {
 
 describe('Calendar API — focus recommendation', () => {
   beforeEach(() => {
-    mockGetEvents.mockReset();
+    mockGetEventsWithDiagnostics.mockReset();
     mockCreateEvent.mockReset();
     mockIsAnyCalendarConfigured.mockReset();
     mockCalculateReadiness.mockReset();
@@ -185,7 +185,7 @@ describe('Calendar API — focus recommendation', () => {
         },
       ];
     });
-    mockGetEvents.mockResolvedValue([
+    mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([
       {
         summary: 'Leadership sync',
         start: today.set({ hour: 9, minute: 0 }).toUTC().toISO(),
@@ -211,7 +211,7 @@ describe('Calendar API — focus recommendation', () => {
         start: tomorrow.set({ hour: 13, minute: 0 }).toUTC().toISO(),
         end: tomorrow.set({ hour: 13, minute: 30 }).toUTC().toISO(),
       },
-    ]);
+    ]));
 
     const res = await dispatch('/focus-recommendation?durationMinutes=90&horizonDays=3');
 
@@ -254,7 +254,7 @@ describe('Calendar API — focus recommendation', () => {
         otherSportRpeToday: 0,
       },
     });
-    mockGetEvents.mockResolvedValue([]);
+    mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([]));
 
     const res = await dispatch('/focus-recommendation');
 
@@ -265,4 +265,58 @@ describe('Calendar API — focus recommendation', () => {
     expect(['high', 'medium', 'low']).toContain(res.body.data.focusRecommendation.confidence);
     expect(res.body.data.focusRecommendation.trainingCoordination ?? null).toBeNull();
   });
+
+  it('rejects a tenant mismatch before calendar or readiness reads', async () => {
+    const router = calendarRoutes();
+    const req = mockReq('/focus-recommendation') as any;
+    req.tenantId = 1200;
+    const res = mockRes();
+
+    await new Promise<void>((resolve) => {
+      (router as any).handle(req, res, (err: any) => {
+        if (err) throw err;
+        resolve();
+      });
+      setImmediate(resolve);
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('TENANT_SCOPE_MISMATCH');
+    expect(mockGetEventsWithDiagnostics).not.toHaveBeenCalled();
+    expect(mockCalculateReadiness).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when one configured calendar provider is unavailable', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'degraded',
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+      sources: {
+        configured: ['google', 'outlook'],
+        fulfilled: ['outlook'],
+        failed: ['google'],
+      },
+    });
+    mockCalculateReadiness.mockResolvedValue({ score: 80 });
+
+    const res = await dispatch('/focus-recommendation');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error.code).toBe('FOCUS_RECOMMENDATION_FAILED');
+  });
 });
+
+function readyCalendarResult(events: unknown[]) {
+  return {
+    events,
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: {
+      configured: ['outlook'],
+      fulfilled: ['outlook'],
+      failed: [],
+    },
+  };
+}

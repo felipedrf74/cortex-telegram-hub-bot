@@ -1,10 +1,13 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DateTime } from 'luxon';
 
 const mockComposeWeeklyPlan = vi.fn();
 const mockComposeDailyBrief = vi.fn();
 const mockInvalidatePlanningCaches = vi.fn();
+const mockGetUserById = vi.fn();
 let testDb: Database.Database;
+let mockUserTimezone = 'Europe/Lisbon';
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -20,6 +23,10 @@ vi.mock('../../src/services/daily-brief-orchestrator', () => ({
 
 vi.mock('../../src/services/cache-coherence-registry', () => ({
   invalidatePlanningCaches: (...args: unknown[]) => mockInvalidatePlanningCaches(...args),
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  getUserById: (...args: unknown[]) => mockGetUserById(...args),
 }));
 
 function installSchema(): void {
@@ -47,8 +54,12 @@ function installCoherentComposers(): void {
   mockComposeWeeklyPlan.mockImplementation(async (input: any) => ({
     weekStart: input.weekStart,
     weekEnd: '2026-04-19',
-    generatedAt: input.planningSnapshot.generatedAt,
-    planningSnapshot: input.planningSnapshot,
+    generatedAt: input.context.capturedAt,
+    timezone: input.context.timezone,
+    warningCodes: [],
+    warnings: [],
+    sourceHealth: Object.fromEntries(['calendar', 'tasks', 'mail', 'focus', 'training', 'cooking', 'content', 'finance']
+      .map((key) => [key, { status: 'ready', warningCodes: [], warnings: [] }])),
     variant: 'steady',
     degraded: false,
     gated: { skills: [] },
@@ -60,8 +71,14 @@ function installCoherentComposers(): void {
   }));
   mockComposeDailyBrief.mockImplementation(async (input: any) => ({
     date: input.date,
-    generatedAt: input.planningSnapshot.generatedAt,
-    planningSnapshot: input.planningSnapshot,
+    generatedAt: input.context.capturedAt,
+    timezone: input.context.timezone,
+    warningCodes: [],
+    warnings: [],
+    sourceHealth: {
+      ...input.weekPlan.sourceHealth,
+      decision_center: { status: 'ready', warningCodes: [], warnings: [] },
+    },
     degraded: false,
     gated: { skills: [] },
     garmin_stale: false,
@@ -79,6 +96,13 @@ describe('planning recompute service', () => {
     mockComposeWeeklyPlan.mockReset();
     mockComposeDailyBrief.mockReset();
     mockInvalidatePlanningCaches.mockReset();
+    mockGetUserById.mockReset();
+    mockUserTimezone = 'Europe/Lisbon';
+    mockGetUserById.mockImplementation((userId: number) => ({
+      id: userId,
+      timezone: mockUserTimezone,
+      language: 'en-US',
+    }));
     installCoherentComposers();
   });
 
@@ -91,7 +115,7 @@ describe('planning recompute service', () => {
     const { recomputePlanningSnapshot } = await import('../../src/services/planning-recompute-service');
     const input = {
       userId: 11,
-      tenantId: 21,
+      tenantId: 11,
       timezone: 'Europe/Lisbon',
       locale: 'pt-PT',
       idempotencyKey: 'recompute-once',
@@ -104,8 +128,9 @@ describe('planning recompute service', () => {
     const replay = await recomputePlanningSnapshot(input);
 
     expect(replay).toEqual(first);
-    expect(first.snapshot.snapshotId).toBe(first.week.planningSnapshot?.snapshotId);
-    expect(first.snapshot.snapshotId).toBe(first.today.planningSnapshot?.snapshotId);
+    expect(first).not.toHaveProperty('snapshot');
+    expect(first.week).not.toHaveProperty('planningSnapshot');
+    expect(first.today).not.toHaveProperty('planningSnapshot');
     expect(first.week.generatedAt).toBe(first.today.generatedAt);
     expect(mockComposeWeeklyPlan).toHaveBeenCalledTimes(1);
     expect(mockComposeDailyBrief).toHaveBeenCalledTimes(1);
@@ -128,7 +153,7 @@ describe('planning recompute service', () => {
     const { recomputePlanningSnapshot } = await import('../../src/services/planning-recompute-service');
     const base = {
       userId: 11,
-      tenantId: 21,
+      tenantId: 11,
       timezone: 'Europe/Lisbon',
       locale: 'en',
       idempotencyKey: 'stable-key',
@@ -151,10 +176,11 @@ describe('planning recompute service', () => {
     ['America/Sao_Paulo', '2026-04-13T02:30:00.000Z', '2026-04-12'],
     ['America/Los_Angeles', '2026-11-01T08:30:00.000Z', '2026-11-01'],
   ])('anchors implicit today to the captured local day in %s', async (timezone, now, expectedDate) => {
+    mockUserTimezone = timezone;
     const { recomputePlanningSnapshot } = await import('../../src/services/planning-recompute-service');
     const result = await recomputePlanningSnapshot({
       userId: 15,
-      tenantId: 25,
+      tenantId: 15,
       timezone,
       locale: 'en',
       idempotencyKey: `local-day-${timezone}`,
@@ -162,15 +188,15 @@ describe('planning recompute service', () => {
     });
 
     expect(result.today.date).toBe(expectedDate);
-    expect(result.snapshot.localDate).toBe(expectedDate);
-    expect(result.week.weekStart).toBe(result.snapshot.weekStart);
+    expect(result.week.timezone).toBe(timezone);
+    expect(result.week.weekStart).toBe(DateTime.fromISO(expectedDate, { zone: timezone }).startOf('week').toISODate());
   });
 
   it('supports requested past and future weeks but rejects dates outside that week', async () => {
     const { recomputePlanningSnapshot } = await import('../../src/services/planning-recompute-service');
     const base = {
       userId: 17,
-      tenantId: 27,
+      tenantId: 17,
       timezone: 'Europe/Lisbon',
       locale: 'en',
       now: new Date('2026-08-31T10:00:00.000Z'),
@@ -202,7 +228,7 @@ describe('planning recompute service', () => {
     const { recomputePlanningSnapshot } = await import('../../src/services/planning-recompute-service');
     const base = {
       userId: 19,
-      tenantId: 29,
+      tenantId: 19,
       timezone: 'Europe/Lisbon',
       locale: 'en',
       idempotencyKey: 'retry-and-scope',
@@ -213,10 +239,10 @@ describe('planning recompute service', () => {
     mockComposeWeeklyPlan.mockRejectedValueOnce(new Error('source unavailable'));
     await expect(recomputePlanningSnapshot(base)).rejects.toThrow('source unavailable');
     const retry = await recomputePlanningSnapshot(base);
-    const otherTenant = await recomputePlanningSnapshot({ ...base, tenantId: 30 });
+    const otherAccount = await recomputePlanningSnapshot({ ...base, userId: 30, tenantId: 30 });
 
-    expect(retry.snapshot.tenantId).toBe(29);
-    expect(otherTenant.snapshot.tenantId).toBe(30);
+    expect(retry.week.timezone).toBe('Europe/Lisbon');
+    expect(otherAccount.week.timezone).toBe('Europe/Lisbon');
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM planning_recompute_receipts').get())
       .toMatchObject({ count: 2 });
   });
@@ -229,8 +255,12 @@ describe('planning recompute service', () => {
       releaseWeekly = () => resolve({
         weekStart: input.weekStart,
         weekEnd: '2026-04-19',
-        generatedAt: input.planningSnapshot.generatedAt,
-        planningSnapshot: input.planningSnapshot,
+        generatedAt: input.context.capturedAt,
+        timezone: input.context.timezone,
+        warningCodes: [],
+        warnings: [],
+        sourceHealth: Object.fromEntries(['calendar', 'tasks', 'mail', 'focus', 'training', 'cooking', 'content', 'finance']
+          .map((key) => [key, { status: 'ready', warningCodes: [], warnings: [] }])),
         variant: 'steady',
         degraded: false,
         gated: { skills: [] },
@@ -243,7 +273,7 @@ describe('planning recompute service', () => {
     }));
     const input = {
       userId: 31,
-      tenantId: 41,
+      tenantId: 31,
       timezone: 'Europe/Lisbon',
       locale: 'en',
       idempotencyKey: 'slow-recompute',

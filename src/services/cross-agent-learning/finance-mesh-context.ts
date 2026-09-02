@@ -12,6 +12,11 @@ import {
 } from '../finance-tracker';
 import { getSubscriptionStatus } from '../stripe-service';
 import { isValidTenantUserId } from '../tenant-scope-observability';
+import {
+  degradedPlanSource,
+  readyPlanSource,
+  unavailablePlanSource,
+} from '../secretary-planning-context';
 import type { FinanceMeshContext, MeshSignalDraft } from './types';
 import { endOfDayIso, reportInvalidMeshScope, resolveWeekWindow, roundTo, safely } from './mesh-common';
 
@@ -84,6 +89,10 @@ export function createEmptyFinanceMeshContext(opts: {
       isActive: false,
       isPro: false,
     },
+    sourceHealth: unavailablePlanSource(
+      'FINANCE_STATE_UNAVAILABLE',
+      'Finance planning state is unavailable.',
+    ),
     derivedSignals: [],
   };
 }
@@ -105,6 +114,8 @@ export async function readFinanceMeshContext(opts: {
   const window = resolveWeekWindow(opts.weekStart, opts.timezone, opts.referenceNow);
   const month = window.start.toFormat('yyyy-MM');
   const year = window.start.year;
+  const readFailures = new Set<string>();
+  const recordReadFailure = (source: string) => () => { readFailures.add(source); };
   const monthlySummary = safely(() => getMonthlySummary(opts.userId, month, { tenantId }), {
     month,
     currency: null,
@@ -115,7 +126,7 @@ export async function readFinanceMeshContext(opts: {
     totalDeductions: 0,
     netIncome: 0,
     transactionCount: 0,
-  });
+  }, recordReadFailure('monthly_summary'));
   const preferredCurrency = getPreferredCurrencyForUser(opts.userId, { tenantId });
   const budgetView = safely(() => getMonthlyBudgetView(opts.userId, month, { tenantId }), {
     month,
@@ -134,8 +145,12 @@ export async function readFinanceMeshContext(opts: {
     recurringExpenseCount: 0,
     recurringExpenses: [],
     notes: [],
-  });
-  const taxEvents = safely(() => getTaxEvents(opts.userId, { year, limit: 24, tenantId }), []);
+  }, recordReadFailure('budget'));
+  const taxEvents = safely(
+    () => getTaxEvents(opts.userId, { year, limit: 24, tenantId }),
+    [],
+    recordReadFailure('tax_events'),
+  );
   const annualSummary = safely(() => getAnnualTaxSummary(opts.userId, year, { tenantId }), {
     year,
     totalGrossIncome: 0,
@@ -148,7 +163,7 @@ export async function readFinanceMeshContext(opts: {
     monthsPaid: 0,
     monthsPending: 0,
     months: [],
-  });
+  }, recordReadFailure('annual_summary'));
   const subscription = safely(() => getSubscriptionStatus(opts.userId), {
     plan: 'free',
     period: 'monthly',
@@ -159,7 +174,7 @@ export async function readFinanceMeshContext(opts: {
     cancelAtPeriodEnd: false,
     isActive: false,
     isPro: false,
-  });
+  }, recordReadFailure('subscription'));
 
   const remainingRatio = budgetView.projectedRemainingRatio ?? budgetView.currentRemainingRatio;
   const nearestPending = taxEvents.find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
@@ -289,6 +304,17 @@ export async function readFinanceMeshContext(opts: {
     taxEvents,
     annualSummary,
     subscription,
+    sourceHealth: readFailures.size === 5
+      ? unavailablePlanSource(
+          'FINANCE_STATE_UNAVAILABLE',
+          'Finance planning state is unavailable.',
+        )
+      : readFailures.size > 0
+        ? degradedPlanSource(
+            'FINANCE_STATE_DEGRADED',
+            'Some Finance planning state is unavailable.',
+          )
+        : readyPlanSource(),
     derivedSignals,
   };
 }

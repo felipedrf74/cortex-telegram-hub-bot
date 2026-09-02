@@ -55,11 +55,15 @@ import { getUserConnections } from '../../src/services/oauth-store';
 import { getOrCreateNotificationProfile, updateNotificationProfile } from '../../src/services/notification-orchestrator';
 import { clearPendingChatConfirmation, getPendingChatConfirmation, trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
 import { addTransaction, calculateAndStoreTax, getTaxEvents } from '../../src/services/finance-tracker';
+import { executeSecretaryCalendarMutation } from '../../src/services/secretary-calendar-mutation-service';
 
-const tenantA = 7101;
 const userA = 8101;
-const tenantB = 7202;
 const userB = 8202;
+// Secretary commands currently use users.id as the canonical tenant key.
+// Distinct accounts still exercise cross-tenant isolation without inventing
+// an unsupported active-workspace scope.
+const tenantA = userA;
+const tenantB = userB;
 
 function input(overrides: Partial<ChatPlannerInput> = {}): ChatPlannerInput {
   return {
@@ -96,8 +100,32 @@ function calendarPlan(messageId = 'msg-calendar-idempotency'): ChatActionPlan {
   return plan;
 }
 
+function calendarMutationPlan(
+  messageId: string,
+  action: 'update_event' | 'delete_event',
+): ChatActionPlan {
+  const plan = calendarPlan(messageId);
+  plan.steps[0].action = action;
+  plan.steps[0].risk = action === 'delete_event' ? 'destructive' : 'safe_write';
+  plan.requiresConfirmation = true;
+  plan.steps[0].idempotencyKey = `chat-${action}-${messageId}`;
+  plan.steps[0].args = action === 'update_event'
+    ? {
+        provider: 'google_calendar',
+        eventId: 'event-chat-replay',
+        title: 'Updated review',
+        changedFields: ['title'],
+      }
+    : {
+        provider: 'google_calendar',
+        eventId: 'event-chat-replay',
+      };
+  return plan;
+}
+
 function makeCalendarDeps(options: {
   hasGoogle?: boolean;
+  hasOutlook?: boolean;
   createEvent?: ReturnType<typeof vi.fn>;
   getEventsForSources?: ReturnType<typeof vi.fn>;
 } = {}) {
@@ -121,7 +149,10 @@ function makeCalendarDeps(options: {
         createEvent,
         getEventsForSources,
         hasGoogle: vi.fn(() => options.hasGoogle ?? true),
-        hasOutlook: vi.fn(() => true),
+        // These scenarios issue Google commands. Keep the fixture's configured
+        // source inventory honest so legacy adapters are not treated as if an
+        // unmodelled second provider was also successfully checked.
+        hasOutlook: vi.fn(() => options.hasOutlook ?? false),
       },
       taskProviderForUser: vi.fn(() => ({}) as any),
     },
@@ -355,6 +386,73 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       expect(ledgerCreates.count).toBe(1);
     });
 
+    it('replays a verified calendar command after the provider disconnects', async () => {
+      const calendar = makeCalendarDeps();
+      const plan = calendarPlan('msg-calendar-disconnected-replay');
+      const request = input({ messageId: 'msg-calendar-disconnected-replay' });
+
+      const first = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
+      vi.mocked(calendar.deps.calendar.hasGoogle).mockReturnValue(false);
+      const replay = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
+
+      expect(first.metadata.actionStatus).toBe('verified_success');
+      expect(replay.metadata.actionStatus).toBe('verified_success');
+      expect(calendar.deps.calendar.createEvent).toHaveBeenCalledTimes(1);
+      expect(calendar.events).toHaveLength(1);
+    });
+
+    it.each(['update_event', 'delete_event'] as const)(
+      'replays a verified chat %s mutation after the provider disconnects',
+      async (action) => {
+        const messageId = `msg-calendar-${action}-disconnected-replay`;
+        const plan = calendarMutationPlan(messageId, action);
+        const step = plan.steps[0];
+        let current: any = {
+          id: 'event-chat-replay',
+          source: 'google',
+          summary: 'Original review',
+          start: '2026-05-17T10:00:00.000Z',
+          end: '2026-05-17T11:00:00.000Z',
+        };
+        const calendarIo = {
+          getEventById: vi.fn(async () => current),
+          getEventsWithDiagnostics: vi.fn(),
+          updateEvent: vi.fn(async () => {
+            current = { ...current, summary: 'Updated review' };
+            return current;
+          }),
+          deleteEvent: vi.fn(async () => { current = null; }),
+        };
+        await executeSecretaryCalendarMutation({
+          userId: userA,
+          tenantId: tenantA,
+          idempotencyKey: step.idempotencyKey,
+          operation: action === 'delete_event' ? 'delete' : 'update',
+          source: 'google',
+          eventId: 'event-chat-replay',
+          ...(action === 'update_event' ? { title: 'Updated review' } : {}),
+          timezone: 'Europe/Lisbon',
+          channel: 'chat',
+          nowIso: plan.createdAt,
+        }, { calendarIo });
+
+        const disconnected = makeCalendarDeps({ hasGoogle: false });
+        const replay = await executeChatActionPlan(
+          plan,
+          input({ messageId }),
+          disconnected.deps,
+          { confirmed: true },
+        );
+
+        expect(
+          replay.metadata.actionStatus,
+          JSON.stringify(replay.metadata),
+        ).toBe('verified_success');
+        expect(calendarIo.updateEvent).toHaveBeenCalledTimes(action === 'update_event' ? 1 : 0);
+        expect(calendarIo.deleteEvent).toHaveBeenCalledTimes(action === 'delete_event' ? 1 : 0);
+      },
+    );
+
     it('does not duplicate provider writes after provider success plus verifier failure or timeout', async () => {
       const mismatch = makeCalendarDeps({
         getEventsForSources: vi.fn(async () => []),
@@ -370,16 +468,120 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
 
       process.env.CHAT_PROVIDER_READ_BACK_TIMEOUT_MS = '5';
       const timeout = makeCalendarDeps({
-        getEventsForSources: vi.fn(async () => new Promise(() => undefined)),
+        getEventsForSources: vi.fn()
+          .mockResolvedValueOnce([])
+          .mockImplementation(() => new Promise(() => undefined)),
       });
       const timeoutPlan = calendarPlan('msg-calendar-readback-timeout');
+      Object.assign(timeoutPlan.steps[0].args, {
+        startDateTime: '2026-05-17T12:00:00+01:00',
+        endDateTime: '2026-05-17T13:00:00+01:00',
+      });
+      timeoutPlan.steps[0].idempotencyKey = `${timeoutPlan.steps[0].idempotencyKey}-timeout`;
       const timeoutRequest = input({ messageId: 'msg-calendar-readback-timeout' });
       const firstTimeout = await executeChatActionPlan(timeoutPlan, timeoutRequest, timeout.deps, { confirmed: true });
       const secondTimeout = await executeChatActionPlan(timeoutPlan, timeoutRequest, timeout.deps, { confirmed: true });
 
-      expect(firstTimeout.metadata.actionStatus).toBe('partial_success');
+      expect(firstTimeout.metadata.actionStatus, JSON.stringify(firstTimeout.metadata)).toBe('partial_success');
       expect(secondTimeout.metadata.actionStatus).toBe('partial_success');
       expect(timeout.deps.calendar.createEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-enters the shared calendar command after a retryable conflict-source failure', async () => {
+      const events: any[] = [];
+      const getEventsForSources = vi.fn()
+        .mockRejectedValueOnce(new Error('calendar source temporarily unavailable'))
+        .mockResolvedValueOnce([])
+        .mockImplementation(async () => [...events]);
+      const createEvent = vi.fn(async (data: any, source: 'google' | 'outlook') => {
+        const event = {
+          id: 'evt-chat-retry',
+          summary: data.title,
+          start: data.start,
+          end: data.end,
+          source,
+        };
+        events.push(event);
+        return event;
+      });
+      const calendar = makeCalendarDeps({ createEvent, getEventsForSources });
+      const plan = calendarPlan('msg-calendar-conflict-source-retry');
+      const request = input({ messageId: 'msg-calendar-conflict-source-retry' });
+
+      const unavailable = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
+      const recovered = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
+
+      expect(unavailable.metadata.actionStatus).toBe('blocked');
+      expect(recovered.metadata.actionStatus).toBe('verified_success');
+      expect(createEvent).toHaveBeenCalledTimes(1);
+      expect(getEventsForSources).toHaveBeenCalledTimes(3);
+      expect(testDb.prepare(`
+        SELECT state
+          FROM secretary_calendar_command_receipts
+         WHERE user_id = ? AND tenant_id = ?
+           AND idempotency_key = ?
+      `).get(userA, String(tenantA), plan.steps[0].idempotencyKey)).toEqual({ state: 'succeeded' });
+    });
+
+    it('uses the current chat retry clock to recover an expired calendar command lease', async () => {
+      const events: any[] = [];
+      const getEventsForSources = vi.fn()
+        .mockRejectedValueOnce(new Error('calendar source temporarily unavailable'))
+        .mockResolvedValueOnce([])
+        .mockImplementation(async () => [...events]);
+      const createEvent = vi.fn(async (data: any, source: 'google' | 'outlook') => {
+        const event = {
+          id: 'evt-chat-expired-lease-recovery',
+          summary: data.title,
+          start: data.start,
+          end: data.end,
+          source,
+        };
+        events.push(event);
+        return event;
+      });
+      const calendar = makeCalendarDeps({ createEvent, getEventsForSources });
+      const plan = calendarPlan('msg-calendar-expired-lease-recovery');
+      const request = input({ messageId: 'msg-calendar-expired-lease-recovery' });
+
+      const unavailable = await executeChatActionPlan(plan, request, calendar.deps, { confirmed: true });
+      expect(unavailable.metadata.actionStatus).toBe('blocked');
+
+      // Model a process stopping after it acquired the durable command lease.
+      // The logical plan remains stamped at NOW, while this lease expires five
+      // minutes later in UTC.
+      testDb.prepare(`
+        UPDATE secretary_calendar_command_receipts
+           SET processing_lease_token = ?, processing_lease_expires_at = ?
+         WHERE user_id = ? AND tenant_id = ? AND idempotency_key = ?
+      `).run(
+        'crashed-worker',
+        '2026-05-16T11:05:00.000Z',
+        userA,
+        String(tenantA),
+        plan.steps[0].idempotencyKey,
+      );
+
+      const recovered = await executeChatActionPlan(
+        plan,
+        input({
+          messageId: 'msg-calendar-expired-lease-recovery',
+          nowIso: '2026-05-16T12:06:00+01:00',
+        }),
+        calendar.deps,
+        { confirmed: true },
+      );
+
+      expect(recovered.metadata.actionStatus).toBe('verified_success');
+      expect(createEvent).toHaveBeenCalledTimes(1);
+      expect(testDb.prepare(`
+        SELECT state, processing_lease_token
+          FROM secretary_calendar_command_receipts
+         WHERE user_id = ? AND tenant_id = ? AND idempotency_key = ?
+      `).get(userA, String(tenantA), plan.steps[0].idempotencyKey)).toEqual({
+        state: 'succeeded',
+        processing_lease_token: null,
+      });
     });
 
     it('keeps confirmation tokens single-use, pending continuation idempotent, and financial/send-email retries non-duplicating', async () => {
@@ -473,12 +675,12 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
 
   describe('provider failures', () => {
     it.each([
-      ['expired token', new Error('401 expired access_token=raw-provider-secret')],
-      ['permission denied', new Error('403 permission denied refresh_token=raw-provider-secret')],
-      ['rate limit', new Error('429 rate limit oauth=raw-provider-secret')],
-      ['timeout', new Error('provider_write_timeout stack trace raw-provider-secret')],
-      ['provider 500', new Error('500 internal provider error raw-provider-secret')],
-    ])('fails safely for calendar provider failure: %s', async (_label, error) => {
+      ['expired token', Object.assign(new Error('expired raw-provider-secret'), { status: 401 }), 'failed', 'provider_create_failed', 1],
+      ['permission denied', Object.assign(new Error('permission denied raw-provider-secret'), { status: 403 }), 'failed', 'provider_create_failed', 1],
+      ['rate limit', Object.assign(new Error('rate limit raw-provider-secret'), { status: 429 }), 'failed', 'provider_create_failed', 3],
+      ['timeout', Object.assign(new Error('provider timeout raw-provider-secret'), { code: 'ETIMEDOUT' }), 'partial_success', 'provider_read_back_failed', 1],
+      ['provider 500', Object.assign(new Error('provider error raw-provider-secret'), { status: 500 }), 'partial_success', 'provider_read_back_failed', 1],
+    ])('fails safely for calendar provider failure: %s', async (_label, error, expectedStatus, expectedReason, expectedCreateCalls) => {
       const provider = makeCalendarDeps({
         createEvent: vi.fn(async () => {
           throw error;
@@ -488,9 +690,11 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
         messageId: `msg-provider-${String(_label).replace(/\s+/g, '-')}`,
       }), provider.deps, { confirmed: true });
 
-      expect(response.metadata.actionStatus).toBe('failed');
-      expect(response.text).toMatch(/could not complete|nothing was confirmed/i);
-      expect(provider.deps.calendar.createEvent).toHaveBeenCalledTimes(1);
+      expect(response.metadata.actionStatus).toBe(expectedStatus);
+      expect(response.text).toMatch(expectedStatus === 'failed'
+        ? /could not complete|nothing was confirmed/i
+        : /could not verify|verify manually|will not retry/i);
+      expect(provider.deps.calendar.createEvent).toHaveBeenCalledTimes(expectedCreateCalls);
       expectNoSecretLeak(response);
       const telemetry = listChatActionTelemetryForScope({
         userId: userA,
@@ -498,7 +702,7 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
         messageId: `msg-provider-${String(_label).replace(/\s+/g, '-')}`,
       });
       expect(telemetry).toHaveLength(1);
-      expect(telemetry[0]?.failureReason).toBe('provider_create_failed');
+      expect(telemetry[0]?.failureReason).toBe(expectedReason);
       expectNoSecretLeak(telemetry);
     });
 
@@ -515,6 +719,45 @@ describe('chat action production safety: tenant isolation, idempotency, retries,
       expect(telemetry[0]?.failureReason).toBe('google_calendar_not_connected_for_write');
       expectNoSecretLeak(response);
       expectNoSecretLeak(telemetry);
+    });
+
+    it('keeps a pre-write nonterminal chat receipt blocked after provider disconnect', async () => {
+      const events: any[] = [];
+      const getEventsForSources = vi.fn()
+        .mockRejectedValueOnce(new Error('calendar source temporarily unavailable'))
+        .mockImplementation(async () => [...events]);
+      const createEvent = vi.fn(async (data: any, source: 'google' | 'outlook') => {
+        const event = {
+          id: 'evt-chat-disconnected-recovery',
+          summary: data.title,
+          start: data.start,
+          end: data.end,
+          source,
+        };
+        events.push(event);
+        return event;
+      });
+      const connected = makeCalendarDeps({ createEvent, getEventsForSources });
+      const plan = calendarPlan('msg-chat-disconnected-recovery');
+      const request = input({ messageId: 'msg-chat-disconnected-recovery' });
+
+      const unavailable = await executeChatActionPlan(plan, request, connected.deps, { confirmed: true });
+      const disconnected = makeCalendarDeps({
+        hasGoogle: false,
+        createEvent,
+        getEventsForSources,
+      });
+      const recovered = await executeChatActionPlan(plan, request, disconnected.deps, { confirmed: true });
+
+      expect(unavailable.metadata.actionStatus).toBe('blocked');
+      expect(recovered.metadata.actionStatus).toBe('blocked');
+      expect(createEvent).not.toHaveBeenCalled();
+      expect(testDb.prepare(`
+        SELECT state
+          FROM secretary_calendar_command_receipts
+         WHERE user_id = ? AND tenant_id = ?
+           AND idempotency_key = ?
+      `).get(userA, String(tenantA), plan.steps[0].idempotencyKey)).toEqual({ state: 'conflict_unknown' });
     });
 
     it('handles malformed provider responses and verifier failures without silent success or raw error leakage', async () => {

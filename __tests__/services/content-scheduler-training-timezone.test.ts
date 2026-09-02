@@ -6,13 +6,17 @@ const mockReadTrainingContextAll = vi.fn();
 const mockGetActivePlans = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
-const mockGetEvents = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
 
 vi.mock('../../src/config', () => ({
   config: {
     app: { timezone: 'Europe/Lisbon' },
   },
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
 }));
 
 vi.mock('../../src/services/database', async () => ({
@@ -65,7 +69,7 @@ vi.mock('../../src/services/unified-calendar', async () => ({
   ...(await vi.importActual<typeof import('../../src/services/unified-calendar')>(
     '../../src/services/unified-calendar'
   )),
-  getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
   hasWritableCalendarForUser: (...args: unknown[]) => mockHasWritableCalendarForUser(...args),
 }));
 
@@ -126,7 +130,7 @@ describe('content scheduler training timezone', () => {
           description: null,
         }]
       : []);
-    mockGetEvents.mockResolvedValue([]);
+    mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([]));
     mockHasWritableCalendarForUser.mockReturnValue(false);
   });
 
@@ -142,4 +146,55 @@ describe('content scheduler training timezone', () => {
     expect(mockGetActivePlans).toHaveBeenCalledWith(42, 42);
     expect(mockGetSessionsForWeek).toHaveBeenCalledWith(11);
   });
+
+  it('keeps a filming recommendation provisional when calendar state is unavailable', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T10:30:00.000Z'));
+    mockGetEventsWithDiagnostics.mockRejectedValue(new Error('calendar unavailable'));
+
+    const recommendation = await getFilmingRecommendation(42, [], 42);
+
+    expect(recommendation).not.toBeNull();
+    expect(recommendation?.calendarLoad).toBe('unknown');
+    expect(recommendation?.reason).toContain('calendar could not be confirmed');
+    expect(recommendation?.reasons.join(' ')).not.toContain('calendar is clear');
+    expect(recommendation?.confidence).not.toBe('high');
+    expect(mockGetFocusBlockRecommendation).not.toHaveBeenCalled();
+  });
+
+  it('keeps a filming recommendation provisional when one calendar provider fails', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T10:30:00.000Z'));
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'degraded',
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+      sources: {
+        configured: ['google', 'outlook'],
+        fulfilled: ['outlook'],
+        failed: ['google'],
+      },
+    });
+
+    const recommendation = await getFilmingRecommendation(42, [], 42);
+
+    expect(recommendation?.calendarLoad).toBe('unknown');
+    expect(recommendation?.reason).toContain('calendar could not be confirmed');
+    expect(mockGetFocusBlockRecommendation).not.toHaveBeenCalled();
+  });
 });
+
+function readyCalendarResult(events: unknown[]) {
+  return {
+    events,
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: {
+      configured: ['outlook'],
+      fulfilled: ['outlook'],
+      failed: [],
+    },
+  };
+}

@@ -607,8 +607,11 @@ export async function sendPushNotification(
       result.unregistered.push(token);
       deleteDeadPushToken(token);
     } else if (outcome.status === 429 || outcome.status >= 500 || outcome.status === 0) {
-      // Transient provider failure. APNs did not accept the request; the
-      // caller must treat this as retryable (durable resend remains separate).
+      // Transient or ambiguous provider failure. A network error (status 0)
+      // can happen after APNs accepted bytes but before the response arrived;
+      // APNs exposes no idempotency token that can prove otherwise. The caller
+      // retries durably with the same collapse id so duplicate lock-screen
+      // presentation is minimized without claiming provider-side exactly-once.
       result.retriable += 1;
       logger.warn(
         { status: outcome.status, reason: outcome.reason, tokenSuffix: token.slice(-8) },

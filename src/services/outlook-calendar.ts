@@ -227,7 +227,7 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         endDateTime: new Date(endDate).toISOString(),
         $orderby: 'start/dateTime',
         $top: 100,
-        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,showAs,bodyPreview,body,location,webLink,categories',
+        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,showAs,bodyPreview,body,location,webLink,categories,iCalUId,originalStart,organizer',
       })
       .header('Prefer', outlookCalendarViewPreferHeader())
       .get(), OUTLOOK_API_TIMEOUT_MS);
@@ -271,6 +271,13 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         // values remain conservatively blocking.
         blocksTime: !['free', 'workingelsewhere']
           .includes(String(event.showAs ?? '').trim().toLowerCase()),
+        providerUid: typeof event.iCalUId === 'string' ? event.iCalUId : undefined,
+        providerOccurrenceStart: typeof event.originalStart === 'string'
+          ? event.originalStart
+          : undefined,
+        organizer: typeof event.organizer?.emailAddress?.address === 'string'
+          ? event.organizer.emailAddress.address.trim().toLowerCase()
+          : undefined,
       }));
   } catch (err) {
     logger.error({ err }, 'Failed to fetch Outlook calendar events');
@@ -321,6 +328,13 @@ async function getOutlookEventRequest(
     timeZone: event.start?.timeZone || event.end?.timeZone,
     blocksTime: !['free', 'workingelsewhere']
       .includes(String(event.showAs ?? '').trim().toLowerCase()),
+    providerUid: typeof event.iCalUId === 'string' ? event.iCalUId : undefined,
+    providerOccurrenceStart: typeof event.originalStart === 'string'
+      ? event.originalStart
+      : undefined,
+    organizer: typeof event.organizer?.emailAddress?.address === 'string'
+      ? event.organizer.emailAddress.address.trim().toLowerCase()
+      : undefined,
   };
 }
 
@@ -395,6 +409,13 @@ export async function createEvent(data: {
       htmlLink: response.webLink || undefined,
       categories: Array.isArray(response.categories) ? response.categories : (writableCategories.length > 0 ? writableCategories : undefined),
       isAllDay: !!response.isAllDay,
+      providerUid: typeof response.iCalUId === 'string' ? response.iCalUId : undefined,
+      providerOccurrenceStart: typeof response.originalStart === 'string'
+        ? response.originalStart
+        : undefined,
+      organizer: typeof response.organizer?.emailAddress?.address === 'string'
+        ? response.organizer.emailAddress.address.trim().toLowerCase()
+        : undefined,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to create Outlook calendar event');

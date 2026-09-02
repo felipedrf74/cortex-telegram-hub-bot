@@ -4,6 +4,21 @@ import {
   type SecretaryOrchestrationInput,
 } from '../../src/services/secretary-orchestrator';
 import type { WeeklyPlanDay } from '../../src/services/weekly-plan-orchestrator';
+import type { WeeklyPlanSourceHealth } from '../../src/services/secretary-planning-context';
+
+function readySourceHealth(): WeeklyPlanSourceHealth {
+  const ready = { status: 'ready' as const, warningCodes: [], warnings: [] };
+  return {
+    calendar: ready,
+    tasks: ready,
+    mail: ready,
+    focus: ready,
+    training: ready,
+    cooking: ready,
+    content: ready,
+    finance: ready,
+  };
+}
 
 function makeDay(overrides: Partial<WeeklyPlanDay> = {}): WeeklyPlanDay {
   return {
@@ -58,6 +73,7 @@ function makeInput(overrides: Partial<SecretaryOrchestrationInput> = {}): Secret
     },
     conflicts: [],
     language: 'pt-PT',
+    sourceHealth: readySourceHealth(),
     ...overrides,
   };
 }
@@ -620,6 +636,7 @@ describe('secretary-orchestrator', () => {
     const result = buildSecretaryCoordination(makeInput({
       day,
       weekPlan: { days: [day], conflicts: [], variant: 'steady' },
+      language: 'en-US',
       secretaryTodaySignals: {
         handledCount: 1,
         handledTitles: ['Secretary reflowed the agenda and verified the state.'],
@@ -637,5 +654,46 @@ describe('secretary-orchestrator', () => {
     expect(result.secretaryToday.needsUser[0]?.detail).toContain('protect');
     expect(result.secretaryToday.waitingOnSource.map((entry) => entry.source)).toContain('source_health');
     expect(result.secretaryToday.nextBestMove).toBe('Choose the protected commitment.');
+  });
+
+  it('does not claim agenda, conflicts, tasks, or mail were checked when source health is not ready', () => {
+    const unavailable = { status: 'unavailable' as const, warningCodes: ['SOURCE_UNAVAILABLE'], warnings: ['Unavailable.'] };
+    const result = buildSecretaryCoordination(makeInput({
+      sourceHealth: {
+        calendar: unavailable,
+        tasks: unavailable,
+        mail: unavailable,
+      },
+    }));
+
+    const checkedIds = result.secretaryToday.checked.map((entry) => entry.id);
+    expect(checkedIds).not.toEqual(expect.arrayContaining(['agenda-sync', 'conflict-scan', 'reminder-pressure']));
+    expect(result.secretaryToday.waitingOnSource.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['source-health-calendar', 'source-health-tasks', 'source-health-mail']),
+    );
+    expect(result.secretaryToday.summary).not.toContain('Agenda checked');
+  });
+
+  it('keeps a healthy calendar with unknown write capability separate from source availability', () => {
+    const secretary = { ...makeDay().secretary };
+    delete secretary.writableCalendar;
+    const day = makeDay({
+      secretary,
+    });
+    const result = buildSecretaryCoordination(makeInput({
+      day,
+      weekPlan: { days: [day], conflicts: [], variant: 'steady' },
+      language: 'en-US',
+    }));
+
+    expect(result.secretaryToday.checked).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'agenda-sync',
+        detail: expect.stringContaining('read, but calendar write access is not available'),
+      }),
+    ]));
+    expect(result.secretaryToday.waitingOnSource.map((entry) => entry.id))
+      .not.toContain('calendar-write-unavailable');
+    expect(result.secretaryToday.summary).not.toContain('source still needs to confirm');
   });
 });

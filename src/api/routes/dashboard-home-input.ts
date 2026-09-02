@@ -126,8 +126,8 @@ export function buildDashboardHomeInput(opts: {
       // as ready, and buildSecretarySummary at line 200 fell through to
       // "all clear" copy. The flag at dashboard.ts:298 controls whether
       // the truth fields are populated; do NOT zero out the input here.
-      calendarStatus: dashboard.calendar?.status ?? 'ready',
-      tasksStatus: dashboard.tasks?.status ?? 'ready',
+      calendarStatus: dashboard.calendar?.status ?? 'unavailable',
+      tasksStatus: dashboard.tasks?.status ?? 'unavailable',
       language,
     }),
     meta,

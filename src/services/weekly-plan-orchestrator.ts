@@ -2,7 +2,6 @@
 
 import { DateTime } from 'luxon';
 import { buildEditorialCoordinationSignals } from '../agents/editorial-coordinator-agent';
-import { config } from '../config';
 import { getCached, setCache } from './cache-store';
 import {
   createEmptySecretaryMeshContext,
@@ -39,19 +38,25 @@ import {
 } from './conflict-resolver';
 import { formatCurrencyAmount } from './finance-tracker';
 import { logger } from '../utils/logger';
-import { getUserById, getUserTimezoneById, type User } from './user-service';
 import { entitlementPlanToSkillTier, getEffectiveEntitlement } from './entitlement';
 import { checkSkillAccess } from './skill-tiers';
 import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './training-plans';
 import { resolveTrainingPlanTimezone, resolveTrainingTimezone } from './training-date-utils';
 import type { MealPlan } from './cooking-chef';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
-import { createDecisionPlanningContext, type DecisionPlanningContext } from './decision-planning-context';
 import {
-  assertPlanningSnapshotScope,
-  createPlanningSnapshotIdentity,
-  type PlanningSnapshotIdentity,
-} from './planning-snapshot-contract';
+  assertSecretaryPlanningContextMatches,
+  mergePlanWarnings,
+  planLanguageLocale,
+  readyPlanSource,
+  resolveSecretaryPlanningContext,
+  SecretaryPlanningContextError,
+  unavailablePlanSource,
+  type PlanSourceHealth,
+  type SecretaryPlanningContext,
+  type WeeklyPlanSourceHealth,
+} from './secretary-planning-context';
+import { unavailableWeeklyPlanSourceHealth } from './secretary-planning-snapshot';
 
 const WEEKLY_PLAN_SIGNAL_PRODUCER_VERSION = 'weekly-plan-orchestrator.v1';
 
@@ -143,8 +148,10 @@ export interface WeeklyPlanResponse {
   weekStart: string;
   weekEnd: string;
   generatedAt: string;
-  /** Shared identity used when a daily brief is projected from this week. */
-  planningSnapshot?: PlanningSnapshotIdentity;
+  timezone: string;
+  warningCodes: string[];
+  warnings: string[];
+  sourceHealth: WeeklyPlanSourceHealth;
   variant: 'conservative' | 'steady' | 'push';
   degraded: boolean;
   gated: { skills: string[] };
@@ -160,42 +167,6 @@ export interface WeeklyPlanResponse {
     activeConflictCount: number;
   };
   days: WeeklyPlanDay[];
-}
-
-function buildEmptyWeeklyPlanDay(date: string, timezone: string): WeeklyPlanDay {
-  return {
-    date,
-    weekday: DateTime.fromISO(date, { zone: timezone }).toFormat('cccc'),
-    headline: 'Plan unavailable because tenant scope is invalid for this request.',
-    training: {
-      title: 'Planning unavailable',
-      type: 'gated',
-      status: 'gated',
-      durationMinutes: null,
-      intensity: null,
-      reason: 'Tenant scope is invalid, so the planner skipped user-owned orchestration reads.',
-      decisions: [],
-    },
-    meals: [],
-    cooking: {
-      status: 'unavailable',
-      headline: 'Cooking plan unavailable for this day.',
-      warningCodes: ['COOKING_CONTEXT_UNAVAILABLE'],
-    },
-    content: null,
-    secretary: {
-      focusBlock: null,
-      pendingTasks: 0,
-      overdueTasks: 0,
-      travel: false,
-      busy: false,
-      priorityNote: null,
-      sequence: [],
-      tradeoffNote: null,
-      decisions: [],
-    },
-    finance: null,
-  };
 }
 
 async function loadMeshContextOrFallback<T>(opts: {
@@ -222,112 +193,67 @@ async function loadMeshContextOrFallback<T>(opts: {
   }
 }
 
-function buildEmptyWeeklyPlanResponse(opts: {
-  userId: number;
-  weekStart?: string;
-  timezone?: string;
-}): WeeklyPlanResponse {
-  const timezone = resolveWeeklyPlanTimezone(opts.userId, opts.timezone);
-  const window = resolveWeekWindow(opts.weekStart, timezone);
-  const days = weekIsoDates(window.start).map((date) => buildEmptyWeeklyPlanDay(date, timezone));
-  return {
-    weekStart: window.weekStart,
-    weekEnd: window.weekEnd,
-    generatedAt: new Date().toISOString(),
-    variant: 'conservative',
-    degraded: true,
-    gated: { skills: [] },
-    garmin_stale: false,
-    conflicts: [],
-    creativeCopy: {
-      headline: '',
-      note: '',
-    },
-    summary: {
-      sessionCount: 0,
-      mealCount: 0,
-      activeConflictCount: 0,
-    },
-    days,
-  };
-}
-
 export async function composeWeeklyPlan(opts: {
   userId: number;
   tenantId?: number;
   weekStart?: string;
   timezone?: string;
+  language?: string;
+  context?: SecretaryPlanningContext;
   forceRefresh?: boolean;
   syncSignals?: boolean;
   /** Route-owned SWR callers bypass the orchestrator cache to avoid two owners. */
   cacheMode?: 'read-write' | 'bypass';
-  planningContext?: DecisionPlanningContext;
-  planningSnapshot?: PlanningSnapshotIdentity;
 }): Promise<WeeklyPlanResponse> {
-  if (!isValidTenantUserId(opts.userId)) {
+  let context: SecretaryPlanningContext;
+  try {
+    if (opts.context) {
+      assertSecretaryPlanningContextMatches(opts.context, opts);
+      context = opts.context;
+    } else {
+      context = resolveSecretaryPlanningContext({
+        userId: opts.userId,
+        tenantId: opts.tenantId,
+        weekStart: opts.weekStart,
+        language: opts.language,
+      });
+    }
+  } catch (error) {
+    if (!(error instanceof SecretaryPlanningContextError)
+      || !['INVALID_SCOPE', 'TENANT_SCOPE_MISMATCH'].includes(error.code)) {
+      throw error;
+    }
     recordTenantScopeAnomaly({
       layer: 'orchestration',
-      operation: 'compose_weekly_plan',
-      reason: 'invalid_user_scope',
-      userId: opts.userId ?? null,
+      operation: error.code === 'TENANT_SCOPE_MISMATCH'
+        ? 'compose_weekly_plan_tenant_scope'
+        : 'compose_weekly_plan',
+      reason: error.code === 'TENANT_SCOPE_MISMATCH' ? 'tenant_mismatch' : 'invalid_user_scope',
+      userId: isValidTenantUserId(opts.userId) ? opts.userId : opts.userId ?? null,
       details: {
         tenantId: opts.tenantId ?? null,
         weekStart: opts.weekStart ?? null,
       },
     });
-    return buildEmptyWeeklyPlanResponse({
-      ...opts,
-      timezone: resolveTrainingTimezone(opts.timezone ?? config.app.timezone),
-    });
+    throw error;
   }
-
-  if (opts.tenantId !== undefined && !isValidTenantUserId(opts.tenantId)) {
-    recordTenantScopeAnomaly({
-      layer: 'orchestration',
-      operation: 'compose_weekly_plan_tenant_scope',
-      reason: 'invalid_user_scope',
-      userId: opts.userId,
-      details: {
-        tenantId: opts.tenantId,
-        weekStart: opts.weekStart ?? null,
-      },
-    });
-    return buildEmptyWeeklyPlanResponse({
-      ...opts,
-      timezone: resolveTrainingTimezone(opts.timezone ?? config.app.timezone),
-    });
-  }
-  const tenantId = opts.tenantId ?? opts.userId;
-
-  const planningContext = opts.planningContext ?? createDecisionPlanningContext({
-    userId: opts.userId,
-    tenantId,
-    timezone: resolveWeeklyPlanTimezone(opts.userId, opts.timezone),
-  });
-  if (planningContext.userId !== opts.userId || planningContext.tenantId !== tenantId) {
-    throw new Error('PLANNING_CONTEXT_SCOPE_MISMATCH');
-  }
-  const timezone = planningContext.timezone;
-  const window = resolveWeekWindow(opts.weekStart, timezone, planningContext.localDate);
-  const planningSnapshot = opts.planningSnapshot
-    ?? createPlanningSnapshotIdentity(planningContext, window.weekStart);
-  assertPlanningSnapshotScope(planningSnapshot, {
-    userId: opts.userId,
-    tenantId,
-    timezone,
-    weekStart: window.weekStart,
-  });
+  const tenantId = context.tenantId;
+  const window = resolveWeekWindow(context.weekStart, context.timezone);
   const shouldSyncSignals = opts.syncSignals === true;
-  const cacheKey = `plan:week:u:${opts.userId}:t:${tenantId}:${window.weekStart}:tz:${timezone}:sync:${shouldSyncSignals ? '1' : '0'}`;
+  const cacheKey = [
+    'plan', 'week', 'u', opts.userId, 't', tenantId, window.weekStart,
+    'tz', context.timezone, 'lang', context.language,
+    'sync', shouldSyncSignals ? '1' : '0',
+  ].join(':');
   const ownsCache = opts.cacheMode !== 'bypass';
   if (ownsCache && !opts.forceRefresh) {
     const cached = getCached<WeeklyPlanResponse>(cacheKey);
     if (cached) {
-      return cached;
+      return normalizeCachedWeeklyPlan(cached, context);
     }
   }
 
-  const user = getUserById(opts.userId);
+  const user = context.user;
   if (!user) {
     logger.warn(
       { userId: opts.userId },
@@ -355,10 +281,10 @@ export async function composeWeeklyPlan(opts: {
         userId: opts.userId,
         tenantId,
         weekStart: window.weekStart,
-        timezone,
-        referenceDate: planningContext.localDate,
+        timezone: context.timezone,
+        referenceDate: context.targetDate,
       }),
-      fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart, timezone }),
+      fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart, timezone: context.timezone }),
     }),
     gatedSkills.includes('cooking')
       ? Promise.resolve<{ value: CookingMeshContext | null; degraded: boolean }>({ value: null, degraded: false })
@@ -366,7 +292,12 @@ export async function composeWeeklyPlan(opts: {
           label: 'cooking',
           userId: opts.userId,
           weekStart: window.weekStart,
-          loader: readCookingMeshContext({ userId: opts.userId, tenantId, weekStart: window.weekStart, timezone }),
+          loader: readCookingMeshContext({
+            userId: opts.userId,
+            tenantId,
+            weekStart: window.weekStart,
+            timezone: context.timezone,
+          }),
           fallback: null,
         }),
     gatedSkills.includes('content')
@@ -379,8 +310,8 @@ export async function composeWeeklyPlan(opts: {
             userId: opts.userId,
             tenantId,
             weekStart: window.weekStart,
-            timezone,
-            referenceNow: planningContext.nowUtc,
+            timezone: context.timezone,
+            referenceNow: context.capturedAt,
           }),
           fallback: null,
         }),
@@ -394,8 +325,8 @@ export async function composeWeeklyPlan(opts: {
             userId: opts.userId,
             tenantId,
             weekStart: window.weekStart,
-            timezone,
-            referenceNow: planningContext.nowUtc,
+            timezone: context.timezone,
+            referenceNow: context.capturedAt,
           }),
           fallback: null,
         }),
@@ -406,8 +337,7 @@ export async function composeWeeklyPlan(opts: {
   const content = contentLoad.value;
   const finance = financeLoad.value;
   let orchestrationDegraded =
-    degradedQuota.over
-    || trainingLoad.degraded
+    trainingLoad.degraded
     || secretaryLoad.degraded
     || cookingLoad.degraded
     || contentLoad.degraded
@@ -424,7 +354,7 @@ export async function composeWeeklyPlan(opts: {
   const derivedSignalDrafts = [
     ...training.derivedSignals,
     ...secretary.derivedSignals,
-    ...(cooking ? buildCookingMeshSignals(cooking, training, content, planningContext.nowUtc) : []),
+    ...(cooking ? buildCookingMeshSignals(cooking, training, content, context.capturedAt) : []),
     ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
     ...(finance ? finance.derivedSignals : []),
   ];
@@ -437,7 +367,10 @@ export async function composeWeeklyPlan(opts: {
     authoritativeSignalSources.add('mesh.editorial-coordinator');
   }
   if (!financeLoad.degraded) authoritativeSignalSources.add('mesh.finance-context');
-  const isHistoricalWindow = window.weekEnd < planningContext.localDate;
+  const currentLocalDate = DateTime.fromISO(context.capturedAt, { zone: 'utc' })
+    .setZone(context.timezone)
+    .toISODate()!;
+  const isHistoricalWindow = window.weekEnd < currentLocalDate;
   let meshSignals = new Map<SignalType, AgentSignal[]>();
   try {
     meshSignals = shouldSyncSignals && !isHistoricalWindow
@@ -445,10 +378,10 @@ export async function composeWeeklyPlan(opts: {
           opts.userId,
           tenantId,
           derivedSignalDrafts,
-          planningContext.nowUtc,
+          context.capturedAt,
           authoritativeSignalSources,
         )
-      : groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts, planningContext.nowUtc);
+      : groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts, context.capturedAt);
   } catch (err) {
     orchestrationDegraded = true;
     logger.warn(
@@ -457,7 +390,7 @@ export async function composeWeeklyPlan(opts: {
     );
   }
 
-  const variant = resolveAggressivenessVariant(training, garminStale, planningContext.nowUtc);
+  const variant = resolveAggressivenessVariant(training, garminStale, context.capturedAt);
   const directives = buildDirectiveSet({
     training,
     secretary,
@@ -470,7 +403,6 @@ export async function composeWeeklyPlan(opts: {
   const shadowedByDay = indexAcceptedDirectives(resolution.shadowed);
   const days = weekIsoDates(window.start).map((date) => buildPlanDay({
     date,
-    timezone,
     variant,
     gatedSkills,
     training,
@@ -480,13 +412,40 @@ export async function composeWeeklyPlan(opts: {
     finance,
     acceptedDirectives: acceptedByDay.get(date) ?? [],
     shadowedDirectives: shadowedByDay.get(date) ?? [],
+    timezone: context.timezone,
+    language: context.language,
   }));
+
+  const sourceHealth = resolveWeeklySourceHealth({
+    training,
+    secretary,
+    cooking,
+    content,
+    finance,
+    gatedSkills,
+    trainingFailed: trainingLoad.degraded,
+    cookingFailed: cookingLoad.degraded,
+    contentFailed: contentLoad.degraded,
+    financeFailed: financeLoad.degraded,
+  });
+  orchestrationDegraded = orchestrationDegraded || Object.entries(sourceHealth).some(([key, health]) =>
+    !gatedSkills.includes(key) && health.status !== 'ready',
+  );
+  const warningMetadata = mergePlanWarnings(context, sourceHealth, degradedQuota.over
+    ? {
+        warningCodes: ['AI_COPY_QUOTA_REACHED'],
+        warnings: ['Creative plan copy is unavailable at the current AI allowance; deterministic planning remains current.'],
+      }
+    : undefined);
 
   const response: WeeklyPlanResponse = {
     weekStart: window.weekStart,
     weekEnd: window.weekEnd,
-    generatedAt: planningSnapshot.generatedAt,
-    planningSnapshot,
+    generatedAt: context.capturedAt,
+    timezone: context.timezone,
+    warningCodes: warningMetadata.warningCodes,
+    warnings: warningMetadata.warnings,
+    sourceHealth,
     variant,
     degraded: orchestrationDegraded,
     gated: { skills: gatedSkills },
@@ -494,7 +453,7 @@ export async function composeWeeklyPlan(opts: {
     conflicts: resolution.conflicts,
     creativeCopy: degradedQuota.over
       ? { headline: '', note: '' }
-      : buildCreativeCopy(days, variant),
+      : buildCreativeCopy(days, variant, sourceHealth, gatedSkills),
     summary: {
       sessionCount: days.filter((day) => day.training.status !== 'rest' && day.training.status !== 'gated').length,
       mealCount: days.reduce((sum, day) => sum + day.meals.length, 0),
@@ -505,6 +464,157 @@ export async function composeWeeklyPlan(opts: {
 
   if (ownsCache) setCache(cacheKey, response, 1800);
   return response;
+}
+
+function normalizeCachedWeeklyPlan(
+  cached: WeeklyPlanResponse,
+  context: SecretaryPlanningContext,
+): WeeklyPlanResponse {
+  const legacy = cached as WeeklyPlanResponse & {
+    timezone?: string;
+    warningCodes?: string[];
+    warnings?: string[];
+    sourceHealth?: WeeklyPlanSourceHealth;
+  };
+  if (legacy.timezone && legacy.warningCodes && legacy.warnings && legacy.sourceHealth) {
+    return cached;
+  }
+  const sourceHealth = legacy.sourceHealth ?? unavailableWeeklyPlanSourceHealth();
+  return {
+    ...cached,
+    timezone: legacy.timezone ?? context.timezone,
+    warningCodes: [...new Set([
+      ...(legacy.warningCodes ?? []),
+      'PLANNING_SOURCE_HEALTH_UNAVAILABLE',
+    ])],
+    warnings: [...new Set([
+      ...(legacy.warnings ?? []),
+      'Cached planning data predates source-health metadata and cannot be treated as fully current.',
+    ])],
+    sourceHealth,
+    degraded: true,
+  };
+}
+
+function resolveWeeklySourceHealth(input: {
+  training: TrainingMeshContext;
+  secretary: SecretaryMeshContext;
+  cooking: CookingMeshContext | null;
+  content: ContentMeshContext | null;
+  finance: FinanceMeshContext | null;
+  gatedSkills: string[];
+  trainingFailed: boolean;
+  cookingFailed: boolean;
+  contentFailed: boolean;
+  financeFailed: boolean;
+}): WeeklyPlanSourceHealth {
+  const secretaryHealth = input.secretary.sourceHealth ?? {
+    calendar: unavailablePlanSource(
+      'CALENDAR_STATE_UNKNOWN',
+      'Calendar state could not be confirmed.',
+    ),
+    tasks: unavailablePlanSource(
+      'TASKS_STATE_UNKNOWN',
+      'Task state could not be confirmed.',
+    ),
+    mail: unavailablePlanSource(
+      'MAIL_STATE_UNKNOWN',
+      'Mail state could not be confirmed.',
+    ),
+    focus: unavailablePlanSource(
+      'FOCUS_STATE_UNKNOWN',
+      'Focus state could not be confirmed.',
+    ),
+  };
+  const skillHealth = (
+    skill: 'cooking' | 'content' | 'finance',
+    failed: boolean,
+    health: PlanSourceHealth | undefined,
+  ) => {
+    if (input.gatedSkills.includes(skill)) {
+      return unavailablePlanSource(
+        `${skill.toUpperCase()}_SKILL_GATED`,
+        `${capitalizeFirstLetter(skill)} planning is not available on the current tier.`,
+      );
+    }
+    if (failed) {
+      return unavailablePlanSource(
+        `${skill.toUpperCase()}_STATE_UNAVAILABLE`,
+        `${capitalizeFirstLetter(skill)} planning state is unavailable.`,
+      );
+    }
+    return health ?? unavailablePlanSource(
+      `${skill.toUpperCase()}_STATE_UNKNOWN`,
+      `${capitalizeFirstLetter(skill)} planning source health was not reported.`,
+    );
+  };
+  return {
+    ...secretaryHealth,
+    training: input.trainingFailed
+      ? unavailablePlanSource('TRAINING_STATE_UNAVAILABLE', 'Training planning state is unavailable.')
+      : input.training.sourceHealth ?? unavailablePlanSource(
+          'TRAINING_STATE_UNKNOWN',
+          'Training planning source health was not reported.',
+        ),
+    cooking: input.gatedSkills.includes('cooking')
+      ? unavailablePlanSource(
+          'COOKING_SKILL_GATED',
+          'Cooking planning is not available on the current tier.',
+        )
+      : input.cookingFailed
+        ? unavailablePlanSource('COOKING_STATE_UNAVAILABLE', 'Cooking planning state is unavailable.')
+        : aggregateCookingSourceHealth(input.cooking),
+    content: skillHealth('content', input.contentFailed, input.content?.sourceHealth),
+    finance: skillHealth('finance', input.financeFailed, input.finance?.sourceHealth),
+  };
+}
+
+function aggregateCookingSourceHealth(cooking: CookingMeshContext | null): PlanSourceHealth {
+  const health = cooking?.sourceHealth;
+  if (!health) {
+    return unavailablePlanSource(
+      'COOKING_STATE_UNKNOWN',
+      'Cooking planning source health was not reported.',
+    );
+  }
+  const flatHealth = health as Partial<PlanSourceHealth>;
+  if (typeof flatHealth.status === 'string'
+      && Array.isArray(flatHealth.warningCodes)
+      && Array.isArray(flatHealth.warnings)) {
+    return flatHealth as PlanSourceHealth;
+  }
+
+  const sourceHealth = [health.mealPlan, health.shoppingList, health.recipes, health.focus];
+  if (health.safety) sourceHealth.push(health.safety);
+  const warningCodes = [...new Set([
+    ...sourceHealth.flatMap((source) => source.warningCodes),
+    ...(cooking.calendar?.warningCodes ?? []),
+  ])];
+  if (!health.safety) warningCodes.push('COOKING_SAFETY_STATE_UNKNOWN');
+  if (!cooking.calendar) warningCodes.push('COOKING_CALENDAR_STATE_UNKNOWN');
+
+  if (health.mealPlan.status === 'unavailable' || health.safety?.status === 'unavailable') {
+    return {
+      status: 'unavailable',
+      warningCodes: [...new Set(warningCodes)],
+      warnings: ['Cooking meal or safety state is unavailable.'],
+    };
+  }
+
+  const calendarReady = cooking.calendar?.status === 'ready'
+    || cooking.calendar?.status === 'not_configured';
+  const allReady = Boolean(health.safety)
+    && sourceHealth.every((source) => source.status === 'ready')
+    && calendarReady;
+  return allReady
+    ? readyPlanSource()
+    : {
+        status: 'degraded',
+        warningCodes: [...new Set(warningCodes.length > 0
+          ? warningCodes
+          : ['COOKING_STATE_DEGRADED'])],
+        warnings: ['Some Cooking planning state is unavailable.'],
+      };
 }
 
 function groupDerivedSignalDrafts(
@@ -560,7 +670,11 @@ function buildCookingMeshSignals(
   ));
   const mealDates = new Set(cooking.meals.map((meal) => meal.date));
   const sourceHealth = cooking.sourceHealth;
-  const hasVerifiedMealCoverage = sourceHealth != null
+  const hasDetailedHealth = sourceHealth != null
+    && 'mealPlan' in sourceHealth
+    && 'shoppingList' in sourceHealth
+    && 'focus' in sourceHealth;
+  const hasVerifiedMealCoverage = hasDetailedHealth
     && sourceHealth.mealPlan.status === 'ready'
     && sourceHealth.shoppingList.status === 'ready'
     && sourceHealth.safety != null
@@ -573,7 +687,7 @@ function buildCookingMeshSignals(
         ? fuelingSupport.trainingDatesMissingMeals
         : [...sessionDates].filter((date) => !mealDates.has(date));
   const hasVerifiedAvailability = isCookingCalendarAvailabilityVerified(cooking.calendar?.status)
-    && sourceHealth != null
+    && hasDetailedHealth
     && sourceHealth.focus.status === 'ready'
     && sourceHealth.safety != null
     && sourceHealth.safety.status !== 'unavailable'
@@ -1079,7 +1193,6 @@ function secretaryContentExecutionTradeoffLabel(directive: MeshDirective): strin
 
 function buildPlanDay(opts: {
   date: string;
-  timezone: string;
   variant: 'conservative' | 'steady' | 'push';
   gatedSkills: string[];
   training: TrainingMeshContext;
@@ -1089,9 +1202,13 @@ function buildPlanDay(opts: {
   finance: FinanceMeshContext | null;
   acceptedDirectives: MeshDirective[];
   shadowedDirectives: MeshDirective[];
+  timezone: string;
+  language: SecretaryPlanningContext['language'];
 }): WeeklyPlanDay {
   const trainingTimezone = resolveTrainingPlanTimezone(opts.training.activePlan);
-  const weekday = DateTime.fromISO(opts.date, { zone: opts.timezone }).toFormat('cccc');
+  const weekday = DateTime.fromISO(opts.date, { zone: opts.timezone })
+    .setLocale(planLanguageLocale(opts.language))
+    .toFormat('cccc');
   const trainingSession = sessionForDate(
     opts.training.sessions,
     opts.date,
@@ -1158,7 +1275,6 @@ function buildPlanDay(opts: {
   const secretaryItem = buildSecretaryItem({
     secretary: opts.secretary,
     date: opts.date,
-    timezone: opts.timezone,
     availabilityDirective,
     trainingFocusDirective,
     trainingProtectionDirective,
@@ -1167,8 +1283,15 @@ function buildPlanDay(opts: {
     primaryDirective,
     spendingDirective,
     deferredPrimaryDirective,
+    timezone: opts.timezone,
   });
-  const headline = buildDayHeadline(opts.date, trainingItem, contentItem, availabilityDirective, mealCoverageDirective);
+  const headline = buildDayHeadline(
+    trainingItem,
+    contentItem,
+    opts.secretary.sourceHealth?.calendar.status === 'ready',
+    availabilityDirective,
+    mealCoverageDirective,
+  );
 
   return {
     date: opts.date,
@@ -1588,18 +1711,9 @@ function buildContentItem(
   };
 }
 
-function localDateForTimestamp(value: unknown, timezone: string): string | null {
-  const raw = String(value ?? '').trim();
-  if (!raw) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const parsed = DateTime.fromISO(raw, { setZone: true, zone: timezone });
-  return parsed.isValid ? parsed.setZone(timezone).toISODate() : null;
-}
-
 function buildSecretaryItem(opts: {
   secretary: SecretaryMeshContext;
   date: string;
-  timezone: string;
   availabilityDirective?: MeshDirective;
   trainingFocusDirective?: MeshDirective;
   trainingProtectionDirective?: MeshDirective;
@@ -1608,6 +1722,7 @@ function buildSecretaryItem(opts: {
   primaryDirective?: MeshDirective;
   spendingDirective?: MeshDirective;
   deferredPrimaryDirective?: MeshDirective;
+  timezone: string;
 }): WeeklyPlanSecretaryItem {
   const {
     secretary,
@@ -1629,9 +1744,14 @@ function buildSecretaryItem(opts: {
         note: secretary.focusBlock.reason,
       }
     : null;
-  const dateEvents = secretary.events.filter((event) => localDateForTimestamp(event.start, timezone) === date);
-  const criticalMeetingCount = dateEvents.filter((event) => /\b(client|cliente|interview|entrevista|doctor|m[eé]dico|meeting|reuni[aã]o|call|sponsor|patroc[ií]nio|filming|shoot|flight|voo|deadline)\b/i.test(String(event.summary ?? ''))).length;
-  const tasksDueOnDate = secretary.pending.filter((task) => localDateForTimestamp(task.dueDate, timezone) === date).length;
+  const dateEvents = secretary.events.filter((event) => planningLocalDate(String(event.start ?? ''), timezone) === date);
+  const localAgendaItems = (secretary.localAgendaItems ?? []).filter((item) => planningLocalDate(item.startAt, timezone) === date);
+  const scheduleTitles = [
+    ...dateEvents.map((event) => String(event.summary ?? '')),
+    ...localAgendaItems.map((item) => item.title),
+  ];
+  const criticalMeetingCount = scheduleTitles.filter((title) => /\b(client|cliente|interview|entrevista|doctor|m[eé]dico|meeting|reuni[aã]o|call|sponsor|patroc[ií]nio|filming|shoot|flight|voo|deadline)\b/i.test(title)).length;
+  const tasksDueOnDate = secretary.pending.filter((task) => planningLocalDate(String(task.dueDate ?? ''), timezone) === date).length;
   const fixedTaskCount = secretary.pending.filter((task) => Boolean(task.dueDate)).length;
   const movableTaskCount = Math.max(0, secretary.pending.length - fixedTaskCount);
   const portableTaskRatio = secretary.pending.length > 0
@@ -1685,8 +1805,8 @@ function buildSecretaryItem(opts: {
     overdueTasks: secretary.overdue.length,
     tasksDueOnDate,
     mailUnreadTotal: secretary.mailPressure?.totalUnread ?? 0,
-    calendarEventCount: dateEvents.length,
-    fragmented: dateEvents.length >= 4,
+    calendarEventCount: dateEvents.length + localAgendaItems.length,
+    fragmented: dateEvents.length + localAgendaItems.length >= 4,
     criticalMeetingCount,
     movableTaskCount,
     fixedTaskCount,
@@ -2018,9 +2138,9 @@ function readBudgetSignal(finance: FinanceMeshContext): {
 }
 
 function buildDayHeadline(
-  date: string,
   training: WeeklyPlanTrainingItem,
   content: WeeklyPlanContentItem | null,
+  calendarReady: boolean,
   availabilityDirective?: MeshDirective,
   mealCoverageDirective?: MeshDirective,
 ): string {
@@ -2039,7 +2159,9 @@ function buildDayHeadline(
           ? 'A script is already ready, so protect a clean execution block.'
           : content.title === 'Ready to ship'
             ? 'Content is ready to ship, so protect a clean delivery block.'
-      : 'Energy and calendar line up well for filming here.';
+            : calendarReady
+              ? 'Energy and calendar line up well for filming here.'
+              : 'A filming window is planned, but calendar confirmation is still pending.';
   }
   if (training.status === 'adjusted') {
     return 'This day needs a small adjustment to stay aligned.';
@@ -2053,9 +2175,24 @@ function buildDayHeadline(
 function buildCreativeCopy(
   days: WeeklyPlanDay[],
   variant: 'conservative' | 'steady' | 'push',
+  sourceHealth: WeeklyPlanSourceHealth,
+  gatedSkills: string[],
 ): { headline: string; note: string } {
   const trainingDays = days.filter((day) => day.training.status !== 'rest').length;
   const filmingDay = days.find((day) => day.content?.status === 'scheduled');
+  const hasUnhealthyEnabledSource = Object.entries(sourceHealth).some(
+    ([source, health]) => !gatedSkills.includes(source) && health.status !== 'ready',
+  );
+  if (hasUnhealthyEnabledSource) {
+    return {
+      headline: 'The plan keeps confirmed commitments visible while some sources recover.',
+      note: 'Unavailable, stale, or degraded sources remain marked as partial and are not treated as clear.',
+    };
+  }
+
+  const crossSkillAlignmentReady = ['calendar', 'training', 'cooking', 'content'].every(
+    (source) => !gatedSkills.includes(source) && sourceHealth[source as keyof WeeklyPlanSourceHealth].status === 'ready',
+  );
   return {
     headline: variant === 'push'
       ? 'The mesh sees room to press a little harder this week.'
@@ -2063,8 +2200,10 @@ function buildCreativeCopy(
         ? 'This week protects consistency first, then performance.'
         : 'This week stays balanced across training, focus, and recovery.',
     note: filmingDay
-      ? `Training, cooking, and content align cleanly around ${filmingDay.weekday}.`
-      : `${trainingDays} training days are scheduled with the current cross-skill constraints in mind.`,
+      ? crossSkillAlignmentReady
+        ? `Training, cooking, and content align cleanly around ${filmingDay.weekday}.`
+        : `A content window is visible on ${filmingDay.weekday}; gated skills were not used to confirm alignment.`
+      : `${trainingDays} training days are visible in the current plan.`,
   };
 }
 
@@ -2230,16 +2369,20 @@ function weekIsoDates(start: DateTime): string[] {
   return Array.from({ length: 7 }, (_, index) => start.plus({ days: index }).toISODate()!);
 }
 
-function resolveWeekWindow(
-  weekStart?: string,
-  timezone?: string,
-  fallbackLocalDate?: string,
-): { start: DateTime; weekStart: string; weekEnd: string } {
-  const zone = resolveTrainingTimezone(timezone ?? config.app.timezone);
-  const capturedFallback = DateTime.fromISO(fallbackLocalDate ?? '', { zone }).startOf('week');
-  const fallback = capturedFallback.isValid
-    ? capturedFallback
-    : DateTime.now().setZone(zone).startOf('week');
+function planningLocalDate(value: string, timezone: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const parsed = DateTime.fromISO(value, { setZone: true });
+  return parsed.isValid ? parsed.setZone(timezone).toISODate()! : value.slice(0, 10);
+}
+
+function resolveWeekWindow(weekStart?: string, timezone = 'Europe/Lisbon'): {
+  start: DateTime;
+  weekStart: string;
+  weekEnd: string;
+  timezone: string;
+} {
+  const zone = timezone;
+  const fallback = DateTime.now().setZone(zone).startOf('week');
   const base = weekStart
     ? DateTime.fromISO(weekStart, { zone }).startOf('day')
     : fallback;
@@ -2248,19 +2391,11 @@ function resolveWeekWindow(
     start,
     weekStart: start.toISODate()!,
     weekEnd: start.plus({ days: 6 }).toISODate()!,
+    timezone: zone,
   };
 }
 
-function resolveWeeklyPlanTimezone(userId: number, requested?: string | null): string {
-  if (requested) return resolveTrainingTimezone(requested);
-  try {
-    return resolveTrainingTimezone(getUserTimezoneById(userId));
-  } catch {
-    return resolveTrainingTimezone(config.app.timezone);
-  }
-}
-
-function resolveGatedSkills(user: User | null): string[] {
+function resolveGatedSkills(user: SecretaryPlanningContext['user']): string[] {
   const paidDomains = ['cooking', 'content', 'finance'] as const;
   if (!user) {
     return [...paidDomains];

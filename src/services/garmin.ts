@@ -1072,7 +1072,7 @@ async function refreshOAuth2(): Promise<GarminRefreshOutcome> {
  * user-initiated Garmin call (via safeGet → serializedAuthRecovery) will
  * detect the 403 and run ONE recovery attempt with MFA notification
  * wired to the interactive user. Until then, the bot runs without live
- * Garmin data — which is better than spamming Felipe's inbox.
+ * Garmin data — which is better than spamming the operator inbox.
  */
 export async function keepAlive(): Promise<boolean> {
   // Runs for whichever user the caller scoped the request context to. The

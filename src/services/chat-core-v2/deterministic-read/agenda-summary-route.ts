@@ -115,9 +115,13 @@ function summarizeAgenda(items: SecretaryAgendaItem[], timezone: string, now: Da
 function buildAgendaSummaryText(data: ChatCoreV2AgendaSummaryData, locale: string | null | undefined): string {
   const normalizedLocale = normalizeChatCoreV2Locale(locale);
   if (data.activeCount === 0) {
-    if (normalizedLocale === 'pt-BR') return 'Sua agenda da Secretary está livre agora.';
-    if (normalizedLocale === 'pt-PT') return 'A tua agenda da Secretary está livre neste momento.';
-    return 'Your Secretary agenda is clear right now.';
+    if (normalizedLocale === 'pt-BR') {
+      return 'Nenhum compromisso local da Secretary está ativo. O calendário do provedor não foi verificado por esta consulta.';
+    }
+    if (normalizedLocale === 'pt-PT') {
+      return 'Nenhum compromisso local da Secretary está ativo. O calendário do fornecedor não foi verificado por esta consulta.';
+    }
+    return 'No local Secretary commitments are active. This read did not verify the provider calendar.';
   }
 
   const header = buildAgendaSummaryHeader(data, normalizedLocale);

@@ -91,6 +91,15 @@ export async function buildSecretaryContextSnapshot(
   input: BuildChatPromptContextInput & { userId: number; tenantId: number },
   options: { now?: Date; sourceDiagnostics?: SecretarySourceDiagnostic[] } = {},
 ): Promise<SecretaryContextSnapshot> {
+  // Reject cross-account scope before buildChatPromptContext can read history,
+  // memory, profile, or shared decision state.
+  if (!Number.isSafeInteger(input.userId)
+    || input.userId <= 0
+    || !Number.isSafeInteger(input.tenantId)
+    || input.tenantId <= 0
+    || input.userId !== input.tenantId) {
+    throw new Error('SECRETARY_CONTEXT_SCOPE_MISMATCH');
+  }
   const promptContext = await buildChatPromptContext(input);
   const operational = await collectSecretaryOperationalContext({
     message: input.message,

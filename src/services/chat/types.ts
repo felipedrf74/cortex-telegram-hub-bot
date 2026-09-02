@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { createEvent, getEventsForSources } from '../unified-calendar';
+import type { createEvent, getEventsForSources, getEventsWithDiagnostics } from '../unified-calendar';
 import type { isGoogleCalendarConfigured } from '../google-calendar';
 import type { isOutlookCalendarConfigured } from '../outlook-calendar';
 import type { ChatActionRunStatus } from '../chat-action-run-store';
@@ -135,6 +135,7 @@ export interface ChatActionRouteResponse {
 export type CalendarProviderDeps = {
   createEvent: typeof createEvent;
   getEventsForSources: typeof getEventsForSources;
+  getEventsWithDiagnostics?: typeof getEventsWithDiagnostics;
   hasGoogle: typeof isGoogleCalendarConfigured;
   hasOutlook: typeof isOutlookCalendarConfigured;
 };

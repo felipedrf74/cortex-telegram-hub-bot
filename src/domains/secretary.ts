@@ -5,7 +5,11 @@ import { ensureActiveProvider, getActiveProvider } from '../services/provider-re
 import { callDomain as directCallDomain, continueWithToolResults as directContinueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
 import { getActiveReminders, getRemindersForToday } from '../state/reminders';
-import { getEvents, hasConnectedCalendarForUser } from '../services/unified-calendar';
+import {
+  getEventsWithDiagnostics,
+  hasConnectedCalendarForUser,
+  type UnifiedCalendarFetchResult,
+} from '../services/unified-calendar';
 import type { TodoTask } from '../services/microsoft-todo';
 import { formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
@@ -64,6 +68,8 @@ import {
 } from '../services/skill-inference-service';
 import { markChatShadowBaselineEligible } from '../services/chat-shadow-baseline';
 import type { Lang } from '../utils/i18n';
+import { canonicalizeIanaTimezone } from '../services/secretary-timezone';
+import { assertSecretaryPlanningScope } from '../services/secretary-planning-context';
 
 function requestLocaleToSecretaryLanguage(locale: string | null): Lang | undefined {
   if (!locale) return undefined;
@@ -95,6 +101,16 @@ function safeInline(value: unknown): string {
     return sanitized.slice(1, -1);
   }
   return sanitized;
+}
+
+function unavailableCalendarFetchResult(): UnifiedCalendarFetchResult {
+  return {
+    events: [],
+    status: 'unavailable',
+    warningCodes: ['CALENDAR_STATE_UNAVAILABLE'],
+    warnings: ['Calendar state is unavailable.'],
+    sources: { configured: [], fulfilled: [], failed: [] },
+  };
 }
 
 const DOMAIN: DomainName = 'secretary';
@@ -303,6 +319,9 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   const hasGarmin = hasUserScope && needs.garmin
     ? isGarminConfiguredForUser(scopedUserId)
     : false;
+  const timezone = canonicalizeIanaTimezone(getUserTimezone(scopedUserId)) ?? 'Europe/Lisbon';
+  const localNow = DateTime.now().setZone(timezone);
+  const localDate = localNow.toISODate() ?? 'invalid-local-date';
 
   // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
@@ -361,15 +380,13 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   // ship for up to 30s. Bake the enabled-flags into the key so any
   // toggle immediately invalidates.
   const enabledFlags = `${tasksEnabled ? 't' : ''}${calendarEnabled ? 'c' : ''}${emailEnabled ? 'e' : ''}${remindersEnabled ? 'r' : ''}`;
-  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:e${enabledFlags}:${contextLanguage}`;
+  const cacheKey = `${scopedTenantKey}:${hasUserScope ? scopedUserId : 'anon'}:${shape}:e${enabledFlags}:tz${timezone}:d${localDate}:${contextLanguage}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return appendPromptContext(cached.value, true);
   }
 
-  const timezone = getUserTimezone(scopedUserId);
-  const localNow = DateTime.now().setZone(timezone);
   const parts: string[] = [];
   parts.push(`${copy.todayLabel}: ${localNow.toFormat('cccc, LLLL dd yyyy, HH:mm')} (${timezone})`);
 
@@ -377,6 +394,8 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   const today = localNow;
   const threeDaysAgo = today.minus({ days: 3 }).toFormat('yyyy-MM-dd');
   const todayStr = today.toFormat('yyyy-MM-dd');
+  let garminActivitiesReady = false;
+  let garminBodyBatteryReady = false;
 
   // Fetch only what `needs` says we need (skip disabled sub-skills + skip unneeded sources)
   const [todoResult, reminders, calendarResult, unreadMail, garminActivities, garminBodyBattery, plannerBrief, decisionCtx, decisionContracts] = await Promise.all([
@@ -386,19 +405,30 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     hasUserScope && needs.reminders && remindersEnabled
       ? Promise.resolve(getRemindersForToday(scopedUserId, scopedTenantKey, timezone))
       : Promise.resolve([]),
-    hasCalendar && scopedUserId !== null
-      ? getEvents(localNow.startOf('day').toISO()!, localNow.endOf('day').toISO()!, scopedUserId).catch(() => [] as any[])
-      : Promise.resolve([] as any[]),
+    hasUserScope && needs.calendar && calendarEnabled && scopedUserId !== null
+      ? getEventsWithDiagnostics(localNow.startOf('day').toISO()!, localNow.endOf('day').toISO()!, scopedUserId)
+          .catch(() => unavailableCalendarFetchResult())
+      : Promise.resolve(null),
     hasMail && scopedUserId !== null
       ? getUnreadMailSummaryForUser(scopedUserId).catch(() => null)
       : Promise.resolve(null),
     hasGarmin && scopedUserId !== null
-      ? getActivitiesByDateForUser(scopedUserId, threeDaysAgo, todayStr).catch(() => [] as GarminActivity[])
+      ? getActivitiesByDateForUser(scopedUserId, threeDaysAgo, todayStr)
+          .then((activities) => {
+            garminActivitiesReady = true;
+            return activities;
+          })
+          .catch(() => [] as GarminActivity[])
       : Promise.resolve([] as GarminActivity[]),
     hasGarmin && scopedUserId !== null
-      ? getBodyBatteryEventsForUser(scopedUserId, todayStr).catch(() => null)
+      ? getBodyBatteryEventsForUser(scopedUserId, todayStr)
+          .then((events) => {
+            garminBodyBatteryReady = true;
+            return events;
+          })
+          .catch(() => null)
       : Promise.resolve(null),
-    hasUserScope && needs.planner
+    hasUserScope && (needs.planner || needs.calendar)
       ? composeDailyBrief({ userId: scopedUserId, tenantId: scopedTenantId!, language: contextLanguage }).catch(() => null)
       : Promise.resolve(null),
     needsSharedDecisionContext ? buildSharedDecisionContext(DOMAIN, scopedUserId, scopedTenantId ?? undefined).catch(() => '') : Promise.resolve(''),
@@ -445,6 +475,8 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
     } else if (!todoResult.success) {
       parts.push(`\n${copy.todoLabel}: ${copy.apiErrorLabel}`);
     }
+  } else if (hasUserScope && needs.tasks && tasksEnabled) {
+    parts.push(`\n${copy.todoLabel}: ${copy.apiErrorLabel}`);
   }
 
   // Reminders & calendar — compact. Codex QA round 5: untrusted
@@ -454,19 +486,48 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
   if (reminders.length > 0) {
     parts.push(`\n${copy.remindersTodayLabel}: ${reminders.map((r) => `${safeInline(r.message)} (${formatDateTime(r.remind_at)})`).join(', ')}`);
   }
-  if (calendarResult.length > 0) {
-    parts.push(`\n${copy.calendarTodayLabel(calendarResult.length)}: ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${safeInline(e.summary)}`).join(' | ')}`);
+  const calendarStatus = calendarResult
+    ? combineSecretaryCalendarStatus(calendarResult.status, plannerBrief?.sourceHealth?.calendar?.status)
+    : null;
+  const canonicalCalendarCount = plannerBrief?.day?.secretary?.calendarEventCount;
+  const nexusCommitmentCount = calendarResult && typeof canonicalCalendarCount === 'number'
+    ? Math.max(0, canonicalCalendarCount - calendarResult.events.length)
+    : 0;
+  if (calendarResult && calendarResult.events.length > 0) {
+    parts.push(`\n${copy.calendarTodayLabel(calendarResult.events.length)}: ${calendarResult.events.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${safeInline(e.summary)}`).join(' | ')}`);
+  }
+  if (nexusCommitmentCount > 0) {
+    parts.push(`\n${copy.nexusCommitmentsLabel(nexusCommitmentCount)}`);
+  }
+  if (calendarStatus === 'ready' && calendarResult?.events.length === 0 && nexusCommitmentCount === 0) {
+    parts.push(`\n${copy.calendarTodayLabel(0)}: ${copy.noCalendarEventsLabel}`);
+  } else if (calendarResult && calendarStatus !== 'ready') {
+    const warningCodes = [...new Set([
+      ...calendarResult.warningCodes,
+      ...(plannerBrief?.sourceHealth?.calendar?.warningCodes ?? []),
+    ])];
+    parts.push(`\n${copy.calendarTodayLabel(calendarResult.events.length)}: ${copy.calendarOfflineLabel}${warningCodes.length > 0 ? ` (${warningCodes.join(', ')})` : ''}`);
   }
   if (unreadMail) {
+    const fulfilledProviders = [
+      unreadMail.configuredProviders.includes('outlook') && typeof unreadMail.outlookUnread === 'number',
+      unreadMail.configuredProviders.includes('gmail') && typeof unreadMail.gmailUnread === 'number',
+    ].filter(Boolean).length;
     const providerDetails = [
       unreadMail.outlookUnread != null ? `Outlook ${unreadMail.outlookUnread}` : null,
       unreadMail.gmailUnread != null ? `Gmail ${unreadMail.gmailUnread}` : null,
     ].filter(Boolean).join(' | ');
-    parts.push(`\n${copy.mailLabel}: ${copy.unreadMailLabel(unreadMail.totalUnread)}${providerDetails ? ` (${providerDetails})` : ''}`);
+    if (fulfilledProviders === unreadMail.configuredProviders.length) {
+      parts.push(`\n${copy.mailLabel}: ${copy.unreadMailLabel(unreadMail.totalUnread)}${providerDetails ? ` (${providerDetails})` : ''}`);
+    } else {
+      parts.push(`\n${copy.mailLabel}: ${copy.apiErrorLabel}${providerDetails ? ` (${providerDetails})` : ''}`);
+    }
+  } else if (hasUserScope && needs.email && emailEnabled) {
+    parts.push(`\n${copy.mailLabel}: ${hasMail ? copy.apiErrorLabel : copy.mailIntegrationMissingLabel}`);
   }
 
   // Garmin training summary (last 3 days)
-  if (garminActivities.length > 0 || garminBodyBattery) {
+  if (hasGarmin) {
     parts.push(`\n${copy.garminTrainingHeader}`);
 
     if (garminActivities.length > 0) {
@@ -499,8 +560,12 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
           parts.push(`  ${d}: ${copy.noTrainingLogged}`);
         }
       }
-    } else {
+    } else if (garminActivitiesReady) {
       parts.push(`  ${copy.noActivitiesLast3Days}`);
+    }
+
+    if (!garminActivitiesReady || !garminBodyBatteryReady) {
+      parts.push(`  ${copy.trainingSourceUnavailable}`);
     }
 
     // Body battery
@@ -570,7 +635,7 @@ async function buildStateContext(message: string = '', userId?: number, tenantId
       email: hasMail,
       reminders: hasUserScope && needs.reminders && remindersEnabled,
       garmin: hasGarmin,
-      planner: hasUserScope && needs.planner,
+      planner: hasUserScope && (needs.planner || needs.calendar),
       sharedDecisionContext: needsSharedDecisionContext,
     },
     estimatedContextChars: finalContext.length,
@@ -618,6 +683,20 @@ function localizeSecretaryContext(language: string, ptPt: string, ptBr: string, 
   return en;
 }
 
+function combineSecretaryCalendarStatus(
+  providerStatus: 'ready' | 'degraded' | 'unavailable',
+  planningStatus?: 'ready' | 'stale' | 'degraded' | 'unavailable',
+): 'ready' | 'degraded' | 'unavailable' {
+  // The canonical planner carries local Secretary commitments in addition to
+  // provider events. A provider-only read cannot prove that the day is empty.
+  if (!planningStatus) return 'unavailable';
+  if (providerStatus === 'unavailable' || planningStatus === 'unavailable') return 'unavailable';
+  if (providerStatus === 'degraded' || planningStatus === 'degraded' || planningStatus === 'stale') {
+    return 'degraded';
+  }
+  return 'ready';
+}
+
 function secretaryStateContextCopy(language: string) {
   return {
     todayLabel: localizeSecretaryContext(language, 'Hoje', 'Hoje', 'Today'),
@@ -631,10 +710,29 @@ function secretaryStateContextCopy(language: string) {
       `Calendário de hoje (${count})`,
       `Calendar today (${count})`,
     ),
+    noCalendarEventsLabel: localizeSecretaryContext(
+      language,
+      'sem eventos confirmados hoje',
+      'sem eventos confirmados hoje',
+      'no confirmed events today',
+    ),
+    nexusCommitmentsLabel: (count: number) => localizeSecretaryContext(
+      language,
+      `Compromissos Nexus incluídos: ${count}`,
+      `Compromissos Nexus incluídos: ${count}`,
+      `Nexus commitments included: ${count}`,
+    ),
     mailLabel: localizeSecretaryContext(language, 'Email', 'Email', 'Mail'),
+    mailIntegrationMissingLabel: localizeSecretaryContext(
+      language,
+      'integração não configurada',
+      'integração não configurada',
+      'integration not configured',
+    ),
     garminTrainingHeader: localizeSecretaryContext(language, '[RESUMO GARMIN DE TREINO]', '[RESUMO GARMIN DE TREINO]', '[GARMIN TRAINING SUMMARY]'),
     noTrainingLogged: localizeSecretaryContext(language, 'Sem treino registado', 'Sem treino registrado', 'No training logged'),
     noActivitiesLast3Days: localizeSecretaryContext(language, 'Sem atividades nos últimos 3 dias', 'Sem atividades nos últimos 3 dias', 'No activities in the last 3 days'),
+    trainingSourceUnavailable: localizeSecretaryContext(language, 'Estado do treino indisponível ou parcial', 'Estado do treino indisponível ou parcial', 'Training state unavailable or partial'),
     bodyBatteryLabel: localizeSecretaryContext(language, 'Body Battery', 'Body Battery', 'Body Battery'),
     chargedLabel: localizeSecretaryContext(language, 'Carregado', 'Carregado', 'Charged'),
     drainedLabel: localizeSecretaryContext(language, 'Gasto', 'Gasto', 'Drained'),
@@ -738,6 +836,11 @@ export async function handleSecretary(
   tenantId?: number,
   callerAbortSignal?: AbortSignal,
 ): Promise<DomainResponse> {
+  if (userId !== undefined) {
+    // Scope validation precedes account admission, fastpath metrics,
+    // conversation history, and every provider/profile read.
+    assertSecretaryPlanningScope(userId, tenantId);
+  }
   const operation = (abortSignal?: AbortSignal) => handleSecretaryAdmitted(
     message,
     userId,

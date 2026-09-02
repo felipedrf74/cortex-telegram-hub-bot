@@ -41,6 +41,13 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: vi.fn(async () => mockCalendarEvents),
+  getEventsWithDiagnostics: vi.fn(async () => ({
+    events: mockCalendarEvents,
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+  })),
   isAnyCalendarConfigured: vi.fn(() => true),
   hasWritableCalendarForUser: vi.fn(() => true),
 }));

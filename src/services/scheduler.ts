@@ -84,6 +84,10 @@ import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
 import { composeDailyBrief, type DailyBriefResponse } from './daily-brief-orchestrator';
 import { composeWeeklyPlan, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
+import {
+  composeSecretaryScheduledPlanningSnapshot,
+  projectSecretaryScheduledReport,
+} from './secretary-scheduled-report';
 import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 import { runEventBackboneOnce } from './event-backbone-worker';
 import { runEventBackboneCleanup } from '../tools/event-backbone-cleanup';
@@ -1025,7 +1029,6 @@ export async function buildDailyBriefingDataForUser(
     data.sourceDegradationReasons!.push('planning_source_unavailable');
     logger.warn({ err, userId, tenantId }, 'Daily briefing: canonical Cooking day unavailable');
   }
-
   return data;
 }
 
@@ -2049,6 +2052,7 @@ export function startScheduler(): void {
       async (lease) => runEndOfDaySummaryForTarget(lease.target, {
         dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
         requireNotificationIntent: true,
+        localDate: lease.schedule.localDate,
       }),
     );
   }), { timezone: tz });
@@ -2073,6 +2077,7 @@ export function startScheduler(): void {
       async (lease) => sendDailyBriefingForTarget(lease.target, {
         dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
         requireNotificationIntent: true,
+        localDate: lease.schedule.localDate,
       }),
     );
   }), { timezone: tz });
@@ -2092,6 +2097,7 @@ export function startScheduler(): void {
       async (lease) => sendWeeklyReviewForTarget(lease.target, {
         dispatchKey: `${lease.schedule.job}:${lease.schedule.localDate}`,
         requireNotificationIntent: true,
+        localDate: lease.schedule.localDate,
       }),
     );
   }), { timezone: tz });
@@ -2198,6 +2204,67 @@ export function startScheduler(): void {
       if (total > 0) logger.info(pruned, 'Retention cleanup: notification history');
     } catch (err) {
       logger.warn({ err }, 'Notification retention cleanup failed');
+    }
+
+    // Secretary routine PUT receipts are replay evidence, not permanent user
+    // history. Drain expired rows globally so inactive accounts also observe
+    // the exact 30-day ceiling; each pass is bounded to keep midnight cleanup
+    // cooperative with the other retention jobs.
+    try {
+      const { pruneExpiredSecretaryRoutineIdempotencyReceipts } = require('./secretary-routine-profile');
+      let deleted = 0;
+      let remaining = 0;
+      for (let pass = 0; pass < 20; pass += 1) {
+        const result = pruneExpiredSecretaryRoutineIdempotencyReceipts(undefined, { limit: 5_000 });
+        deleted += result.deleted;
+        remaining = result.remaining;
+        if (remaining === 0 || result.deleted === 0) break;
+      }
+      if (remaining > 0) {
+        logger.warn({ deleted, remaining }, 'Retention backlog: Secretary routine idempotency receipts');
+      } else if (deleted > 0) {
+        logger.info({ deleted }, 'Retention cleanup: Secretary routine idempotency receipts');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Secretary routine receipt retention cleanup failed');
+    }
+
+    try {
+      const { pruneExpiredSecretaryCalendarCommandReceipts } = require('./secretary-calendar-command-store');
+      let deleted = 0;
+      let remaining = 0;
+      for (let pass = 0; pass < 20; pass += 1) {
+        const result = pruneExpiredSecretaryCalendarCommandReceipts({ limit: 5_000 });
+        deleted += result.deleted;
+        remaining = result.remaining;
+        if (remaining === 0 || result.deleted === 0) break;
+      }
+      if (remaining > 0) {
+        logger.warn({ deleted, remaining }, 'Retention backlog: Secretary calendar command receipts');
+      } else if (deleted > 0) {
+        logger.info({ deleted }, 'Retention cleanup: Secretary calendar command receipts');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Secretary calendar command receipt retention cleanup failed');
+    }
+
+    try {
+      const { pruneExpiredSecretaryCalendarMutationReceipts } = require('./secretary-calendar-mutation-store');
+      let deleted = 0;
+      let remaining = 0;
+      for (let pass = 0; pass < 20; pass += 1) {
+        const result = pruneExpiredSecretaryCalendarMutationReceipts({ limit: 5_000 });
+        deleted += result.deleted;
+        remaining = result.remaining;
+        if (remaining === 0 || result.deleted === 0) break;
+      }
+      if (remaining > 0) {
+        logger.warn({ deleted, remaining }, 'Retention backlog: Secretary calendar mutation receipts');
+      } else if (deleted > 0) {
+        logger.info({ deleted }, 'Retention cleanup: Secretary calendar mutation receipts');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Secretary calendar mutation receipt retention cleanup failed');
     }
 
     // ── bounded private-data retention (plan §4) ───────────────────
@@ -3923,6 +3990,7 @@ export interface CoachBriefingDispatchResult {
 export interface ScheduledReportPersistenceOptions {
   dispatchKey?: string;
   requireNotificationIntent?: boolean;
+  localDate?: string;
 }
 
 export async function sendCoachBriefingForTarget(
@@ -4147,8 +4215,12 @@ export async function runEndOfDaySummaryForTarget(
   options: ScheduledReportPersistenceOptions = {},
 ): Promise<ScheduledReportTargetResult> {
   const userId = target.userId ?? target.tenantId;
-  const report = await buildEndOfDaySummaryForUser(userId, target.tenantId);
-  if (!report) return { degraded: false };
+  const snapshot = await composeSecretaryScheduledPlanningSnapshot({
+    userId,
+    tenantId: target.tenantId,
+    ...(options.localDate ? { localDate: options.localDate } : {}),
+  });
+  const report = projectSecretaryScheduledReport(snapshot, 'evening_summary');
 
   // Store durable evening report
   try {
@@ -4156,7 +4228,7 @@ export async function runEndOfDaySummaryForTarget(
       userId,
       tenantId: target.tenantId,
       type: 'evening_summary' as const,
-      title: 'End-of-day summary',
+      title: report.title,
       summary: report.summary,
       documentJson: report.documentJson,
       sourceJob: 'end_of_day',
@@ -4169,8 +4241,7 @@ export async function runEndOfDaySummaryForTarget(
     logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
   }
   return {
-    degraded: Array.isArray(report.documentJson.degradationReasons)
-      && report.documentJson.degradationReasons.length > 0,
+    degraded: snapshot.daily.degraded,
   };
 }
 
@@ -4179,7 +4250,12 @@ export async function sendDailyBriefingForTarget(
   options: ScheduledReportPersistenceOptions = {},
 ): Promise<ScheduledReportTargetResult> {
   const userId = target.userId ?? target.tenantId;
-  const data = await buildDailyBriefingDataForUser(userId, target.tenantId);
+  const snapshot = await composeSecretaryScheduledPlanningSnapshot({
+    userId,
+    tenantId: target.tenantId,
+    ...(options.localDate ? { localDate: options.localDate } : {}),
+  });
+  const report = projectSecretaryScheduledReport(snapshot, 'morning_briefing');
 
   // ── Store durable report + push (April 2026) ────────────────────
   try {
@@ -4187,9 +4263,9 @@ export async function sendDailyBriefingForTarget(
       userId,
       tenantId: target.tenantId,
       type: 'morning_briefing' as const,
-      title: `☀️ ${data.date}`,
-      summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
-      documentJson: data,
+      title: report.title,
+      summary: report.summary,
+      documentJson: report.documentJson,
       sourceJob: 'daily_briefing',
       pushCategory: 'morning_briefing',
       dispatchKey: options.dispatchKey,
@@ -4200,8 +4276,7 @@ export async function sendDailyBriefingForTarget(
     logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
   }
   return {
-    degraded: data.planToday?.degraded === true
-      || (data.sourceDegradationReasons?.length ?? 0) > 0,
+    degraded: snapshot.daily.degraded,
   };
 }
 
@@ -4229,16 +4304,21 @@ export async function sendWeeklyReviewForTarget(
   options: ScheduledReportPersistenceOptions = {},
 ): Promise<ScheduledReportTargetResult> {
   const userId = target.userId ?? target.tenantId;
-  const payload = await buildWeeklyReviewPayloadForUser(userId, target.tenantId);
+  const snapshot = await composeSecretaryScheduledPlanningSnapshot({
+    userId,
+    tenantId: target.tenantId,
+    ...(options.localDate ? { localDate: options.localDate } : {}),
+  });
+  const report = projectSecretaryScheduledReport(snapshot, 'weekly_review');
   // Store durable report + push
   try {
     await storeAndPushReport({
       userId,
       tenantId: target.tenantId,
       type: 'weekly_review' as const,
-      title: '📊 Week in Review',
-      summary: payload.summary,
-      documentJson: payload.documentJson,
+      title: report.title,
+      summary: report.summary,
+      documentJson: report.documentJson,
       sourceJob: 'weekly_review',
       pushCategory: 'weekly_review',
       dispatchKey: options.dispatchKey,
@@ -4249,9 +4329,7 @@ export async function sendWeeklyReviewForTarget(
     logger.debug({ err, userId, tenantId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
   }
   return {
-    degraded: payload.documentJson.cooking == null
-      || payload.documentJson.cooking.degraded === true
-      || (payload.documentJson.degradationReasons?.length ?? 0) > 0,
+    degraded: snapshot.week.degraded,
   };
 }
 

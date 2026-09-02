@@ -22,6 +22,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: vi.fn(),
   getEvents: vi.fn(),
+  getEventsWithDiagnostics: vi.fn(),
   getEventsForSources: vi.fn(),
   hasConnectedCalendarForUser: vi.fn(() => true),
   hasWritableCalendarForUser: vi.fn(() => true),
@@ -50,6 +51,9 @@ vi.mock('../../src/services/unified-mail-pressure', () => ({
 }));
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: vi.fn(),
+}));
+vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+  composeWeeklyPlan: vi.fn(),
 }));
 vi.mock('../../src/services/decision-center', () => ({
   getDecisionSummary: vi.fn(() => ({
@@ -137,6 +141,7 @@ import * as mailPressure from '../../src/services/unified-mail-pressure';
 import * as reminders from '../../src/state/reminders';
 import * as registry from '../../src/skills/registry';
 import * as dailyBrief from '../../src/services/daily-brief-orchestrator';
+import * as weeklyPlan from '../../src/services/weekly-plan-orchestrator';
 import * as cacheCoherence from '../../src/services/cache-coherence-registry';
 import * as decisionCenter from '../../src/services/decision-center';
 
@@ -170,6 +175,13 @@ beforeEach(() => {
     source: 'outlook',
   } as any]);
   vi.mocked(calendar.getEvents).mockResolvedValue([]);
+  vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+    events: [],
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+  });
   mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
   mockTaskGetDefaultList.mockReset();
   mockTaskCreateTask.mockReset();
@@ -186,6 +198,18 @@ beforeEach(() => {
   });
   vi.mocked(reminders.getRemindersForToday).mockReturnValue([]);
   vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+    warningCodes: [],
+    sourceHealth: {
+      calendar: { status: 'ready', warningCodes: [], warnings: [] },
+      tasks: { status: 'ready', warningCodes: [], warnings: [] },
+      mail: { status: 'ready', warningCodes: [], warnings: [] },
+      focus: { status: 'ready', warningCodes: [], warnings: [] },
+      training: { status: 'ready', warningCodes: [], warnings: [] },
+      cooking: { status: 'ready', warningCodes: [], warnings: [] },
+      content: { status: 'ready', warningCodes: [], warnings: [] },
+      finance: { status: 'ready', warningCodes: [], warnings: [] },
+      decision_center: { status: 'ready', warningCodes: [], warnings: [] },
+    },
     coordination: {
       topPriority: null,
       executionOrder: [],
@@ -197,8 +221,18 @@ beforeEach(() => {
         priorityNote: null,
         sequence: [],
         tradeoffNote: null,
+        pendingTasks: 0,
+        overdueTasks: 0,
+        calendarEventCount: 0,
+        mailUnreadTotal: 0,
       },
     },
+  } as any);
+  vi.mocked(weeklyPlan.composeWeeklyPlan).mockResolvedValue({
+    sourceHealth: {
+      calendar: { status: 'ready', warningCodes: [], warnings: [] },
+    },
+    days: [],
   } as any);
 });
 
@@ -207,11 +241,23 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / pattern matching', () => {
+  it('rejects a tenant mismatch before metrics or source reads', async () => {
+    const metricsBefore = getFastpathMetrics();
+
+    await expect(tryFastpath(UID, "what's my day?", 'en-US', UID + 1))
+      .rejects.toMatchObject({ code: 'TENANT_SCOPE_MISMATCH' });
+
+    expect(getFastpathMetrics()).toEqual(metricsBefore);
+    expect(calendar.getEventsWithDiagnostics).not.toHaveBeenCalled();
+    expect(mockGetTaskProviderForUser).not.toHaveBeenCalled();
+  });
+
   it('exposes registered patterns including Decision Center and reports', () => {
     const patterns = getFastpathPatterns();
     expect(patterns).toEqual(
       expect.arrayContaining([
         'day_overview',
+        'status_overview',
         'create_calendar_event',
         'daily_priority',
         'week_overview',
@@ -225,7 +271,7 @@ describe('secretary-fastpath / pattern matching', () => {
         'latest_report',
       ]),
     );
-    expect(patterns).toHaveLength(12);
+    expect(patterns).toHaveLength(13);
   });
 
   it.each([
@@ -237,6 +283,8 @@ describe('secretary-fastpath / pattern matching', () => {
     ['today', 'day_overview'],
     ['hoje', 'day_overview'],
     ['mostra meu dia', 'day_overview'],
+    ['/status', 'status_overview'],
+    ['plan status', 'status_overview'],
   ])('matches "%s" → %s', async (input, expectedPattern) => {
     const result = await tryFastpath(UID, input);
     expect(result.matched).toBe(true);
@@ -377,22 +425,25 @@ describe('secretary-fastpath / day_overview handler', () => {
   });
 
   it('returns formatted HTML with calendar events', async () => {
-    vi.mocked(calendar.getEvents).mockResolvedValue([
-      {
+    vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+      events: [{
         id: '1',
         summary: 'Standup',
         start: '2026-04-07T09:00:00.000Z',
         end: '2026-04-07T09:30:00.000Z',
         provider: 'google',
-      } as any,
-      {
+      } as any, {
         id: '2',
         summary: 'Gym session',
         start: '2026-04-07T18:00:00.000Z',
         end: '2026-04-07T19:00:00.000Z',
         provider: 'google',
-      } as any,
-    ]);
+      } as any],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
 
     const result = await tryFastpath(UID, "what's my day?");
     expect(result.matched).toBe(true);
@@ -404,7 +455,13 @@ describe('secretary-fastpath / day_overview handler', () => {
   });
 
   it('shows "Sem eventos hoje" when calendar is empty', async () => {
-    vi.mocked(calendar.getEvents).mockResolvedValue([]);
+    vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
     const result = await tryFastpath(UID, "what's my day?");
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Sem eventos hoje');
@@ -443,7 +500,7 @@ describe('secretary-fastpath / day_overview handler', () => {
   });
 
   it('handles partial API failures gracefully', async () => {
-    vi.mocked(calendar.getEvents).mockRejectedValue(new Error('Calendar API down'));
+    vi.mocked(calendar.getEventsWithDiagnostics).mockRejectedValue(new Error('Calendar API down'));
     mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [{ id: 't1', title: 'Buy groceries', dueDateTime: null, listName: 'Inbox', listId: 'L1' } as any],
@@ -452,6 +509,56 @@ describe('secretary-fastpath / day_overview handler', () => {
     // Even with calendar errored out, we still get a valid response with tasks
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('TAREFAS:');
+    expect(result.response!.text).toContain('Não foi possível confirmar o calendário');
+    expect(result.response!.text).not.toContain('Sem eventos hoje');
+  });
+
+  it('does not render a partial calendar read as an empty agenda', async () => {
+    vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+      events: [],
+      status: 'degraded',
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+      sources: { configured: ['google', 'outlook'], fulfilled: ['outlook'], failed: ['google'] },
+    });
+
+    const result = await tryFastpath(UID, "what's my day?");
+
+    expect(result.response!.text).toContain('Parte do calendário não pôde ser confirmada');
+    expect(result.response!.text).not.toContain('Sem eventos hoje');
+  });
+
+  it('includes canonical Nexus agenda commitments before provider synchronization', async () => {
+    vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+      sourceHealth: {
+        calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        tasks: { status: 'ready', warningCodes: [], warnings: [] },
+        training: { status: 'ready', warningCodes: [], warnings: [] },
+      },
+      coordination: { topPriority: null, executionOrder: [], watchouts: [], handoffs: [] },
+      day: {
+        secretary: {
+          calendarEventCount: 1,
+          priorityNote: null,
+          sequence: [],
+          tradeoffNote: null,
+        },
+      },
+    } as any);
+
+    const result = await tryFastpath(UID, "what's my day?");
+
+    expect(result.response!.text).toContain('1 compromissos Nexus incluídos');
+    expect(result.response!.text).not.toContain('Sem eventos hoje');
+  });
+
+  it('does not call a failed canonical training read a rest day', async () => {
+    vi.mocked(dailyBrief.composeDailyBrief).mockRejectedValue(new Error('planning unavailable'));
+
+    const result = await tryFastpath(UID, "what's my day?", 'en-US');
+
+    expect(result.response!.text).toContain('Training plan could not be confirmed');
+    expect(result.response!.text).not.toContain('No training planned today');
   });
 });
 
@@ -609,6 +716,20 @@ describe('secretary-fastpath / unread_emails handler', () => {
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Email não configurado');
   });
+
+  it('does not call a partial mail-provider failure a clean inbox', async () => {
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['outlook', 'gmail'],
+      totalUnread: 0,
+      outlookUnread: null,
+      gmailUnread: 0,
+    });
+
+    const result = await tryFastpath(UID, 'inbox', 'en-US');
+
+    expect(result.response!.text).toContain('Mail could not be confirmed');
+    expect(result.response!.text).not.toContain('Inbox clean');
+  });
 });
 
 describe('secretary-fastpath / daily_priority handler', () => {
@@ -635,6 +756,31 @@ describe('secretary-fastpath / daily_priority handler', () => {
     expect(result.response!.text).toContain('Protect the long run before content work.');
     expect(result.response!.text).toContain('1. Long run');
     expect(result.response!.text).toContain('Inbox pressure is elevated');
+  });
+
+  it('does not return an all-clear priority when canonical source health is incomplete', async () => {
+    vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+      sourceHealth: {
+        calendar: {
+          status: 'unavailable',
+          warningCodes: ['CALENDAR_SOURCE_UNAVAILABLE'],
+          warnings: ['Calendar could not be confirmed.'],
+        },
+      },
+      coordination: {
+        topPriority: null,
+        executionOrder: [],
+        blockers: [],
+        secretaryToday: {
+          summary: 'Secretary built the best available state, but the calendar still needs confirmation.',
+        },
+      },
+      day: { secretary: { priorityNote: null, sequence: [] } },
+    } as any);
+
+    const result = await tryFastpath(UID, "what's my priority today?");
+    expect(result.response!.text).toContain('calendar still needs confirmation');
+    expect(result.response!.text).not.toContain('Inbox clean');
   });
 });
 
@@ -711,25 +857,25 @@ describe('secretary-fastpath / decision and report handlers', () => {
     expect(result.response?.text).toContain('Schedule decision');
   });
 
-  it('threads tenant scope into Decision Center fastpaths', async () => {
-    const result = await tryFastpath(UID, 'what needs my decision?', 'en-US', 99);
+  it('threads the canonical tenant scope into Decision Center fastpaths', async () => {
+    const result = await tryFastpath(UID, 'what needs my decision?', 'en-US', UID);
 
     expect(result.matched).toBe(true);
-    expect(vi.mocked(decisionCenter.getDecisionSummary)).toHaveBeenCalledWith(UID, 99, 3);
+    expect(vi.mocked(decisionCenter.getDecisionSummary)).toHaveBeenCalledWith(UID, UID, 3);
   });
 
   it('answers handled-by-Nexus history without AI', async () => {
-    const result = await tryFastpath(UID, 'what did Nexus handle?', 'en-US', 99);
+    const result = await tryFastpath(UID, 'what did Nexus handle?', 'en-US', UID);
 
     expect(result.matched).toBe(true);
     expect(result.patternId).toBe('handled_by_nexus_summary');
     expect(result.response?.text).toContain('Handled by Nexus');
     expect(result.response?.text).toContain('Calendar sync retried');
-    expect(vi.mocked(decisionCenter.listHandledByNexusItems)).toHaveBeenCalledWith(UID, 99, 5);
+    expect(vi.mocked(decisionCenter.listHandledByNexusItems)).toHaveBeenCalledWith(UID, UID, 5);
   });
 
   it('answers latest report without AI', async () => {
-    const result = await tryFastpath(UID, 'latest report', 'en-US', 99);
+    const result = await tryFastpath(UID, 'latest report', 'en-US', UID);
 
     expect(result.matched).toBe(true);
     expect(result.patternId).toBe('latest_report');
@@ -738,7 +884,7 @@ describe('secretary-fastpath / decision and report handlers', () => {
     const reportStore = await import('../../src/services/report-document-store');
     expect(vi.mocked(reportStore.getRecentReports)).toHaveBeenCalledWith(UID, {
       limit: 1,
-      tenantId: 99,
+      tenantId: UID,
     });
   });
 });
@@ -860,7 +1006,13 @@ describe('secretary-fastpath / bilingual — EN', () => {
 
   // ── day_overview ──
   it('day_overview returns English copy when user lang is en-US', async () => {
-    vi.mocked(calendar.getEvents).mockResolvedValue([]);
+    vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
     const result = await tryFastpath(UID, "what's my day?");
     expect(result.matched).toBe(true);
     // English header + empty-state copy
@@ -900,7 +1052,13 @@ describe('secretary-fastpath / bilingual — EN', () => {
 
   // ── week_overview ──
   it('week_overview uses English day names and WEEK header', async () => {
-    vi.mocked(calendar.getEvents).mockResolvedValue([]);
+    vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
     const result = await tryFastpath(UID, "what's my week?");
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('WEEK');
@@ -908,6 +1066,112 @@ describe('secretary-fastpath / bilingual — EN', () => {
     expect(result.response!.text).toContain('free'); // "— free" in English
     expect(result.response!.text).not.toContain('SEMANA');
     expect(result.response!.text).not.toContain('livre');
+  });
+
+  it('never labels unconfirmed calendar days as free', async () => {
+    vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['OUTLOOK_CALENDAR_UNAVAILABLE'],
+      warnings: ['Outlook Calendar is unavailable right now.'],
+      sources: { configured: ['outlook'], fulfilled: [], failed: ['outlook'] },
+    });
+
+    const result = await tryFastpath(UID, "what's my week?", 'en-US');
+
+    expect(result.response!.text).toContain('calendar unconfirmed');
+    expect(result.response!.text).not.toContain('— free');
+  });
+
+  it('builds status from the canonical daily snapshot', async () => {
+    vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+      warningCodes: [],
+      sourceHealth: {
+        calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        tasks: { status: 'ready', warningCodes: [], warnings: [] },
+        mail: { status: 'ready', warningCodes: [], warnings: [] },
+      },
+      day: {
+        secretary: {
+          pendingTasks: 4,
+          calendarEventCount: 2,
+          mailUnreadTotal: 9,
+        },
+      },
+    } as any);
+    vi.mocked(reminders.getRemindersForToday).mockReturnValue([
+      { id: 1, remind_at: '2026-05-11T09:00:00.000Z', message: 'Call dentist' } as any,
+    ]);
+
+    const result = await tryFastpath(UID, '/status', 'en-US', UID);
+
+    expect(dailyBrief.composeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      userId: UID,
+      tenantId: UID,
+      language: 'en-US',
+    }));
+    expect(result.response!.text).toContain('Tasks: 4 pending');
+    expect(result.response!.text).toContain('Agenda today: 2 commitments');
+    expect(result.response!.text).toContain('Inbox: 9 unread');
+    expect(result.response!.text).toContain("Today's reminders: 1");
+  });
+
+  it('does not render unavailable canonical sources as healthy zeroes', async () => {
+    vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+      warningCodes: ['CALENDAR_UNAVAILABLE', 'TASKS_UNAVAILABLE', 'MAIL_UNAVAILABLE'],
+      sourceHealth: {
+        calendar: { status: 'unavailable', warningCodes: ['CALENDAR_UNAVAILABLE'], warnings: [] },
+        tasks: { status: 'unavailable', warningCodes: ['TASKS_UNAVAILABLE'], warnings: [] },
+        mail: { status: 'unavailable', warningCodes: ['MAIL_UNAVAILABLE'], warnings: [] },
+      },
+      day: {
+        secretary: {
+          pendingTasks: 0,
+          calendarEventCount: 0,
+          mailUnreadTotal: 0,
+        },
+      },
+    } as any);
+
+    const result = await tryFastpath(UID, '/status', 'en-US', UID);
+
+    expect(result.response!.text).toContain('Tasks: unconfirmed');
+    expect(result.response!.text).toContain('Agenda today: unconfirmed');
+    expect(result.response!.text).toContain('Inbox: unconfirmed');
+    expect(result.response!.text).not.toContain('0 commitments');
+    expect(result.response!.text).toContain('sources need confirmation');
+  });
+
+  it('does not label provider-only days as free when the canonical week fails', async () => {
+    vi.mocked(weeklyPlan.composeWeeklyPlan).mockRejectedValue(new Error('canonical week unavailable'));
+
+    const result = await tryFastpath(UID, "what's my week?", 'en-US');
+
+    expect(result.response!.text).toContain('calendar unconfirmed');
+    expect(result.response!.text).not.toContain('— free');
+  });
+
+  it('includes canonical Nexus commitments in the week before provider synchronization', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-11T12:00:00.000Z'));
+    try {
+      vi.mocked(weeklyPlan.composeWeeklyPlan).mockResolvedValue({
+        sourceHealth: {
+          calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        },
+        days: [{
+          date: '2026-05-11',
+          secretary: { calendarEventCount: 1 },
+        }],
+      } as any);
+
+      const result = await tryFastpath(UID, "what's my week?", 'en-US');
+
+      expect(result.response!.text).toContain('1 Nexus commitments included');
+      expect(result.response!.text).not.toContain('Mon 11/05</b> — free');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ── show_tasks ──
@@ -1035,12 +1299,12 @@ describe('secretary-fastpath / language override', () => {
     expect(result.response!.text).toContain('Sem eventos hoje');
   });
 
-  it('no override + no user row keeps the legacy pt-BR default without leaking scoped data', async () => {
-    // userId=0 skips the getUserLanguage call entirely (anonymous)
-    const result = await tryFastpath(0, "what's my day?");
-    expect(result.response!.text).toContain('Sem treino planeado hoje');
-    expect(result.response!.text).not.toContain('Sem eventos hoje');
-    expect(result.response!.text).not.toContain('No training planned today');
+  it('rejects an invalid anonymous sentinel before language or source reads', async () => {
+    await expect(tryFastpath(0, "what's my day?"))
+      .rejects.toMatchObject({ code: 'INVALID_SCOPE' });
+
+    expect(userSvc.getUserLanguage).not.toHaveBeenCalled();
+    expect(calendar.getEventsWithDiagnostics).not.toHaveBeenCalled();
   });
 });
 

@@ -71,6 +71,8 @@ const mockSweepExpiredStructuredHealthData = vi.hoisted(() => vi.fn());
 const mockRunPipelineAgent = vi.hoisted(() => vi.fn());
 const mockListHandledByNexusItems = vi.hoisted(() => vi.fn());
 const mockIsCronJobEnabled = vi.hoisted(() => vi.fn(() => true));
+const mockComposeSecretaryScheduledPlanningSnapshot = vi.hoisted(() => vi.fn());
+const mockProjectSecretaryScheduledReport = vi.hoisted(() => vi.fn());
 const mockWrapJob = vi.hoisted(() => vi.fn(
   (name: string, fn: (...args: unknown[]) => unknown, _options?: unknown) => {
     const wrapped = vi.fn((...args: unknown[]) => fn(...args));
@@ -341,6 +343,12 @@ vi.mock('../../src/services/report-schedule-jobs', () => ({
   failScheduledReportLease: (...args: unknown[]) => mockFailScheduledReportLease(...args),
   startScheduledReportLeaseHeartbeat: (...args: unknown[]) => mockStartScheduledReportLeaseHeartbeat(...args),
 }));
+vi.mock('../../src/services/secretary-scheduled-report', () => ({
+  composeSecretaryScheduledPlanningSnapshot: (...args: unknown[]) =>
+    mockComposeSecretaryScheduledPlanningSnapshot(...args),
+  projectSecretaryScheduledReport: (...args: unknown[]) =>
+    mockProjectSecretaryScheduledReport(...args),
+}));
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
   releaseDueNotificationDeliveries: (...args: unknown[]) => mockReleaseDueNotificationDeliveries(...args),
@@ -437,9 +445,9 @@ import {
   sendCoachBriefings,
   sendCoachBriefingForTarget,
   runScheduledCoachBriefingForTarget,
-  sendDailyBriefing,
-  sendDailyBriefingForTarget,
   runEndOfDaySummaryForTarget,
+  sendDailyBriefingForTarget,
+  sendDailyBriefing,
   sendWeeklyReviewForTarget,
   refreshConnectedGarminUsers,
   refreshConnectedGarminUsersWithLease,
@@ -622,6 +630,25 @@ describe('scheduler tenant scoping', () => {
     mockGetMissingScheduledInventoryCount.mockImplementation(
       (_userId: number, request: { targetCount: number }) => request.targetCount,
     );
+    mockComposeSecretaryScheduledPlanningSnapshot.mockImplementation(async (
+      scope: { userId: number; tenantId: number },
+    ) => ({
+      scope,
+      marker: `snapshot:${scope.userId}`,
+      daily: { degraded: false },
+      week: { degraded: false },
+    }));
+    mockProjectSecretaryScheduledReport.mockImplementation((snapshot: any, kind: string) => ({
+      title: `${kind}:${snapshot.marker}`,
+      summary: `summary:${snapshot.marker}`,
+      documentJson: {
+        timezone: 'Pacific/Kiritimati',
+        warningCodes: ['CALENDAR_UNAVAILABLE'],
+        warnings: ['Calendar could not be confirmed.'],
+        sourceHealth: { calendar: { status: 'unavailable' } },
+        snapshot,
+      },
+    }));
     mockGenerateAndStoreTopicCandidates.mockResolvedValue({ candidates: [] });
     mockGenerateWeeklyPackage.mockResolvedValue({ youtube: [], reels: [] });
     mockRunGovernedAgentJob.mockImplementation(async (
@@ -1072,27 +1099,26 @@ describe('scheduler tenant scoping', () => {
     expect(result.planToday?.date).toBe('2026-04-16');
   });
 
-  it('keeps scheduled Cooking reads on the user while preserving the tenant scope', async () => {
+  it('keeps scheduled planning on the user while preserving the tenant scope', async () => {
     await sendDailyBriefingForTarget({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       telegramId: null,
     });
 
-    expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(42);
-    expect(mockGetRemindersForToday).toHaveBeenCalledWith(42, 700, 'Europe/Lisbon');
-    expect(mockComposeDailyBrief).toHaveBeenCalledWith({
+    expect(mockComposeSecretaryScheduledPlanningSnapshot).toHaveBeenCalledWith({
       userId: 42,
-      tenantId: 700,
-      date: '2026-04-17',
+      tenantId: 42,
     });
+    expect(mockGetTaskProviderForUser).not.toHaveBeenCalled();
+    expect(mockGetRemindersForToday).not.toHaveBeenCalled();
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
       userId: 42,
+      tenantId: 42,
       documentJson: expect.objectContaining({
-        planToday: expect.objectContaining({
-          dayHeadline: 'Focus day for 42',
-          cooking: expect.objectContaining({ headline: 'Dinner: Canonical meal for 42' }),
-        }),
+        timezone: 'Pacific/Kiritimati',
+        sourceHealth: { calendar: { status: 'unavailable' } },
       }),
     }));
   });
@@ -1174,97 +1200,85 @@ describe('scheduler tenant scoping', () => {
       }],
     });
 
-    await runEndOfDaySummaryForTarget({ userId: 42, tenantId: 700, telegramId: null });
-    expect(mockGetTaskProviderForUser).toHaveBeenLastCalledWith(42);
+    await runEndOfDaySummaryForTarget({ userId: 42, tenantId: 42, telegramId: null });
+    expect(mockComposeSecretaryScheduledPlanningSnapshot).toHaveBeenLastCalledWith({
+      userId: 42,
+      tenantId: 42,
+    });
     expect(mockStoreAndPushReport).toHaveBeenLastCalledWith(expect.objectContaining({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       type: 'evening_summary',
     }));
 
-    await sendWeeklyReviewForTarget({ userId: 42, tenantId: 700, telegramId: null });
-    expect(mockComposeWeeklyPlan).toHaveBeenLastCalledWith(expect.objectContaining({
+    await sendWeeklyReviewForTarget({ userId: 42, tenantId: 42, telegramId: null });
+    expect(mockComposeSecretaryScheduledPlanningSnapshot).toHaveBeenLastCalledWith({
       userId: 42,
-      tenantId: 700,
-    }));
+      tenantId: 42,
+    });
     expect(mockStoreAndPushReport).toHaveBeenLastCalledWith(expect.objectContaining({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       type: 'weekly_review',
-      documentJson: expect.objectContaining({
-        cooking: expect.objectContaining({ mealCount: 1 }),
-      }),
+      documentJson: expect.objectContaining({ timezone: 'Pacific/Kiritimati' }),
     }));
   });
 
-  it('marks end-of-day delivery degraded when the scoped Training source fails', async () => {
-    mockGetAllPendingTasks.mockResolvedValue({
-      success: true,
-      data: [{
-        id: 'due',
-        title: 'Still deliver this report',
-        listName: 'Inbox',
-        importance: 'normal',
-        dueDateTime: '2026-04-17T16:00:00.000Z',
-      }],
-    });
-    mockGetActivePlans.mockImplementationOnce(() => {
-      throw new Error('training database unavailable');
+  it('marks end-of-day delivery degraded when the canonical snapshot is degraded', async () => {
+    mockComposeSecretaryScheduledPlanningSnapshot.mockResolvedValueOnce({
+      marker: 'degraded-evening',
+      daily: { degraded: true },
+      week: { degraded: true },
     });
 
     const result = await runEndOfDaySummaryForTarget({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       telegramId: null,
     });
 
     expect(result).toEqual({ degraded: true });
-    expect(mockGetActivePlans).toHaveBeenCalledWith(42, 700);
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       type: 'evening_summary',
-      documentJson: expect.objectContaining({
-        degradationReasons: ['training_source_unavailable'],
-      }),
     }));
   });
 
-  it('fails an empty end-of-day run when Training was unavailable instead of completing green', async () => {
-    mockGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
-    mockGetActivePlans.mockImplementationOnce(() => {
-      throw new Error('training database unavailable');
+  it('does not turn an unavailable canonical end-of-day snapshot into a green result', async () => {
+    mockComposeSecretaryScheduledPlanningSnapshot.mockResolvedValueOnce({
+      marker: 'unavailable-evening',
+      daily: { degraded: true },
+      week: { degraded: true },
     });
 
     await expect(runEndOfDaySummaryForTarget({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       telegramId: null,
-    })).rejects.toThrow('END_OF_DAY_TRAINING_SOURCE_UNAVAILABLE');
+    })).resolves.toEqual({ degraded: true });
 
-    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
+    expect(mockStoreAndPushReport).toHaveBeenCalledOnce();
   });
 
-  it('marks weekly delivery degraded when Decision history cannot be read', async () => {
-    mockListHandledByNexusItems.mockImplementationOnce(() => {
-      throw new Error('decision history unavailable');
+  it('marks weekly delivery degraded when the canonical weekly snapshot is degraded', async () => {
+    mockComposeSecretaryScheduledPlanningSnapshot.mockResolvedValueOnce({
+      marker: 'degraded-week',
+      daily: { degraded: false },
+      week: { degraded: true },
     });
 
     const result = await sendWeeklyReviewForTarget({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       telegramId: null,
     });
 
     expect(result).toEqual({ degraded: true });
-    expect(mockListHandledByNexusItems).toHaveBeenCalledWith(42, 700, 25);
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
       userId: 42,
-      tenantId: 700,
+      tenantId: 42,
       type: 'weekly_review',
-      documentJson: expect.objectContaining({
-        degradationReasons: ['decision_history_source_unavailable'],
-      }),
     }));
   });
 
@@ -1972,19 +1986,74 @@ describe('scheduler tenant scoping', () => {
     expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
     expect(mockStoreAndPushReport).toHaveBeenNthCalledWith(1, expect.objectContaining({
       type: 'morning_briefing',
-      title: '☀️ Friday, April 17',
-      summary: '0 events, 0 tasks',
+      title: 'morning_briefing:snapshot:11',
+      summary: 'summary:snapshot:11',
       sourceJob: 'daily_briefing',
       pushCategory: 'morning_briefing',
       documentJson: expect.objectContaining({
-        planToday: expect.objectContaining({
-          date: '2026-04-17',
-          cooking: expect.objectContaining({
-            meals: [expect.objectContaining({ title: 'Canonical meal for 11' })],
-          }),
-        }),
+        timezone: 'Pacific/Kiritimati',
+        sourceHealth: { calendar: { status: 'unavailable' } },
       }),
     }));
+  });
+
+  it('builds all scheduled Secretary reports through the canonical snapshot without legacy reads', async () => {
+    const target = { tenantId: 42, telegramId: null };
+    const localDate = '2026-08-31';
+    const cases = [
+      { job: 'end_of_day', kind: 'evening_summary', run: () => runEndOfDaySummaryForTarget(target, { localDate, dispatchKey: `end_of_day:${localDate}`, requireNotificationIntent: true }) },
+      { job: 'morning_briefing', kind: 'morning_briefing', run: () => sendDailyBriefingForTarget(target, { localDate, dispatchKey: `morning_briefing:${localDate}`, requireNotificationIntent: true }) },
+      { job: 'weekly_review', kind: 'weekly_review', run: () => sendWeeklyReviewForTarget(target, { localDate, dispatchKey: `weekly_review:${localDate}`, requireNotificationIntent: true }) },
+    ] as const;
+
+    for (const reportCase of cases) {
+      vi.clearAllMocks();
+      const scheduledSnapshot = {
+        marker: 'canonical-snapshot',
+        daily: { degraded: false },
+        week: { degraded: false },
+      };
+      mockComposeSecretaryScheduledPlanningSnapshot.mockResolvedValue(scheduledSnapshot);
+      mockProjectSecretaryScheduledReport.mockReturnValue({
+        title: `title:${reportCase.kind}`,
+        summary: `summary:${reportCase.kind}`,
+        documentJson: {
+          timezone: 'Pacific/Kiritimati',
+          warningCodes: ['CALENDAR_UNAVAILABLE'],
+          warnings: ['Calendar could not be confirmed.'],
+          sourceHealth: { calendar: { status: 'unavailable' } },
+        },
+      });
+
+      await reportCase.run();
+
+      expect(mockComposeSecretaryScheduledPlanningSnapshot).toHaveBeenCalledOnce();
+      expect(mockComposeSecretaryScheduledPlanningSnapshot).toHaveBeenCalledWith({
+        userId: 42,
+        tenantId: 42,
+        localDate,
+      });
+      expect(mockProjectSecretaryScheduledReport).toHaveBeenCalledOnce();
+      expect(mockProjectSecretaryScheduledReport.mock.calls[0]?.[0]).toBe(scheduledSnapshot);
+      expect(mockProjectSecretaryScheduledReport.mock.calls[0]?.[1]).toBe(reportCase.kind);
+      expect(mockStoreAndPushReport).toHaveBeenCalledOnce();
+      expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 42,
+        tenantId: 42,
+        type: reportCase.kind,
+        dispatchKey: `${reportCase.job}:${localDate}`,
+        requireNotificationIntent: true,
+        documentJson: expect.objectContaining({
+          timezone: 'Pacific/Kiritimati',
+          sourceHealth: { calendar: { status: 'unavailable' } },
+        }),
+      }));
+      expect(mockGetTaskProviderForUser).not.toHaveBeenCalled();
+      expect(mockGetEvents).not.toHaveBeenCalled();
+      expect(mockGetRemindersForToday).not.toHaveBeenCalled();
+      expect(mockGetUnreadCountForUser).not.toHaveBeenCalled();
+      expect(mockGetActivePlan).not.toHaveBeenCalled();
+    }
   });
 
   it('sendDailyBriefing fails observably when active users cannot be queried', async () => {
@@ -2747,8 +2816,11 @@ describe('scheduler tenant scoping', () => {
       dataCollectionMs: 11,
       analysisMs: 22,
     });
-
-    const outcome = await runScheduledCoachBriefingForTarget({ tenantId: 11, userId: 11, telegramId: null });
+    const dispatchKey = 'coach_briefing:2026-04-17';
+    const outcome = await runScheduledCoachBriefingForTarget(
+      { tenantId: 11, userId: 11, telegramId: null },
+      { dispatchKey, requireNotificationIntent: true },
+    );
 
     expect(outcome).toMatchObject({
       jobId: 'garmin_coach',
@@ -2762,6 +2834,12 @@ describe('scheduler tenant scoping', () => {
       budgetJobName: 'garmin_coach',
       abortSignal: expect.any(AbortSignal),
       budgetRunId: 'scheduler-test-run',
+    }));
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 11,
+      type: 'coach_briefing',
+      dispatchKey,
+      requireNotificationIntent: true,
     }));
   });
 

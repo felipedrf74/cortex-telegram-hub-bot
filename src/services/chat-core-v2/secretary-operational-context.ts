@@ -26,6 +26,13 @@ import { sanitizeForPromptInterpolation } from '../../utils/prompt-sanitizer';
 import { withTimeout } from '../../utils/timeout';
 import { composeDailyBrief } from '../daily-brief-orchestrator';
 import { getAICallTimeoutMs } from '../runtime-flags';
+import { composeWeeklyPlan } from '../weekly-plan-orchestrator';
+import {
+  resolveSecretaryPlanningContext,
+  withSecretaryPlanningTargetDate,
+  type PlanSourceHealth,
+} from '../secretary-planning-context';
+import { buildSecretaryDaySnapshot } from '../secretary-planning-snapshot';
 
 const COLLECTOR_TIMEOUT_MS = 5_000;
 const MAX_TASK_ITEMS = 5;
@@ -97,14 +104,17 @@ export async function collectSecretaryOperationalContext(
     garmin: intent.ambiguous || intent.garmin || planning,
   };
 
+  const canonicalPlanning = planning
+    ? await collectCanonicalPlanningContext(input, observedAt)
+    : [];
   const runs: Array<Promise<CollectorResult>> = [
-    requested.tasks
+    requested.tasks && !planning
       ? collectTasks(input, observedAt)
       : Promise.resolve(notRequested('tasks', observedAt)),
-    requested.calendar
+    requested.calendar && !planning
       ? collectCalendar(input, observedAt)
       : Promise.resolve(notRequested('calendar', observedAt)),
-    requested.mail
+    requested.mail && !planning
       ? collectMail(input, observedAt)
       : Promise.resolve(notRequested('mail', observedAt)),
     requested.reminders
@@ -117,11 +127,10 @@ export async function collectSecretaryOperationalContext(
       ? collectGarmin(input, observedAt)
       : Promise.resolve(notRequested('garmin', observedAt)),
   ];
-  if (planning) runs.push(collectDailyCoordination(input, observedAt));
-  const results = await Promise.all(runs);
+  const results = [...await Promise.all(runs), ...canonicalPlanning];
   return {
     items: results.flatMap((result) => result.items),
-    diagnostics: results.map((result) => result.diagnostic),
+    diagnostics: mergeCollectorDiagnostics(results),
   };
 }
 
@@ -137,17 +146,40 @@ function unavailableOperationalContext(observedAt: string): SecretaryOperational
   };
 }
 
-async function collectDailyCoordination(
+async function collectCanonicalPlanningContext(
   input: CollectSecretaryOperationalContextInput,
   observedAt: string,
-): Promise<CollectorResult> {
+): Promise<CollectorResult[]> {
   try {
-    const timezone = safeTimezone(input.userId);
-    const window = resolveOperationalCalendarWindow(input.message, timezone, input.now ?? new Date());
+    const baseContext = resolveSecretaryPlanningContext({
+      userId: input.userId,
+      tenantId: input.tenantId,
+    });
+    const window = resolveOperationalCalendarWindow(
+      input.message,
+      baseContext.timezone,
+      input.now ?? new Date(),
+    );
+    const context = withSecretaryPlanningTargetDate(
+      baseContext,
+      window.start.toISODate() ?? baseContext.targetDate,
+    );
+    const week = await withTimeout(composeWeeklyPlan({
+      userId: input.userId,
+      tenantId: input.tenantId,
+      weekStart: context.weekStart,
+      language: context.language,
+      context,
+    }), COLLECTOR_TIMEOUT_MS);
+    const snapshot = buildSecretaryDaySnapshot({ context, week });
     const brief = await withTimeout(composeDailyBrief({
       userId: input.userId,
       tenantId: input.tenantId,
-      date: window.start.toISODate() ?? undefined,
+      date: context.targetDate,
+      language: context.language,
+      context,
+      weekPlan: week,
+      daySnapshot: snapshot,
     }), COLLECTOR_TIMEOUT_MS);
     const coordination = brief.coordination;
     const projection = {
@@ -166,7 +198,7 @@ async function collectDailyCoordination(
       gated: brief.gated,
     };
     const staleAfter = staleAfterFrom(observedAt);
-    const item = operationalItem({
+    const coordinationItem = operationalItem({
       id: 'secretary-daily-coordination',
       source: 'daily_context',
       sourceRef: `daily_context:${brief.date}`,
@@ -181,10 +213,53 @@ async function collectDailyCoordination(
       relevanceScore: 0.96,
       priority: 90,
     });
-    if (brief.degraded) {
-      return {
+    const day = snapshot.day ?? brief.day;
+    const calendarCount = day.secretary.calendarEventCount ?? 0;
+    const pendingTasks = day.secretary.pendingTasks ?? 0;
+    const tasksDue = day.secretary.tasksDueOnDate ?? 0;
+    const overdueTasks = day.secretary.overdueTasks ?? 0;
+    const unreadMail = day.secretary.mailUnreadTotal ?? 0;
+    const canonicalResults = [
+      canonicalPlanningSourceResult({
+        source: 'calendar',
+        health: snapshot.sourceHealth.calendar,
+        empty: calendarCount === 0,
+        content: `Canonical calendar planning coverage: date=${snapshot.date}; event_count=${calendarCount}; active_conflicts=${snapshot.conflicts.length}; writable=${day.secretary.writableCalendar === true}.`,
+        versionShape: {
+          date: snapshot.date,
+          eventCount: calendarCount,
+          conflicts: snapshot.conflicts.length,
+          writable: day.secretary.writableCalendar === true,
+        },
+        input,
+        observedAt,
+        staleAfter,
+      }),
+      canonicalPlanningSourceResult({
+        source: 'tasks',
+        health: snapshot.sourceHealth.tasks,
+        empty: pendingTasks === 0,
+        content: `Canonical task planning coverage: date=${snapshot.date}; pending=${pendingTasks}; due_on_date=${tasksDue}; overdue=${overdueTasks}.`,
+        versionShape: { date: snapshot.date, pendingTasks, tasksDue, overdueTasks },
+        input,
+        observedAt,
+        staleAfter,
+      }),
+      canonicalPlanningSourceResult({
+        source: 'mail',
+        health: snapshot.sourceHealth.mail,
+        empty: unreadMail === 0,
+        content: `Canonical mail planning pressure: date=${snapshot.date}; unread_total=${unreadMail}.`,
+        versionShape: { date: snapshot.date, unreadMail },
+        input,
+        observedAt,
+        staleAfter,
+      }),
+    ];
+    const dailyResult: CollectorResult = brief.degraded
+      ? {
         source: 'daily_context',
-        items: [item],
+        items: [coordinationItem],
         diagnostic: {
           source: 'daily_context',
           status: 'unknown',
@@ -192,11 +267,82 @@ async function collectDailyCoordination(
           staleAfter,
           reasonCode: 'daily_coordination_degraded',
         },
-      };
-    }
-    return available('daily_context', observedAt, [item], staleAfter, 'daily_coordination_bounded_projection');
+      }
+      : available(
+          'daily_context',
+          observedAt,
+          [coordinationItem],
+          staleAfter,
+          'daily_coordination_bounded_projection',
+        );
+    return [...canonicalResults, dailyResult];
   } catch {
-    return failed('daily_context', observedAt, 'daily_coordination_unavailable');
+    return [
+      failed('calendar', observedAt, 'canonical_planning_snapshot_unavailable'),
+      failed('tasks', observedAt, 'canonical_planning_snapshot_unavailable'),
+      failed('mail', observedAt, 'canonical_planning_snapshot_unavailable'),
+      failed('daily_context', observedAt, 'daily_coordination_unavailable'),
+    ];
+  }
+}
+
+function canonicalPlanningSourceResult(input: {
+  source: Extract<ChatContextSource, 'calendar' | 'tasks' | 'mail'>;
+  health: PlanSourceHealth;
+  empty: boolean;
+  content: string;
+  versionShape: unknown;
+  input: CollectSecretaryOperationalContextInput;
+  observedAt: string;
+  staleAfter: string;
+}): CollectorResult {
+  const item = operationalItem({
+    id: `canonical-${input.source}-planning-aggregate`,
+    source: input.source,
+    sourceRef: `${input.source}:canonical-planning-aggregate`,
+    entityVersion: opaqueRef(JSON.stringify(input.versionShape)),
+    content: input.content,
+    input: input.input,
+    observedAt: input.observedAt,
+    staleAfter: input.staleAfter,
+    reason: 'Derived from the same canonical Secretary day snapshot used by REST, recompute, and scheduled reports.',
+    permission: input.source === 'tasks' ? 'tasks:read' : input.source === 'mail' ? 'mail:read' : 'secretary:read',
+    critical: input.source === 'calendar',
+    freshness: input.health.status === 'stale' ? 'stale' : input.health.status === 'ready' ? 'fresh' : 'unknown',
+    confidence: input.health.status === 'ready' ? 0.95 : input.health.status === 'stale' ? 0.62 : 0.5,
+  });
+  const reasonCode = input.health.warningCodes[0] ?? `canonical_${input.source}_${input.health.status}`;
+  if (input.health.status === 'unavailable') return failed(input.source, input.observedAt, reasonCode);
+  if (input.health.status === 'degraded') return unknown(input.source, input.observedAt, reasonCode, [item]);
+  if (input.health.status === 'stale') {
+    return stale(input.source, input.observedAt, [item], input.staleAfter, reasonCode);
+  }
+  return input.empty
+    ? empty(input.source, input.observedAt, `canonical_${input.source}_empty`, [item])
+    : available(input.source, input.observedAt, [item], input.staleAfter);
+}
+
+function mergeCollectorDiagnostics(results: CollectorResult[]): ChatContextSourceDiagnostic[] {
+  const bySource = new Map<ChatContextSource, ChatContextSourceDiagnostic>();
+  for (const result of results) {
+    const current = bySource.get(result.source);
+    if (!current
+      || current.reasonCode === 'source_not_requested_for_turn'
+      || diagnosticPriority(result.diagnostic.status) >= diagnosticPriority(current.status)) {
+      bySource.set(result.source, result.diagnostic);
+    }
+  }
+  return [...bySource.values()];
+}
+
+function diagnosticPriority(status: ChatContextSourceDiagnostic['status']): number {
+  switch (status) {
+    case 'available': return 6;
+    case 'empty': return 5;
+    case 'stale': return 4;
+    case 'unknown': return 3;
+    case 'permission_denied': return 2;
+    case 'failed': return 1;
   }
 }
 
@@ -699,8 +845,13 @@ function permissionDenied(source: ChatContextSource, observedAt: string, reasonC
   return { source, items: [], diagnostic: { source, status: 'permission_denied', observedAt, reasonCode } };
 }
 
-function unknown(source: ChatContextSource, observedAt: string, reasonCode: string): CollectorResult {
-  return { source, items: [], diagnostic: { source, status: 'unknown', observedAt, reasonCode } };
+function unknown(
+  source: ChatContextSource,
+  observedAt: string,
+  reasonCode: string,
+  items: ChatContextItem[] = [],
+): CollectorResult {
+  return { source, items, diagnostic: { source, status: 'unknown', observedAt, reasonCode } };
 }
 
 function coarseRecoverySignal(event: ReadinessEventRow, consent: Set<string>): 'normal' | 'caution' | 'unknown' {

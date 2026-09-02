@@ -41,7 +41,10 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
         start: input.startAt,
         end: input.endAt,
         description: providerDescriptionForSecretaryEvent(input),
-        categories: dedupeCategories(['Nexus', 'Secretary', input.sourceSkill]),
+        categories: dedupeCategories(['Nexus', 'Secretary', input.sourceSkill, ...(input.categories ?? [])]),
+        attendees: input.attendees,
+        location: input.location,
+        recurrence: input.recurrence,
       }, source, input.ownerUserId);
       return toSecretaryProviderEvent(event, input, true);
     },
@@ -86,6 +89,7 @@ export function createUnifiedCalendarSecretaryProviderAdapter(
 
 export function buildSecretaryCalendarDescription(input: SecretaryProviderEventInput): string {
   const sourceBody = sourceBodyForSecretaryCalendarEvent(input);
+  const commandBody = input.sourceSkill === 'secretary' ? input.description?.trim() : '';
   const durationMinutes = typeof input.durationMinutes === 'number' && Number.isFinite(input.durationMinutes) && input.durationMinutes > 0
     ? input.durationMinutes
     : null;
@@ -96,7 +100,7 @@ export function buildSecretaryCalendarDescription(input: SecretaryProviderEventI
   const sourceLine = userFacingSourceLine(input);
   const sections = [
     headerLines.join('\n'),
-    sourceBody,
+    sourceBody || commandBody,
     sourceLine,
   ]
     .map((section) => section?.trim() ?? '')

@@ -219,6 +219,13 @@ function createLegacyDatabase(
       completed_at TEXT
     );
   `);
+  // The fixture records the pre-283 migration ledger without replaying the
+  // full prefix. Materialize migration 087's registry schema because later
+  // additive skill-version releases legitimately write to those tables.
+  database.exec(readFileSync(
+    join(repositoryRoot, 'migrations/087_skill_version_registry.sql'),
+    'utf8',
+  ));
   if (environment === 'production') {
     database.exec(`
       CREATE UNIQUE INDEX idx_ref_channels_url ON content_ref_channels(channel_url);
@@ -450,6 +457,7 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '308_secretary_calendar_command_receipts.sql' }),
         expect.objectContaining({ file: '309_secretary_calendar_mutation_receipts.sql' }),
         expect.objectContaining({ file: '310_retire_fossa_email_metadata.sql' }),
+        expect.objectContaining({ file: '311_activate_secretary_2_2_skill_version.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

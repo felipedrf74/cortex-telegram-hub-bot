@@ -60,11 +60,17 @@ import {
   listNotificationCenterItems,
   performNotificationAction,
   notificationTitleOrFallback,
+  notificationIntentDeliveryScopeKey,
+  processNotificationIntentDelivery,
   registerNotificationDeviceToken,
   releaseDueNotificationDeliveries,
   releaseDueSnoozedNotifications,
   updateNotificationProfile,
 } from '../../src/services/notification-orchestrator';
+import {
+  claimScheduledJobExecution,
+  completeScheduledJobExecution,
+} from '../../src/services/scheduled-job-execution-state';
 import { setPushPreference } from '../../src/services/report-document-store';
 
 const NOW = '2026-05-07T12:00:00.000Z';
@@ -136,6 +142,213 @@ describe('notification delivery accounting', () => {
     testDb?.close();
   });
 
+  describe('exact durable intent delivery', () => {
+    it('retries one transient APNs failure with one center item and at most one accepted push', async () => {
+      establishedProfile(760);
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 0, skipped: 0, retriable: 1, unregistered: [],
+      }).mockResolvedValueOnce({
+        sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [],
+      });
+      const created = await createNotificationIntent(reminderIntent(760, {
+        dedupeKey: 'exact-transient-retry',
+      }));
+
+      expect(created.decisionLog.decision).toBe('apns_delivery_failed');
+      const [first, second] = await Promise.all([
+        processNotificationIntentDelivery(created.intent.intentId, 760, 760),
+        processNotificationIntentDelivery(created.intent.intentId, 760, 760),
+      ]);
+
+      expect([first.status, second.status].sort()).toEqual(['already_processed', 'retry_succeeded']);
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(2);
+      expect((testDb.prepare(`
+        SELECT COUNT(*) AS count FROM notification_center_items WHERE intent_id = ?
+      `).get(created.intent.intentId) as { count: number }).count).toBe(1);
+      expect((testDb.prepare(`
+        SELECT COUNT(*) AS count FROM notification_delivery_attempts
+         WHERE intent_id = ? AND status = 'sent'
+      `).get(created.intent.intentId) as { count: number }).count).toBe(1);
+    });
+
+    it('retires an unregistered device but preserves durable retry for a transient companion device', async () => {
+      establishedProfile(765);
+      registerNotificationDeviceToken({
+        userId: 765,
+        tenantId: 765,
+        token: 'dead-token',
+        environment: 'production',
+        deviceId: 'dead-device',
+      });
+      registerNotificationDeviceToken({
+        userId: 765,
+        tenantId: 765,
+        token: 'transient-token',
+        environment: 'production',
+        deviceId: 'transient-device',
+      });
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 0, skipped: 0, retriable: 1, unregistered: ['dead-token'],
+      }).mockResolvedValueOnce({
+        sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [],
+      });
+
+      const created = await createNotificationIntent(reminderIntent(765, {
+        dedupeKey: 'mixed-unregistered-transient-retry',
+      }));
+      expect(created.decisionLog.decision).toBe('apns_delivery_failed');
+      expect((testDb.prepare(`
+        SELECT error_code AS errorCode FROM notification_delivery_attempts
+         WHERE intent_id = ? ORDER BY rowid DESC LIMIT 1
+      `).get(created.intent.intentId) as { errorCode: string }).errorCode)
+        .toBe('apns_delivery_transient');
+      expect((testDb.prepare(`
+        SELECT revoked_at AS revokedAt FROM notification_device_tokens
+         WHERE user_id = 765 AND device_id = 'dead-device'
+      `).get() as { revokedAt: string | null }).revokedAt).not.toBeNull();
+      expect((testDb.prepare(`
+        SELECT revoked_at AS revokedAt FROM notification_device_tokens
+         WHERE user_id = 765 AND device_id = 'transient-device'
+      `).get() as { revokedAt: string | null }).revokedAt).toBeNull();
+
+      await expect(
+        processNotificationIntentDelivery(created.intent.intentId, 765, 765),
+      ).resolves.toMatchObject({
+        status: 'retry_succeeded',
+        centerItemCount: 1,
+        acceptedPushCount: 1,
+      });
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(2);
+      expect((testDb.prepare(`
+        SELECT COUNT(*) AS count FROM notification_delivery_attempts
+         WHERE intent_id = ? AND status = 'sent'
+      `).get(created.intent.intentId) as { count: number }).count).toBe(1);
+      await expect(
+        processNotificationIntentDelivery(created.intent.intentId, 765, 765),
+      ).resolves.toMatchObject({
+        status: 'already_processed',
+        centerItemCount: 1,
+        acceptedPushCount: 1,
+      });
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a permanent APNs rejection', async () => {
+      establishedProfile(761);
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 1, skipped: 0, retriable: 0, unregistered: [],
+      });
+      const created = await createNotificationIntent(reminderIntent(761, {
+        dedupeKey: 'exact-permanent-failure',
+      }));
+
+      const result = await processNotificationIntentDelivery(created.intent.intentId, 761, 761);
+
+      expect(result).toMatchObject({ status: 'terminal', centerItemCount: 1, acceptedPushCount: 0 });
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('fences an exact intent across worker processes before another APNs call', async () => {
+      establishedProfile(762);
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 0, skipped: 0, retriable: 1, unregistered: [],
+      }).mockResolvedValueOnce({
+        sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [],
+      });
+      const created = await createNotificationIntent(reminderIntent(762, {
+        dedupeKey: 'cross-process-delivery-fence',
+      }));
+      const held = claimScheduledJobExecution({
+        jobName: 'notification:deliver_intent',
+        scopeKey: notificationIntentDeliveryScopeKey(created.intent.intentId, 762, 762),
+        leaseTtlMs: 60_000,
+        leaseOwner: 'independent-worker',
+      }, testDb);
+      expect(held.kind).toBe('claimed');
+      if (held.kind !== 'claimed') throw new Error('test could not acquire delivery fence');
+
+      await expect(
+        processNotificationIntentDelivery(created.intent.intentId, 762, 762),
+      ).rejects.toThrow('notification delivery already in progress');
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+
+      expect(completeScheduledJobExecution(held, 'failed', testDb)).toBe(true);
+      await expect(
+        processNotificationIntentDelivery(created.intent.intentId, 762, 762),
+      ).resolves.toMatchObject({ status: 'retry_succeeded', acceptedPushCount: 1 });
+      expect(mockSendPushNotification).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not acknowledge success after its durable delivery fence is replaced', async () => {
+      establishedProfile(764);
+      mockSendPushNotification.mockResolvedValueOnce({
+        sent: 0, failed: 0, skipped: 0, retriable: 1, unregistered: [],
+      });
+      const created = await createNotificationIntent(reminderIntent(764, {
+        dedupeKey: 'delivery-fence-replaced-during-provider-call',
+      }));
+      const scopeKey = notificationIntentDeliveryScopeKey(created.intent.intentId, 764, 764);
+      mockSendPushNotification.mockImplementationOnce(async () => {
+        testDb.prepare(`
+          UPDATE scheduled_job_execution_state
+             SET lease_token = 'replacement-worker-token'
+           WHERE job_name = 'notification:deliver_intent' AND scope_key = ?
+        `).run(scopeKey);
+        return { sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
+      });
+
+      await expect(
+        processNotificationIntentDelivery(created.intent.intentId, 764, 764),
+      ).rejects.toThrow('notification delivery lease lost');
+      expect((testDb.prepare(`
+        SELECT COUNT(*) AS count FROM notification_delivery_attempts
+         WHERE intent_id = ? AND status = 'sent'
+      `).get(created.intent.intentId) as { count: number }).count).toBe(1);
+    });
+
+    it('prunes only expired or completed notification delivery fences after retention', async () => {
+      establishedProfile(763);
+      const created = await createNotificationIntent(reminderIntent(763, {
+        dedupeKey: 'delivery-fence-retention',
+      }));
+      const completed = claimScheduledJobExecution({
+        jobName: 'notification:deliver_intent',
+        scopeKey: notificationIntentDeliveryScopeKey(created.intent.intentId, 763, 763),
+        leaseTtlMs: 60_000,
+        leaseOwner: 'completed-retention-worker',
+        now: new Date(NOW),
+      }, testDb);
+      expect(completed.kind).toBe('claimed');
+      if (completed.kind !== 'claimed') throw new Error('completed retention fence was not claimed');
+      expect(completeScheduledJobExecution(completed, 'success', testDb)).toBe(true);
+      const activeScopeKey = notificationIntentDeliveryScopeKey('active-retention-fence', 763, 763);
+      const active = claimScheduledJobExecution({
+        jobName: 'notification:deliver_intent',
+        scopeKey: activeScopeKey,
+        leaseTtlMs: 60_000,
+        leaseOwner: 'active-retention-worker',
+        now: new Date(NOW),
+      }, testDb);
+      expect(active.kind).toBe('claimed');
+      testDb.prepare(`
+        UPDATE scheduled_job_execution_state
+           SET updated_at = '2020-01-01T00:00:00.000Z'
+         WHERE job_name = 'notification:deliver_intent' AND scope_key IN (?, ?)
+      `).run(
+        notificationIntentDeliveryScopeKey(created.intent.intentId, 763, 763),
+        activeScopeKey,
+      );
+
+      const summary = pruneNotificationRetention(new Date(NOW));
+
+      expect(summary.deliveryExecutionStates).toBe(1);
+      expect(testDb.prepare(`
+        SELECT lease_token FROM scheduled_job_execution_state
+         WHERE job_name = 'notification:deliver_intent' AND scope_key = ?
+      `).get(activeScopeKey)).toEqual(expect.objectContaining({ lease_token: expect.any(String) }));
+    });
+  });
+
   describe('digest release', () => {
     it('charges the interrupt budget once per digest push, not once per item', async () => {
       establishedProfile(700);
@@ -165,7 +378,10 @@ describe('notification delivery accounting', () => {
         priority: 'passive', dedupeKey: 'carrier-ordinary', relatedEntityId: 'carrier-ordinary',
       }));
       const report = await createNotificationIntent(reminderIntent(732, {
-        type: 'daily_digest', priority: 'passive', body: 'Your day, in short',
+        type: 'daily_digest', priority: 'passive',
+        privacyPolicy: 'sensitive',
+        body: 'Keep private oncology recovery run on track.',
+        sensitiveBody: 'Keep private oncology recovery run on track.',
         dedupeKey: 'carrier-report', relatedEntityId: 'carrier-report',
       }));
       // The ordinary row sorts first, while the later report row must carry the
@@ -187,6 +403,10 @@ describe('notification delivery accounting', () => {
         { notification_id: report.item!.itemId, decision: 'sent_push' },
       ]);
       expect(mockSendPushNotification).toHaveBeenCalledTimes(1);
+      const deliveredPayload = mockSendPushNotification.mock.calls[0]?.[1] as { body: string };
+      expect(deliveredPayload.body).not.toContain('oncology');
+      expect(deliveredPayload.body).not.toContain('recovery run');
+      expect(deliveredPayload.body).toContain('open Nexus');
 
       // Leaving the first row as `digest` makes the next sweep send a second
       // push for content already covered by the report-carried digest.

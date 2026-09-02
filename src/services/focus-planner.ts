@@ -3,7 +3,11 @@
 import { DateTime } from 'luxon';
 import { logger } from '../utils/logger';
 import { calculateReadiness } from './readiness-scorer';
-import { getEvents, type UnifiedCalendarEvent } from './unified-calendar';
+import {
+  getEventsWithDiagnostics,
+  type UnifiedCalendarEvent,
+  type UnifiedCalendarFetchResult,
+} from './unified-calendar';
 import { readTrainingContextAll } from './training-signals';
 import {
   getActivePlans,
@@ -39,6 +43,21 @@ export interface FocusBlockRecommendation {
   trainingCoordination?: FocusTrainingCoordination | null;
 }
 
+/** Explicit user-owned availability supplied by Secretary. The focus planner
+ * must not invent a workday when this contract is present. */
+export interface FocusPlanningWindow {
+  weekdays: number[];
+  start: string;
+  end: string;
+}
+
+/** Read-only commitments that constrain a recommendation without being
+ * written to a provider calendar. */
+export interface FocusBusyInterval {
+  start: string;
+  end: string;
+}
+
 interface TrainingDaySummary {
   load: TrainingLoad;
   reasons: string[];
@@ -68,36 +87,64 @@ export async function getFocusBlockRecommendation(
     durationMinutes?: number;
     horizonDays?: number;
     preferredDate?: string;
+    startDate?: string;
+    timezone?: string;
+    availabilityWindows?: FocusPlanningWindow[];
+    additionalBusyIntervals?: FocusBusyInterval[];
+    /** Canonical caller-owned calendar snapshot. When supplied, the focus
+     * planner must not issue an independent provider read. */
+    calendarEvents?: UnifiedCalendarEvent[];
   },
 ): Promise<FocusBlockRecommendation | null> {
-  const zone = getUserTimezone(userId);
+  const zone = opts.timezone ?? getUserTimezone(userId);
   const now = DateTime.now().setZone(zone);
   const durationMinutes = clamp(Math.round(opts?.durationMinutes ?? 90), 30, 180);
   const preferredDate = typeof opts?.preferredDate === 'string'
     ? DateTime.fromISO(opts.preferredDate, { zone }).startOf('day')
     : null;
+  const explicitStartDate = typeof opts?.startDate === 'string'
+    ? DateTime.fromISO(opts.startDate, { zone }).startOf('day')
+    : null;
   const horizonDays = preferredDate?.isValid
     ? 1
     : clamp(Math.round(opts?.horizonDays ?? 4), 1, 7);
-  const startDate = preferredDate?.isValid ? preferredDate : now.startOf('day');
+  const startDate = preferredDate?.isValid
+    ? preferredDate
+    : explicitStartDate?.isValid
+      ? explicitStartDate
+      : now.startOf('day');
   const endDate = startDate.plus({ days: horizonDays - 1 }).endOf('day');
 
   const [calendarResult, readinessResult] = await Promise.allSettled([
-    getEvents(startDate.toUTC().toISO()!, endDate.toUTC().toISO()!, userId),
+    opts.calendarEvents
+      ? Promise.resolve(readyCalendarSnapshot(opts.calendarEvents))
+      : getEventsWithDiagnostics(startDate.toUTC().toISO()!, endDate.toUTC().toISO()!, userId),
     calculateReadiness(userId, { tenantId: opts.tenantId }),
   ]);
 
-  const events = calendarResult.status === 'fulfilled' ? calendarResult.value : [];
+  const calendarSnapshot = calendarResult.status === 'fulfilled' ? calendarResult.value : null;
+  const events = calendarSnapshot?.events ?? [];
   const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
   const trainingContext = readTrainingContextAll({ userId, tenantId: opts.tenantId });
   const trainingSchedule = buildTrainingSchedule(userId, startDate, horizonDays, zone);
 
-  const hadCalendarData = calendarResult.status === 'fulfilled';
+  const hadCalendarData = calendarSnapshot?.status === 'ready';
   const hadReadinessData = readiness?.score != null;
   const hadTrainingData = trainingSchedule.size > 0 || trainingContext.signals.length > 0;
 
-  if (!hadCalendarData && !hadReadinessData && !hadTrainingData) {
-    return null;
+  // A focus block is a concrete availability claim. Readiness or training
+  // data cannot prove a provider time window is free, so fail closed when
+  // the calendar read is unknown instead of treating the fallback [] as an
+  // empty calendar. Reject so callers can preserve unavailable source health
+  // rather than confusing "could not read" with "no recommendation".
+  if (!hadCalendarData) {
+    if (calendarResult.status === 'rejected' && calendarResult.reason instanceof Error) {
+      throw calendarResult.reason;
+    }
+    throw new Error(
+      calendarSnapshot?.warnings[0]
+        ?? 'Calendar availability could not be confirmed',
+    );
   }
 
   const candidates: FocusCandidate[] = [];
@@ -108,7 +155,15 @@ export async function getFocusBlockRecommendation(
     const dayEvents = eventsForDate(events, isoDate, zone);
     const calendarSummary = summarizeCalendarLoad(dayEvents);
     const trainingSummary = trainingSchedule.get(isoDate) ?? fallbackTrainingSummary(hadTrainingData);
-    const windows = enumerateCandidateWindows(day, dayEvents, durationMinutes, now, zone);
+    const windows = enumerateCandidateWindows(
+      day,
+      dayEvents,
+      durationMinutes,
+      now,
+      zone,
+      opts.availabilityWindows,
+      opts.additionalBusyIntervals,
+    );
 
     for (const window of windows) {
       const focusWindow = classifyFocusWindow(window.start);
@@ -190,6 +245,20 @@ export async function getFocusBlockRecommendation(
   );
 
   return recommendation;
+}
+
+function readyCalendarSnapshot(events: UnifiedCalendarEvent[]): UnifiedCalendarFetchResult {
+  return {
+    events,
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: {
+      configured: [],
+      fulfilled: [],
+      failed: [],
+    },
+  };
 }
 
 function selectRecommendedCandidate(
@@ -435,38 +504,71 @@ function enumerateCandidateWindows(
   durationMinutes: number,
   now: DateTime,
   zone: string,
+  availabilityWindows?: FocusPlanningWindow[],
+  additionalBusyIntervals: FocusBusyInterval[] = [],
 ): Array<{ start: DateTime; end: DateTime }> {
-  const dayStart = day.set({ hour: 8, minute: 0, second: 0, millisecond: 0 });
-  const dayEnd = day.set({ hour: 18, minute: 30, second: 0, millisecond: 0 });
+  const availableRanges = availabilityWindows
+    ? availabilityWindows
+        .filter((window) => window.weekdays.includes(day.weekday))
+        .map((window) => ({
+          start: clockOnDay(day, window.start),
+          end: clockOnDay(day, window.end),
+        }))
+        .filter((window): window is { start: DateTime; end: DateTime } => Boolean(
+          window.start && window.end && window.start < window.end,
+        ))
+    : [{
+        start: day.set({ hour: 8, minute: 0, second: 0, millisecond: 0 }),
+        end: day.set({ hour: 18, minute: 30, second: 0, millisecond: 0 }),
+      }];
 
-  const busyWindows = events
-    .filter((event) => !looksLikeTrainingEvent(event.summary || ''))
-    .map((event) => ({
-      start: DateTime.fromISO(event.start, { zone: 'utc' }).setZone(zone),
-      end: DateTime.fromISO(event.end, { zone: 'utc' }).setZone(zone),
+  if (availableRanges.length === 0) return [];
+
+  const busyWindows = [
+    ...events
+      .filter((event) => !looksLikeTrainingEvent(event.summary || ''))
+      .map((event) => ({ start: event.start, end: event.end })),
+    ...additionalBusyIntervals,
+  ]
+    .map((interval) => ({
+      start: DateTime.fromISO(interval.start, { zone: 'utc', setZone: true }).setZone(zone),
+      end: DateTime.fromISO(interval.end, { zone: 'utc', setZone: true }).setZone(zone),
     }))
-    .filter((window) => window.end > dayStart && window.start < dayEnd)
+    .filter((window) => window.start.isValid && window.end.isValid && window.start < window.end)
     .sort((lhs, rhs) => lhs.start.toMillis() - rhs.start.toMillis());
 
   const candidates: Array<{ start: DateTime; end: DateTime }> = [];
-  let cursor = dayStart;
+  for (const range of availableRanges) {
+    let cursor = range.start;
+    if (day.hasSame(now, 'day') && cursor < now.plus({ minutes: 15 })) {
+      cursor = roundUpToThirtyMinutes(now.plus({ minutes: 15 }));
+    }
 
-  if (day.hasSame(now, 'day')) {
-    cursor = cursor < now.plus({ minutes: 15 }) ? roundUpToThirtyMinutes(now.plus({ minutes: 15 })) : cursor;
+    for (const busy of busyWindows.filter((window) => window.end > range.start && window.start < range.end)) {
+      const gapEnd = busy.start < range.end ? busy.start : range.end;
+      candidates.push(...windowsWithinGap(cursor, gapEnd, durationMinutes));
+      if (busy.end > cursor) cursor = roundUpToThirtyMinutes(busy.end);
+      if (cursor >= range.end) break;
+    }
+
+    if (cursor < range.end) {
+      candidates.push(...windowsWithinGap(cursor, range.end, durationMinutes));
+    }
   }
 
-  for (const busy of busyWindows) {
-    const gapEnd = busy.start < dayEnd ? busy.start : dayEnd;
-    candidates.push(...windowsWithinGap(cursor, gapEnd, durationMinutes));
-    if (busy.end > cursor) cursor = roundUpToThirtyMinutes(busy.end);
-    if (cursor >= dayEnd) break;
-  }
+  return candidates.sort((left, right) => left.start.toMillis() - right.start.toMillis());
+}
 
-  if (cursor < dayEnd) {
-    candidates.push(...windowsWithinGap(cursor, dayEnd, durationMinutes));
-  }
-
-  return candidates;
+function clockOnDay(day: DateTime, clock: string): DateTime | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(clock);
+  if (!match) return null;
+  const result = day.set({
+    hour: Number(match[1]),
+    minute: Number(match[2]),
+    second: 0,
+    millisecond: 0,
+  });
+  return result.isValid && result.toFormat('HH:mm') === clock ? result : null;
 }
 
 function windowsWithinGap(
