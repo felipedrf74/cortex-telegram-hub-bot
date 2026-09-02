@@ -7098,6 +7098,76 @@ describe('release security and operations', () => {
       .toEqual({ result: 'skipped', detail: 'host_not_configured' });
   });
 
+  it('accepts a failed Compose teardown only when its exact governed project is absent', () => {
+    const commands: string[][] = [];
+    const registry = createReleaseRegistry({
+      policy,
+      exec: (_bin, args) => {
+        commands.push(args);
+        if (args[0] === 'compose') {
+          return { status: 1, stdout: '', stderr: 'network does not exist' };
+        }
+        if ((args[0] === 'container' || args[0] === 'network') && args[1] === 'ls') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected Docker command: ${args.join(' ')}`);
+      },
+    });
+
+    const result = registry.composeDown({
+      composeFile: join(workspace, 'compose.yml'),
+      environment: 'staging',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+
+    expect(result).toMatchObject({ status: 0, alreadyAbsent: true });
+    expect(commands).toEqual([
+      expect.arrayContaining(['compose', '--file', join(workspace, 'compose.yml'), 'down']),
+      [
+        'container', 'ls', '--all', '--filter',
+        `label=com.docker.compose.project=${policy.environments.staging.composeProject}`,
+        '--format', '{{.ID}}',
+      ],
+      [
+        'network', 'ls', '--filter',
+        `label=com.docker.compose.project=${policy.environments.staging.composeProject}`,
+        '--format', '{{.ID}}',
+      ],
+    ]);
+  });
+
+  it('keeps a failed Compose teardown blocked when any exact project resource remains', () => {
+    const commands: string[][] = [];
+    const registry = createReleaseRegistry({
+      policy,
+      exec: (_bin, args) => {
+        commands.push(args);
+        if (args[0] === 'compose') {
+          return { status: 1, stdout: '', stderr: 'network does not exist' };
+        }
+        if (args[0] === 'container' && args[1] === 'ls') {
+          return { status: 0, stdout: 'retained-container\n', stderr: '' };
+        }
+        throw new Error(`unexpected Docker command: ${args.join(' ')}`);
+      },
+    });
+
+    const result = registry.composeDown({
+      composeFile: join(workspace, 'compose.yml'),
+      environment: 'staging',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result).not.toHaveProperty('alreadyAbsent');
+    expect(commands).toHaveLength(2);
+    expect(commands.some((args) => args[0] === 'network')).toBe(false);
+  });
+
   it('prunes to exactly two image pairs, removing a third', () => {
     // Drives the real prune implementation, not the harness double: the harness
     // can only prove which digests were requested, not that a third is removed.
