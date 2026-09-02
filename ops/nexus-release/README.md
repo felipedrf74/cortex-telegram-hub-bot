@@ -6255,6 +6255,15 @@ Compose declares both files `required: true`; a missing or unreadable file is a
 hard failure and `format: raw` prevents value interpolation. The descriptor-safe host gate runs before every Compose
 config/ps/up/down/migrator render, remembers both accepted digests for the life
 of the release process, and refuses an edit between staging and production.
+If `APNS_ENABLED=true`, keep `APNS_AUTH_KEY_P8` as either canonical escaped PEM
+or a normalized absolute host path to the private `.p8`. A referenced file must
+be a mode-0600, single-link regular UTF-8 file owned by the effective root
+release identity and contain an EC P-256 key. The host gate descriptor-reads and
+digest-pins it, then passes only canonical single-line escaped PEM to the backend
+container while explicitly blanking it in the migrator. This prevents a valid
+host path from becoming an unreadable container path while avoiding a broad
+secret directory mount. Never print the path, PEM, or its digest during
+verification.
 Rotate a pair only as one owner-controlled transaction while no release attempt
 is running. `INTERNAL_API_SECRET` must be present with the same raw value in
 both files of a pair.
@@ -6266,6 +6275,9 @@ selectors, `NODE_ENV`, and `STAGING` are forbidden in the backend file.
 `NEXUS_RELEASE_ID`, `NEXUS_RELEASE_SOURCE_SHA`, and
 `NEXUS_RELEASE_BACKEND_DIGEST` are also poller-supplied and are forbidden in
 every mutable environment file.
+`NEXUS_APNS_AUTH_KEY_P8_ESCAPED` is likewise poller-supplied and forbidden; the
+mutable file remains the source declaration through `APNS_AUTH_KEY_P8`, while
+the descriptor-safe gate owns the bytes delivered to the container.
 `NODE_ENV=production` remains deliberate for both deployments; the registry
 supplies immutable `NEXUS_APP_STAGING=true` only for staging and `false` only for
 production. Every render requires the exact signed candidate identity and plan

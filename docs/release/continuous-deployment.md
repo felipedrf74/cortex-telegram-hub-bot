@@ -280,6 +280,16 @@ pair of digests is pinned for that release process, so an operator edit cannot
 change secrets between staging and production. Compose retains
 `NODE_ENV=production` for both while the registry supplies the immutable
 application isolation identity `STAGING=true` or `false` outside either file.
+When `APNS_ENABLED=true`, `APNS_AUTH_KEY_P8` may name the host's private `.p8`
+file, but that host pathname is not assumed to exist inside the unprivileged
+container. The same descriptor-safe gate requires a normalized absolute path,
+a mode-0600 single-link regular file owned by the effective root release
+identity, bounded canonical UTF-8, and an EC P-256 private key. It pins the
+canonical key digest for the release attempt and gives
+Compose only a single-line escaped PEM through the sanitized root process
+environment; the backend service overrides `APNS_AUTH_KEY_P8` with those bytes.
+The migrator explicitly receives an empty APNs key. The path, PEM, and digest
+are never written to release receipts or logs.
 All three service mappings require Compose >=2.30.0 and use `format: raw`, so
 `$`, backslashes, quotes, and comment-like bytes cannot interpolate from the
 root process. Admission accepts only unquoted canonical raw values and rejects

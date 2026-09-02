@@ -15,6 +15,7 @@
 #   NEXUS_BACKEND_ENV_FILE      root-owned backend/migrator env file (0600)
 #   NEXUS_CONTENT_ENGINE_ENV_FILE root-owned minimal content-engine env file (0600)
 #   NEXUS_APP_STAGING           exact true/false application isolation identity
+#   NEXUS_APNS_AUTH_KEY_P8_ESCAPED descriptor-verified host key material, escaped
 #   NEXUS_DATA_DIR              host-mounted database directory, per environment
 #   NEXUS_BACKEND_PORT          8200 production / 8201 staging
 #   NEXUS_CONTENT_ENGINE_PORT   8100 production / 8101 staging
@@ -136,6 +137,10 @@ services:
       PORTAL_PORT: "8200"
       PORTAL_BIND: "0.0.0.0"
       PORTAL_PUBLIC_BIND_ACK: production-public-host-reviewed
+      # The backend env may point at a host-only .p8 file. The root release
+      # gate validates and reads it, then Compose supplies a single-line escaped
+      # PEM so the unprivileged container never depends on an unmounted path.
+      APNS_AUTH_KEY_P8: ${NEXUS_APNS_AUTH_KEY_P8_ESCAPED:-}
       # Service DNS on the Compose network, not a host port.
       CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"
       CONTENT_ENGINE_PORT: "8100"
@@ -182,6 +187,9 @@ services:
       # governed release data maintenance.
       MIGRATIONS_MODE: boot
       DATABASE_PATH: /app/data/bot.db
+      # The shared backend env file may declare APNs credentials, but the
+      # one-shot schema migrator has no notification responsibility.
+      APNS_AUTH_KEY_P8: ""
       # The signed migration plan is an allowlist: the migrator refuses any
       # pending file the plan does not authorize, or whose bytes differ from the
       # digest CI classified.

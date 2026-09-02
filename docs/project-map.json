@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "585d55f6f9f9b61fabd89490448aa31e2a072e9005fe91477b1e7df8a198ed08",
-    "baseCommit": "f959e5b4d789e8e2bfaa24fb5fc67fa516816dfd",
-    "baseCommitTimestamp": "2026-09-02T00:17:34+01:00",
+    "sourceDigest": "aeb2492e52d7e8ada10b2ae6bffda53b77d24769f60d810c480c6a25421bac00",
+    "baseCommit": "6c4004935705aa4a9188d037cf866d78228a8d69",
+    "baseCommitTimestamp": "2026-09-02T08:29:08+01:00",
     "trackedFiles": 3516,
     "sourceFiles": 1236
   },
@@ -6045,7 +6045,7 @@
     },
     {
       "path": "ops/nexus-release/README.md",
-      "bytes": 478378,
+      "bytes": 479242,
       "generated": false
     },
     {
@@ -6074,13 +6074,13 @@
       "generated": false
     },
     {
-      "path": "package-lock.json",
-      "bytes": 301494,
+      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
+      "bytes": 304940,
       "generated": false
     },
     {
-      "path": "__tests__/scripts/release-continuous-deployment.test.ts",
-      "bytes": 296703,
+      "path": "package-lock.json",
+      "bytes": 301494,
       "generated": false
     },
     {

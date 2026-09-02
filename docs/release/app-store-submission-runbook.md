@@ -246,6 +246,10 @@ and the digest-pinned production container pair. Verify, do not assume:
   `Nexus Hub/Nexus Hub.Release.entitlements`; the release variant is what an App
   Store build must resolve to, because the debug variant targets the APNs
   sandbox and must match the backend's `APNS_ENVIRONMENT`.
+- A production APNs smoke must show an accepted `sent` attempt from the exact
+  receipt-backed backend release. `APNS_ENABLED=true` alone is insufficient:
+  the continuous-delivery environment gate must have descriptor-validated the
+  host `.p8` and bridged canonical escaped PEM into the backend container.
 
 ## Known-risk items to answer if asked
 
