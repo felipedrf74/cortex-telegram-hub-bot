@@ -2529,10 +2529,11 @@ as_builder /usr/bin/git -C "$STAGE_DIR" init --quiet
 as_builder /usr/bin/git -C "$STAGE_DIR" config core.hooksPath /dev/null
 as_builder /usr/bin/git -C "$STAGE_DIR" remote add origin "$SOURCE_REPOSITORY"
 # The transient builder has no interactive credential helper. Pin Git protocol
-# v0: the canonical anonymous GitHub remote is readable with v0 while a v2
-# negotiation can incorrectly request credentials in this sandbox. The exact
-# protected SHA is still verified immediately below before checkout.
-as_builder /usr/bin/git -C "$STAGE_DIR" -c protocol.version=0 fetch --quiet --no-tags --depth=1 \
+# v0 and HTTP/1.1: the canonical anonymous GitHub remote is readable with this
+# transport pair while v2 or HTTP/2 negotiation can incorrectly request
+# credentials in this sandbox. The exact protected SHA is still verified
+# immediately below before checkout.
+as_builder /usr/bin/git -C "$STAGE_DIR" -c protocol.version=0 -c http.version=HTTP/1.1 fetch --quiet --no-tags --depth=1 \
   origin "$SOURCE_REF"
 FETCHED_SHA="$(as_builder /usr/bin/git -C "$STAGE_DIR" rev-parse --verify 'FETCH_HEAD^{commit}')"
 test "$FETCHED_SHA" = "$SOURCE_SHA" \
