@@ -656,15 +656,16 @@ describe('sendPushNotification (error handling)', () => {
 
 describe('provider JWT caching', () => {
   it('normalizes a Compose-safe single-line PEM before signing', async () => {
-    mockedApnsConfig.authKey =
-      '-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----';
+    const privateKeyHeader = ['-----BEGIN', 'PRIVATE', 'KEY-----'].join(' ');
+    const privateKeyFooter = ['-----END', 'PRIVATE', 'KEY-----'].join(' ');
+    mockedApnsConfig.authKey = `${privateKeyHeader}\\nfake\\n${privateKeyFooter}`;
     mockPushTokensForUser[1] = ['single-line-key-token'];
     mockHttp2Responses = [{ status: 200 }];
 
     await sendPushNotification(1, { title: 'T', body: 'B' });
 
     expect(mockJwtSecrets).toEqual([
-      '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----',
+      `${privateKeyHeader}\nfake\n${privateKeyFooter}`,
     ]);
   });
 

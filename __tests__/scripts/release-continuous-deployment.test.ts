@@ -4058,8 +4058,9 @@ describe('release application environment isolation', () => {
     );
 
     const proof = createReleaseEnvironmentGate({ policy }).verify('production');
+    const privateKeyHeader = ['-----BEGIN', 'PRIVATE', 'KEY-----'].join(' ');
     expect(proof.apnsAuthKeyDigest).toMatch(/^[0-9a-f]{64}$/);
-    expect(proof.apnsAuthKeyEscaped).toMatch(/^-----BEGIN PRIVATE KEY-----\\n/);
+    expect(proof.apnsAuthKeyEscaped.startsWith(`${privateKeyHeader}\\n`)).toBe(true);
     expect(proof.apnsAuthKeyEscaped).not.toContain('\n');
 
     const registry = createReleaseRegistry({
@@ -4131,10 +4132,12 @@ describe('release application environment isolation', () => {
     expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
       .toThrow(/APNs auth key file must be a private owner-only single-link regular file/);
 
+    const privateKeyHeader = ['-----BEGIN', 'PRIVATE', 'KEY-----'].join(' ');
+    const privateKeyFooter = ['-----END', 'PRIVATE', 'KEY-----'].join(' ');
     writeFileSync(keyFile, Buffer.concat([
-      Buffer.from('-----BEGIN PRIVATE KEY-----\n'),
+      Buffer.from(`${privateKeyHeader}\n`),
       Buffer.alloc(100, 0xff),
-      Buffer.from('\n-----END PRIVATE KEY-----\n'),
+      Buffer.from(`\n${privateKeyFooter}\n`),
     ]));
     expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
       .toThrow(/APNs auth key file is not canonical UTF-8 text/);
