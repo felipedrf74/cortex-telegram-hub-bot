@@ -32,6 +32,21 @@ export interface TrainingAgendaReconciliationResult {
   failed: number;
 }
 
+/**
+ * Training persists tenant ownership with positive integer identifiers, while
+ * Secretary also supports opaque tenant keys. Scheduler callers must skip
+ * Training reconciliation for those opaque scopes instead of intentionally
+ * tripping Training's fail-closed tenant guard every five minutes.
+ */
+export function resolveTrainingTenantIdFromAgendaScope(tenantId: string | number): number | null {
+  if (typeof tenantId === 'number') {
+    return Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : null;
+  }
+  if (!/^[1-9]\d*$/.test(tenantId)) return null;
+  const parsed = Number(tenantId);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 const LEGACY_MARKER_LOOKBACK_DAYS = 14;
 const LEGACY_MARKER_LOOKAHEAD_DAYS = 90;
 

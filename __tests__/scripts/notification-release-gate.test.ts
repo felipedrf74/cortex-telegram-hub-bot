@@ -44,7 +44,10 @@ import {
   getDecisionReleaseGateStatus,
   runDecisionExpiryJob,
 } from '../../src/services/decision-center';
-import { ensureNotificationTables } from '../../src/services/notification-orchestrator';
+import {
+  ensureNotificationTables,
+  recordNotificationReliabilityEvent,
+} from '../../src/services/notification-orchestrator';
 import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 describe('notification release gate fixture', () => {
@@ -80,6 +83,28 @@ describe('notification release gate fixture', () => {
       unreconciledDeliveryAttempts: 0,
       deliveryOutcomeUnknownAttempts: 0,
       pass: true,
+    });
+  });
+
+  it('evaluates badge drift only against an explicit unified-inbox baseline', () => {
+    recordNotificationReliabilityEvent({
+      userId: 91007,
+      tenantId: 91007,
+      eventType: 'badge_reconciled',
+      badgeCount: 176,
+      source: 'ios_dashboard_snapshot',
+    });
+
+    expect(getDecisionReleaseGateStatus(91007, 91007)).toMatchObject({
+      badgeDrift: null,
+      pass: true,
+    });
+    expect(getDecisionReleaseGateStatus(91007, 91007, {
+      expectedBadgeCount: 175,
+      canonicalUnreadCount: 175,
+    })).toMatchObject({
+      badgeDrift: 1,
+      pass: false,
     });
   });
 

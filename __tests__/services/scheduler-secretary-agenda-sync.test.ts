@@ -48,6 +48,9 @@ describe('M2: secretary_agenda_sync cron registration', () => {
     expect(body).toContain('listPendingSecretaryAgendaProviderScopes()');
     expect(body).not.toContain('getActiveUserIds()');
     expect(body).not.toContain('tenantId: userId');
+    expect(body).toContain('resolveTrainingTenantIdFromAgendaScope(tenantId)');
+    expect(body).toContain('reconcileOrphanedTrainingAgendaEvents(userId, trainingTenantId)');
+    expect(body).not.toContain('reconcileOrphanedTrainingAgendaEvents(userId, tenantId)');
     expect(body).toContain('{ ownerUserId: userId, tenantId, includeInactive: false }');
     expect(body).toContain('createUnifiedCalendarSecretaryProviderAdapter(source)');
     // Concurrency bound prevents simultaneous-user storms on Outlook quotas

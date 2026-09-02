@@ -2557,7 +2557,10 @@ export function startScheduler(): void {
         listPendingSecretaryAgendaProviderScopes,
       } = require('./secretary-agenda-provider-sync');
       const { createUnifiedCalendarSecretaryProviderAdapter } = require('./secretary-unified-calendar-provider-adapter');
-      const { reconcileOrphanedTrainingAgendaEvents } = require('./training-agenda-reconciliation');
+      const {
+        reconcileOrphanedTrainingAgendaEvents,
+        resolveTrainingTenantIdFromAgendaScope,
+      } = require('./training-agenda-reconciliation');
       // Sweep past items out of the active set first. Without this the
       // active set grows without bound and every past item keeps costing
       // sync-eligibility checks each tick (the sweep existed since the
@@ -2596,17 +2599,24 @@ export function startScheduler(): void {
             let userSynced = 0;
             let userReadbackFailed = 0;
             let userReconciledTrainingAgenda = 0;
-            const reconciliationScopeKey = `${userId}:${tenantId}`;
-            if (!reconciledScopes.has(reconciliationScopeKey)) {
+            const trainingTenantId = resolveTrainingTenantIdFromAgendaScope(tenantId);
+            const reconciliationScopeKey = trainingTenantId == null
+              ? null
+              : `${userId}:${trainingTenantId}`;
+            if (
+              trainingTenantId != null
+              && reconciliationScopeKey != null
+              && !reconciledScopes.has(reconciliationScopeKey)
+            ) {
               reconciledScopes.add(reconciliationScopeKey);
               try {
-                const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, tenantId);
+                const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId, trainingTenantId);
                 userReconciledTrainingAgenda = reconciliation.deleted;
                 if (reconciliation.attempted > 0) {
                   logger.info(
                     {
                       userId,
-                      tenantId,
+                      tenantId: trainingTenantId,
                       attempted: reconciliation.attempted,
                       deleted: reconciliation.deleted,
                       failed: reconciliation.failed,
@@ -2615,10 +2625,13 @@ export function startScheduler(): void {
                   );
                 }
               } catch (err) {
-                logger.warn({ err, userId, tenantId }, '[scheduler] secretary_agenda_sync training reconciliation failure');
+                logger.warn(
+                  { err, userId, tenantId: trainingTenantId },
+                  '[scheduler] secretary_agenda_sync training reconciliation failure',
+                );
                 failedScopes.push({
                   userId,
-                  tenantId,
+                  tenantId: String(trainingTenantId),
                   source: 'training_reconciliation',
                   failed: 1,
                   deadLetter: 0,

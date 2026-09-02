@@ -308,7 +308,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/decision-center/command-service.ts:2774-2774",
+            "pattern": "src/services/decision-center/command-service.ts:2779-2779",
             "anchor": "'DECISION_VERSION_CONFLICT',",
             "behavior": "The product-learning approval action rejects a stale record version before mutation while accepting the exact current record and context versions.",
             "replacementTest": "__tests__/services/product-learning.test.ts",
