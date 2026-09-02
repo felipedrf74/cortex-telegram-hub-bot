@@ -16,7 +16,7 @@ readonly PEER_BACKEND_APP='nexus-hub-staging'
 readonly PEER_CONTENT_APP='content-engine-staging'
 readonly PEER_BACKEND_PORT='8201'
 readonly PEER_CONTENT_PORT='8101'
-readonly EXPECTED_ROTATOR_SHA256='2efff86ae28c043a7622ed0fa0df8ab738a96115c0337429c4347e21e9412322'
+readonly EXPECTED_ROTATOR_SHA256='27ef7e16b77454222fc7f831e72e77728e8e7e11547990012530e9ca49fbc170'
 readonly PRODUCTION_EDGE_HEALTH_URL='https://api.nexushub.me/health'
 readonly POSTCHECK_CONTRACT_VERSION='2'
 
@@ -1132,6 +1132,8 @@ const counts = (value) => value
   && value.needsRotation + value.alreadyNew + value.undecryptable === value.nonempty;
 const expectedTables = [
   'user_oauth_tokens',
+  'webhook_subscriptions',
+  'webhook_events',
   'garmin_sessions',
   'garmin_user_tokens',
   'apple_health_data',

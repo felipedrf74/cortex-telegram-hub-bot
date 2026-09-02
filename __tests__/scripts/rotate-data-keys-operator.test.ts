@@ -15,9 +15,11 @@ const STAGING = join(ROOT, 'scripts', 'rotate-staging-data-keys.sh');
 const POSTCHECK = join(ROOT, 'scripts', 'production-data-key-rotation-postcheck.mjs');
 const ROTATOR = join(ROOT, 'dist', 'tools', 'rotate-data-encryption-keys.js');
 const EXPECTED_SHA256 =
-  '2efff86ae28c043a7622ed0fa0df8ab738a96115c0337429c4347e21e9412322';
+  '27ef7e16b77454222fc7f831e72e77728e8e7e11547990012530e9ca49fbc170';
 const EXPECTED_TABLES = [
   'user_oauth_tokens',
+  'webhook_subscriptions',
+  'webhook_events',
   'garmin_sessions',
   'garmin_user_tokens',
   'apple_health_data',
@@ -133,7 +135,7 @@ describe('data-key rotation operators', () => {
     }
   });
 
-  it('pins the reviewed rotator artifact and the complete six-table contract', () => {
+  it('pins the reviewed rotator artifact and the complete eight-table contract', () => {
     for (const script of [PRODUCTION, STAGING]) {
       const source = readFileSync(script, 'utf8');
       expect(source).toContain(`readonly EXPECTED_ROTATOR_SHA256='${EXPECTED_SHA256}'`);

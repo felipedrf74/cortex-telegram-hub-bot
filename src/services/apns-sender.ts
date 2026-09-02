@@ -147,7 +147,10 @@ function getProviderJwt(): string {
   // work for docker-compose/.env deployments.
   let pem: string;
   if (authKey.startsWith('-----BEGIN')) {
-    pem = authKey;
+    // A raw PEM and its Compose-safe single-line form share the same prefix.
+    // Normalize escaped line breaks here before signing; otherwise the release
+    // bridge's canonical value reaches jsonwebtoken as invalid key material.
+    pem = authKey.replace(/\\n/g, '\n');
   } else if (fs.existsSync(authKey)) {
     pem = fs.readFileSync(authKey, 'utf8');
   } else {

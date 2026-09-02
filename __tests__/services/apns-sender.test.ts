@@ -98,10 +98,12 @@ vi.mock('../../src/services/database', () => ({
 
 // ── Mock jsonwebtoken so we don't need a real ES256 key ─────────────
 let jwtSignCallCount = 0;
+const mockJwtSecrets: string[] = [];
 vi.mock('jsonwebtoken', () => ({
   default: {
-    sign: vi.fn((_payload: unknown, _secret: string, _opts: unknown) => {
+    sign: vi.fn((_payload: unknown, secret: string, _opts: unknown) => {
       jwtSignCallCount += 1;
+      mockJwtSecrets.push(secret);
       return `fake.jwt.token.${jwtSignCallCount}`;
     }),
   },
@@ -214,6 +216,7 @@ beforeEach(() => {
   mockHttp2Hosts.length = 0;
   mockHttp2Connected = false;
   jwtSignCallCount = 0;
+  mockJwtSecrets.length = 0;
   for (const k of Object.keys(mockPushTokensForUser)) {
     delete mockPushTokensForUser[Number(k)];
   }
@@ -652,6 +655,19 @@ describe('sendPushNotification (error handling)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('provider JWT caching', () => {
+  it('normalizes a Compose-safe single-line PEM before signing', async () => {
+    mockedApnsConfig.authKey =
+      '-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----';
+    mockPushTokensForUser[1] = ['single-line-key-token'];
+    mockHttp2Responses = [{ status: 200 }];
+
+    await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(mockJwtSecrets).toEqual([
+      '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----',
+    ]);
+  });
+
   it('reuses the same JWT for multiple requests within the TTL window', async () => {
     mockPushTokensForUser[1] = ['a', 'b', 'c'];
     mockHttp2Responses = [{ status: 200 }, { status: 200 }, { status: 200 }];

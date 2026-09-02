@@ -4,10 +4,11 @@ import {
   chmodSync, closeSync, existsSync, linkSync, mkdtempSync, mkdirSync, openSync, readFileSync,
   realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
+import fs from 'node:fs';
 import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { canonicalJson, sha256 } from '../../scripts/lib/release-canonical.mjs';
 import { RELEASE_CONTROL_PLANE_SCHEMA } from '../../scripts/lib/release-control-plane.mjs';
@@ -4021,6 +4022,7 @@ describe('release application environment isolation', () => {
     expect(BACKEND_FORBIDDEN_ENVIRONMENT_KEYS).toEqual(expect.arrayContaining([
       'DATABASE_PATH',
       'NEXUS_APP_STAGING',
+      'NEXUS_APNS_AUTH_KEY_P8_ESCAPED',
       'NEXUS_BACKEND_IMAGE',
       'NEXUS_CONTENT_ENGINE_ENV_FILE',
       'NEXUS_RELEASE_ID',
@@ -4034,6 +4036,190 @@ describe('release application environment isolation', () => {
     ]);
     expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
       .not.toThrow();
+  });
+
+  it('descriptor-validates a host APNs key and exports only canonical escaped PEM', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const keyFile = join(workspace, 'env', 'production-apns.p8');
+    writeFileSync(
+      keyFile,
+      privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      policy.environments.production.backendEnvFile,
+      [
+        'INTERNAL_API_SECRET=production-shared-secret',
+        'TELEGRAM_BOT_TOKEN=backend-only',
+        'APNS_ENABLED=true',
+        `APNS_AUTH_KEY_P8=${keyFile}`,
+        '',
+      ].join('\n'),
+    );
+
+    const proof = createReleaseEnvironmentGate({ policy }).verify('production');
+    expect(proof.apnsAuthKeyDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(proof.apnsAuthKeyEscaped).toMatch(/^-----BEGIN PRIVATE KEY-----\\n/);
+    expect(proof.apnsAuthKeyEscaped).not.toContain('\n');
+
+    const registry = createReleaseRegistry({
+      policy,
+      exec: () => ({ status: 0, stdout: '', stderr: '' }),
+    });
+    const composeEnvironment = registry.composeEnv({
+      environment: 'production',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+    expect(composeEnvironment.NEXUS_APNS_AUTH_KEY_P8_ESCAPED)
+      .toBe(proof.apnsAuthKeyEscaped);
+  });
+
+  it('rejects unsafe or changing APNs key files before Compose receives them', () => {
+    const writeKey = (file: string) => {
+      const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+      writeFileSync(
+        file,
+        privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+        { mode: 0o600 },
+      );
+    };
+    const keyFile = join(workspace, 'env', 'production-apns.p8');
+    writeKey(keyFile);
+    writeFileSync(
+      policy.environments.production.backendEnvFile,
+      `INTERNAL_API_SECRET=production-shared-secret\nAPNS_ENABLED=true\nAPNS_AUTH_KEY_P8=${keyFile}\n`,
+    );
+
+    chmodSync(keyFile, 0o640);
+    expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+      .toThrow(/APNs auth key file must be a private owner-only single-link regular file/);
+    chmodSync(keyFile, 0o600);
+
+    const gate = createReleaseEnvironmentGate({ policy });
+    gate.verify('production');
+    writeKey(keyFile);
+    expect(() => gate.verify('production'))
+      .toThrow(/application environment files changed during the release attempt/);
+  });
+
+  it('rejects symlinked, hardlinked, oversized, and non-UTF-8 APNs key files', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const validPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+    const keyFile = join(workspace, 'env', 'production-apns.p8');
+    const configuredKey = (file: string) => writeFileSync(
+      policy.environments.production.backendEnvFile,
+      `INTERNAL_API_SECRET=production-shared-secret\nAPNS_ENABLED=true\nAPNS_AUTH_KEY_P8=${file}\n`,
+    );
+
+    writeFileSync(keyFile, validPem, { mode: 0o600 });
+    const symlink = join(workspace, 'env', 'production-apns-link.p8');
+    symlinkSync(keyFile, symlink);
+    configuredKey(symlink);
+    expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+      .toThrow(/APNs auth key file is absent or unsafe/);
+
+    configuredKey(keyFile);
+    const hardlink = join(workspace, 'env', 'production-apns-hardlink.p8');
+    linkSync(keyFile, hardlink);
+    expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+      .toThrow(/APNs auth key file must be a private owner-only single-link regular file/);
+    rmSync(hardlink);
+
+    writeFileSync(keyFile, Buffer.alloc((16 * 1024) + 1, 0x41));
+    expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+      .toThrow(/APNs auth key file must be a private owner-only single-link regular file/);
+
+    writeFileSync(keyFile, Buffer.concat([
+      Buffer.from('-----BEGIN PRIVATE KEY-----\n'),
+      Buffer.alloc(100, 0xff),
+      Buffer.from('\n-----END PRIVATE KEY-----\n'),
+    ]));
+    expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+      .toThrow(/APNs auth key file is not canonical UTF-8 text/);
+  });
+
+  it('requires the referenced APNs key to be owned by the release identity', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const keyFile = join(workspace, 'env', 'production-apns.p8');
+    writeFileSync(
+      keyFile,
+      privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      policy.environments.production.backendEnvFile,
+      `INTERNAL_API_SECRET=production-shared-secret\nAPNS_ENABLED=true\nAPNS_AUTH_KEY_P8=${keyFile}\n`,
+    );
+    const keyIdentity = statSync(keyFile);
+    const realFstatSync = fs.fstatSync;
+    const fstatSpy = vi.spyOn(fs, 'fstatSync').mockImplementation(((descriptor: number) => {
+      const metadata = realFstatSync(descriptor);
+      if (metadata.ino !== keyIdentity.ino) return metadata;
+      return new Proxy(metadata, {
+        get(target, property, receiver) {
+          if (property === 'uid') return target.uid + 1;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    }) as typeof fs.fstatSync);
+    try {
+      expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+        .toThrow(/APNs auth key file must be a private owner-only single-link regular file/);
+    } finally {
+      fstatSpy.mockRestore();
+    }
+  });
+
+  it('sanitizes an APNs key path-resolution race', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const keyFile = join(workspace, 'env', 'production-apns.p8');
+    writeFileSync(
+      keyFile,
+      privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      policy.environments.production.backendEnvFile,
+      `INTERNAL_API_SECRET=production-shared-secret\nAPNS_ENABLED=true\nAPNS_AUTH_KEY_P8=${keyFile}\n`,
+    );
+    const realRealpathSync = fs.realpathSync;
+    const realpathSpy = vi.spyOn(fs, 'realpathSync').mockImplementation(((file: string) => {
+      if (file === keyFile) throw new Error(`sensitive path ${file}`);
+      return realRealpathSync(file);
+    }) as typeof fs.realpathSync);
+    try {
+      expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+        .toThrow(/^production APNs auth key file changed while it was read$/);
+    } finally {
+      realpathSpy.mockRestore();
+    }
+  });
+
+  it('rejects invalid APNs enablement and non-P-256 key material', () => {
+    for (const enabled of ['1', 'TRUE', ' true', 'true ']) {
+      writeFileSync(
+        policy.environments.production.backendEnvFile,
+        `INTERNAL_API_SECRET=production-shared-secret\nAPNS_ENABLED=${enabled}\n`,
+      );
+      expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+        .toThrow(/APNS_ENABLED must be canonical true or false/);
+    }
+
+    const keyFile = join(workspace, 'env', 'production-apns.p8');
+    const { privateKey } = generateKeyPairSync('ed25519');
+    writeFileSync(
+      keyFile,
+      privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      policy.environments.production.backendEnvFile,
+      `INTERNAL_API_SECRET=production-shared-secret\nAPNS_ENABLED=true\nAPNS_AUTH_KEY_P8=${keyFile}\n`,
+    );
+    expect(() => createReleaseEnvironmentGate({ policy }).verify('production'))
+      .toThrow(/must be an EC P-256 private key/);
   });
 
   it('rejects a non-engine credential in the content-engine file', () => {
@@ -4162,6 +4348,7 @@ describe('compose status parsing is strict', () => {
       'NODE_OPTIONS',
       'GIT_CONFIG_GLOBAL',
       'NEXUS_RELEASE_TELEGRAM_BOT_TOKEN',
+      'NEXUS_APNS_AUTH_KEY_P8_ESCAPED',
     ];
     const prior = Object.fromEntries(ambientNames.map((name) => [name, process.env[name]]));
     for (const name of ambientNames) process.env[name] = `hostile-${name}`;
@@ -4174,7 +4361,13 @@ describe('compose status parsing is strict', () => {
         releaseIdentity: identity,
         planDir: runtimePlan.planDir,
       });
-      for (const name of ambientNames) expect(env).not.toHaveProperty(name);
+      for (const name of ambientNames) {
+        if (name === 'NEXUS_APNS_AUTH_KEY_P8_ESCAPED') {
+          expect(env[name]).toBe('');
+        } else {
+          expect(env).not.toHaveProperty(name);
+        }
+      }
       expect(env.COMPOSE_DISABLE_ENV_FILE).toBe('1');
       expect(env).toMatchObject({
         PATH: process.env.PATH,
@@ -4208,6 +4401,7 @@ describe('compose status parsing is strict', () => {
       NEXUS_CONTENT_ENGINE_ENV_FILE:
         policy.environments.production.contentEngineEnvFile,
       NEXUS_APP_STAGING: 'false',
+      NEXUS_APNS_AUTH_KEY_P8_ESCAPED: '',
       NEXUS_OLLAMA_GATEWAY_SOCKET_DIR: '/run/nexus-inference/production',
       NEXUS_OLLAMA_GATEWAY_SOCKET_PATH: '/run/nexus-inference/production/ollama.sock',
     });
@@ -4220,6 +4414,7 @@ describe('compose status parsing is strict', () => {
       NEXUS_BACKEND_ENV_FILE: policy.environments.staging.backendEnvFile,
       NEXUS_CONTENT_ENGINE_ENV_FILE: policy.environments.staging.contentEngineEnvFile,
       NEXUS_APP_STAGING: 'true',
+      NEXUS_APNS_AUTH_KEY_P8_ESCAPED: '',
       NEXUS_OLLAMA_GATEWAY_SOCKET_DIR: '/run/nexus-inference/staging',
       NEXUS_OLLAMA_GATEWAY_SOCKET_PATH: '/run/nexus-inference/staging/ollama.sock',
     });

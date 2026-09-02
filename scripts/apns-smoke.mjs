@@ -104,9 +104,9 @@ function describeConfig() {
       out.authKey = `inline PEM (${env.authKey.length} chars)`;
     } else if (fs.existsSync(env.authKey)) {
       const stat = fs.statSync(env.authKey);
-      out.authKey = `path ${env.authKey} (${stat.size} bytes, mode ${(stat.mode & 0o777).toString(8)})`;
+      out.authKey = `file reference (${stat.size} bytes, mode ${(stat.mode & 0o777).toString(8)})`;
     } else {
-      out.authKey = `path ${env.authKey} (NOT FOUND)`;
+      out.authKey = 'file reference (NOT FOUND)';
     }
   }
   return out;
@@ -120,7 +120,7 @@ function isConfigured() {
 
 // ── PEM loader ────────────────────────────────────────────────────────
 function loadPem() {
-  if (env.authKey.startsWith('-----BEGIN')) return env.authKey;
+  if (env.authKey.startsWith('-----BEGIN')) return env.authKey.replace(/\\n/g, '\n');
   if (fs.existsSync(env.authKey)) return fs.readFileSync(env.authKey, 'utf8');
   const escaped = env.authKey.replace(/\\n/g, '\n');
   if (escaped.includes('-----BEGIN')) return escaped;

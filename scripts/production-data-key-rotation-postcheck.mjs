@@ -28,7 +28,7 @@ import { pathToFileURL } from 'node:url';
 
 export const POSTCHECK_CONTRACT_VERSION = 2;
 export const EXPECTED_ROTATOR_SHA256 =
-  '2efff86ae28c043a7622ed0fa0df8ab738a96115c0337429c4347e21e9412322';
+  '27ef7e16b77454222fc7f831e72e77728e8e7e11547990012530e9ca49fbc170';
 
 const EDGE_HEALTH_URL = 'https://api.nexushub.me/health';
 const PRODUCTION_LOCAL_BASE_URL = 'http://127.0.0.1:8200';

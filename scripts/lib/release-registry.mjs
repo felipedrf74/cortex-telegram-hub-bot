@@ -220,7 +220,7 @@ export function createReleaseRegistry({
     if (!environmentGate || typeof environmentGate.verify !== 'function') {
       fail('release environment gate is not configured');
     }
-    environmentGate.verify(environment);
+    const environmentProof = environmentGate.verify(environment);
     const ollamaGatewaySocketDir = `/run/nexus-inference/${environment}`;
     return {
       ...composeProcessBaseEnvironment(),
@@ -237,6 +237,10 @@ export function createReleaseRegistry({
       NEXUS_BACKEND_ENV_FILE: target.backendEnvFile,
       NEXUS_CONTENT_ENGINE_ENV_FILE: target.contentEngineEnvFile,
       NEXUS_APP_STAGING: environment === 'staging' ? 'true' : 'false',
+      // The root host gate descriptor-reads and validates a configured APNs
+      // key before converting it to the escaped single-line form accepted by
+      // the application. A host-only path must never reach the container.
+      NEXUS_APNS_AUTH_KEY_P8_ESCAPED: environmentProof.apnsAuthKeyEscaped,
       NEXUS_DATA_DIR: target.dataDir,
       NEXUS_BACKEND_PORT: String(target.backendPort),
       NEXUS_CONTENT_ENGINE_PORT: String(target.contentEnginePort),

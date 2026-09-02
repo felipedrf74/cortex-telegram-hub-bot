@@ -822,6 +822,60 @@ describe('release topology', () => {
     expect(compose).toContain('CONTENT_ENGINE_BASE_URL: "http://content-engine:8100"');
   });
 
+  it('bridges descriptor-verified APNs key material instead of a host-only path', () => {
+    const compose = readFileSync(join(root, 'docker-compose.release.yml'), 'utf8');
+    const backend = compose.slice(compose.indexOf('  backend:'), compose.indexOf('  migrator:'));
+    const migrator = compose.slice(compose.indexOf('  migrator:'));
+    expect(backend).toContain(
+      'APNS_AUTH_KEY_P8: ${NEXUS_APNS_AUTH_KEY_P8_ESCAPED:-}',
+    );
+    expect(migrator).not.toContain('NEXUS_APNS_AUTH_KEY_P8_ESCAPED');
+    expect(migrator).toContain('APNS_AUTH_KEY_P8: ""');
+    expect(compose).not.toContain(':/run/secrets/');
+  });
+
+  it('signs the Compose-safe escaped APNs key in the standalone smoke', () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const baseEnvironment = {
+      ...process.env,
+      APNS_ENABLED: 'true',
+      APNS_TEAM_ID: 'TESTTEAMID',
+      APNS_KEY_ID: 'TESTKEYID',
+      APNS_BUNDLE_ID: 'me.nexushub.test',
+      APNS_ENVIRONMENT: 'production',
+    };
+    const inlineResult = spawnSync(process.execPath, ['scripts/apns-smoke.mjs', '--check'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...baseEnvironment,
+        APNS_AUTH_KEY_P8: pem.replace(/\n/g, '\\n'),
+      },
+    });
+
+    expect(inlineResult.status, inlineResult.stderr).toBe(0);
+    expect(inlineResult.stdout).toContain('JWT signs cleanly');
+    expect(inlineResult.stdout).not.toContain('BEGIN PRIVATE KEY');
+
+    const fixture = mkdtempSync(join(tmpdir(), 'nexus-apns-smoke-'));
+    try {
+      const keyFile = join(fixture, 'private-key.p8');
+      writeFileSync(keyFile, pem, { mode: 0o600 });
+      const fileResult = spawnSync(process.execPath, ['scripts/apns-smoke.mjs', '--check'], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...baseEnvironment, APNS_AUTH_KEY_P8: keyFile },
+      });
+      expect(fileResult.status, fileResult.stderr).toBe(0);
+      expect(fileResult.stdout).toContain('JWT signs cleanly');
+      expect(fileResult.stdout).not.toContain(keyFile);
+      expect(fileResult.stdout).not.toContain('BEGIN PRIVATE KEY');
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('runs the signed Ollama gateway over isolated Unix sockets with no application secrets', () => {
     const compose = readFileSync(join(root, 'docker-compose.release.yml'), 'utf8');
     const gateway = compose.slice(
