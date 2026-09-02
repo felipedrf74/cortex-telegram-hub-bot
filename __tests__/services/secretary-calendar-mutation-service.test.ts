@@ -221,6 +221,61 @@ describe.sequential('Secretary existing-calendar mutation service', () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ['non-integer user', { userId: Number.NaN }, 'INVALID_INPUT'],
+    ['non-positive user', { userId: 0 }, 'INVALID_INPUT'],
+    ['missing tenant', { tenantId: undefined }, 'TENANT_SCOPE_MISMATCH'],
+    ['non-string key', { idempotencyKey: 42 }, 'INVALID_INPUT'],
+    ['empty key', { idempotencyKey: ' ' }, 'INVALID_INPUT'],
+    ['oversized key', { idempotencyKey: 'a'.repeat(500) }, 'INVALID_INPUT'],
+    ['malformed key', { idempotencyKey: 'contains\u0000control' }, 'INVALID_INPUT'],
+    ['unknown operation', { operation: 'move' }, 'INVALID_INPUT'],
+    ['unknown provider', { source: 'apple' }, 'INVALID_INPUT'],
+    ['non-string event id', { eventId: 42 }, 'INVALID_INPUT'],
+    ['empty event id', { eventId: ' ' }, 'INVALID_INPUT'],
+    ['oversized event id', { eventId: 'e'.repeat(2_000) }, 'INVALID_INPUT'],
+    ['non-string timezone', { timezone: 42 }, 'INVALID_INPUT'],
+    ['invalid timezone', { timezone: 'Mars/Olympus' }, 'INVALID_INPUT'],
+    ['unknown channel', { channel: 'email' }, 'INVALID_INPUT'],
+    ['non-string title', { title: 42 }, 'INVALID_INPUT'],
+    ['blank title', { title: ' ' }, 'INVALID_INPUT'],
+    ['oversized title', { title: 't'.repeat(2_000) }, 'INVALID_INPUT'],
+    ['non-string description', { description: 42 }, 'INVALID_INPUT'],
+    ['oversized description', { description: 'd'.repeat(20_000) }, 'INVALID_INPUT'],
+    ['start without end', { end: undefined }, 'INVALID_INPUT'],
+    ['end without start', { start: undefined }, 'INVALID_INPUT'],
+    ['non-string start', { start: 42 }, 'INVALID_INPUT'],
+    ['start missing time separator', { start: '2026-08-31' }, 'INVALID_INPUT'],
+    ['end missing time separator', { end: '2026-08-31' }, 'INVALID_INPUT'],
+    ['invalid start timestamp', { start: '2026-99-99T11:00:00Z' }, 'INVALID_INPUT'],
+    ['invalid end timestamp', { end: '2026-99-99T12:00:00Z' }, 'INVALID_INPUT'],
+    ['end before start', { end: '2026-08-31T10:00:00.000Z' }, 'INVALID_INPUT'],
+    ['duration beyond one day', { end: '2026-09-02T12:00:00.000Z' }, 'INVALID_INPUT'],
+    ['delete with title', { operation: 'delete', start: undefined, end: undefined }, 'INVALID_INPUT'],
+    ['delete with description', {
+      operation: 'delete', title: undefined, description: 'not accepted', start: undefined, end: undefined,
+    }, 'INVALID_INPUT'],
+    ['delete with range', { operation: 'delete', title: undefined }, 'INVALID_INPUT'],
+    ['update without changes', {
+      title: undefined, description: undefined, start: undefined, end: undefined,
+    }, 'INVALID_INPUT'],
+  ] as const)('rejects %s before provider I/O', async (_label, overrides, expectedCode) => {
+    const io = readyIo();
+    const command = { ...updateCommand(), ...overrides } as SecretaryCalendarMutationInput;
+
+    expect(() => withDatabaseForTest(db, () => inspectSecretaryCalendarMutationReplay(command)))
+      .toThrow(expect.objectContaining({ code: expectedCode }));
+    expect(io.getEventById).not.toHaveBeenCalled();
+    expect(io.updateEvent).not.toHaveBeenCalled();
+    expect(io.deleteEvent).not.toHaveBeenCalled();
+  });
+
+  it('treats a valid command without a durable receipt as a replay miss', () => {
+    expect(withDatabaseForTest(db, () => inspectSecretaryCalendarMutationReplay(
+      updateCommand({ nowIso: 'not-an-instant' }),
+    ))).toBeNull();
+  });
+
   it('rejects scope mismatch before database or provider I/O', async () => {
     const forbiddenDb = new Proxy({} as Database.Database, {
       get() { throw new Error('database was touched'); },
@@ -362,6 +417,39 @@ describe.sequential('Secretary existing-calendar mutation service', () => {
     expect(io.updateEvent).toHaveBeenCalledTimes(1);
     expect(mockInvalidateCalendarCaches).toHaveBeenCalledTimes(1);
     expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('preserves supported provider metadata and restores a safe source fallback', async () => {
+    const io = readyIo();
+    io.getEventById
+      .mockResolvedValueOnce(event())
+      .mockResolvedValueOnce(event({
+        summary: 'Planning review moved',
+        start: NEW_START,
+        end: NEW_END,
+        syncedSources: ['unsupported-provider'],
+        description: 'Agenda context',
+        location: 'Studio 2',
+        categories: ['Focus'],
+        color: '#123456',
+        isAllDay: false,
+        timeZone: 'Europe/Lisbon',
+      }));
+
+    const result = await withDatabaseForTestAsync(db, () => executeSecretaryCalendarMutation(
+      updateCommand({ idempotencyKey: 'calendar-mutation-rich-readback' }),
+      { calendarIo: io },
+    ));
+
+    expect(result.event).toMatchObject({
+      syncedSources: ['google'],
+      description: 'Agenda context',
+      location: 'Studio 2',
+      categories: ['Focus'],
+      color: '#123456',
+      isAllDay: false,
+      timeZone: 'Europe/Lisbon',
+    });
   });
 
   it('replays the same public mutation across transport and account-timezone changes', async () => {

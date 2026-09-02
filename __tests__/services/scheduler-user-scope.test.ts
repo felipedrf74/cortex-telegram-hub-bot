@@ -2843,6 +2843,57 @@ describe('scheduler tenant scoping', () => {
     }));
   });
 
+  it('validates and classifies every governed Coach dispatch output boundary', async () => {
+    mockRunGovernedAgentJob.mockImplementationOnce(async (adapter: any, scope: any) => {
+      const prepared = await adapter.prepare(scope);
+      expect(prepared).toMatchObject({
+        kind: 'ready',
+        input: { tenantId: 11, userId: 11 },
+        fingerprintMaterial: { dispatchKey: 'manual' },
+      });
+
+      const valid = { status: 'generated', recommendations: 0, errors: 0 };
+      expect(() => adapter.validateOutput(valid, prepared.input)).not.toThrow();
+      expect(adapter.classifyOutput(valid)).toBe('success');
+      expect(adapter.classifyOutput({ ...valid, status: 'skipped' })).toBe('skipped_no_work');
+
+      const invalidCases = [
+        { output: valid, input: { tenantId: 12, userId: 11 } },
+        { output: valid, input: { tenantId: 11, userId: 12 } },
+        { output: { ...valid, status: 'failed' }, input: prepared.input },
+        { output: { ...valid, recommendations: 0.5 }, input: prepared.input },
+        { output: { ...valid, recommendations: -1 }, input: prepared.input },
+        { output: { ...valid, errors: 0.5 }, input: prepared.input },
+        { output: { ...valid, errors: -1 }, input: prepared.input },
+      ];
+      for (const invalid of invalidCases) {
+        expect(() => adapter.validateOutput(invalid.output, invalid.input))
+          .toThrow('Coach briefing dispatch output failed validation');
+      }
+
+      return {
+        jobId: adapter.jobId,
+        runId: 'scheduler-validation-test',
+        scope,
+        status: 'success',
+        providerCalls: 0,
+        costUsd: 0,
+        output: valid,
+      };
+    });
+
+    await expect(runScheduledCoachBriefingForTarget({
+      tenantId: 11,
+      userId: 11,
+      telegramId: null,
+    })).resolves.toMatchObject({
+      status: 'success',
+      output: { status: 'generated', recommendations: 0, errors: 0 },
+    });
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
+  });
+
   it('sendCoachBriefings skips free-plan users before generating or pushing coach reports', async () => {
     mockGetActivePlan.mockReturnValue({
       id: 701,

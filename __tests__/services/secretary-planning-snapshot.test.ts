@@ -3,6 +3,8 @@ import {
   buildSecretaryDaySnapshot,
   markDailyPlanSourcesStale,
   markWeeklyPlanSourcesStale,
+  readyWeeklyPlanSourceHealth,
+  unavailableDailyPlanSourceHealth,
 } from '../../src/services/secretary-planning-snapshot';
 
 describe('Secretary planning snapshot source-health compatibility', () => {
@@ -49,5 +51,49 @@ describe('Secretary planning snapshot source-health compatibility', () => {
     expect(Object.values(week.sourceHealth!).every((health) => health.status === 'unavailable')).toBe(true);
     expect(day.warningCodes).toContain('PLANNING_SOURCE_UNAVAILABLE');
     expect(Object.values(day.sourceHealth!).every((health) => health.status === 'unavailable')).toBe(true);
+  });
+
+  it('adds compatibility warnings when legacy cached payloads omit warning arrays', () => {
+    const week = markWeeklyPlanSourcesStale({});
+    const day = markDailyPlanSourcesStale({});
+
+    expect(week.warningCodes).toEqual(['PLAN_CACHE_STALE', 'PLANNING_SOURCE_UNAVAILABLE']);
+    expect(week.warnings).toEqual(['This cached plan does not include current source health.']);
+    expect(day.warningCodes).toEqual(['PLAN_CACHE_STALE', 'PLANNING_SOURCE_UNAVAILABLE']);
+    expect(day.warnings).toEqual(['This cached plan does not include current source health.']);
+  });
+
+  it('marks only ready sources stale and preserves existing health failures and unique warnings', () => {
+    const weeklyHealth = readyWeeklyPlanSourceHealth();
+    weeklyHealth.mail = {
+      status: 'degraded',
+      warningCodes: ['MAIL_PARTIAL'],
+      warnings: ['Mail is partial.'],
+    };
+    const week = markWeeklyPlanSourcesStale({
+      sourceHealth: weeklyHealth,
+      warningCodes: ['PLAN_CACHE_STALE'],
+      warnings: ['This plan is cached while current source state refreshes.'],
+    });
+    const weekWithoutWarningArrays = markWeeklyPlanSourcesStale({
+      sourceHealth: readyWeeklyPlanSourceHealth(),
+    });
+
+    const dailyHealth = unavailableDailyPlanSourceHealth();
+    dailyHealth.calendar = { status: 'ready', warningCodes: [], warnings: [] };
+    const day = markDailyPlanSourcesStale({ sourceHealth: dailyHealth });
+
+    expect(week.sourceHealth.calendar.status).toBe('stale');
+    expect(week.sourceHealth.mail).toEqual(weeklyHealth.mail);
+    expect(week.warningCodes).toEqual(['PLAN_CACHE_STALE']);
+    expect(week.warnings).toEqual(['This plan is cached while current source state refreshes.']);
+    expect(weekWithoutWarningArrays.warningCodes).toEqual(['PLAN_CACHE_STALE']);
+    expect(weekWithoutWarningArrays.warnings).toEqual([
+      'This plan is cached while current source state refreshes.',
+    ]);
+    expect(day.sourceHealth.calendar.status).toBe('stale');
+    expect(day.sourceHealth.decision_center.status).toBe('unavailable');
+    expect(day.warningCodes).toEqual(['PLAN_CACHE_STALE']);
+    expect(day.warnings).toEqual(['This plan is cached while current source state refreshes.']);
   });
 });
