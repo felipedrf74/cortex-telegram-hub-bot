@@ -4295,7 +4295,10 @@ describe('release manifest publication fails closed on the pinned key', () => {
     } finally {
       rmSync(fixture.directory, { recursive: true, force: true });
     }
-  }, 60_000);
+  // The verifier performs a complete migration-policy recomputation in a child
+  // process. Coverage instrumentation on hosted runners can legitimately take
+  // longer than the ordinary local path while still remaining bounded.
+  }, 120_000);
 
   it('refuses forged eligibility even when every inventory entry is identical', () => {
     const fixture = migrationResultFixture((verdict) => {

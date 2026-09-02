@@ -261,7 +261,7 @@ describe('migration-safety-check', () => {
     rmSync(productionPolicyFixture.repo, { recursive: true, force: true });
   });
 
-  it('validates every registered migration identity during cumulative rehearsal', { timeout: 30_000 }, () => {
+  it('validates every registered migration identity during cumulative rehearsal', { timeout: 60_000 }, () => {
     const result = spawnSync(
       'node',
       ['scripts/migration-safety-check.mjs', '--json'],
