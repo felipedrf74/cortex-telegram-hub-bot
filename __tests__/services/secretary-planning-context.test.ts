@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetUserById = vi.fn();
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
 }));
 

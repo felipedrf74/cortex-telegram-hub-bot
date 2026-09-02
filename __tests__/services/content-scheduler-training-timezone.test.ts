@@ -15,7 +15,10 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
 }));
 

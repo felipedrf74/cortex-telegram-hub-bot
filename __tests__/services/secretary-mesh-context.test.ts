@@ -6,7 +6,10 @@ vi.mock('../../src/services/unified-calendar', () => ({
 }));
 
 let mockAgendaRows: any[] = [];
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  )),
   getDb: () => ({
     prepare: vi.fn(() => ({ all: vi.fn(() => mockAgendaRows) })),
   }),
@@ -16,7 +19,10 @@ vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: vi.fn(),
 }));
 
-vi.mock('../../src/services/secretary-routine-profile', () => ({
+vi.mock('../../src/services/secretary-routine-profile', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-routine-profile')>(
+    '../../src/services/secretary-routine-profile',
+  )),
   getSecretaryRoutineProfile: vi.fn(() => ({
     status: 'configured',
     version: 1,

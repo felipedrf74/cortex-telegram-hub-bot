@@ -199,6 +199,26 @@
         "reason": "The retained cursor suite replaces permissive null and page-one fallback assertions with typed malformed and stale cursor failures."
       },
       {
+        "test": "__tests__/api/chat-fastpath.test.ts",
+        "replacementTests": [
+          "__tests__/api/chat-fastpath.test.ts"
+        ],
+        "sources": [
+          "src/api/routes/chat-fastpath.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/api/routes/chat-fastpath.ts:228-228",
+            "anchor": "return await handleCanonicalOverview('/status', labels, userId, tenantId);",
+            "behavior": "Authenticated status callbacks use the canonical Secretary snapshot reader instead of assembling independent provider reads.",
+            "replacementTest": "__tests__/api/chat-fastpath.test.ts",
+            "ownerTestNamePattern": "handles /status overview$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained fast-path suite replaces direct task, calendar, reminder, and mail assertions with canonical snapshot delegation and fail-closed scope behavior."
+      },
+      {
         "test": "__tests__/api/plan-routes.test.ts",
         "replacementTests": [
           "__tests__/api/plan-routes.test.ts"
@@ -388,11 +408,11 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/weekly-plan-orchestrator.ts:214-219",
-            "anchor": "context = resolveSecretaryPlanningContext({",
-            "behavior": "An explicitly invalid tenant scope returns a degraded empty plan before any cache, user, or mesh read can occur.",
+            "pattern": "src/services/weekly-plan-orchestrator.ts:230-230",
+            "anchor": ": 'compose_weekly_plan',",
+            "behavior": "An invalid weekly planning scope is rejected before reads and records the privacy-safe invalid-scope anomaly classification.",
             "replacementTest": "__tests__/services/weekly-plan-orchestrator.test.ts",
-            "ownerTestNamePattern": "fails closed before cache or mesh reads when an explicit tenant is invalid$",
+            "ownerTestNamePattern": "fails closed and records an anomaly when tenant scope is invalid$",
             "minimumMutants": 1
           }
         ],
@@ -2069,6 +2089,46 @@
         "reason": "The retained registry test replaces athlete-only in-memory ownership with tenant-plus-athlete save, lookup, and clearing evidence."
       },
       {
+        "test": "__tests__/services/daily-brief-orchestrator.test.ts",
+        "replacementTests": [
+          "__tests__/services/daily-brief-orchestrator.test.ts"
+        ],
+        "sources": [
+          "src/services/secretary-planning-context.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/secretary-planning-context.ts:198-198",
+            "anchor": "resolvedTenantId !== userId",
+            "behavior": "Daily planning rejects invalid or mismatched tenant scope before user, cache, weekly-plan, or Decision Center reads.",
+            "replacementTest": "__tests__/services/daily-brief-orchestrator.test.ts",
+            "ownerTestNamePattern": "rejects a tenant mismatch before user, week, or Decision Center reads$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained daily suite replaces degraded cross-tenant shells and split profile reads with a single fail-closed planning context and canonical snapshot parity."
+      },
+      {
+        "test": "__tests__/services/event-backbone.test.ts",
+        "replacementTests": [
+          "__tests__/services/event-backbone.test.ts"
+        ],
+        "sources": [
+          "src/services/event-backbone-worker.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/event-backbone-worker.ts:333-333",
+            "anchor": "decision: { ...result },",
+            "behavior": "The event-backbone worker records the exact scoped notification delivery result instead of draining or summarizing unrelated intents.",
+            "replacementTest": "__tests__/services/event-backbone.test.ts",
+            "ownerTestNamePattern": "processes deliver_notification jobs for their exact scoped intent$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained backbone suite replaces broad queued-notification draining with exact-intent delivery, transient retry, and bounded dead-letter evidence."
+      },
+      {
         "test": "__tests__/services/notification-producers-phase2.test.ts",
         "replacementTests": [
           "__tests__/services/notification-producers-phase2.test.ts"
@@ -2087,6 +2147,26 @@
           }
         ],
         "reason": "The retained producer test replaces first-page-only delivery with deterministic cursor pagination across more rows than the configured page size."
+      },
+      {
+        "test": "__tests__/services/planning-recompute-service.test.ts",
+        "replacementTests": [
+          "__tests__/services/planning-recompute-service.test.ts"
+        ],
+        "sources": [
+          "src/services/planning-recompute-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/planning-recompute-service.ts:419-419",
+            "anchor": "receipt.status === 'completed'",
+            "behavior": "A completed planning receipt replays the exact coherent week and day without invalidation, composition, or provider work.",
+            "replacementTest": "__tests__/services/planning-recompute-service.test.ts",
+            "ownerTestNamePattern": "creates one coherent weekly/daily snapshot and exact replays do no work$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained recompute suite replaces independent refresh assertions with durable scoped replay, request-fingerprint conflict, lease recovery, and one-snapshot parity."
       },
       {
         "test": "__tests__/services/report-schedule-dispatcher.test.ts",
@@ -2124,9 +2204,57 @@
             "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
             "ownerTestNamePattern": "sendDailyBriefing blocks before user enumeration when daily briefings are disabled$",
             "minimumMutants": 1
+          },
+          {
+            "pattern": "src/services/scheduler.ts:4258-4258",
+            "anchor": "projectSecretaryScheduledReport(snapshot, 'morning_briefing')",
+            "behavior": "Scheduled morning reports project from the same canonical scoped Secretary snapshot used by the other report surfaces.",
+            "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
+            "ownerTestNamePattern": "sendDailyBriefing stores report documents under canonical tenant ids$",
+            "minimumMutants": 1
           }
         ],
-        "reason": "The retained scheduler suite replaces an undefined success result with explicit enabled and disabled callback-gate outcomes while preserving fail-closed enumeration behavior."
+        "reason": "The retained scheduler suite preserves fail-closed parent/sub-skill callback gating and replaces legacy per-source assembly with canonical snapshot projection, explicit degradation, and tenant-local dispatch evidence."
+      },
+      {
+        "test": "__tests__/services/secretary-context.test.ts",
+        "replacementTests": [
+          "__tests__/services/secretary-context.test.ts"
+        ],
+        "sources": [
+          "src/domains/secretary.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/domains/secretary.ts:408-408",
+            "anchor": "hasUserScope && needs.calendar && calendarEnabled && scopedUserId !== null",
+            "behavior": "Secretary performs the diagnostic calendar read only for an authenticated calendar-shaped request with the calendar sub-skill enabled.",
+            "replacementTest": "__tests__/services/secretary-context.test.ts",
+            "ownerTestNamePattern": "\"show my tasks\" → fetches tasks but NOT calendar/email/garmin$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained lazy-context suite replaces the legacy events read assertions with diagnostic calendar health reads while preserving shape-specific source isolation."
+      },
+      {
+        "test": "__tests__/services/secretary-mesh-context.test.ts",
+        "replacementTests": [
+          "__tests__/services/secretary-mesh-context.test.ts"
+        ],
+        "sources": [
+          "src/services/cross-agent-learning/secretary-mesh-context.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/cross-agent-learning/secretary-mesh-context.ts:471-471",
+            "anchor": "input.routineResult.profile.status === 'unconfigured'",
+            "behavior": "An unconfigured Secretary routine never invents a workday or focus window and remains explicitly unavailable to every planner surface.",
+            "replacementTest": "__tests__/services/secretary-mesh-context.test.ts",
+            "ownerTestNamePattern": "does not infer a focus workday for an unconfigured routine profile$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained mesh suite replaces permissive tenant and raw-calendar assumptions with local agenda, diagnostic source health, routine, DST, and read-only calendar contracts."
       },
       {
         "test": "__tests__/services/travel-windows-and-equipment.test.ts",

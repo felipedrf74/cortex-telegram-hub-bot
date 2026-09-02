@@ -25,7 +25,10 @@ const mockInvalidateCalendarCaches = vi.hoisted(() => vi.fn());
 vi.mock('../../src/services/decision-center', () => ({
   createDecisionIntent: (...args: unknown[]) => mockCreateDecisionIntent(...args),
 }));
-vi.mock('../../src/services/cache-coherence-registry', () => ({
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry',
+  )),
   invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
 }));
 vi.mock('../../src/utils/logger', () => ({

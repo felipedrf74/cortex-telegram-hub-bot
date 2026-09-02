@@ -31,7 +31,10 @@ vi.mock('../../src/services/unified-calendar', () => ({
   getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
 }));
 
-vi.mock('../../src/services/secretary-local-calendar-conflicts', () => ({
+vi.mock('../../src/services/secretary-local-calendar-conflicts', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-local-calendar-conflicts')>(
+    '../../src/services/secretary-local-calendar-conflicts',
+  )),
   readSecretaryLocalCalendarConflicts: (...args: unknown[]) => mockReadLocalCalendarConflicts(...args),
 }));
 

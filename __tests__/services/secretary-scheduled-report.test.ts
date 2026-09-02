@@ -5,7 +5,10 @@ const mockComposeWeeklyPlan = vi.hoisted(() => vi.fn());
 const mockBuildSecretaryDaySnapshot = vi.hoisted(() => vi.fn());
 const mockComposeDailyBrief = vi.hoisted(() => vi.fn());
 
-vi.mock('../../src/services/secretary-planning-context', () => ({
+vi.mock('../../src/services/secretary-planning-context', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-planning-context')>(
+    '../../src/services/secretary-planning-context',
+  )),
   resolveSecretaryPlanningContext: (...args: unknown[]) => mockResolveSecretaryPlanningContext(...args),
   planLanguageLocale: (language: string) => language,
 }));
@@ -14,7 +17,10 @@ vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 
-vi.mock('../../src/services/secretary-planning-snapshot', () => ({
+vi.mock('../../src/services/secretary-planning-snapshot', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-planning-snapshot')>(
+    '../../src/services/secretary-planning-snapshot',
+  )),
   buildSecretaryDaySnapshot: (...args: unknown[]) => mockBuildSecretaryDaySnapshot(...args),
 }));
 

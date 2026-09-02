@@ -17,27 +17,42 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
-vi.mock('../../src/services/tenant-scope-observability', () => ({
+vi.mock('../../src/services/tenant-scope-observability', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/tenant-scope-observability')>(
+    '../../src/services/tenant-scope-observability',
+  )),
   isValidTenantUserId: (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value > 0,
   recordTenantScopeAnomaly: vi.fn(),
 }));
 
-vi.mock('../../src/services/content-notification-store', () => ({
+vi.mock('../../src/services/content-notification-store', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-notification-store')>(
+    '../../src/services/content-notification-store',
+  )),
   getUnreadNotifications: (...args: unknown[]) => mockGetUnreadNotifications(...args),
 }));
 
-vi.mock('../../src/services/content-scheduler', () => ({
+vi.mock('../../src/services/content-scheduler', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-scheduler')>(
+    '../../src/services/content-scheduler',
+  )),
   getFilmingRecommendation: (...args: unknown[]) => mockGetFilmingRecommendation(...args),
   getTopics: (...args: unknown[]) => mockGetTopics(...args),
   getUpcomingTopicCount: (...args: unknown[]) => mockGetUpcomingTopicCount(...args),
 }));
 
-vi.mock('../../src/services/content-dashboard-service', () => ({
+vi.mock('../../src/services/content-dashboard-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-dashboard-service')>(
+    '../../src/services/content-dashboard-service',
+  )),
   getKnowledgeStats: (...args: unknown[]) => mockGetKnowledgeStats(...args),
   getVoiceDna: (...args: unknown[]) => mockGetVoiceDna(...args),
 }));
 
-vi.mock('../../src/services/content-intelligence', () => ({
+vi.mock('../../src/services/content-intelligence', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-intelligence')>(
+    '../../src/services/content-intelligence',
+  )),
   getActiveContentPillars: (...args: unknown[]) => mockGetActiveContentPillars(...args),
   getContentDeskItems: (...args: unknown[]) => mockGetContentDeskItems(...args),
   getNextContentExecutionHint: (...args: unknown[]) => mockGetNextContentExecutionHint(...args),

@@ -34,7 +34,10 @@ vi.mock('../../src/services/task-store/task-router', () => ({
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
-vi.mock('../../src/services/secretary-fastpath', () => ({
+vi.mock('../../src/services/secretary-fastpath', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-fastpath')>(
+    '../../src/services/secretary-fastpath',
+  )),
   tryFastpath: (...args: unknown[]) => mockTrySecretaryFastpath(...args),
 }));
 

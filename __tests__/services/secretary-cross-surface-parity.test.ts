@@ -22,14 +22,22 @@ const mocks = vi.hoisted(() => ({
 
 let testDb: Database.Database;
 
-vi.mock('../../src/services/database', () => ({ getDb: () => testDb }));
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  )),
+  getDb: () => testDb,
+}));
 vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
   composeWeeklyPlan: (...args: unknown[]) => mocks.composeWeeklyPlan(...args),
 }));
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: (...args: unknown[]) => mocks.composeDailyBrief(...args),
 }));
-vi.mock('../../src/services/cache-coherence-registry', () => ({
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry',
+  )),
   invalidatePlanningCaches: (...args: unknown[]) => mocks.invalidatePlanningCaches(...args),
 }));
 vi.mock('../../src/services/user-service', async () => {

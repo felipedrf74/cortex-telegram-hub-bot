@@ -25,7 +25,10 @@ vi.mock('../../src/services/secretary-calendar-command-service', async (importOr
   };
 });
 
-vi.mock('../../src/services/unified-calendar', () => ({
+vi.mock('../../src/services/unified-calendar', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/unified-calendar')>(
+    '../../src/services/unified-calendar',
+  )),
   getEventsWithDiagnostics: vi.fn(),
   getEvents: (...args: unknown[]) => mockGetEventsForSources(...args),
   getEventsForSources: (...args: unknown[]) => mockGetEventsForSources(...args),
@@ -37,11 +40,17 @@ vi.mock('../../src/services/unified-calendar', () => ({
   hasWritableCalendarForUser: (...args: unknown[]) => mockHasWritableCalendarForUser(...args),
 }));
 
-vi.mock('../../src/services/runtime-flags', () => ({
+vi.mock('../../src/services/runtime-flags', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/runtime-flags')>(
+    '../../src/services/runtime-flags',
+  )),
   isHomeFocusPillV1Enabled: vi.fn(() => true),
 }));
 
-vi.mock('../../src/services/cache-store', () => ({
+vi.mock('../../src/services/cache-store', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-store')>(
+    '../../src/services/cache-store',
+  )),
   getCachedSWR: vi.fn(() => null),
   setCacheSWR: vi.fn(),
   clearCache: vi.fn(),
@@ -52,15 +61,24 @@ vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: vi.fn(),
 }));
 
-vi.mock('../../src/services/training-calendar-scope', () => ({
+vi.mock('../../src/services/training-calendar-scope', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/training-calendar-scope')>(
+    '../../src/services/training-calendar-scope',
+  )),
   filterCalendarEventsForTrainingScope: vi.fn((events) => events),
 }));
 
-vi.mock('../../src/services/health-sleep-agenda', () => ({
+vi.mock('../../src/services/health-sleep-agenda', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/health-sleep-agenda')>(
+    '../../src/services/health-sleep-agenda',
+  )),
   getAppleHealthSleepAgendaEvents: vi.fn(() => []),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getUserTimezoneById: vi.fn(() => 'Europe/Lisbon'),
 }));
 

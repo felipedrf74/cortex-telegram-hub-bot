@@ -25,7 +25,10 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
   invalidatePlanningCaches: (...args: unknown[]) => mockInvalidatePlanningCaches(...args),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
 }));
 
