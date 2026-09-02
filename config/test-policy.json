@@ -2198,7 +2198,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/scheduler.ts:4215-4215",
+            "pattern": "src/services/scheduler.ts:4290-4290",
             "anchor": "if (!isCronJobEnabled('daily_briefing')) return false;",
             "behavior": "Manual daily briefing callbacks honor the same Secretary parent and briefings sub-skill gate as scheduled and recovery callbacks.",
             "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
