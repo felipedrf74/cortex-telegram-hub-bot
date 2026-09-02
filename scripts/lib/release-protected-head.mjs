@@ -65,6 +65,11 @@ export function createProtectedHeadVerifier({
     }
 
     const result = exec(gitBin, [
+      // GitHub's smart-HTTP protocol-v2 flow can advertise anonymously and
+      // then reject the follow-up ls-refs request. Protocol v0 resolves the
+      // same exact public ref in one credential-free request, avoiding a
+      // false protected-head outage while preserving the scrubbed envelope.
+      '-c', 'protocol.version=0',
       '-c', 'credential.helper=',
       '-c', 'core.askPass=/bin/false',
       '-c', 'http.extraHeader=',

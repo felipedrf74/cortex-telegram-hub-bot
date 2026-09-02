@@ -2549,6 +2549,7 @@ describe('protected-main head verifier', () => {
     expect(calls[0]).toMatchObject({
       command: '/usr/bin/git',
       args: [
+        '-c', 'protocol.version=0',
         '-c', 'credential.helper=',
         '-c', 'core.askPass=/bin/false',
         '-c', 'http.extraHeader=',
