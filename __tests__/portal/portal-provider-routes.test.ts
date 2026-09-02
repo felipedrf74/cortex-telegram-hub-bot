@@ -86,9 +86,9 @@ function createDomainRouter(overrides: Record<string, unknown> = {}) {
       { domain: 'finance', provider: 'openai' },
     ]),
     isGeminiRoutingEnabled: vi.fn(() => true),
-    isGeminiIncludeSecretaryEnabled: vi.fn(() => false),
+    isSecretaryPrimaryRouteEnabled: vi.fn(() => false),
     setGeminiRoutingEnabled: vi.fn(),
-    setGeminiIncludeSecretary: vi.fn(),
+    setSecretaryPrimaryRouteEnabled: vi.fn(),
     setGeminiDomains: vi.fn(),
     ...overrides,
   };
@@ -144,6 +144,7 @@ describe('portal provider and model routes', () => {
         { domain: 'finance', provider: 'openai', model: 'finance-model' },
       ],
       geminiRoutingEnabled: true,
+      secretaryPrimaryRouteEnabled: false,
       geminiIncludeSecretary: false,
       geminiConfigured: true,
     });
@@ -159,6 +160,7 @@ describe('portal provider and model routes', () => {
     expect(invoke(findRoute(degradedRoutes, 'GET', '/api/domain-routing')).body).toEqual({
       domains: [],
       geminiRoutingEnabled: false,
+      secretaryPrimaryRouteEnabled: false,
       geminiIncludeSecretary: false,
       geminiConfigured: false,
     });
@@ -176,13 +178,13 @@ describe('portal provider and model routes', () => {
     const res = invoke(findRoute(routes, 'POST', '/api/domain-routing/toggle'), {
       body: {
         enabled: false,
-        includeSecretary: true,
+        secretaryPrimaryRouteEnabled: true,
         domains: ['content', 'unknown', 'finance', 123],
       },
     });
 
     expect(domainRouter.setGeminiRoutingEnabled).toHaveBeenCalledWith(false);
-    expect(domainRouter.setGeminiIncludeSecretary).toHaveBeenCalledWith(true);
+    expect(domainRouter.setSecretaryPrimaryRouteEnabled).toHaveBeenCalledWith(true);
     expect(domainRouter.setGeminiDomains).toHaveBeenCalledWith(['content', 'finance']);
     expect(clearDomainPairCache).toHaveBeenCalled();
     expect(res.body).toEqual({
@@ -192,6 +194,7 @@ describe('portal provider and model routes', () => {
         { domain: 'finance', provider: 'openai' },
       ],
       geminiRoutingEnabled: true,
+      secretaryPrimaryRouteEnabled: false,
       geminiIncludeSecretary: false,
     });
   });

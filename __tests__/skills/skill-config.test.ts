@@ -21,6 +21,8 @@ import {
   getPatternRoutes,
   getKeywordRoutes,
   getClassificationHints,
+  getAllCronJobMappings,
+  getCronJobOwner,
   _resetRegistry,
 } from '../../src/skills/skill-config';
 import type { SkillDefinition, SubSkillDefinition } from '../../src/skills/skill-config';
@@ -403,6 +405,19 @@ describe('SkillConfig — dynamic skill registration', () => {
     expect(routes).toHaveLength(2);
     expect(routes.map(r => r.domain)).toContain('accounting');
     expect(routes.map(r => r.domain)).toContain('secretary');
+  });
+
+  it('fails closed when a dynamic skill claims an already-owned cron job', () => {
+    registerSkill({
+      ...ACCOUNTING_SKILL,
+      subSkills: [{
+        ...ACCOUNTING_SKILL.subSkills[0],
+        cronJobs: ['shared_list'],
+      }],
+    });
+
+    expect(() => getCronJobOwner('shared_list')).toThrow(/Duplicate cron job ownership/);
+    expect(() => getAllCronJobMappings()).toThrow(/Duplicate cron job ownership/);
   });
 
   it('unregisterSkill removes a dynamic skill', () => {

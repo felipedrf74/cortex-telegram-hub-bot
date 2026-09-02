@@ -1680,11 +1680,10 @@ table.legacy th {
       <!--
         Live view of which provider/model each domain currently routes to.
         Two master toggles at the top:
-          1. Enable Gemini routing — master switch. When OFF, ALL domains
-             go to Anthropic regardless of any other setting (instant rollback).
-          2. Include Secretary in Gemini — opt-in to route the secretary
-             domain through Gemini for evaluation runs. Default OFF because
-             Claude's tool-use is generally more reliable; flip on to test.
+          1. Enable Gemini routing — master switch for Gemini-backed domains.
+             Secretary remains governed by its independent primary-route control.
+          2. Secretary primary route — provider-neutral safeguard for the
+             configured Secretary primary provider.
 
         Underneath: a table with one row per domain showing the resolved
         provider, the model name, the fallback, and the default the code
@@ -1701,11 +1700,11 @@ table.legacy th {
         <div id="domain-routing-controls" style="display:flex;flex-wrap:wrap;gap:var(--space-3);padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--border-subtle);background:var(--bg-overlay);">
           <label class="flex items-center" style="gap:var(--space-2);cursor:pointer;font-size:13px;">
             <input type="checkbox" id="domain-routing-enabled" onchange="toggleGeminiRouting(this)" />
-            <span><strong>Enable Gemini routing</strong> — master switch (off = all Anthropic)</span>
+            <span><strong>Enable Gemini routing</strong> — master switch for Gemini-backed domains</span>
           </label>
           <label class="flex items-center" style="gap:var(--space-2);cursor:pointer;font-size:13px;">
-            <input type="checkbox" id="domain-routing-include-secretary" onchange="toggleIncludeSecretary(this)" />
-            <span><strong>Include Secretary</strong> — also route secretary through Gemini (eval mode)</span>
+            <input type="checkbox" id="domain-routing-secretary-primary" onchange="toggleSecretaryPrimaryRoute(this)" />
+            <span><strong>Secretary primary route</strong> — off uses the emergency fallback</span>
           </label>
           <span id="domain-routing-status" class="card-subtitle" style="margin-left:auto;font-family:var(--font-mono);font-size:11px;"></span>
         </div>
@@ -4245,8 +4244,8 @@ table.legacy th {
   // master switches at the top + a table with one row per domain. Each row
   // shows the resolved provider, the model name, the fallback, and the
   // default the code would use. Per-domain toggles update the gemini_domains
-  // set; the master switches update gemini_routing_enabled and
-  // gemini_include_secretary. All changes persist to kv_store and take
+  // set; the master switches update gemini_routing_enabled and the
+  // provider-neutral Secretary primary-route setting. All changes persist to kv_store and take
   // effect immediately (no pm2 restart needed because the backend clears
   // its cached domain→pair map on every toggle POST).
   const PROVIDER_PILL_CLASS = {
@@ -4267,29 +4266,30 @@ table.legacy th {
       const d = await r.json();
       const domains = Array.isArray(d.domains) ? d.domains : [];
       const enabled = !!d.geminiRoutingEnabled;
-      const includeSecretary = !!d.geminiIncludeSecretary;
+      const secretaryPrimaryRouteEnabled = !!d.secretaryPrimaryRouteEnabled;
       const configured = !!d.geminiConfigured;
 
       // Master toggle states
       const enabledCheckbox = document.getElementById('domain-routing-enabled');
-      const includeSecCheckbox = document.getElementById('domain-routing-include-secretary');
+      const includeSecCheckbox = document.getElementById('domain-routing-secretary-primary');
       if (enabledCheckbox) enabledCheckbox.checked = enabled;
       if (includeSecCheckbox) {
-        includeSecCheckbox.checked = includeSecretary;
-        includeSecCheckbox.disabled = !enabled;
+        includeSecCheckbox.checked = secretaryPrimaryRouteEnabled;
+        includeSecCheckbox.disabled = false;
       }
 
       // Status pill — shows whether Gemini is configured + active counts
       const geminiCount = domains.filter(d => d.provider === 'gemini').length;
+      const openaiCount = domains.filter(d => d.provider === 'openai').length;
       const anthropicCount = domains.filter(d => d.provider === 'anthropic').length;
       const statusEl = document.getElementById('domain-routing-status');
       if (statusEl) {
         if (!configured) {
           statusEl.innerHTML = '<span style="color:var(--text-warning)">⚠ GEMINI_API_KEY not set</span>';
         } else if (!enabled) {
-          statusEl.innerHTML = '<span style="color:var(--text-tertiary)">routing disabled · all → anthropic</span>';
+          statusEl.innerHTML = '<span style="color:var(--text-tertiary)">Gemini routes disabled · ' + openaiCount + ' → openai · ' + anthropicCount + ' → anthropic</span>';
         } else {
-          statusEl.innerHTML = '<span style="color:var(--text-secondary)">' + geminiCount + ' → gemini · ' + anthropicCount + ' → anthropic</span>';
+          statusEl.innerHTML = '<span style="color:var(--text-secondary)">' + geminiCount + ' → gemini · ' + openaiCount + ' → openai · ' + anthropicCount + ' → anthropic</span>';
         }
       }
 
@@ -4297,7 +4297,7 @@ table.legacy th {
       const summaryEl = document.getElementById('domain-routing-summary');
       if (summaryEl) {
         const verb = enabled ? 'active' : 'disabled';
-        summaryEl.textContent = 'Routing ' + verb + ' · ' + domains.length + ' domains · ' + geminiCount + ' on Gemini';
+        summaryEl.textContent = 'Gemini routing ' + verb + ' · ' + domains.length + ' domains · ' + geminiCount + ' on Gemini';
       }
 
       // Table rows
@@ -4316,13 +4316,13 @@ table.legacy th {
         const pillClass = PROVIDER_PILL_CLASS[row.provider] || 'badge';
         const isOverride = row.provider !== row.defaultProvider;
 
-        // Per-domain toggle. For secretary, toggling also flips the
-        // include-secretary master flag (since that's what controls it).
+        // Per-domain toggle. Secretary is controlled by its provider-neutral
+        // primary-route safeguard.
         // For others, the toggle calls togglePerDomain to update the
         // gemini_domains set on the backend.
         let toggle;
         if (row.isSecretary) {
-          toggle = '<span class="card-subtitle" style="font-size:11px">controlled by master switch ↑</span>';
+          toggle = '<span class="card-subtitle" style="font-size:11px">controlled by Secretary route ↑</span>';
         } else {
           toggle = '<label class="flex items-center" style="gap:6px;justify-content:flex-end;cursor:pointer;font-size:11px">' +
             '<input type="checkbox" data-domain="' + esc(row.domain) + '"' + (row.geminiEnabled ? ' checked' : '') + ' onchange="togglePerDomain(this)" />' +
@@ -4447,11 +4447,11 @@ table.legacy th {
     );
   };
 
-  // Master switch: include secretary in the Gemini migration
-  window.toggleIncludeSecretary = function(checkbox) {
+  // Provider-neutral Secretary primary-route safeguard.
+  window.toggleSecretaryPrimaryRoute = function(checkbox) {
     postRoutingChange(
-      { includeSecretary: !!checkbox.checked },
-      'Secretary ' + (checkbox.checked ? 'now routes through Gemini' : 'back on Anthropic'),
+      { secretaryPrimaryRouteEnabled: !!checkbox.checked },
+      'Secretary primary route ' + (checkbox.checked ? 'enabled' : 'disabled'),
     );
   };
 
@@ -4462,7 +4462,7 @@ table.legacy th {
     // Read current set from the table, flip the one that just toggled,
     // then send the new full set to the backend (which replaces the kv_store
     // value atomically). Secretary is always excluded from this set since
-    // it's controlled by the master include-secretary switch.
+    // it is controlled by the Secretary primary-route switch.
     const current = new Set();
     document.querySelectorAll('#domain-routing-table input[type="checkbox"][data-domain]').forEach(el => {
       if (el.checked) current.add(el.dataset.domain);

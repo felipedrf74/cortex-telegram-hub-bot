@@ -320,10 +320,11 @@ export function getAllSkillStatuses(): SkillStatus[] {
 /**
  * Check whether a cron job should run based on its owning sub-skill's enabled state.
  * Returns true if the job has no sub-skill owner (unmapped jobs always run)
- * or if the owning sub-skill is enabled.
+ * or if both the owning parent skill and sub-skill are enabled.
  */
 export function isCronJobEnabled(jobId: string): boolean {
   const owner = getCronJobOwner(jobId);
   if (!owner) return true; // unmapped jobs always run
+  if (!getSkillStatus(owner.domain).enabled) return false;
   return registry.isSubmoduleEnabled(owner.domain, owner.subSkill);
 }

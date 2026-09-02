@@ -81,7 +81,15 @@ export async function handlePortalAction(
     }
 
     case 'trigger-briefing': {
-      await sendDailyBriefing();
+      const enabled = await sendDailyBriefing();
+      if (!enabled) {
+        pushEvent({
+          ts: new Date().toISOString(),
+          type: 'auth',
+          summary: 'Manual morning briefing skipped: Secretary briefings disabled',
+        });
+        return { ok: false, message: 'Secretary briefings are disabled' };
+      }
       pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual morning briefing sent' });
       return { ok: true, message: 'Morning briefing stored and pushed' };
     }

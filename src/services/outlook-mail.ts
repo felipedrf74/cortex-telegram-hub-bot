@@ -314,7 +314,7 @@ export async function sendEmail(data: {
   subject: string;
   body: string;
   cc?: string;
-  source?: string;  // job name for tracking (e.g. 'fossa_email')
+  source?: string;  // job name for tracking
 }): Promise<void> {
   return sendEmailWithClient(getGraphClient(), data);
 }

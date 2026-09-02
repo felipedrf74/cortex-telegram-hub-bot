@@ -225,18 +225,22 @@ describe('P0 identity: persisted-payload writers do not hardcode "Felipe"', () =
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 8. fossa_email cron is gated behind an explicit owner-only flag
+// 8. Retired owner-specific mail automation is absent from runtime
 // ═══════════════════════════════════════════════════════════════════
 
-describe('P0 identity: fossa_email cron is owner-only gated', () => {
-  it('scheduler.ts requires FOSSA_EMAIL_ENABLED=1 in addition to OUTLOOK availability', () => {
-    const source = fs.readFileSync(
-      path.join(REPO_ROOT, 'src/services/scheduler.ts'),
-      'utf8',
-    );
-    // The cron registration block must reference the explicit env flag
-    expect(source).toMatch(/FOSSA_EMAIL_ENABLED/);
-    // And gate the cron.schedule call on it
-    expect(source).toMatch(/fossaEnabled\s*&&\s*isOutlookMailConfigured/);
+describe('P0 identity: retired owner-specific mail automation is absent', () => {
+  it('has no runtime registration, policy, or environment gate', () => {
+    const legacyJobId = ['f', 'ossa_email'].join('');
+    const legacyEnv = ['F', 'OSSA_EMAIL_ENABLED'].join('');
+    for (const relativePath of [
+      'src/services/scheduler.ts',
+      'src/skills/skill-config.ts',
+      'src/skills/secretary/manifest.json',
+      'scripts/generate-agent-job-manifest.mjs',
+    ]) {
+      const source = fs.readFileSync(path.join(REPO_ROOT, relativePath), 'utf8');
+      expect(source).not.toContain(legacyJobId);
+      expect(source).not.toContain(legacyEnv);
+    }
   });
 });

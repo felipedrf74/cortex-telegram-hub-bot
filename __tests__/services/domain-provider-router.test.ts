@@ -37,6 +37,7 @@ describe('Domain Provider Router', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.GEMINI_ROUTING_ENABLED;
+    delete process.env.SECRETARY_PRIMARY_ROUTE_ENABLED;
     delete process.env.GEMINI_INCLUDE_SECRETARY;
     delete process.env.GEMINI_DOMAINS;
     delete process.env.AI_DOMAIN_PROVIDER_OVERRIDES;
@@ -58,18 +59,42 @@ describe('Domain Provider Router', () => {
 
     it('re-applies env overrides without leaking prior in-memory state', () => {
       process.env.GEMINI_ROUTING_ENABLED = 'false';
-      process.env.GEMINI_INCLUDE_SECRETARY = 'false';
+      process.env.SECRETARY_PRIMARY_ROUTE_ENABLED = 'false';
       initDomainRouting();
 
       expect(getProviderForDomain('triathlon')).toBe('anthropic');
       expect(getProviderForDomain('secretary')).toBe('anthropic');
 
       delete process.env.GEMINI_ROUTING_ENABLED;
-      delete process.env.GEMINI_INCLUDE_SECRETARY;
+      delete process.env.SECRETARY_PRIMARY_ROUTE_ENABLED;
       initDomainRouting();
 
       expect(getProviderForDomain('triathlon')).toBe('gemini');
       expect(getProviderForDomain('secretary')).toBe('openai');
+    });
+
+    it('keeps the provider-neutral Secretary route independent from the Gemini kill switch', () => {
+      process.env.GEMINI_ROUTING_ENABLED = 'false';
+      initDomainRouting();
+
+      expect(getProviderForDomain('secretary')).toBe('openai');
+      expect(getProviderForDomain('triathlon')).toBe('anthropic');
+    });
+
+    it('reads the legacy Secretary route key for one release and warns', () => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any);
+      process.env.GEMINI_INCLUDE_SECRETARY = 'false';
+      initDomainRouting();
+
+      expect(getProviderForDomain('secretary')).toBe('anthropic');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          legacyKey: 'GEMINI_INCLUDE_SECRETARY',
+          replacementKey: 'SECRETARY_PRIMARY_ROUTE_ENABLED',
+        }),
+        expect.stringContaining('deprecated'),
+      );
+      warnSpy.mockRestore();
     });
 
     it('lets env narrow the gemini domain allowlist', () => {
@@ -113,6 +138,14 @@ describe('Domain Provider Router', () => {
       expect(hasDomainProviderRoute('cooking')).toBe(true);
       expect(hasDomainProviderRoute('chat')).toBe(false);
       expect(hasDomainProviderRoute('dynamic_custom_skill')).toBe(false);
+    });
+
+    it('keeps the Secretary primary-route safeguard stronger than experiment overrides', () => {
+      process.env.SECRETARY_PRIMARY_ROUTE_ENABLED = 'false';
+      process.env.AI_DOMAIN_PROVIDER_OVERRIDES = 'secretary=gemini';
+      initDomainRouting();
+
+      expect(getProviderForDomain('secretary')).toBe('anthropic');
     });
   });
 

@@ -11,6 +11,8 @@ import {
   getGeminiDomainAllowlist,
   getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
+  getSecretaryPrimaryRouteEnvOverride,
+  resolveSecretaryPrimaryRouteEnvOverride,
   getDecisionConflictPolicyV1Mode,
   getSecretaryReasoningV1Mode,
   getTrainingAdaptationV1Mode,
@@ -115,6 +117,13 @@ describe('runtime-flags', () => {
     expect(getGeminiRoutingEnvOverride({ GEMINI_ROUTING_ENABLED: 'true' })).toBe(true);
     expect(getGeminiRoutingEnvOverride({ GEMINI_ROUTING_ENABLED: 'false' })).toBe(false);
     expect(getGeminiRoutingEnvOverride({ GEMINI_ROUTING_ENABLED: 'maybe' })).toBeNull();
+    expect(getSecretaryPrimaryRouteEnvOverride({ SECRETARY_PRIMARY_ROUTE_ENABLED: 'false' })).toBe(false);
+    expect(resolveSecretaryPrimaryRouteEnvOverride({
+      SECRETARY_PRIMARY_ROUTE_ENABLED: 'true',
+      GEMINI_INCLUDE_SECRETARY: 'false',
+    })).toEqual({ value: true, source: 'primary' });
+    expect(resolveSecretaryPrimaryRouteEnvOverride({ GEMINI_INCLUDE_SECRETARY: 'false' }))
+      .toEqual({ value: false, source: 'legacy' });
     expect(getGeminiIncludeSecretaryEnvOverride({ GEMINI_INCLUDE_SECRETARY: 'true' })).toBe(true);
     expect(getGeminiIncludeSecretaryEnvOverride({ GEMINI_INCLUDE_SECRETARY: 'nope' })).toBeNull();
     expect(

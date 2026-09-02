@@ -18,9 +18,9 @@ interface DomainProviderConfigRow {
 interface DomainProviderRouter {
   getDomainProviderConfig: () => DomainProviderConfigRow[];
   isGeminiRoutingEnabled: () => boolean;
-  isGeminiIncludeSecretaryEnabled: () => boolean;
+  isSecretaryPrimaryRouteEnabled: () => boolean;
   setGeminiRoutingEnabled: (enabled: boolean) => void;
-  setGeminiIncludeSecretary: (enabled: boolean) => void;
+  setSecretaryPrimaryRouteEnabled: (enabled: boolean) => void;
   setGeminiDomains: (domains: string[]) => void;
 }
 
@@ -126,10 +126,13 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
         })(),
       }));
 
+      const secretaryPrimaryRouteEnabled = router.isSecretaryPrimaryRouteEnabled();
       res.json({
         domains: enriched,
         geminiRoutingEnabled: router.isGeminiRoutingEnabled(),
-        geminiIncludeSecretary: router.isGeminiIncludeSecretaryEnabled(),
+        secretaryPrimaryRouteEnabled,
+        // One-release response alias for an older portal bundle.
+        geminiIncludeSecretary: secretaryPrimaryRouteEnabled,
         geminiConfigured: (() => {
           try {
             return isGeminiConfiguredForRoute(deps);
@@ -142,6 +145,7 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
       res.json({
         domains: [],
         geminiRoutingEnabled: false,
+        secretaryPrimaryRouteEnabled: false,
         geminiIncludeSecretary: false,
         geminiConfigured: false,
       });
@@ -150,14 +154,22 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
 
   app.post('/api/domain-routing/toggle', requirePortalAdminToken, express.json(), (req: Request, res: Response) => {
     try {
-      const { enabled, includeSecretary, domains: geminiDomains } = req.body;
+      const {
+        enabled,
+        secretaryPrimaryRouteEnabled,
+        includeSecretary,
+        domains: geminiDomains,
+      } = req.body;
       const router = getDomainRouter(deps);
 
       if (typeof enabled === 'boolean') {
         router.setGeminiRoutingEnabled(enabled);
       }
-      if (typeof includeSecretary === 'boolean') {
-        router.setGeminiIncludeSecretary(includeSecretary);
+      const secretaryRouteSetting = typeof secretaryPrimaryRouteEnabled === 'boolean'
+        ? secretaryPrimaryRouteEnabled
+        : includeSecretary;
+      if (typeof secretaryRouteSetting === 'boolean') {
+        router.setSecretaryPrimaryRouteEnabled(secretaryRouteSetting);
       }
       if (Array.isArray(geminiDomains)) {
         const validated = geminiDomains.filter((domain): domain is string => (
@@ -175,11 +187,13 @@ export function registerPortalProviderRoutes(app: Express, deps: PortalProviderR
         // Provider registry may not be initialized in degraded portal mode.
       }
 
+      const resolvedSecretaryRouteSetting = router.isSecretaryPrimaryRouteEnabled();
       res.json({
         ok: true,
         config: router.getDomainProviderConfig(),
         geminiRoutingEnabled: router.isGeminiRoutingEnabled(),
-        geminiIncludeSecretary: router.isGeminiIncludeSecretaryEnabled(),
+        secretaryPrimaryRouteEnabled: resolvedSecretaryRouteSetting,
+        geminiIncludeSecretary: resolvedSecretaryRouteSetting,
       });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');

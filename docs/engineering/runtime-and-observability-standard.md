@@ -25,7 +25,7 @@ Cloudflare Tunnel ingress, and recovery-first continuous deployment.
    only acceptable place for "Gemini 2.5-flash" / "Claude Sonnet 4.6" /
    "GPT-5.5" strings. Business code calls `getActiveProvider(taskType)`.
 3. **Feature flags are boolean env keys.** `NEXUS_FIXTURE_MODE=1`,
-   `FOSSA_EMAIL_ENABLED=1`, `IOS_REQUIRE_UDID=1`,
+   `SECRETARY_PRIMARY_ROUTE_ENABLED=true`, `IOS_REQUIRE_UDID=1`,
    `PORTAL_BETA_HARDENED=true`, `NEXUS_DEPLOY_SKIP_VERIFY=1`. Default off
    for any flag that exposes new behavior.
 4. **Secrets never appear in `process.env` log dumps.** A debug helper

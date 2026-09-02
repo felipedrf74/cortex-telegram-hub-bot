@@ -22,7 +22,9 @@
  *
  * Feature flag: GEMINI_ROUTING_ENABLED is a kill-switch for the Gemini-backed
  * domains. When explicitly set to 'false' they route back to Anthropic as an
- * emergency escape hatch. Secretary remains OpenAI unless its own override is disabled.
+ * emergency escape hatch. It does not affect Secretary because Secretary's
+ * configured primary is OpenAI. SECRETARY_PRIMARY_ROUTE_ENABLED independently
+ * guards Secretary's configured primary route.
  */
 
 import type { DomainName } from '../domains/types';
@@ -31,9 +33,9 @@ import { logger } from '../utils/logger';
 import {
   getDomainProviderExperimentOverrides,
   getGeminiDomainAllowlist,
-  getGeminiIncludeSecretaryEnvOverride,
   getGeminiRoutingEnvOverride,
   isSecretaryHaikuRoutingEnabled,
+  resolveSecretaryPrimaryRouteEnvOverride,
 } from './runtime-flags';
 
 // ─── Domain → Provider Mapping ──────────────────────────────────────
@@ -73,17 +75,17 @@ const DEFAULT_GEMINI_DOMAINS = ['triathlon', 'content', 'finance', 'cooking'];
 let _geminiDomains = new Set<string>(DEFAULT_GEMINI_DOMAINS);
 let _domainProviderExperimentOverrides = new Map<string, ProviderName>();
 
-// Historical toggle — now repurposed as the secretary primary-provider
-// safeguard. When true (default), secretary stays on OpenAI. When false,
-// secretary degrades straight to Anthropic as an emergency escape hatch.
-let _geminiIncludeSecretary = true;
+// Secretary's provider-neutral primary-route safeguard. When true (default),
+// Secretary uses its routed OpenAI primary. When false, it degrades to the
+// emergency Anthropic route.
+let _secretaryPrimaryRouteEnabled = true;
 
 /** Initialize from environment or kv_store */
 export function initDomainRouting(): void {
   _geminiRoutingEnabled = true;
   _geminiDomains = new Set(DEFAULT_GEMINI_DOMAINS);
   _domainProviderExperimentOverrides = new Map();
-  _geminiIncludeSecretary = true;
+  _secretaryPrimaryRouteEnabled = true;
   _secretaryHaikuEnabled = isSecretaryHaikuRoutingEnabled();
 
   const routingOverride = getGeminiRoutingEnvOverride();
@@ -92,9 +94,15 @@ export function initDomainRouting(): void {
   }
 
   // Env override for the secretary primary-provider safeguard
-  const includeSecretaryOverride = getGeminiIncludeSecretaryEnvOverride();
-  if (includeSecretaryOverride !== null) {
-    _geminiIncludeSecretary = includeSecretaryOverride;
+  const secretaryRouteOverride = resolveSecretaryPrimaryRouteEnvOverride();
+  if (secretaryRouteOverride.value !== null) {
+    _secretaryPrimaryRouteEnabled = secretaryRouteOverride.value;
+  }
+  if (secretaryRouteOverride.source === 'legacy') {
+    logger.warn(
+      { legacyKey: 'GEMINI_INCLUDE_SECRETARY', replacementKey: 'SECRETARY_PRIMARY_ROUTE_ENABLED' },
+      'Legacy Secretary provider-route environment key is deprecated and will be removed after one release',
+    );
   }
 
   // Env can also narrow the domain set
@@ -112,8 +120,19 @@ export function initDomainRouting(): void {
     const row = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_routing_enabled'").get() as { value: string } | undefined;
     if (row) _geminiRoutingEnabled = row.value === 'true';
 
-    const includeSecRow = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_include_secretary'").get() as { value: string } | undefined;
-    if (includeSecRow) _geminiIncludeSecretary = includeSecRow.value === 'true';
+    const secretaryRouteRow = db.prepare("SELECT value FROM kv_store WHERE key = 'secretary_primary_route_enabled'").get() as { value: string } | undefined;
+    if (secretaryRouteRow) {
+      _secretaryPrimaryRouteEnabled = secretaryRouteRow.value === 'true';
+    } else {
+      const legacySecretaryRouteRow = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_include_secretary'").get() as { value: string } | undefined;
+      if (legacySecretaryRouteRow) {
+        _secretaryPrimaryRouteEnabled = legacySecretaryRouteRow.value === 'true';
+        logger.warn(
+          { legacyKey: 'gemini_include_secretary', replacementKey: 'secretary_primary_route_enabled' },
+          'Legacy Secretary provider-route setting was read and is deprecated after one release',
+        );
+      }
+    }
 
     const domainsRow = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_domains'").get() as { value: string } | undefined;
     if (domainsRow && domainsRow.value) {
@@ -123,7 +142,7 @@ export function initDomainRouting(): void {
 
   logger.info({
     geminiRoutingEnabled: _geminiRoutingEnabled,
-    geminiIncludeSecretary: _geminiIncludeSecretary,
+    secretaryPrimaryRouteEnabled: _secretaryPrimaryRouteEnabled,
     geminiDomains: [..._geminiDomains],
     domainProviderExperimentOverrides: Object.fromEntries(_domainProviderExperimentOverrides),
   }, 'Domain provider routing initialized');
@@ -149,19 +168,28 @@ export function setGeminiDomains(domains: string[]): void {
   logger.info({ domains }, 'Gemini domains updated');
 }
 
-/** Toggle whether secretary also routes through Gemini (persists to kv_store) */
-export function setGeminiIncludeSecretary(enabled: boolean): void {
-  _geminiIncludeSecretary = enabled;
+/** Toggle Secretary's provider-neutral primary route (persists only the new key). */
+export function setSecretaryPrimaryRouteEnabled(enabled: boolean): void {
+  _secretaryPrimaryRouteEnabled = enabled;
   try {
     const { getDb } = require('./database');
-    getDb().prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('gemini_include_secretary', ?)").run(String(enabled));
+    getDb().prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('secretary_primary_route_enabled', ?)").run(String(enabled));
   } catch {}
-  logger.info({ enabled }, 'Gemini include-secretary toggled');
+  logger.info({ enabled }, 'Secretary primary provider route toggled');
 }
 
-/** Whether the secretary domain currently routes through Gemini */
+export function isSecretaryPrimaryRouteEnabled(): boolean {
+  return _secretaryPrimaryRouteEnabled;
+}
+
+/** @deprecated One-release API alias; writes only the provider-neutral key. */
+export function setGeminiIncludeSecretary(enabled: boolean): void {
+  setSecretaryPrimaryRouteEnabled(enabled);
+}
+
+/** @deprecated One-release API alias. */
 export function isGeminiIncludeSecretaryEnabled(): boolean {
-  return _geminiIncludeSecretary;
+  return isSecretaryPrimaryRouteEnabled();
 }
 
 // ─── Public API ─────────────────────────────────────────────────────
@@ -171,25 +199,29 @@ export function isGeminiIncludeSecretaryEnabled(): boolean {
  *
  * Non-secretary domains are Gemini-first. The Anthropic escape hatches are:
  *   1. GEMINI_ROUTING_ENABLED=false    — global kill-switch
- *   2. GEMINI_INCLUDE_SECRETARY=false  — secretary-only kill-switch
+ *   2. SECRETARY_PRIMARY_ROUTE_ENABLED=false — secretary-only kill-switch
  * Anthropic is only reachable via runtime overrides, not as the resting-state default.
  */
 export function getProviderForDomain(domain: DomainName): ProviderName {
-  // Global kill-switch — if Gemini routing is disabled entirely, fall
-  // back to Anthropic for every domain. This is the emergency escape
-  // hatch (e.g. GEMINI_API_KEY expired, Gemini quota exhausted).
+  // Secretary routes to OpenAI (GPT-5.4 nano) by default and is deliberately
+  // independent from the Gemini kill-switch. Coupling it to that switch would
+  // make the provider-neutral Secretary control misleading and could force a
+  // healthy OpenAI route onto a disabled Anthropic runtime.
+  // When the provider-neutral primary-route safeguard is false, Secretary
+  // falls back to Anthropic as an emergency escape hatch.
+  if (domain === 'secretary') {
+    if (!_secretaryPrimaryRouteEnabled) return 'anthropic';
+    const experimentOverride = _domainProviderExperimentOverrides.get(domain);
+    if (experimentOverride) return experimentOverride;
+    return DOMAIN_PROVIDER_MAP.secretary;
+  }
+
+  // Gemini kill-switch — Gemini-backed domains fall back to Anthropic as the
+  // explicit emergency route (e.g. Gemini key expiry or quota exhaustion).
   if (!_geminiRoutingEnabled) return 'anthropic';
 
   const experimentOverride = _domainProviderExperimentOverrides.get(domain);
   if (experimentOverride) return experimentOverride;
-
-  // Secretary routes to OpenAI (GPT-5.4 nano) by default.
-  // The _geminiIncludeSecretary toggle is repurposed: when false, secretary
-  // falls back to Anthropic (emergency escape). When true (default), it
-  // uses the DOMAIN_PROVIDER_MAP value (openai).
-  if (domain === 'secretary') {
-    return _geminiIncludeSecretary ? DOMAIN_PROVIDER_MAP.secretary : 'anthropic';
-  }
 
   // Per-domain allow-list — populated from DEFAULT_GEMINI_DOMAINS on init
   // and overridable via kv_store. Any domain NOT in the set falls back

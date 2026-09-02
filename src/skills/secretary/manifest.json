@@ -1,6 +1,6 @@
 {
   "name": "secretary",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Personal assistant — tasks, calendar, email, reminders, notes, briefings",
   "author": "Felipe Dominguez",
   "domain": "secretary",
@@ -17,7 +17,7 @@
         "ms_todo_get_checklist", "ms_todo_add_checklist_item",
         "ms_todo_get_lists", "ms_todo_create_list", "ms_todo_delete_list"
       ],
-      "cronJobs": ["end_of_day", "shared_list"]
+      "cronJobs": ["shared_list"]
     },
     {
       "module_name": "calendar",
@@ -27,7 +27,12 @@
         "get_calendar_events", "create_calendar_event",
         "update_calendar_event", "delete_calendar_event"
       ],
-      "cronJobs": ["conflict_detection"]
+      "cronJobs": [
+        "conflict_detection",
+        "secretary_agenda_sync",
+        "travel_window_notify",
+        "commitment_start_reminder"
+      ]
     },
     {
       "module_name": "email",
@@ -37,7 +42,7 @@
         "search_outlook_emails", "read_outlook_email",
         "send_outlook_email", "reply_outlook_email", "get_outlook_unread"
       ],
-      "cronJobs": ["fossa_email"]
+      "cronJobs": []
     },
     {
       "module_name": "reminders",
@@ -65,10 +70,10 @@
       "description": "Morning briefing, weekly review, and daily digest",
       "enabled_by_default": true,
       "tools": [],
-      "cronJobs": ["daily_briefing", "weekly_review"]
+      "cronJobs": ["daily_briefing", "weekly_review", "end_of_day"]
     }
   ],
-  "requiredApiKeys": ["ANTHROPIC_API_KEY"],
+  "requiredApiKeys": [],
   "config": {
     "stateContextTtl": 30000,
     "maxToolIterations": 4
