@@ -70,6 +70,7 @@ const mockRunTaskLedgerRetentionJob = vi.hoisted(() => vi.fn());
 const mockSweepExpiredStructuredHealthData = vi.hoisted(() => vi.fn());
 const mockRunPipelineAgent = vi.hoisted(() => vi.fn());
 const mockListHandledByNexusItems = vi.hoisted(() => vi.fn());
+const mockIsCronJobEnabled = vi.hoisted(() => vi.fn(() => true));
 const mockWrapJob = vi.hoisted(() => vi.fn(
   (name: string, fn: (...args: unknown[]) => unknown, _options?: unknown) => {
     const wrapped = vi.fn((...args: unknown[]) => fn(...args));
@@ -219,7 +220,9 @@ vi.mock('../../src/services/apns-sender', () => ({ sendPushNotification: vi.fn()
 vi.mock('../../src/services/task-store/task-ledger-retention', () => ({
   runTaskLedgerRetentionJob: (...args: unknown[]) => mockRunTaskLedgerRetentionJob(...args),
 }));
-vi.mock('../../src/skills/skill-manager', () => ({ isCronJobEnabled: vi.fn(() => true) }));
+vi.mock('../../src/skills/skill-manager', () => ({
+  isCronJobEnabled: (...args: unknown[]) => mockIsCronJobEnabled(...args),
+}));
 vi.mock('../../src/services/invoice-queue', () => ({
   flushQueue: vi.fn(async () => ({ flushed: 0, failed: 0, remaining: 0 })),
 }));
@@ -470,6 +473,8 @@ function useTrainingScopeDb(scopes: Array<{ tenant_id: number; user_id: number }
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsCronJobEnabled.mockReset();
+    mockIsCronJobEnabled.mockReturnValue(true);
     vi.stubEnv('COACH_PERIODIZATION_V2_ENABLED', 'on');
     mockRunPipelineAgent.mockReset();
     mockRunPipelineAgent.mockResolvedValue(undefined);
@@ -2002,6 +2007,19 @@ describe('scheduler tenant scoping', () => {
 
     expect(mockStoreAndPushReport).not.toHaveBeenCalled();
     expect(mockGetOwnerBootstrapTarget).not.toHaveBeenCalled();
+  });
+
+  it('sendDailyBriefing blocks before user enumeration when daily briefings are disabled', async () => {
+    mockIsCronJobEnabled.mockImplementation((jobId: unknown) => jobId !== 'daily_briefing');
+    mockGetDb.mockImplementation(() => {
+      throw new Error('disabled callbacks must not access the database');
+    });
+
+    await expect(sendDailyBriefing()).resolves.toBe(false);
+
+    expect(mockIsCronJobEnabled).toHaveBeenCalledWith('daily_briefing');
+    expect(mockGetDb).not.toHaveBeenCalled();
+    expect(mockStoreAndPushReport).not.toHaveBeenCalled();
   });
 
   it('allows only an explicit pre-bootstrap caller to use the owner bridge', () => {

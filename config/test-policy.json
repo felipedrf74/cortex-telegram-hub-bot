@@ -219,6 +219,26 @@
         "reason": "The retained route suite removes direct dual-cache invalidation assertions and replaces them with the single coherent recompute service contract and typed idempotency failures."
       },
       {
+        "test": "__tests__/portal/portal-provider-routes.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-provider-routes.test.ts"
+        ],
+        "sources": [
+          "src/portal/provider-routes.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/portal/provider-routes.ts:168-172",
+            "anchor": "router.setSecretaryPrimaryRouteEnabled(secretaryRouteSetting);",
+            "behavior": "Portal routing writes the provider-neutral Secretary primary-route flag while retaining the legacy request alias for one release.",
+            "replacementTest": "__tests__/portal/portal-provider-routes.test.ts",
+            "ownerTestNamePattern": "updates domain routing flags, filters invalid domains, and clears provider cache$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained portal suite replaces the provider-specific Secretary toggle assertion with the provider-neutral write contract and compatibility response alias."
+      },
+      {
         "test": "__tests__/portal/portal-decision-center-routes.test.ts",
         "replacementTests": [
           "__tests__/portal/portal-decision-center-routes.test.ts"
@@ -1969,6 +1989,26 @@
         "reason": "The retained contract test replaces label-only flow evidence with a complete, unique, passing lifecycle denominator."
       },
       {
+        "test": "__tests__/security/p0-chat-identity-isolation.test.ts",
+        "replacementTests": [
+          "__tests__/skills/secretary-skill-package.test.ts"
+        ],
+        "sources": [
+          "src/skills/skill-config.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/skills/skill-config.ts:805-805",
+            "anchor": "for (const jobId of sub.cronJobs ?? []) {",
+            "behavior": "Secretary enumerates every tenant-neutral scheduled job from the authoritative sub-skill ownership map, with no retired owner-specific automation.",
+            "replacementTest": "__tests__/skills/secretary-skill-package.test.ts",
+            "ownerTestNamePattern": "getAllCronJobMappings returns all secretary cron mappings$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The owner-only Fossa gate assertion is replaced by positive tenant-neutral job ownership plus an explicit absence audit across every former registration surface."
+      },
+      {
         "test": "__tests__/security/training-route-policy-manifest.test.ts",
         "replacementTests": [
           "__tests__/security/training-route-policy-manifest.test.ts"
@@ -2069,6 +2109,26 @@
         "reason": "The retained dispatcher test replaces the user-equals-tenant ledger assumption with explicit two-dimensional schedule claims."
       },
       {
+        "test": "__tests__/services/scheduler-user-scope.test.ts",
+        "replacementTests": [
+          "__tests__/services/scheduler-user-scope.test.ts"
+        ],
+        "sources": [
+          "src/services/scheduler.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/scheduler.ts:4215-4215",
+            "anchor": "if (!isCronJobEnabled('daily_briefing')) return false;",
+            "behavior": "Manual daily briefing callbacks honor the same Secretary parent and briefings sub-skill gate as scheduled and recovery callbacks.",
+            "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
+            "ownerTestNamePattern": "sendDailyBriefing blocks before user enumeration when daily briefings are disabled$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained scheduler suite replaces an undefined success result with explicit enabled and disabled callback-gate outcomes while preserving fail-closed enumeration behavior."
+      },
+      {
         "test": "__tests__/services/travel-windows-and-equipment.test.ts",
         "replacementTests": [
           "__tests__/services/travel-windows-and-equipment.test.ts"
@@ -2087,6 +2147,26 @@
           }
         ],
         "reason": "The retained lifecycle test replaces write-call assertions with durable receipt replay and conflicting-key refusal evidence."
+      },
+      {
+        "test": "__tests__/skills/secretary-skill-package.test.ts",
+        "replacementTests": [
+          "__tests__/skills/secretary-skill-package.test.ts"
+        ],
+        "sources": [
+          "src/skills/skill-manager.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/skills/skill-manager.ts:328-328",
+            "anchor": "if (!getSkillStatus(owner.domain).enabled) return false;",
+            "behavior": "Disabling the parent Secretary capability blocks every owned child job and callback before sub-skill state is considered.",
+            "replacementTest": "__tests__/skills/secretary-skill-package.test.ts",
+            "ownerTestNamePattern": "disabling the parent blocks every child job and callback$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained package suite replaces stale Fossa and job-placement assertions with complete one-owner mappings plus parent and child gate enforcement."
       }
     ],
     "ownerTestMappings": [],
