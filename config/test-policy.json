@@ -228,7 +228,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/api/routes/plan.ts:118-118",
+            "pattern": "src/api/routes/plan.ts:122-122",
             "anchor": "idempotencyKey: req.body?.idempotencyKey ?? headerIdempotencyKey,",
             "behavior": "The recompute route delegates one scoped locale and timezone-bound idempotent request to the coherent planning snapshot owner.",
             "replacementTest": "__tests__/api/plan-routes.test.ts",
@@ -1898,7 +1898,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/user-data-export.ts:2235-2237",
+            "pattern": "src/services/user-data-export.ts:2234-2236",
             "anchor": "if (providerFilesPending !== 0)",
             "behavior": "Transactional account erasure refuses while any owner-scoped provider Batch file or upload intent lacks durable deletion proof.",
             "replacementTest": "__tests__/services/user-data-export.test.ts",
