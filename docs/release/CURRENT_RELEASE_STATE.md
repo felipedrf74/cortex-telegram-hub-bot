@@ -1,10 +1,19 @@
 # Current Release State
 
 > **Process changed 2026-08-07** — see [`continuous-deployment.md`](continuous-deployment.md).
-> Signed state observed 2026-08-30; superseded snapshots remain in Git history.
+> Signed state observed 2026-09-03; superseded snapshots remain in Git history.
 > Authority: `sudo -n /usr/local/sbin/nexus-release-state-view`, backed by `/var/lib/nexus-release/state/release-state.json` and `/var/lib/nexus-release/receipts/`; `docs/release/release-state.json` is generated and non-authoritative.
 
-## Final implementation anchor — 2026-08-30
+## Implementation anchor — 2026-09-03 (Decision Center, Content Creation, Secretary, Training)
+
+- The active completed, provable v3 receipt is `fbc8643aa600ada31c613fdbc9c2cd4f` for protected-main source `b75fd6911162cfd41925466db3bb5523f77114d4` (completed `2026-09-03T20:57:52.175Z`, payload `sha256:959133837132618a3f5e77db374fa2f3a5d73d2c6cd7018b6cd85faf167f87e2`). Post-switch `/health` and `/public-status` returned healthy/ok.
+- That source contains, by ancestry: the Decision Center command-receipt backend (PR #430, `e96c1ccf`, first proven by receipt `2d00cf60689040a70ad25058b049a056` completed `2026-09-03T17:56:30.693Z`); the Content Creation hardening (PR #429, `2aad3bec`, findings B1, B2, N1–N11 and the CodeQL closures); the Secretary delivery (PR #415, `517abb45`, first proven by receipt `bceecaa838b6c4e3e50b07758b78cefa`); and the Training skill delivery (PR #410, `12ff5342`). The docs-only PR #431 (`b75fd691`) superseded the in-flight `2aad3bec` publication, so `fbc8643a` is the terminal receipt for all four.
+- Decision receipts are immutable, scope-bound, and fail-closed for predecessor rows: exact retries of pre-receipt review/edit/viewed keys replay, non-provable predecessor identities return `DECISION_EXECUTION_RECOVERY_REQUIRED`, and Content approval invalidates content-derived caches only after verified readback (including reconciled outcomes). Migration count is 303; no Decision migration was added.
+- Test-cleanup governance moved with the base: the Content retirement mappings and the classifier baseline constant bind to `e96c1ccf`, and the receipts suite has a declared cleanup mapping scoring 100% on its governed range.
+- iOS: Decision Center 1.5.1 (316) was built by Xcode Cloud from iOS protected main `7e039ac6fc727392b97c736b7185af2a58bb2606` (iOS PR #73) and is processed in App Store Connect in the internal TestFlight group only. Signed-device P0/P1, APNs/report-cycle observation, App Review, and public rollout remain `MANUAL_REQUIRED`; nothing from builds 312/313/315 carries forward. See the iOS repo's `docs/beta/release-evidence-current.md` and `docs/qa/QA_IOS_REPORT.md`.
+- Still `MANUAL_REQUIRED` for Training and Secretary: live Google/Outlook/wearable provider staging, physical-device E3 and two-account cache isolation, soak floors, and Felipe's final GO/activation. Deployment of guarded code is not activation evidence.
+
+## Prior implementation anchor — 2026-08-30
 
 - A completed, provable, non-stale v3 receipt proves protected-main source `02da8e27a31c39d24887f6fa40f816ecad694e38` and its exact signed image pair. Fresh live verification matched that source to the backend runtime and healthy three-service production topology.
 - The serving source contains Release A migrations 297–301, all six script-job creation/completion release-identity writers, the isolated OpenAI Batch project binding, the GPT-5.6 visible-output correction, and the transaction-bound PM2 control-plane successor. Production SQLite passed integrity and foreign-key checks; migration 299 is present exactly once and all six live release-identity columns exist.
