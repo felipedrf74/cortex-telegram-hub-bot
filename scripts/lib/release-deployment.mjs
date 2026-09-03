@@ -1735,6 +1735,14 @@ export async function runReleaseDeployment({
       teardown = { status: 1 };
     }
     if (!teardown || teardown.status !== 0) {
+      const teardownProof = teardown?.teardownProof ?? {
+        classification: 'compose_down_failed',
+        attempts: 0,
+        elapsedMs: 0,
+      };
+      log(`pre-production teardown proof: ${
+        teardownProof.classification
+      } attempts=${teardownProof.attempts} elapsedMs=${teardownProof.elapsedMs}`);
       store.block({
         releaseId,
         reason: BLOCK_REASONS.PREPRODUCTION_TEARDOWN_FAILED,
@@ -1757,6 +1765,7 @@ export async function runReleaseDeployment({
           outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
           reason: 'preproduction_teardown_failed',
           releaseId,
+          teardownProof,
         },
       };
     }
@@ -2553,6 +2562,14 @@ export async function runReleaseDeployment({
       teardown = { status: 1 };
     }
     if (!teardown || teardown.status !== 0) {
+      const teardownProof = teardown?.teardownProof ?? {
+        classification: 'compose_down_failed',
+        attempts: 0,
+        elapsedMs: 0,
+      };
+      log(`pre-production teardown proof: ${
+        teardownProof.classification
+      } attempts=${teardownProof.attempts} elapsedMs=${teardownProof.elapsedMs}`);
       store.block({
         releaseId,
         reason: BLOCK_REASONS.PREPRODUCTION_TEARDOWN_FAILED,
@@ -2573,6 +2590,7 @@ export async function runReleaseDeployment({
         outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
         reason: 'preproduction_teardown_failed',
         releaseId,
+        teardownProof,
       };
     }
     store.reject({ releaseId, reason: 'staging_failed' });
