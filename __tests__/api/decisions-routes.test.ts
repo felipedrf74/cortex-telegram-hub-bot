@@ -10,6 +10,7 @@ const mockDecisionRefreshSupportedForDecision = vi.fn();
 const mockListHandledByNexusItems = vi.fn();
 const mockGetDecisionItem = vi.fn();
 const mockGetDecisionItemForCommand = vi.fn();
+const mockGetDecisionMutationCommandReceipt = vi.fn();
 const mockEvaluateDecisionApnsActionRequest = vi.fn();
 const mockIsDecisionActionAttemptReplay = vi.fn();
 const mockPerformDecisionAction = vi.fn();
@@ -63,6 +64,7 @@ vi.mock('../../src/services/decision-center', () => ({
   runDecisionSourceStateSupersessionJob: vi.fn(),
   getDecisionItem: (...args: unknown[]) => mockGetDecisionItem(...args),
   getDecisionItemForCommand: (...args: unknown[]) => mockGetDecisionItemForCommand(...args),
+  getDecisionMutationCommandReceipt: (...args: unknown[]) => mockGetDecisionMutationCommandReceipt(...args),
   evaluateDecisionApnsActionRequest: (...args: unknown[]) => mockEvaluateDecisionApnsActionRequest(...args),
   isDecisionActionAttemptReplay: (...args: unknown[]) => mockIsDecisionActionAttemptReplay(...args),
   performDecisionAction: (...args: unknown[]) => mockPerformDecisionAction(...args),
@@ -146,6 +148,29 @@ interface MockRes {
   json(body: any): MockRes;
   setHeader(name: string, value: string): MockRes;
   end(): MockRes;
+}
+
+function commandReceipt(
+  operation: string,
+  actionId?: string,
+  status: 'succeeded' | 'partially_failed' | 'failed' = 'succeeded',
+) {
+  return {
+    schemaVersion: 'decision_command_receipt@1.0.0',
+    receiptId: `dcr_${'a'.repeat(64)}${status === 'partially_failed' ? '_partial' : ''}`,
+    decisionId: 'nc_1',
+    operation,
+    ...(actionId ? { actionId } : {}),
+    idempotencyKeyHash: 'b'.repeat(64),
+    status,
+    completedAt: '2026-09-03T10:00:00.000Z',
+    verification: {
+      readBackOk: status === 'succeeded',
+      expectedEffect: {},
+      actualEffect: {},
+      message: `Decision ${operation} ${status}.`,
+    },
+  };
 }
 
 function mockRes(onSend?: () => void): MockRes {
@@ -236,6 +261,7 @@ describe('Decision routes', () => {
     mockListHandledByNexusItems.mockReset();
     mockGetDecisionItem.mockReset();
     mockGetDecisionItemForCommand.mockReset();
+    mockGetDecisionMutationCommandReceipt.mockReset();
     mockEvaluateDecisionApnsActionRequest.mockReset();
     mockIsDecisionActionAttemptReplay.mockReset();
     mockPerformDecisionAction.mockReset();
@@ -319,6 +345,7 @@ describe('Decision routes', () => {
       alternativeActions: [{ id: 'dismiss', label: 'Dismiss', style: 'secondary' }],
     });
     mockGetDecisionItemForCommand.mockImplementation((...args: unknown[]) => mockGetDecisionItem(...args));
+    mockGetDecisionMutationCommandReceipt.mockReturnValue(null);
     mockPerformDecisionAction.mockResolvedValue({ actionId: 'open_detail', idempotent: false, status: 'succeeded', item: { decisionId: 'nc_1', status: 'read' } });
     mockReviewDecision.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'approved' });
     mockReviseDecisionProposal.mockReturnValue({
@@ -335,6 +362,7 @@ describe('Decision routes', () => {
       events: [{ event: 'created', createdAt: '2026-05-19T10:00:00.000Z' }],
       conflicts: [],
       executions: [],
+      commandReceipts: [],
     });
     mockRefreshDecisionItem.mockReturnValue({
       item: { decisionId: 'nc_1', status: 'read', recordVersion: 2 },
@@ -755,8 +783,101 @@ describe('Decision routes', () => {
     expect(mockMarkDecisionViewed).toHaveBeenCalledWith('nc_1', 7, 17, {
       idempotencyKey: 'view-journal-1',
       expectedVersion: 4,
+      contextVersion: undefined,
       channel: 'rest',
     });
+  });
+
+  it('adds immutable receipts to lifecycle success, error, refresh, and history carriers', async () => {
+    const router = decisionRoutes();
+    const viewedReceipt = commandReceipt('mark_viewed');
+    mockGetDecisionMutationCommandReceipt.mockReturnValueOnce(viewedReceipt);
+    const viewed = await dispatch(router, 'PATCH', '/nc_1/viewed', {}, {
+      idempotencyKey: 'view-receipt-k1',
+      expectedVersion: 4,
+      contextVersion: 'ctx-current-4',
+    });
+    expect(viewed.body.data).toMatchObject({ commandReceipt: viewedReceipt });
+
+    const refreshReceipt = commandReceipt('refresh');
+    mockRefreshDecisionItem.mockReturnValueOnce({
+      item: { decisionId: 'nc_1', status: 'read', recordVersion: 4 },
+      refreshedAt: '2026-09-03T10:00:00.000Z',
+      commandReceipt: refreshReceipt,
+    });
+    const refreshed = await dispatch(router, 'POST', '/nc_1/refresh', {}, {
+      idempotencyKey: 'refresh-receipt-k1',
+      expectedVersion: 4,
+      contextVersion: 'ctx-current-4',
+    });
+    expect(refreshed.body.data.commandReceipt).toEqual(refreshReceipt);
+
+    const failedReceipt = commandReceipt('act', 'open_detail', 'failed');
+    mockPerformDecisionAction.mockRejectedValueOnce(new DecisionActionError(
+      'DECISION_ACTION_FAILED',
+      'The action failed.',
+      409,
+    ));
+    mockGetDecisionMutationCommandReceipt.mockReturnValueOnce(failedReceipt);
+    const failed = await dispatch(router, 'POST', '/nc_1/actions', {}, {
+      actionId: 'open_detail',
+      idempotencyKey: 'failed-receipt-k1',
+    });
+    expect(failed.statusCode).toBe(409);
+    expect(failed.body.error.details.commandReceipt).toEqual(failedReceipt);
+
+    mockGetDecisionAuditHistory.mockReturnValueOnce({
+      events: [],
+      conflicts: [],
+      executions: [],
+      commandReceipts: [viewedReceipt, refreshReceipt, failedReceipt],
+    });
+    const history = await dispatch(router, 'GET', '/nc_1/history');
+    expect(history.body.data.commandReceipts).toEqual([viewedReceipt, refreshReceipt, failedReceipt]);
+  });
+
+  it.each([
+    'IDEMPOTENCY_KEY_REUSED',
+    'DECISION_ACTION_PAYLOAD_MISMATCH',
+  ])('never attaches a prior succeeded receipt to %s errors', async (code) => {
+    const router = decisionRoutes();
+    const priorSuccess = commandReceipt('act', 'approve_script', 'succeeded');
+    mockGetDecisionMutationCommandReceipt.mockReturnValue(priorSuccess);
+    mockPerformDecisionAction.mockRejectedValueOnce(new DecisionActionError(
+      code,
+      'The command does not match the prior attempt.',
+      409,
+      { commandReceipt: priorSuccess, priorActionId: 'approve_script' },
+    ));
+
+    const response = await dispatch(router, 'POST', '/nc_1/actions', {}, {
+      actionId: 'approve_script',
+      idempotencyKey: 'reused-success-key',
+      payload: { changed: true },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error.code).toBe(code);
+    expect(response.body.error.details).toEqual({ priorActionId: 'approve_script' });
+    expect(response.body.error.details).not.toHaveProperty('commandReceipt');
+  });
+
+  it('keeps the route fallback code when a generic error carries a prior receipt', async () => {
+    const router = decisionRoutes();
+    const priorReceipt = commandReceipt('mark_viewed', null, 'succeeded');
+    mockGetDecisionMutationCommandReceipt.mockReturnValue(priorReceipt);
+    mockMarkDecisionViewed.mockImplementationOnce(() => {
+      throw new Error('projection exploded');
+    });
+
+    const response = await dispatch(router, 'PATCH', '/nc_1/viewed', {}, {
+      idempotencyKey: 'viewed-generic-error-key',
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body.error.code).toBe('DECISION_VIEW_FAILED');
+    expect(response.body.error.details.commandReceipt).toEqual(priorReceipt);
+    expect(JSON.stringify(response.body)).not.toContain('projection exploded');
   });
 
   it('derives version-bound replay keys for old review and proposal clients', async () => {

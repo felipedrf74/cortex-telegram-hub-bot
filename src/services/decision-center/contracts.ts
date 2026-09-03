@@ -3,6 +3,7 @@
 import { DecisionCenterError } from './errors';
 
 export const DECISION_MUTATION_COMMAND_SCHEMA_VERSION = 'decision_mutation_command@1.0.0' as const;
+export const DECISION_COMMAND_RECEIPT_SCHEMA_VERSION = 'decision_command_receipt@1.0.0' as const;
 
 export interface DecisionScope {
   readonly userId: number;
@@ -60,6 +61,55 @@ export type DecisionMutationOperation =
   | 'unsuppress_type'
   | 'record_exposure'
   | 'recompute_plan';
+
+export type DecisionCommandReceiptStatus = 'succeeded' | 'partially_failed' | 'failed';
+
+/**
+ * Privacy-minimized immutable readback captured for one exact mutation.
+ * The full current item remains the top-level response and is deliberately not
+ * duplicated into the receipt because it contains user-authored copy and scope
+ * identifiers.
+ */
+export interface DecisionCommandReceiptReadbackItem {
+  readonly decisionId: string;
+  readonly recordVersion: number;
+  readonly contextVersion?: string;
+  readonly status: string;
+  readonly snoozedUntil?: string;
+  readonly actionId?: string;
+  readonly actionStatus?: string;
+}
+
+export interface DecisionCommandReceiptVerification {
+  readonly readBackOk: boolean;
+  readonly expectedEffect: Readonly<Record<string, unknown>>;
+  readonly actualEffect: Readonly<Record<string, unknown>>;
+  readonly message: string;
+}
+
+/**
+ * Stable evidence for the original idempotent command. The enclosing response
+ * may contain a newer current item; this object always describes the exact
+ * attempt bound to `idempotencyKeyHash`.
+ */
+export interface DecisionCommandReceipt {
+  readonly schemaVersion: typeof DECISION_COMMAND_RECEIPT_SCHEMA_VERSION;
+  readonly receiptId: string;
+  readonly decisionId: string;
+  readonly operation: DecisionMutationOperation;
+  readonly actionId?: string;
+  /** Lowercase SHA-256 hex of the stable key. The raw key never crosses this contract. */
+  readonly idempotencyKeyHash: string;
+  readonly status: DecisionCommandReceiptStatus;
+  readonly executionAttemptId?: string;
+  readonly completedAt: string;
+  readonly requestedRecordVersion?: number;
+  readonly requestedContextVersion?: string;
+  readonly resultRecordVersion?: number;
+  readonly resultContextVersion?: string;
+  readonly readbackItem?: DecisionCommandReceiptReadbackItem;
+  readonly verification?: DecisionCommandReceiptVerification;
+}
 
 export type DecisionApprovalLevel =
   | 'none'

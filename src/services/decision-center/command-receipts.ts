@@ -2,7 +2,13 @@
 
 import { createHash } from 'node:crypto';
 import { getDb } from '../database';
-import type { DecisionMutationCommand } from './contracts';
+import type { DecisionCommandReceipt, DecisionMutationCommand } from './contracts';
+import {
+  createDecisionCommandReceipt,
+  decisionCommandReceiptId,
+  persistDecisionCommandReceipt,
+  readDecisionCommandReceipt,
+} from './command-response-receipts';
 import { DecisionCenterError } from './errors';
 
 export const DECISION_MUTATION_RECEIPT_SCHEMA_VERSION = 'decision_mutation_receipt@1.0.0' as const;
@@ -16,9 +22,15 @@ interface StoredMutationReceipt<Result> {
   readonly result: Result;
 }
 
+interface StoredMutationReceiptRow<Result> {
+  readonly receipt: StoredMutationReceipt<Result>;
+  readonly createdAt: string;
+}
+
 export interface DecisionMutationReceiptResult<Result> {
   readonly result: Result;
   readonly idempotent: boolean;
+  readonly commandReceipt?: DecisionCommandReceipt;
 }
 
 /**
@@ -62,20 +74,27 @@ export function executeDecisionMutationWithReceipt<Result>(
       JSON.stringify(receipt),
       command.requestedAt,
     );
-    return Object.freeze({ result, idempotent: false });
+    const commandReceipt = persistResponseReceipt(
+      command,
+      result,
+      requestHash,
+      new Date().toISOString(),
+    );
+    return Object.freeze({ result, idempotent: false, commandReceipt });
   })();
 }
 
 function replayReceipt<Result>(
-  receipt: StoredMutationReceipt<Result>,
+  row: StoredMutationReceiptRow<Result>,
   command: DecisionMutationCommand,
   requestHash: string,
 ): DecisionMutationReceiptResult<Result> {
+  const { receipt } = row;
+  const compatibleIdentity = matchingStoredIdentity(receipt, command, requestHash);
   if (receipt.schemaVersion !== DECISION_MUTATION_RECEIPT_SCHEMA_VERSION
     || receipt.commandSchemaVersion !== command.schemaVersion
     || receipt.operation !== command.operation
-    || receipt.resourceId !== command.decisionId
-    || receipt.requestHash !== requestHash) {
+    || !compatibleIdentity) {
     throw new DecisionCenterError(
       'IDEMPOTENCY_KEY_REUSED',
       'This idempotency key was already used for a different Decision Center mutation.',
@@ -83,24 +102,133 @@ function replayReceipt<Result>(
       { operation: command.operation },
     );
   }
-  return Object.freeze({ result: receipt.result, idempotent: true });
+  const existingCommandReceipt = readDecisionCommandReceipt(
+    responseReceiptId(command),
+    command.decisionId,
+    command.scope.userId,
+    command.scope.tenantId,
+  );
+  // Predecessor binaries persisted the exact mutation result but did not yet
+  // create the additive command-response receipt. Exact replay upgrades that
+  // row in the same transaction, bound to the current opaque resource
+  // identity; the domain mutation is never executed again.
+  const commandReceipt = existingCommandReceipt ?? persistResponseReceipt(
+    command,
+    receipt.result,
+    receipt.requestHash,
+    row.createdAt,
+  );
+  return Object.freeze({
+    result: receipt.result,
+    idempotent: true,
+    ...(commandReceipt ? { commandReceipt } : {}),
+  });
+}
+
+function persistResponseReceipt<Result>(
+  command: DecisionMutationCommand,
+  result: Result,
+  requestHash: string,
+  completedAt: string,
+): DecisionCommandReceipt {
+  return persistDecisionCommandReceipt({
+    receipt: createDecisionCommandReceipt({
+      receiptId: responseReceiptId(command),
+      decisionId: command.decisionId,
+      operation: command.operation,
+      actionId: command.actionId,
+      idempotencyKey: command.idempotencyKey,
+      status: 'succeeded',
+      completedAt,
+      requestedRecordVersion: command.recordVersion,
+      requestedContextVersion: command.contextVersion,
+      verification: {
+        readBackOk: true,
+        expectedEffect: { requestHash },
+        actualEffect: {
+          resultHash: createHash('sha256').update(stableJson(result)).digest('hex'),
+        },
+        message: 'The exact mutation result was committed with its replay receipt.',
+      },
+    }),
+    userId: command.scope.userId,
+    tenantId: command.scope.tenantId,
+  });
+}
+
+function matchingStoredIdentity<Result>(
+  receipt: StoredMutationReceipt<Result>,
+  command: DecisionMutationCommand,
+  requestHash: string,
+): boolean {
+  if (receipt.resourceId === command.decisionId && receipt.requestHash === requestHash) return true;
+  return compatibleLegacyResourceIds(command).some((resourceId) => (
+    receipt.resourceId === resourceId
+    && receipt.requestHash === commandRequestHash(commandWithResourceIdentity(command, resourceId))
+  ));
+}
+
+function compatibleLegacyResourceIds(command: DecisionMutationCommand): string[] {
+  if (command.operation === 'update_preferences' && command.decisionId === 'decision-preferences') {
+    return [`decision-preferences:${command.scope.tenantId}:${command.scope.userId}`];
+  }
+  if ((command.operation === 'suppress_type' || command.operation === 'unsuppress_type')
+      && command.decisionId.startsWith('decision-suppression:')) {
+    const sourceSkill = command.payload.sourceSkill;
+    const type = command.payload.type;
+    const recipe = command.payload.recipe;
+    if (typeof sourceSkill === 'string' && sourceSkill
+        && typeof type === 'string' && type
+        && (recipe == null || typeof recipe === 'string')) {
+      return [`decision-suppression:${sourceSkill}:${type}:${recipe || '*'}`];
+    }
+  }
+  return [];
+}
+
+function commandWithResourceIdentity(
+  command: DecisionMutationCommand,
+  decisionId: string,
+): DecisionMutationCommand {
+  return {
+    ...command,
+    decisionId,
+    readback: {
+      ...command.readback,
+      entityId: decisionId,
+    },
+  };
+}
+
+function responseReceiptId(command: DecisionMutationCommand): string {
+  return decisionCommandReceiptId({
+    decisionId: command.decisionId,
+    operation: command.operation,
+    actionId: command.actionId,
+    userId: command.scope.userId,
+    tenantId: command.scope.tenantId,
+    idempotencyKey: command.idempotencyKey,
+  });
 }
 
 function readReceipt<Result>(
   eventId: string,
   userId: number,
   tenantId: number,
-): StoredMutationReceipt<Result> | null {
+): StoredMutationReceiptRow<Result> | null {
   const row = getDb().prepare(`
-    SELECT metadata_json AS metadataJson
+    SELECT metadata_json AS metadataJson, created_at AS createdAt
       FROM decision_lifecycle_events
      WHERE event_id = ? AND user_id = ? AND tenant_id = ?
-       AND event = 'mutation_receipt'
+       AND event = 'mutation_receipt' AND reason = 'idempotent_command_receipt'
      LIMIT 1
-  `).get(eventId, userId, tenantId) as { metadataJson: string } | undefined;
+  `).get(eventId, userId, tenantId) as { metadataJson: string; createdAt: string } | undefined;
   if (!row) return null;
   try {
-    return JSON.parse(row.metadataJson) as StoredMutationReceipt<Result>;
+    return {
+      receipt: JSON.parse(row.metadataJson) as StoredMutationReceipt<Result>,
+      createdAt: row.createdAt,
+    };
   } catch (cause) {
     throw new DecisionCenterError(
       'DECISION_MUTATION_RECEIPT_INVALID',
