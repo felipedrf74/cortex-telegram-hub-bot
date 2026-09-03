@@ -7168,6 +7168,49 @@ describe('release security and operations', () => {
     ]);
   });
 
+  it('proves exact project absence when teardown environment construction throws', () => {
+    const commands: string[][] = [];
+    const registry = createReleaseRegistry({
+      policy,
+      environmentGate: {
+        verify: () => { throw new Error('stale runtime environment'); },
+      },
+      exec: (_bin, args) => {
+        commands.push(args);
+        if ((args[0] === 'container' || args[0] === 'network') && args[1] === 'ls') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected Docker command: ${args.join(' ')}`);
+      },
+    });
+
+    const result = registry.composeDown({
+      composeFile: join(workspace, 'compose.yml'),
+      environment: 'staging',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+
+    expect(result).toMatchObject({
+      status: 0,
+      alreadyAbsent: true,
+      teardownProof: { classification: 'absent_after_attempts', attempts: 1 },
+    });
+    expect(commands).toEqual([
+      [
+        'container', 'ls', '--all', '--filter',
+        `label=com.docker.compose.project=${policy.environments.staging.composeProject}`,
+        '--format', '{{.ID}}',
+      ],
+      [
+        'network', 'ls', '--filter',
+        `label=com.docker.compose.project=${policy.environments.staging.composeProject}`,
+        '--format', '{{.ID}}',
+      ],
+    ]);
+  });
+
   it('accepts a failed Compose teardown when exact resource absence settles within its bound', () => {
     let networkListings = 0;
     const sleeps: number[] = [];

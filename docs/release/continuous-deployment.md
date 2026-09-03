@@ -61,9 +61,11 @@ systemd cannot kill the process merely because individually valid discovery and
 mutation phases exceeded a guessed aggregate.
 
 When a controller transition retires an accepted staging candidate, a failed
-`compose down` is accepted as an idempotent no-op only after Docker proves that
-both containers and networks bearing that exact governed Compose-project label
-are absent. The proof allows only a short bounded recheck for Docker's final
+`compose down` or a failure to reconstruct its full runtime environment is
+accepted as an idempotent no-op only after Docker proves that both containers
+and networks bearing that exact governed Compose-project label are absent. The
+absence census needs only the closed policy project name, so a stale runtime
+environment cannot prevent recovery. The proof allows only a short bounded recheck for Docker's final
 network-removal settlement (at most thirty seconds). A partial project, a
 different project, an unavailable Docker enumeration, or resources that remain
 after that bound is a hard teardown failure and blocks further deployment. The
