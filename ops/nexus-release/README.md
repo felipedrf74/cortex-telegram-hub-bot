@@ -6269,6 +6269,11 @@ container while explicitly blanking it in the migrator. This prevents a valid
 host path from becoming an unreadable container path while avoiding a broad
 secret directory mount. Never print the path, PEM, or its digest during
 verification.
+The poller runs with `ProtectHome=yes`, so a referenced key file must not live
+under `/home`, `/root`, or `/run/user`. Keep it in a root-owned mode-0700
+directory under `/etc/nexus-release`, retain mode 0600 and one link on the file,
+and reference that exact non-symlink path from both backend environment files.
+Do not weaken `ProtectHome` or expose a broad home or secrets directory.
 Rotate a pair only as one owner-controlled transaction while no release attempt
 is running. `INTERNAL_API_SECRET` must be present with the same raw value in
 both files of a pair.
@@ -9598,6 +9603,13 @@ fixed source, severity, dedupe key, action, and this runbook URL. `release` and
 a trustworthy identity; filling them from a moving tag or error text would
 fabricate evidence. Raw exception text, logs, and provider bodies are never
 persisted or sent.
+The outer controller catch also writes one closed diagnostic code to the local
+systemd journal without persisting or sending raw exception text. An APNs file
+that the staging or production environment gate cannot open is classified as
+`staging_apns_material_unavailable` or
+`production_apns_material_unavailable`; every other exception remains
+`release_controller_exception`. The durable discovery alert remains
+`release_discovery_failed` and the process still exits nonzero.
 
 Inspect the closed state without reading provider output:
 
