@@ -153,6 +153,33 @@ describe('Decision Center command receipts', () => {
       .toThrow(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
   });
 
+  it.each([
+    ['schemaVersion', 'decision_mutation_receipt@0.9.0'],
+    ['commandSchemaVersion', 'decision_mutation_command@0.0.1'],
+    ['operation', 'suppress_type'],
+  ] as const)('rejects replay when the stored receipt %s no longer matches the command', (field, value) => {
+    let executions = 0;
+    executeDecisionMutationWithReceipt(command(), () => {
+      executions += 1;
+      return { pushEnabled: true };
+    });
+    const row = testDb.prepare(`
+      SELECT event_id AS eventId, metadata_json AS metadataJson FROM decision_lifecycle_events
+       WHERE event = 'mutation_receipt' AND reason = 'idempotent_command_receipt'
+    `).get() as { eventId: string; metadataJson: string };
+    const tampered = { ...JSON.parse(row.metadataJson), [field]: value };
+    testDb.prepare('UPDATE decision_lifecycle_events SET metadata_json = ? WHERE event_id = ?')
+      .run(JSON.stringify(tampered), row.eventId);
+
+    // A stored receipt that no longer describes this exact command contract
+    // must never replay as that command's success, and must never re-execute.
+    expect(() => executeDecisionMutationWithReceipt(command(), () => {
+      executions += 1;
+      return { pushEnabled: true };
+    })).toThrow(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
+    expect(executions).toBe(1);
+  });
+
   it('atomically backfills a canonical receipt for a predecessor preference identity', () => {
     let executions = 0;
     const legacy = command(
