@@ -297,7 +297,10 @@ export function classifyTestGroups(files, policy) {
   for (const file of files) {
     if (!isRelevantPath(file)) continue;
     const owners = groupsForPath(file, policy);
-    if (owners.length === 0) unmapped.push(file);
+    // Only the three iOS-repository projections belong exclusively to XCTest.
+    // Repository-owned Swift elsewhere must still fail closed when unowned.
+    const isExternalIOSSwift = /^(?:Nexus Hub|Nexus HubTests|Nexus HubUITests)\/.+\.swift$/.test(file);
+    if (owners.length === 0 && !isExternalIOSSwift) unmapped.push(file);
     owners.forEach((owner) => mapped.add(owner));
   }
   return { groups: [...mapped].sort(), unmapped: [...new Set(unmapped)].sort() };

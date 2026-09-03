@@ -447,6 +447,10 @@ export function classifyChangedFiles({
   let xctestMode = 'skip';
   if (flags.iosSrc) {
     xctestMode = 'focused';
+    for (const file of files) {
+      const changedTest = /^(Nexus Hub(?:UI)?Tests)\/(?:.*\/)?([^/]+Tests)\.swift$/.exec(file);
+      if (changedTest) xctestClasses.push(`${changedTest[1]}/${changedTest[2]}`);
+    }
     if (flags.iosUi) xctestClasses.push('Nexus HubUITests/*');
     if (flags.iosAuth) xctestClasses.push('Nexus HubTests/AppleSignInNonceTests', 'Nexus HubTests/KeychainHelperTests', 'Nexus HubTests/AuthManagerFixtureLeakTests', 'Nexus HubTests/AuthManagerPersistenceTests', 'Nexus HubTests/AuthUserPresentationTests', 'Nexus HubTests/GoogleAuthCallbackResolverTests');
     if (flags.iosNavigation) xctestClasses.push('Nexus HubTests/NavigationPerformanceSourcePinsTests', 'Nexus HubTests/MainTabViewBadgeMemoizationTests', 'Nexus HubUITests/AppWideResponsivenessUITests', 'Nexus HubUITests/HomeWeekNavigationPerformanceUITests');

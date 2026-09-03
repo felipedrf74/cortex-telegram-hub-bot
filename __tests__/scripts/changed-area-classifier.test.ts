@@ -114,6 +114,73 @@ describe('lean changed-area classification', () => {
     expect(result.flags.fullSuiteTrigger).toBe(false);
   });
 
+  it('routes external iOS Swift changes to XCTest without requiring a Vitest owner', () => {
+    const result = classify([
+      'Nexus Hub/ViewModels/DecisionCenterViewModel.swift',
+      'Nexus HubTests/NotificationDecisionCenterTests.swift',
+      'Nexus HubUITests/NotificationDecisionCenterUITests.swift',
+    ]);
+
+    expect(result.flags).toMatchObject({
+      iosSrc: true,
+      iosTest: true,
+      iosUi: true,
+    });
+    expect(result.tiers).toContain('T2');
+    expect(result.vitest).toMatchObject({
+      mode: 'skip',
+      groups: [],
+      skipReason: 'no Vitest-owned group changed',
+    });
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toEqual(expect.arrayContaining([
+      'Nexus HubUITests/*',
+      'Nexus HubTests/NotificationDecisionCenterTests',
+    ]));
+  });
+
+  it('keeps backend Vitest and external XCTest ownership in a mixed change', () => {
+    const result = classify([
+      'src/services/notification-orchestrator.ts',
+      'Nexus Hub/ViewModels/DecisionCenterViewModel.swift',
+      'Nexus HubTests/NotificationDecisionCenterTests.swift',
+      'Nexus HubUITests/NotificationDecisionCenterUITests.swift',
+    ]);
+
+    expect(result.vitest).toMatchObject({
+      mode: 'focused',
+      groups: ['tasks-notifications'],
+      skipReason: null,
+    });
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toEqual(expect.arrayContaining([
+      'Nexus HubUITests/*',
+      'Nexus HubTests/NotificationDecisionCenterTests',
+    ]));
+  });
+
+  it('selects a newly added external XCTest class by its source filename', () => {
+    const result = classify([
+      'Nexus HubTests/BrandNewFeatureTests.swift',
+    ]);
+
+    expect(result.vitest.mode).toBe('skip');
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toContain('Nexus HubTests/BrandNewFeatureTests');
+  });
+
+  it.each([
+    ['scripts/backend-policy-check.swift', 'release-ops'],
+    ['migrations/backend-schema-check.swift', 'migrations'],
+  ])('retains configured Vitest ownership for %s', (file, group) => {
+    const result = classify([file]);
+
+    expect(result.flags.iosSrc).toBe(true);
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.groups).toContain(group);
+    expect(result.xctest.mode).toBe('focused');
+  });
+
   it('maps the protected-main intent routing rollout to chat-secretary', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-groups.json', 'utf8'));
     const files = [
@@ -358,6 +425,18 @@ describe('lean changed-area classification', () => {
     expect(result.stderr).toContain('config/test-groups.json');
   });
 
+  it('fails closed for an unmapped repository-owned Swift source path', () => {
+    const result = spawnSync('bash', [
+      'scripts/changed-area-classifier.sh',
+      '--json',
+      '--files',
+      'src/new-unowned-area.swift',
+    ], { encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Test-group policy has no owner');
+    expect(result.stderr).toContain('src/new-unowned-area.swift');
+  });
+
   it('fails closed when Git cannot resolve changed-file impact from an ancestor', () => {
     expect(() => assertResolvedChangeImpact(false, 'non-ancestor-sha')).toThrow(
       /base 'non-ancestor-sha' is not an ancestor of HEAD.*full-suite fallback is intentionally disabled/,
@@ -388,10 +467,19 @@ describe('lean changed-area classification', () => {
     expect(classifyTestGroups([
       'src/services/content-workflow.ts',
       'src/services/new-unowned-area.ts',
+      'src/services/new-unowned-area.swift',
+      'Nexus Hub/ViewModels/ExternalProjection.swift',
+      'Nexus Hub/ViewModels/ExternalProjection.swift.bak',
+      'src/Nexus Hub/ViewModels/Embedded.swift',
       'docs/testing.md',
     ], policy)).toEqual({
       groups: ['content'],
-      unmapped: ['src/services/new-unowned-area.ts'],
+      unmapped: [
+        'Nexus Hub/ViewModels/ExternalProjection.swift.bak',
+        'src/Nexus Hub/ViewModels/Embedded.swift',
+        'src/services/new-unowned-area.swift',
+        'src/services/new-unowned-area.ts',
+      ],
     });
   });
 

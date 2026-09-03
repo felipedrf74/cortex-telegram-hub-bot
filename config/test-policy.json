@@ -1280,9 +1280,9 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "scripts/lib/test-groups.mjs:295-302",
-            "anchor": "if (owners.length === 0) unmapped.push(file);",
-            "behavior": "The retained classifier contract must report unmapped production owners without selecting a global fallback.",
+            "pattern": "scripts/lib/test-groups.mjs:295-303",
+            "anchor": "if (owners.length === 0 && !isExternalIOSSwift) unmapped.push(file);",
+            "behavior": "The retained classifier contract must report unmapped repository-owned paths, including Swift sources, while leaving only the three ownerless external iOS Swift projections to XCTest.",
             "replacementTest": "__tests__/scripts/changed-area-classifier.test.ts",
             "ownerTestNamePattern": "maps changed paths and reports unmapped production owners without a full fallback$",
             "minimumMutants": 1
