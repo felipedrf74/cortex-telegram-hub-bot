@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "86d3ee86cbec7cbcd00dc45c1d66e9539fcbe0b7a745e36bdc4cc8672c9980dd",
-    "baseCommit": "ad0c3f823a4e7e316cda2a2687efb8b84dff9b83",
-    "baseCommitTimestamp": "2026-09-03T20:17:25+01:00",
+    "sourceDigest": "e34f0075727c3f39c668773635ac5376019072044062e76120cc5bf9675fb829",
+    "baseCommit": "5469210944c967dbfd7d478b217bc298a03e0c6e",
+    "baseCommitTimestamp": "2026-09-03T21:42:07+01:00",
     "trackedFiles": 3599,
     "sourceFiles": 1262
   },
@@ -6052,7 +6052,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 811968,
+      "bytes": 811971,
       "generated": false
     },
     {
