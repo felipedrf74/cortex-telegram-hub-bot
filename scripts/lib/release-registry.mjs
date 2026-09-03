@@ -287,10 +287,22 @@ export function createReleaseRegistry({
   }
 
   function composeDown({ composeFile, environment, images, releaseIdentity, planDir }) {
-    const result = docker(composeArgs(composeFile, ['down', '--remove-orphans']), {
-      env: composeEnv({ environment, images, releaseIdentity, planDir }),
-      allowFailure: true,
-    });
+    const target = policy.environments[environment];
+    if (!target) fail(`unknown release environment ${environment}`);
+    let result;
+    try {
+      result = docker(composeArgs(composeFile, ['down', '--remove-orphans']), {
+        env: composeEnv({ environment, images, releaseIdentity, planDir }),
+        allowFailure: true,
+      });
+    } catch {
+      // Teardown is also the recovery path for an accepted pre-production
+      // release. If its full runtime environment can no longer be rendered,
+      // the exact project-label census below is still sufficient to prove that
+      // no governed staging resource exists. Present or unreadable resources
+      // continue to fail closed.
+      result = { status: 1, stdout: '', stderr: '' };
+    }
     if (result.status === 0) return result;
 
     // `docker compose down` can return non-zero while its last network removal
@@ -298,8 +310,6 @@ export function createReleaseRegistry({
     // both kinds of resources owned by this exact governed project are absent.
     // A partial stack, an unknown project, or an uninspectable Docker daemon
     // remains a teardown failure for the deployment layer to block.
-    const target = policy.environments[environment];
-    if (!target) fail(`unknown release environment ${environment}`);
     const projectLabel = `label=com.docker.compose.project=${target.composeProject}`;
     const settleStartedAt = Date.now();
     const proof = (classification, attempts) => ({
