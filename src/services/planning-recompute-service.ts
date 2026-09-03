@@ -13,6 +13,13 @@ import {
 } from './secretary-planning-context';
 import { buildSecretaryDaySnapshot } from './secretary-planning-snapshot';
 import { composeWeeklyPlan, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
+import type { DecisionCommandReceipt } from './decision-center/contracts';
+import {
+  createDecisionCommandReceipt,
+  decisionCommandReceiptId,
+  persistDecisionCommandReceipt,
+  readDecisionCommandReceipt,
+} from './decision-center/command-response-receipts';
 
 const RECOMPUTE_LEASE_MINUTES = 5;
 const RECOMPUTE_LEASE_HEARTBEAT_MS = 60_000;
@@ -51,6 +58,7 @@ export interface PlanningRecomputeInput {
 export interface PlanningRecomputeResult {
   week: WeeklyPlanResponse;
   today: DailyBriefResponse;
+  commandReceipt?: DecisionCommandReceipt;
 }
 
 interface RecomputeReceiptRow {
@@ -58,11 +66,13 @@ interface RecomputeReceiptRow {
   status: 'processing' | 'completed' | 'failed';
   leaseExpiresAt: string | null;
   responseJson: string | null;
+  updatedAt: string;
 }
 
 interface NormalizedRecomputeRequest {
   weekStart: string;
   date: string;
+  idempotencyKey: string;
   keyHash: string;
   requestFingerprint: string;
 }
@@ -112,7 +122,7 @@ export async function recomputePlanningSnapshot(
   const db = getDb();
   const existing = readReceipt(db, input.userId, input.tenantId, normalized.keyHash);
   const replay = resolveExistingReceipt(existing, normalized.requestFingerprint, context.capturedAt);
-  if (replay) return replay;
+  if (replay) return attachRecomputeCommandReceipt(replay, input, normalized);
 
   const leaseToken = randomUUID();
   const leaseExpiresAt = DateTime.fromISO(context.capturedAt, { zone: 'utc' })
@@ -132,7 +142,7 @@ export async function recomputePlanningSnapshot(
   if (!claimed) {
     const winner = readReceipt(db, input.userId, input.tenantId, normalized.keyHash);
     const winnerReplay = resolveExistingReceipt(winner, normalized.requestFingerprint, context.capturedAt);
-    if (winnerReplay) return winnerReplay;
+    if (winnerReplay) return attachRecomputeCommandReceipt(winnerReplay, input, normalized);
     throw new PlanningRecomputeError(
       'PLANNING_RECOMPUTE_IN_PROGRESS',
       'A recompute with this idempotency key is already in progress.',
@@ -177,40 +187,74 @@ export async function recomputePlanningSnapshot(
     leaseHeartbeat.renewOrThrow();
     const result = { week, today };
     assertCoherentResult(result, normalized, context);
-    const completed = db.prepare(`
-      UPDATE planning_recompute_receipts
-         SET status = 'completed',
-             lease_token = NULL,
-             lease_expires_at = NULL,
-             snapshot_id = ?,
-             response_json = ?,
-             last_error_code = NULL,
-             updated_at = ?
-       WHERE receipt_id = ?
-         AND user_id = ?
-         AND tenant_id = ?
-         AND status = 'processing'
-         AND lease_token = ?
-    `).run(
-      snapshotId,
-      JSON.stringify(result),
-      context.capturedAt,
-      receiptId,
-      input.userId,
-      input.tenantId,
-      leaseToken,
-    );
+    const responseReceipt = createDecisionCommandReceipt({
+      receiptId: recomputeCommandReceiptId(input, normalized),
+      decisionId: recomputeReceiptResourceId(normalized),
+      operation: 'recompute_plan',
+      actionId: 'recompute_plan',
+      idempotencyKey: normalized.idempotencyKey,
+      status: 'succeeded',
+      completedAt: context.capturedAt,
+      verification: {
+        readBackOk: true,
+        expectedEffect: {
+          date: normalized.date,
+          weekStart: normalized.weekStart,
+          requestFingerprint: normalized.requestFingerprint,
+        },
+        actualEffect: {
+          coherent: true,
+          date: result.today.date,
+          weekStart: result.week.weekStart,
+          generatedAt: result.week.generatedAt,
+        },
+        message: 'The coherent weekly and daily snapshot was recorded exactly.',
+      },
+    });
+    const completed = db.transaction(() => {
+      const update = db.prepare(`
+        UPDATE planning_recompute_receipts
+           SET status = 'completed',
+               lease_token = NULL,
+               lease_expires_at = NULL,
+               snapshot_id = ?,
+               response_json = ?,
+               last_error_code = NULL,
+               updated_at = ?
+         WHERE receipt_id = ?
+           AND user_id = ?
+           AND tenant_id = ?
+           AND status = 'processing'
+           AND lease_token = ?
+      `).run(
+        snapshotId,
+        JSON.stringify(result),
+        context.capturedAt,
+        receiptId,
+        input.userId,
+        input.tenantId,
+        leaseToken,
+      );
+      if (update.changes === 1) {
+        persistDecisionCommandReceipt({
+          receipt: responseReceipt,
+          userId: input.userId,
+          tenantId: input.tenantId,
+        });
+      }
+      return update;
+    })();
     if (completed.changes !== 1) {
       const winner = readReceipt(db, input.userId, input.tenantId, normalized.keyHash);
       const winnerReplay = resolveExistingReceipt(winner, normalized.requestFingerprint, context.capturedAt);
-      if (winnerReplay) return winnerReplay;
+      if (winnerReplay) return attachRecomputeCommandReceipt(winnerReplay, input, normalized);
       throw new PlanningRecomputeError(
         'PLANNING_RECOMPUTE_IN_PROGRESS',
         'The recompute lease changed before the result could be recorded.',
         409,
       );
     }
-    return result;
+    return { ...result, commandReceipt: responseReceipt };
   } catch (error) {
     db.prepare(`
       UPDATE planning_recompute_receipts
@@ -345,7 +389,99 @@ function normalizeRequest(
     userId: input.userId,
     weekStart,
   })).digest('hex');
-  return { date, weekStart, keyHash, requestFingerprint };
+  return { date, weekStart, idempotencyKey, keyHash, requestFingerprint };
+}
+
+function recomputeReceiptResourceId(
+  request: Pick<NormalizedRecomputeRequest, 'date' | 'weekStart'>,
+): string {
+  return `planning-snapshot:${createHash('sha256')
+    .update(JSON.stringify({ date: request.date, weekStart: request.weekStart }))
+    .digest('hex')}`;
+}
+
+function recomputeCommandReceiptId(
+  input: Pick<PlanningRecomputeInput, 'userId' | 'tenantId'>,
+  request: NormalizedRecomputeRequest,
+): string {
+  return decisionCommandReceiptId({
+    decisionId: recomputeReceiptResourceId(request),
+    operation: 'recompute_plan',
+    actionId: 'recompute_plan',
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: request.idempotencyKey,
+  });
+}
+
+function attachRecomputeCommandReceipt(
+  result: PlanningRecomputeResult,
+  input: Pick<PlanningRecomputeInput, 'userId' | 'tenantId'>,
+  request: NormalizedRecomputeRequest,
+): PlanningRecomputeResult {
+  const decisionId = recomputeReceiptResourceId(request);
+  const existingCommandReceipt = readDecisionCommandReceipt(
+    recomputeCommandReceiptId(input, request),
+    decisionId,
+    input.userId,
+    input.tenantId,
+  );
+  const commandReceipt = existingCommandReceipt ?? backfillRecomputeCommandReceipt(
+    result,
+    input,
+    request,
+  );
+  return {
+    ...result,
+    commandReceipt,
+  };
+}
+
+function backfillRecomputeCommandReceipt(
+  result: PlanningRecomputeResult,
+  input: Pick<PlanningRecomputeInput, 'userId' | 'tenantId'>,
+  request: NormalizedRecomputeRequest,
+): DecisionCommandReceipt {
+  const row = readReceipt(getDb(), input.userId, input.tenantId, request.keyHash);
+  if (!row
+      || row.status !== 'completed'
+      || row.requestFingerprint !== request.requestFingerprint
+      || !row.responseJson) {
+    throw new PlanningRecomputeError(
+      'PLANNING_RECOMPUTE_RECEIPT_INVALID',
+      'The predecessor recompute receipt cannot prove its exact completed snapshot.',
+      500,
+    );
+  }
+  const receipt = createDecisionCommandReceipt({
+    receiptId: recomputeCommandReceiptId(input, request),
+    decisionId: recomputeReceiptResourceId(request),
+    operation: 'recompute_plan',
+    actionId: 'recompute_plan',
+    idempotencyKey: request.idempotencyKey,
+    status: 'succeeded',
+    completedAt: row.updatedAt,
+    verification: {
+      readBackOk: true,
+      expectedEffect: {
+        date: request.date,
+        weekStart: request.weekStart,
+        requestFingerprint: request.requestFingerprint,
+      },
+      actualEffect: {
+        coherent: true,
+        date: result.today.date,
+        weekStart: result.week.weekStart,
+        generatedAt: result.week.generatedAt,
+      },
+      message: 'The predecessor coherent planning snapshot was reconciled from its exact receipt.',
+    },
+  });
+  return getDb().transaction(() => persistDecisionCommandReceipt({
+    receipt,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  }))();
 }
 
 function normalizeIdempotencyKey(value: unknown): string {
@@ -395,7 +531,8 @@ function readReceipt(
     SELECT request_fingerprint AS requestFingerprint,
            status,
            lease_expires_at AS leaseExpiresAt,
-           response_json AS responseJson
+           response_json AS responseJson,
+           updated_at AS updatedAt
       FROM planning_recompute_receipts
      WHERE user_id = ? AND tenant_id = ? AND idempotency_key_hash = ?
      LIMIT 1

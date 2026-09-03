@@ -123,14 +123,27 @@ function sanitizeDecisionErrorDetails(details?: Record<string, unknown>): Record
   return sanitized;
 }
 
+// Parity with the iOS route: a receipt found by key alone proves only the
+// prior command and must never ride on a payload/fingerprint rejection.
+const RECEIPT_STRIPPED_CONFLICT_CODES = new Set([
+  'IDEMPOTENCY_KEY_REUSED',
+  'DECISION_ACTION_PAYLOAD_MISMATCH',
+  'DECISION_ACTION_PAYLOAD_REQUIRED',
+]);
+
 function sendDecisionError(res: Response, err: unknown): void {
   if (err instanceof DecisionActionError) {
+    let details = sanitizeDecisionErrorDetails(err.details);
+    if (details && RECEIPT_STRIPPED_CONFLICT_CODES.has(err.code) && 'commandReceipt' in details) {
+      const { commandReceipt: _stripped, ...safeDetails } = details;
+      details = safeDetails;
+    }
     res.status(err.status).json({
       ok: false,
       error: {
         code: err.code,
         message: err.message,
-        details: sanitizeDecisionErrorDetails(err.details),
+        details,
       },
     });
     return;
@@ -383,7 +396,7 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
         sendBadRequest(res, 'IDEMPOTENCY_KEY_INVALID', 'idempotencyKey must be a non-empty string of at most 200 characters');
         return;
       }
-      const { preferences } = updateDecisionPreferencesViaCommand({
+      const { preferences, idempotent, commandReceipt } = updateDecisionPreferencesViaCommand({
         userId,
         tenantId,
         patch: mutation.patch,
@@ -391,7 +404,13 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
         channel: 'portal',
       });
       logPortalAdminMutation(req, userId, 'portal.decision_center.preferences', { tenantId });
-      res.json({ ok: true, tenantId, preferences });
+      res.json({
+        ok: true,
+        tenantId,
+        preferences,
+        idempotent,
+        ...(commandReceipt ? { commandReceipt } : {}),
+      });
     } catch (err) {
       sendDecisionError(res, err);
     }
@@ -461,6 +480,7 @@ export function registerPortalDecisionCenterRoutes(app: Express): void {
           idempotent: result.idempotent,
           item: sanitizePortalDecisionItem(result.item),
           verification: result.verification,
+          ...(result.commandReceipt ? { commandReceipt: result.commandReceipt } : {}),
         });
       } catch (err) {
         sendDecisionError(res, err);

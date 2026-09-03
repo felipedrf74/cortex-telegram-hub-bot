@@ -161,10 +161,19 @@ import { invalidatePlanningAfterVerifiedDecisionSourceMutation } from './plannin
 
 import {
   createDecisionMutationCommand,
+  type DecisionCommandReceipt,
   type DecisionMutationApproval,
   type DecisionMutationChannel,
   type DecisionMutationCommand,
 } from './contracts';
+
+import {
+  compactDecisionCommandReadback,
+  createDecisionCommandReceipt,
+  decisionCommandReceiptId,
+  persistDecisionCommandReceipt,
+  readDecisionCommandReceipt,
+} from './command-response-receipts';
 
 import {
   DECISION_RANK_SNAPSHOT_UNIVERSE_FINGERPRINT,
@@ -532,13 +541,30 @@ export function decisionActionRequestFingerprint(input: {
 export function assertDecisionActionReplayFingerprint(
   execution: any,
   requestFingerprint: string,
+  options: { predecessorIdentityProven?: boolean } = {},
 ): void {
   const expectedEffect = safeParseJson<Record<string, unknown>>(execution?.expected_effect_json, {});
   const storedFingerprint = expectedEffect.idempotencyRequestFingerprint;
-  // Execution rows written by predecessor binaries have no fingerprint. They
-  // remain replayable for additive compatibility; every row created by the
-  // rewrite is bound to the complete request below.
-  if (storedFingerprint == null) return;
+  // A predecessor execution has no complete request fingerprint. It may only
+  // replay when the caller has independently proved the canonical payload and
+  // version from immutable execution/result evidence. Unknown identity is an
+  // explicit recovery state, never an invitation to bind a different request
+  // to the predecessor key.
+  if (storedFingerprint == null) {
+    if (options.predecessorIdentityProven === true) return;
+    throw new DecisionActionError(
+      'DECISION_EXECUTION_RECOVERY_REQUIRED',
+      'The prior Decision action cannot prove the exact request bound to this idempotency key. Refresh before reconciling it.',
+      409,
+      {
+        actionExecutionId: typeof execution?.action_execution_id === 'string'
+          ? execution.action_execution_id
+          : null,
+        actionId: typeof execution?.action_id === 'string' ? execution.action_id : null,
+        recoveryAction: 'refresh',
+      },
+    );
+  }
   if (storedFingerprint !== requestFingerprint) {
     throw new DecisionActionError(
       'IDEMPOTENCY_KEY_REUSED',
@@ -567,6 +593,18 @@ export function readDecisionProposalReceipt(command: DecisionProposalCommand): D
         || typeof receipt.eligibility !== 'object'
         || !receipt.commandContract
         || receipt.commandContract.operation !== 'create_intent') throw new Error('invalid proposal receipt');
+    if (receipt.commandReceipt != null) {
+      const durableReceipt = readDecisionCommandReceipt(
+        receipt.commandReceipt.receiptId,
+        receipt.commandReceipt.decisionId,
+        command.userId,
+        command.tenantId,
+      );
+      if (!durableReceipt
+          || JSON.stringify(durableReceipt) !== JSON.stringify(receipt.commandReceipt)) {
+        throw new Error('proposal response receipt is missing or does not match its scoped ledger entry');
+      }
+    }
     return receipt as DecisionProposalReceipt;
   } catch (cause) {
     throw new DecisionActionError(
@@ -583,7 +621,11 @@ export function readDecisionProposalReceipt(command: DecisionProposalCommand): D
 export function replayDecisionProposalReceipt(
   command: DecisionProposalCommand,
   receipt: DecisionProposalReceipt,
-): { item: DecisionApiItem | null; eligibility: DecisionEligibilityResult } {
+): {
+  item: DecisionApiItem | null;
+  eligibility: DecisionEligibilityResult;
+  commandReceipt?: DecisionCommandReceipt;
+} {
   if (receipt.requestFingerprint !== command.requestFingerprint) {
     throw new DecisionActionError(
       'IDEMPOTENCY_KEY_REUSED',
@@ -591,7 +633,15 @@ export function replayDecisionProposalReceipt(
       409,
     );
   }
-  if (!receipt.decisionId) return { item: null, eligibility: receipt.eligibility };
+  const commandReceipt = receipt.commandReceipt
+    ?? backfillDecisionProposalCommandReceipt(command, receipt);
+  if (!receipt.decisionId) {
+    return {
+      item: null,
+      eligibility: receipt.eligibility,
+      commandReceipt,
+    };
+  }
   const record = getDecisionRecord(receipt.decisionId, command.userId, command.tenantId);
   if (!record) {
     throw new DecisionActionError(
@@ -601,7 +651,64 @@ export function replayDecisionProposalReceipt(
       { decisionId: receipt.decisionId },
     );
   }
-  return { item: formatDecisionItemForApi(record), eligibility: receipt.eligibility };
+  return {
+    item: formatDecisionItemForApi(record),
+    eligibility: receipt.eligibility,
+    commandReceipt,
+  };
+}
+
+
+
+function backfillDecisionProposalCommandReceipt(
+  command: DecisionProposalCommand,
+  receipt: DecisionProposalReceipt,
+): DecisionCommandReceipt {
+  const receiptDecisionId = receipt.decisionId ?? command.intentId;
+  const completed = getDb().prepare(`
+    SELECT created_at AS createdAt
+      FROM decision_lifecycle_events
+     WHERE event_id = ? AND user_id = ? AND tenant_id = ?
+       AND event = 'mutation_receipt' AND action_id = 'create_intent'
+     LIMIT 1
+  `).get(command.eventId, command.userId, command.tenantId) as { createdAt: string } | undefined;
+  if (!completed?.createdAt) {
+    throw new DecisionActionError(
+      'DECISION_MUTATION_RECEIPT_INVALID',
+      'The original Decision Center proposal completion time is unavailable.',
+      500,
+    );
+  }
+  const responseReceipt = createDecisionCommandReceipt({
+    receiptId: decisionCommandReceiptId({
+      decisionId: receiptDecisionId,
+      operation: 'create_intent',
+      actionId: 'create_intent',
+      userId: command.userId,
+      tenantId: command.tenantId,
+      idempotencyKey: command.contract.idempotencyKey,
+    }),
+    decisionId: receiptDecisionId,
+    operation: 'create_intent',
+    actionId: 'create_intent',
+    idempotencyKey: command.contract.idempotencyKey,
+    status: 'succeeded',
+    completedAt: completed.createdAt,
+    verification: {
+      readBackOk: true,
+      expectedEffect: { requestFingerprint: receipt.requestFingerprint },
+      actualEffect: {
+        classification: receipt.eligibility.classification,
+        decisionCreated: receipt.decisionId != null,
+      },
+      message: 'The predecessor proposal outcome was reconciled from its exact immutable receipt.',
+    },
+  });
+  return getDb().transaction(() => persistDecisionCommandReceipt({
+    receipt: responseReceipt,
+    userId: command.userId,
+    tenantId: command.tenantId,
+  }))();
 }
 
 
@@ -609,32 +716,77 @@ export function replayDecisionProposalReceipt(
 export function persistDecisionProposalReceipt(
   command: DecisionProposalCommand,
   result: { decisionId: string | null; eligibility: DecisionEligibilityResult },
-): void {
-  const { idempotencyKey, ...privacySafeCommandContract } = command.contract;
-  const receipt: DecisionProposalReceipt = {
-    schemaVersion: DECISION_PROPOSAL_RECEIPT_SCHEMA_VERSION,
-    requestFingerprint: command.requestFingerprint,
-    decisionId: result.decisionId,
-    eligibility: result.eligibility,
-    commandContract: {
-      ...privacySafeCommandContract,
-      idempotencyKeyHash: createHash('sha256').update(idempotencyKey).digest('hex'),
-    },
-  };
-  getDb().prepare(`
-    INSERT INTO decision_lifecycle_events (
-      event_id, decision_id, user_id, tenant_id, event, action_id,
-      reason, metadata_json, created_at
-    ) VALUES (?, ?, ?, ?, 'mutation_receipt', 'create_intent',
-              'idempotent_proposal_receipt', ?, ?)
-  `).run(
-    command.eventId,
-    result.decisionId ?? command.intentId,
-    command.userId,
-    command.tenantId,
-    JSON.stringify(receipt),
-    appNowIso(),
-  );
+): DecisionCommandReceipt {
+  return getDb().transaction(() => {
+    const { idempotencyKey, ...privacySafeCommandContract } = command.contract;
+    const receiptDecisionId = result.decisionId ?? command.intentId;
+    const completedAt = appNowIso();
+    const record = result.decisionId
+      ? getDecisionRecord(result.decisionId, command.userId, command.tenantId)
+      : null;
+    const item = record && isDecisionRecord(record) ? formatDecisionItemForApi(record) : null;
+    const commandReceipt = createDecisionCommandReceipt({
+      receiptId: decisionCommandReceiptId({
+        decisionId: receiptDecisionId,
+        operation: 'create_intent',
+        actionId: 'create_intent',
+        userId: command.userId,
+        tenantId: command.tenantId,
+        idempotencyKey,
+      }),
+      decisionId: receiptDecisionId,
+      operation: 'create_intent',
+      actionId: 'create_intent',
+      idempotencyKey,
+      status: 'succeeded',
+      completedAt,
+      readbackItem: item
+        ? compactDecisionCommandReadback(item, {
+            actionId: 'create_intent',
+            actionStatus: 'succeeded',
+          })
+        : null,
+      verification: {
+        readBackOk: true,
+        expectedEffect: { requestFingerprint: command.requestFingerprint },
+        actualEffect: {
+          classification: result.eligibility.classification,
+          decisionCreated: item != null,
+        },
+        message: 'The proposal outcome was committed with its exact replay receipt.',
+      },
+    });
+    const receipt: DecisionProposalReceipt = {
+      schemaVersion: DECISION_PROPOSAL_RECEIPT_SCHEMA_VERSION,
+      requestFingerprint: command.requestFingerprint,
+      decisionId: result.decisionId,
+      eligibility: result.eligibility,
+      commandContract: {
+        ...privacySafeCommandContract,
+        idempotencyKeyHash: createHash('sha256').update(idempotencyKey).digest('hex'),
+      },
+      commandReceipt,
+    };
+    getDb().prepare(`
+      INSERT INTO decision_lifecycle_events (
+        event_id, decision_id, user_id, tenant_id, event, action_id,
+        reason, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, 'mutation_receipt', 'create_intent',
+                'idempotent_proposal_receipt', ?, ?)
+    `).run(
+      command.eventId,
+      receiptDecisionId,
+      command.userId,
+      command.tenantId,
+      JSON.stringify(receipt),
+      completedAt,
+    );
+    return persistDecisionCommandReceipt({
+      receipt: commandReceipt,
+      userId: command.userId,
+      tenantId: command.tenantId,
+    });
+  })();
 }
 
 
@@ -642,13 +794,17 @@ export function persistDecisionProposalReceipt(
 export function persistOrReplayDecisionProposalReceipt(
   command: DecisionProposalCommand,
   response: { item: DecisionApiItem | null; eligibility: DecisionEligibilityResult },
-): { item: DecisionApiItem | null; eligibility: DecisionEligibilityResult } {
+): {
+  item: DecisionApiItem | null;
+  eligibility: DecisionEligibilityResult;
+  commandReceipt?: DecisionCommandReceipt;
+} {
   try {
-    persistDecisionProposalReceipt(command, {
+    const commandReceipt = persistDecisionProposalReceipt(command, {
       decisionId: response.item?.decisionId ?? null,
       eligibility: response.eligibility,
     });
-    return response;
+    return { ...response, commandReceipt };
   } catch (err) {
     // A concurrent process can win after our initial read. Its receipt is
     // authoritative; exact replay succeeds and altered reuse is rejected.
@@ -660,7 +816,11 @@ export function persistOrReplayDecisionProposalReceipt(
 
 
 
-export async function createDecisionIntent(input: DecisionIntentCommandInput): Promise<{ item: DecisionApiItem | null; eligibility: DecisionEligibilityResult }> {
+export async function createDecisionIntent(input: DecisionIntentCommandInput): Promise<{
+  item: DecisionApiItem | null;
+  eligibility: DecisionEligibilityResult;
+  commandReceipt?: DecisionCommandReceipt;
+}> {
   assertScope(input.userId, input.tenantId ?? input.userId, 'create_decision_intent', { sourceSkill: input.sourceSkill, type: input.type });
   ensureDecisionCenterTables();
   const proposalCommand = decisionProposalCommand(input);
@@ -735,11 +895,16 @@ export async function createDecisionIntent(input: DecisionIntentCommandInput): P
         if (replay) return replayDecisionProposalReceipt(proposalCommand, replay);
       }
       recordDecisionQualityGateEvent(input, quality);
-      if (proposalCommand) persistDecisionProposalReceipt(proposalCommand, {
-        decisionId: null,
-        eligibility: response.eligibility,
-      });
-      return response;
+      const commandReceipt = proposalCommand
+        ? persistDecisionProposalReceipt(proposalCommand, {
+            decisionId: null,
+            eligibility: response.eligibility,
+          })
+        : null;
+      return {
+        ...response,
+        ...(commandReceipt ? { commandReceipt } : {}),
+      };
     })();
   }
 
@@ -936,6 +1101,13 @@ export async function createDecisionIntent(input: DecisionIntentCommandInput): P
   };
   if (proposalCommand && !proposalReceiptRecordedInProposal) {
     return persistOrReplayDecisionProposalReceipt(proposalCommand, response);
+  }
+  if (proposalCommand) {
+    const receipt = readDecisionProposalReceipt(proposalCommand);
+    return {
+      ...response,
+      ...(receipt?.commandReceipt ? { commandReceipt: receipt.commandReceipt } : {}),
+    };
   }
   return response;
 }

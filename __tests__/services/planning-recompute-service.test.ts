@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DateTime } from 'luxon';
+import { createHash } from 'node:crypto';
 
 const mockComposeWeeklyPlan = vi.fn();
 const mockComposeDailyBrief = vi.fn();
@@ -34,6 +35,18 @@ vi.mock('../../src/services/user-service', async () => ({
 
 function installSchema(): void {
   testDb.exec(`
+    CREATE TABLE decision_lifecycle_events (
+      event_id TEXT PRIMARY KEY,
+      decision_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      tenant_id INTEGER NOT NULL,
+      event TEXT NOT NULL,
+      to_status TEXT,
+      action_id TEXT,
+      reason TEXT,
+      metadata_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE planning_recompute_receipts (
       receipt_id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -131,6 +144,14 @@ describe('planning recompute service', () => {
     const replay = await recomputePlanningSnapshot(input);
 
     expect(replay).toEqual(first);
+    expect(first.commandReceipt).toMatchObject({
+      schemaVersion: 'decision_command_receipt@1.0.0',
+      operation: 'recompute_plan',
+      actionId: 'recompute_plan',
+      status: 'succeeded',
+    });
+    expect(first.commandReceipt?.idempotencyKeyHash)
+      .toBe(createHash('sha256').update(input.idempotencyKey).digest('hex'));
     expect(first).not.toHaveProperty('snapshot');
     expect(first.week).not.toHaveProperty('planningSnapshot');
     expect(first.today).not.toHaveProperty('planningSnapshot');
@@ -150,6 +171,46 @@ describe('planning recompute service', () => {
     expect(receipt.status).toBe('completed');
     expect(receipt.keyHash).toHaveLength(64);
     expect(receipt.responseJson).not.toContain('recompute-once');
+    const immutableReceipt = testDb.prepare(`
+      SELECT metadata_json AS metadataJson
+        FROM decision_lifecycle_events
+       WHERE event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get() as { metadataJson: string };
+    expect(immutableReceipt.metadataJson).not.toContain('recompute-once');
+    expect(immutableReceipt.metadataJson).not.toContain('userId');
+    expect(immutableReceipt.metadataJson).not.toContain('tenantId');
+
+    testDb.prepare(`
+      DELETE FROM decision_lifecycle_events
+       WHERE event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).run();
+    const predecessorReplay = await recomputePlanningSnapshot(input);
+    expect(predecessorReplay.week).toEqual(first.week);
+    expect(predecessorReplay.today).toEqual(first.today);
+    expect(predecessorReplay.commandReceipt).toMatchObject({
+      receiptId: first.commandReceipt!.receiptId,
+      decisionId: first.commandReceipt!.decisionId,
+      operation: 'recompute_plan',
+      status: 'succeeded',
+      verification: {
+        readBackOk: true,
+        expectedEffect: {
+          date: input.date,
+          weekStart: input.weekStart,
+        },
+        actualEffect: {
+          coherent: true,
+          date: input.date,
+          weekStart: input.weekStart,
+        },
+      },
+    });
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledTimes(1);
+    expect(mockComposeDailyBrief).toHaveBeenCalledTimes(1);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get()).toEqual({ count: 1 });
   });
 
   it('rejects changed payload reuse without invalidating or composing', async () => {

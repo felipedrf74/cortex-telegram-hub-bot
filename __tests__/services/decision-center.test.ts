@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 let testDb: Database.Database;
 
@@ -21,6 +22,14 @@ vi.mock('../../src/services/apns-sender', () => ({
   closeApnsClient: vi.fn(),
   _resetForTests: vi.fn(),
   sendPushToUsers: vi.fn(),
+}));
+
+const cacheCoherenceMocks = vi.hoisted(() => ({
+  invalidateContentDerivedCaches: vi.fn(),
+}));
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/services/cache-coherence-registry')>(),
+  invalidateContentDerivedCaches: (...args: unknown[]) => cacheCoherenceMocks.invalidateContentDerivedCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -58,6 +67,7 @@ import {
   evaluateDecisionEligibility,
   getDecisionItem,
   getDecisionItemForCommand,
+  getDecisionAuditHistory,
   refreshDecisionItem,
   getDecisionGuidanceStats,
   getDecisionOverview,
@@ -107,13 +117,18 @@ import {
 import { resolveNotificationContract } from '../../src/services/notification-contracts';
 import { buildSkillNotificationFixtureIntent, createNotificationIntent, ensureNotificationTables, listNotificationCenterItems } from '../../src/services/notification-orchestrator';
 import { clearPendingChatConfirmation, trackPendingChatConfirmation } from '../../src/services/chat-pending-confirmations';
-import { buildNormalizedDecisionAction } from '../../src/services/decision-action-contract';
+import { buildNormalizedDecisionAction, logicalActionAttemptHash } from '../../src/services/decision-action-contract';
+import { markExecutionFailed } from '../../src/services/decision-center/command-service';
 import { evaluateDecisionConflicts } from '../../src/services/decision-conflict-evaluator';
 import { decideContentWorkspaceReview } from '../../src/services/content-workspace-decision-adapter';
 import { transitionContentWorkspaceItem } from '../../src/services/content-workspace';
 import { ensureContentTenantScopeColumns } from '../../src/services/content-tenant-scope';
 import { contentWorkflowObjectIdForDecision } from '../../src/services/decision-center/repository';
 import { getDecisionRecord } from '../../src/services/decision-center/read-projection-ranking-service';
+import {
+  reclaimExpiredExecutionLeases,
+  reconcileCompletedExecutionAfterResponseFailure,
+} from '../../src/services/decision-center/command-service';
 import { initializeDecisionCenterSchemaForTests } from '../../src/testing/decision-center-test-schema';
 
 // Most cases in this compatibility suite characterize the preserved legacy
@@ -378,6 +393,15 @@ describe('Decision Center facade', () => {
 
     expect(first.item?.decisionId).toBeTruthy();
     expect(second.item?.decisionId).toBe(first.item?.decisionId);
+    expect(first.commandReceipt).toMatchObject({
+      schemaVersion: 'decision_command_receipt@1.0.0',
+      decisionId: first.item?.decisionId,
+      operation: 'create_intent',
+      actionId: 'create_intent',
+      status: 'succeeded',
+      idempotencyKeyHash: createHash('sha256').update(proposal.idempotencyKey).digest('hex'),
+    });
+    expect(second.commandReceipt).toEqual(first.commandReceipt);
     expect(testDb.prepare(`
       SELECT COUNT(*) AS count
         FROM notification_intents
@@ -393,7 +417,65 @@ describe('Decision Center facade', () => {
         FROM decision_lifecycle_events
        WHERE user_id = 1 AND tenant_id = 1
          AND event = 'mutation_receipt' AND action_id = 'create_intent'
-    `).get()).toMatchObject({ count: 1 });
+    `).get()).toMatchObject({ count: 2 });
+  });
+
+  it('backfills a predecessor proposal receipt without projecting mutable current state', async () => {
+    const proposal = {
+      ...buildSkillDecisionFixtureIntent('training', 101, {
+        tenantId: 101,
+        relatedEntityId: 'proposal-predecessor-profile',
+        relatedEntityType: 'training_profile',
+        dedupeKey: 'training:proposal-predecessor',
+      }),
+      idempotencyKey: 'proposal-predecessor-key-1',
+    };
+    const first = await createDecisionIntent(proposal);
+    testDb.prepare(`
+      DELETE FROM decision_lifecycle_events
+       WHERE event_id = ? AND decision_id = ?
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).run(first.commandReceipt!.receiptId, first.commandReceipt!.decisionId);
+    const predecessorRow = testDb.prepare(`
+      SELECT event_id AS eventId, metadata_json AS metadataJson
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 101 AND tenant_id = 101
+         AND event = 'mutation_receipt' AND reason = 'idempotent_proposal_receipt'
+    `).get(first.item!.decisionId) as { eventId: string; metadataJson: string };
+    const predecessorMetadata = JSON.parse(predecessorRow.metadataJson) as Record<string, unknown>;
+    delete predecessorMetadata.commandReceipt;
+    testDb.prepare(`
+      UPDATE decision_lifecycle_events SET metadata_json = ? WHERE event_id = ?
+    `).run(JSON.stringify(predecessorMetadata), predecessorRow.eventId);
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET record_version = record_version + 4, status = 'read'
+       WHERE item_id = ? AND user_id = 101 AND tenant_id = 101
+    `).run(first.item!.decisionId);
+
+    const replay = await createDecisionIntent(proposal);
+
+    expect(replay.item).toMatchObject({
+      decisionId: first.item!.decisionId,
+      status: 'read',
+      recordVersion: first.item!.recordVersion + 4,
+    });
+    expect(replay.commandReceipt).toMatchObject({
+      receiptId: first.commandReceipt!.receiptId,
+      decisionId: first.item!.decisionId,
+      operation: 'create_intent',
+      status: 'succeeded',
+    });
+    expect(replay.commandReceipt).not.toHaveProperty('readbackItem');
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_intents
+       WHERE user_id = 101 AND tenant_id = 101 AND intent_id LIKE 'dci_%'
+    `).get()).toEqual({ count: 1 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE event_id = ? AND decision_id = ?
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(replay.commandReceipt!.receiptId, first.item!.decisionId)).toEqual({ count: 1 });
   });
 
   it('rejects altered proposal reuse and never persists the raw idempotency key', async () => {
@@ -417,7 +499,8 @@ describe('Decision Center facade', () => {
     });
 
     const stored = testDb.prepare(`
-      SELECT intents.intent_id AS intentId, receipts.metadata_json AS metadataJson
+      SELECT intents.intent_id AS intentId,
+             group_concat(receipts.metadata_json, '|') AS metadataJson
         FROM notification_intents intents
         JOIN decision_lifecycle_events receipts
           ON receipts.user_id = intents.user_id
@@ -425,7 +508,7 @@ describe('Decision Center facade', () => {
          AND receipts.event = 'mutation_receipt'
          AND receipts.action_id = 'create_intent'
        WHERE intents.user_id = 2 AND intents.tenant_id = 2
-       LIMIT 1
+       GROUP BY intents.intent_id
     `).get() as { intentId: string; metadataJson: string };
     expect(`${stored.intentId}:${stored.metadataJson}`).not.toContain('private-proposal-key-2');
     expect(testDb.prepare(`
@@ -1535,14 +1618,53 @@ describe('Decision Center facade', () => {
     expect(created.item?.explanation.ifIgnored).toBeTruthy();
     expect(created.item?.explanation.actionLabels?.primary).toBe('Approve');
 
+    cacheCoherenceMocks.invalidateContentDerivedCaches.mockClear();
     const result = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
       idempotencyKey: 'tap-1',
     });
     expect(result.status).toBe('succeeded');
     expect(result.verification.readBackOk).toBe(true);
+    // Content read models are invalidated exactly once, only after the
+    // authoritative approval readback verified the effect.
+    expect(cacheCoherenceMocks.invalidateContentDerivedCaches).toHaveBeenCalledTimes(1);
+    expect(cacheCoherenceMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(2);
+    // A late failure bookkeeping call against the already-terminal row must
+    // neither throw nor rewrite the immutable succeeded outcome.
+    expect(() => markExecutionFailed(
+      result.commandReceipt!.executionAttemptId!, 2, 2, 'DECISION_ACTION_FAILED',
+    )).not.toThrow();
+    expect(testDb.prepare(
+      'SELECT status FROM decision_action_executions WHERE action_execution_id = ?',
+    ).get(result.commandReceipt!.executionAttemptId!)).toEqual({ status: 'succeeded' });
     expect(result.item.status).toBe('actioned');
     expect(result.item.outcomeSummary).toContain('content workflow');
-    expect(result.verification.actualEffect.contentApprovalState).toBe('approved');
+    expect(result.verification.actualEffect).toMatchObject({
+      decisionStatus: 'actioned',
+      contentObjectId: object.id,
+      contentApprovalState: 'approved',
+      workflowState: 'approved',
+    });
+    expect(result.commandReceipt).toMatchObject({
+      schemaVersion: 'decision_command_receipt@1.0.0',
+      decisionId: created.item!.decisionId,
+      operation: 'act',
+      actionId: 'approve_script',
+      idempotencyKeyHash: createHash('sha256').update('tap-1').digest('hex'),
+      status: 'succeeded',
+      executionAttemptId: expect.any(String),
+      resultRecordVersion: result.item.recordVersion,
+      readbackItem: {
+        decisionId: created.item!.decisionId,
+        recordVersion: result.item.recordVersion,
+        status: 'actioned',
+        actionId: 'approve_script',
+        actionStatus: 'succeeded',
+      },
+    });
+    expect(JSON.stringify(result.commandReceipt)).not.toContain('tap-1');
+    expect(JSON.stringify(result.commandReceipt)).not.toContain('contentObjectId');
+    expect(JSON.stringify(result.commandReceipt)).not.toContain('contentApprovalState');
+    expect(JSON.stringify(result.commandReceipt)).not.toContain('workflowState');
     testDb.prepare(`UPDATE handled_by_nexus_items SET created_at = ? WHERE decision_id = ?`)
       .run('2026-05-10T10:00:00.000Z', created.item!.decisionId);
     const handled = listHandledByNexusItems(2, 2, 5);
@@ -1559,11 +1681,45 @@ describe('Decision Center facade', () => {
     expect(handled[0].explanation?.nextStep).toContain('Content');
     expect(getDecisionOverview(2, 2, { limit: 20, handledLimit: 5 }).summary.handledTodayCount).toBe(1);
 
+    const immutableK1Receipt = result.commandReceipt;
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET record_version = record_version + 1, updated_at = datetime('now')
+       WHERE item_id = ? AND user_id = 2 AND tenant_id = 2
+    `).run(created.item!.decisionId);
+    const advanced = getDecisionItemForCommand(created.item!.decisionId, 2, 2)!;
+    expect(advanced.recordVersion).toBeGreaterThan(result.item.recordVersion);
+
     const duplicate = await performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
       idempotencyKey: 'tap-1',
     });
     expect(duplicate.idempotent).toBe(true);
     expect(duplicate.status).toBe('idempotent');
+    expect(duplicate.item.recordVersion).toBe(advanced.recordVersion);
+    // Replays never re-invalidate: no new effect happened.
+    expect(cacheCoherenceMocks.invalidateContentDerivedCaches).toHaveBeenCalledTimes(1);
+    expect(duplicate.commandReceipt).toEqual(immutableK1Receipt);
+    expect(duplicate.commandReceipt?.readbackItem?.recordVersion).toBe(result.item.recordVersion);
+    expect(duplicate.verification.actualEffect).toEqual(result.verification.actualEffect);
+    expect(Object.keys(duplicate.verification.actualEffect).sort())
+      .toEqual(Object.keys(result.verification.actualEffect).sort());
+
+    const history = getDecisionAuditHistory(created.item!.decisionId, 2, 2);
+    expect(history.commandReceipts).toContainEqual(immutableK1Receipt);
+    expect(() => getDecisionAuditHistory(created.item!.decisionId, 2, 99))
+      .toThrow(expect.objectContaining({ code: 'DECISION_NOT_FOUND', status: 404 }));
+
+    testDb.prepare(`
+      UPDATE decision_action_executions
+         SET result_json = ?
+       WHERE action_execution_id = ? AND user_id = 2 AND tenant_id = 2
+    `).run(JSON.stringify({
+      ...result.verification.actualEffect,
+      contentApprovalState: 'rewrite_requested',
+    }), result.commandReceipt!.executionAttemptId);
+    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 2, 2, {
+      idempotencyKey: 'tap-1',
+    })).rejects.toMatchObject({ code: 'DECISION_COMMAND_RECEIPT_INVALID', status: 500 });
   });
 
   it('backfills handled history from already-actioned decisions when explicit handled rows are absent', async () => {
@@ -2398,6 +2554,68 @@ describe('Decision Center facade', () => {
     ]));
     expect(getDecisionLifecycleEvents(created.item!.decisionId, 43, 43))
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ event: 'strong_confirmation_legacy_bypass' })]));
+
+    // Predecessor fingerprint parity: rows written before receipts landed
+    // hashed the review without a contextVersion key. The same request must
+    // still hash identically, so a same-key retry after deploy replays
+    // instead of surfacing IDEMPOTENCY_KEY_REUSED.
+    const predecessorFingerprint = logicalActionAttemptHash(`review:${created.item!.decisionId}`, 'approve', {
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'approve-tax-payment',
+      deferUntil: null,
+      reasonCode: null,
+      replacementChoiceId: null,
+      strongConfirmation: true,
+    });
+    const storedFingerprints = (testDb.prepare(`
+      SELECT metadata_json AS metadataJson FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 43 AND tenant_id = 43
+    `).all(created.item!.decisionId) as Array<{ metadataJson: string }>)
+      .map((row) => JSON.parse(row.metadataJson).idempotencyRequestFingerprint)
+      .filter((value) => typeof value === 'string');
+    expect(storedFingerprints).toContain(predecessorFingerprint);
+    const reviewReplay = reviewDecision(created.item!.decisionId, 43, 43, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      idempotencyKey: 'approve-tax-payment',
+      strongConfirmationText: 'CONFIRM',
+    });
+    // Replays return the current top-level item (already advanced by mark_paid).
+    expect(reviewReplay.decisionId).toBe(created.item!.decisionId);
+    expect(reviewReplay.recordVersion).toBeGreaterThanOrEqual(reviewed.recordVersion);
+    expect(() => reviewDecision(created.item!.decisionId, 43, 43, {
+      outcome: 'approve',
+      expectedVersion: created.item!.recordVersion,
+      contextVersion: 'ctx-that-was-never-sent',
+      idempotencyKey: 'approve-tax-payment',
+      strongConfirmationText: 'CONFIRM',
+    })).toThrow(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED' }));
+    // The receipt records only the precondition the client sent, never the
+    // observed context version the guard fell back to.
+    const reviewReceipt = getDecisionAuditHistory(created.item!.decisionId, 43, 43)
+      .commandReceipts.find((receipt) => receipt.operation === 'review');
+    expect(reviewReceipt).toBeTruthy();
+    expect(reviewReceipt!.requestedRecordVersion).toBe(created.item!.recordVersion);
+    expect(reviewReceipt!.requestedContextVersion ?? null).toBeNull();
+
+    const viewedTarget = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 43, {
+      tenantId: 43,
+      dedupeKey: 'viewed-predecessor-format',
+    }));
+    const viewedFingerprint = logicalActionAttemptHash(`viewed:${viewedTarget.item!.decisionId}`, 'mark_viewed', {
+      idempotencyKey: 'viewed-predecessor-format',
+      expectedVersion: null,
+    });
+    markDecisionViewed(viewedTarget.item!.decisionId, 43, 43, { idempotencyKey: 'viewed-predecessor-format' });
+    expect((testDb.prepare(`
+      SELECT metadata_json AS metadataJson FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 43 AND tenant_id = 43
+    `).all(viewedTarget.item!.decisionId) as Array<{ metadataJson: string }>)
+      .map((row) => JSON.parse(row.metadataJson).idempotencyRequestFingerprint)
+      .filter((value) => typeof value === 'string')).toContain(viewedFingerprint);
+    expect(() => markDecisionViewed(viewedTarget.item!.decisionId, 43, 43, {
+      idempotencyKey: 'viewed-predecessor-format',
+    })).not.toThrow();
   });
 
   it.each([
@@ -2889,11 +3107,14 @@ describe('Decision Center facade', () => {
     expect(workflow.approval_state).toBe('approved');
   });
 
-  it('coalesces concurrent different transport keys for the same logical mutation', async () => {
+  it.each(['legacy', 'active'] as const)(
+    'coalesces concurrent transport keys with distinct durable receipts in the %s engine',
+    async (mode) => {
     vi.useRealTimers();
+    process.env.DECISION_CENTER_REWRITE_MODE = mode;
     const { object, created } = await createContentApprovalDecision(21, 21, 'content:logical-concurrent');
 
-    const settled = await Promise.all([
+    const [deviceA, deviceB] = await Promise.all([
       performDecisionAction(created.item!.decisionId, 'approve_script', 21, 21, {
         idempotencyKey: 'device-a',
         expectedVersion: created.item!.recordVersion,
@@ -2904,16 +3125,288 @@ describe('Decision Center facade', () => {
       }),
     ]);
 
+    const settled = [deviceA, deviceB];
     expect(settled.map((result) => result.status).sort()).toEqual(['idempotent', 'succeeded']);
+    expect(deviceA.commandReceipt).toMatchObject({
+      decisionId: created.item!.decisionId,
+      actionId: 'approve_script',
+      idempotencyKeyHash: createHash('sha256').update('device-a').digest('hex'),
+      status: 'succeeded',
+    });
+    expect(deviceB.commandReceipt).toMatchObject({
+      decisionId: created.item!.decisionId,
+      actionId: 'approve_script',
+      idempotencyKeyHash: createHash('sha256').update('device-b').digest('hex'),
+      status: 'succeeded',
+    });
+    expect(deviceA.commandReceipt?.receiptId).not.toBe(deviceB.commandReceipt?.receiptId);
+    expect(deviceA.commandReceipt?.executionAttemptId).toBe(deviceB.commandReceipt?.executionAttemptId);
+    const joined = deviceA.status === 'idempotent' ? deviceA : deviceB;
+    expect(joined.commandReceipt?.verification?.expectedEffect.requestFingerprint)
+      .toMatch(/^[a-f0-9]{64}$/);
+
+    const replayB = await performDecisionAction(created.item!.decisionId, 'approve_script', 21, 21, {
+      idempotencyKey: 'device-b',
+      expectedVersion: created.item!.recordVersion,
+    });
+    expect(replayB.status).toBe('idempotent');
+    expect(replayB.commandReceipt).toEqual(deviceB.commandReceipt);
+    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 21, 21, {
+      idempotencyKey: 'device-b',
+      expectedVersion: created.item!.recordVersion,
+      payload: { changed: true },
+    })).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 });
+
     const executions = testDb.prepare(`
       SELECT COUNT(*) AS count
       FROM decision_action_executions
       WHERE decision_id = ? AND action_id = 'approve_script'
     `).get(created.item!.decisionId) as { count: number };
     expect(executions.count).toBe(1);
+    expect(getDecisionAuditHistory(created.item!.decisionId, 21, 21).commandReceipts)
+      .toEqual(expect.arrayContaining([deviceA.commandReceipt, deviceB.commandReceipt]));
+    const serializedReceipts = testDb.prepare(`
+      SELECT group_concat(metadata_json, '') AS receipts
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 21 AND tenant_id = 21
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(created.item!.decisionId) as { receipts: string };
+    expect(serializedReceipts.receipts).not.toContain('device-a');
+    expect(serializedReceipts.receipts).not.toContain('device-b');
     const workflow = testDb.prepare(`SELECT workflow_version, approval_state FROM content_domain_objects WHERE id = ?`).get(object.id) as { workflow_version: number; approval_state: string };
     expect(workflow).toEqual({ workflow_version: object.workflowVersion + 1, approval_state: 'approved' });
   });
+
+  it.each(['legacy', 'active'] as const)(
+    'reconciles a timed-out logical waiter with an immutable alias in the %s engine',
+    async (mode) => {
+      vi.useRealTimers();
+      process.env.DECISION_CENTER_REWRITE_MODE = mode;
+      const { created } = await createContentApprovalDecision(
+        211,
+        211,
+        `content:logical-timeout:${mode}`,
+      );
+      const winner = await performDecisionAction(
+        created.item!.decisionId,
+        'approve_script',
+        211,
+        211,
+        {
+          idempotencyKey: `logical-timeout-a:${mode}`,
+          expectedVersion: created.item!.recordVersion,
+        },
+      );
+      const executionId = winner.commandReceipt!.executionAttemptId!;
+      testDb.prepare(`
+        UPDATE decision_action_executions
+           SET status = 'started'
+         WHERE action_execution_id = ? AND user_id = 211 AND tenant_id = 211
+      `).run(executionId);
+
+      await expect(performDecisionAction(
+        created.item!.decisionId,
+        'approve_script',
+        211,
+        211,
+        {
+          idempotencyKey: `logical-timeout-b:${mode}`,
+          expectedVersion: created.item!.recordVersion,
+        },
+      )).rejects.toMatchObject({ code: 'DECISION_ACTION_IN_PROGRESS', status: 409 });
+      expect(testDb.prepare(`
+        SELECT COUNT(*) AS count FROM decision_lifecycle_events
+         WHERE decision_id = ? AND user_id = 211 AND tenant_id = 211
+           AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+      `).get(created.item!.decisionId)).toEqual({ count: 1 });
+
+      testDb.prepare(`
+        UPDATE decision_action_executions
+           SET status = 'succeeded'
+         WHERE action_execution_id = ? AND user_id = 211 AND tenant_id = 211
+      `).run(executionId);
+      testDb.prepare(`
+        UPDATE notification_center_items
+           SET record_version = record_version + 5,
+               updated_at = '2026-05-12T12:00:00.000Z'
+         WHERE item_id = ? AND user_id = 211 AND tenant_id = 211
+      `).run(created.item!.decisionId);
+
+      const reconciled = await performDecisionAction(
+        created.item!.decisionId,
+        'approve_script',
+        211,
+        211,
+        {
+          idempotencyKey: `logical-timeout-b:${mode}`,
+          expectedVersion: created.item!.recordVersion,
+        },
+      );
+      expect(reconciled).toMatchObject({
+        status: 'idempotent',
+        commandReceipt: {
+          decisionId: created.item!.decisionId,
+          requestedRecordVersion: created.item!.recordVersion,
+          executionAttemptId: executionId,
+          idempotencyKeyHash: createHash('sha256')
+            .update(`logical-timeout-b:${mode}`)
+            .digest('hex'),
+        },
+      });
+      expect(reconciled.commandReceipt?.readbackItem).toEqual(winner.commandReceipt?.readbackItem);
+      expect(reconciled.item.recordVersion).toBe((winner.commandReceipt!.resultRecordVersion ?? 0) + 5);
+      expect(reconciled.commandReceipt?.resultRecordVersion)
+        .toBe(winner.commandReceipt?.resultRecordVersion);
+      expect(testDb.prepare(`
+        SELECT COUNT(*) AS count FROM decision_action_executions
+         WHERE decision_id = ? AND user_id = 211 AND tenant_id = 211
+           AND action_id = 'approve_script'
+      `).get(created.item!.decisionId)).toEqual({ count: 1 });
+    },
+  );
+
+  it.each(['legacy', 'active'] as const)(
+    'binds a cross-decision logical join to the requested decision and key in the %s engine',
+    async (mode) => {
+      vi.useRealTimers();
+      process.env.DECISION_CENTER_REWRITE_MODE = mode;
+      const object = createCanonicalContentDecisionFixture(testDb, {
+        userId: 210,
+        tenantId: 210,
+        objectType: 'script',
+        title: `Cross-device receipt ${mode}`,
+        editorialState: 'drafted',
+        inReview: true,
+      });
+      const normalizedAction = buildNormalizedDecisionAction({
+        intent: 'approve_content_script',
+        targetEntities: [{
+          type: 'content_workflow_object',
+          id: String(object.id),
+          version: String(object.workflowVersion),
+        }],
+        affectedResources: [{ type: 'content_workflow_object', id: String(object.id) }],
+        preconditions: [],
+        expectedEffects: [{
+          type: 'content_approval_recorded',
+          targetRef: `content_workflow_object:${object.id}`,
+          value: 'approved',
+        }],
+        prohibitedEffects: [],
+        dependencies: [],
+        exclusivityKeys: [`content_workflow_object:${object.id}`],
+        authorizationScope: [],
+        risk: 'medium',
+        reversibility: 'reversible',
+        contextVersion: `ctx_content_logical_cross_${mode}`,
+      });
+      const sharedContext = {
+        entityTitle: 'Content review',
+        sourceState: 'review',
+        normalizedAction,
+      };
+      const first = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 210, {
+        tenantId: 210,
+        relatedEntityId: object.id,
+        relatedEntityType: 'content_workflow_object',
+        dedupeKey: `content:logical-cross-a:${mode}`,
+        decisionContext: sharedContext,
+      }));
+      const firstKey = `cross-device-a:${mode}`;
+      const second = await createDecisionIntent(buildSkillDecisionFixtureIntent('content', 210, {
+        tenantId: 210,
+        relatedEntityId: object.id,
+        relatedEntityType: 'content_workflow_object',
+        dedupeKey: `content:logical-cross-b:${mode}`,
+        decisionContext: sharedContext,
+      }));
+      expect(second.item?.decisionId).not.toBe(first.item?.decisionId);
+      // Keep the duplicate out of the canonical attempt's conflict scan, then
+      // restore it as an independently surfaced card after K1 completes. This
+      // isolates the receipt/replay contract from proposal-conflict policy.
+      testDb.prepare(`
+        UPDATE notification_center_items
+           SET status = 'superseded', decision_state = 'superseded'
+         WHERE item_id = ? AND user_id = 210 AND tenant_id = 210
+      `).run(second.item!.decisionId);
+      const winner = await performDecisionAction(first.item!.decisionId, 'approve_script', 210, 210, {
+        idempotencyKey: firstKey,
+        expectedVersion: first.item!.recordVersion,
+      });
+      testDb.prepare(`
+        UPDATE notification_center_items
+           SET status = 'unread', decision_state = 'ready_for_review',
+               superseded_by_item_id = NULL
+         WHERE item_id = ? AND user_id = 210 AND tenant_id = 210
+      `).run(second.item!.decisionId);
+
+      const requests = [
+        {
+          item: first.item!,
+          key: firstKey,
+        },
+        {
+          item: second.item!,
+          key: `cross-device-b:${mode}`,
+        },
+      ] as const;
+      const joined = await performDecisionAction(
+        second.item!.decisionId,
+        'approve_script',
+        210,
+        210,
+        {
+          idempotencyKey: requests[1].key,
+          expectedVersion: requests[1].item.recordVersion,
+        },
+      );
+      const results = [winner, joined];
+
+      expect(results.map((result) => result.status).sort()).toEqual(['idempotent', 'succeeded']);
+      for (const [index, result] of results.entries()) {
+        expect(result.item.decisionId).toBe(requests[index].item.decisionId);
+        expect(result.commandReceipt).toMatchObject({
+          decisionId: requests[index].item.decisionId,
+          actionId: 'approve_script',
+          idempotencyKeyHash: createHash('sha256').update(requests[index].key).digest('hex'),
+          status: 'succeeded',
+        });
+      }
+      expect(results[0].commandReceipt?.receiptId).not.toBe(results[1].commandReceipt?.receiptId);
+      expect(results[0].commandReceipt?.executionAttemptId).toBe(results[1].commandReceipt?.executionAttemptId);
+      const joinedIndex = 1;
+      expect(joined.status).toBe('idempotent');
+      expect(results[joinedIndex].item.status).toBe('superseded');
+      expect(results[joinedIndex].commandReceipt?.verification?.expectedEffect.requestFingerprint)
+        .toMatch(/^[a-f0-9]{64}$/);
+
+      const joinedRequest = requests[joinedIndex];
+      const replay = await performDecisionAction(
+        joinedRequest.item.decisionId,
+        'approve_script',
+        210,
+        210,
+        {
+          idempotencyKey: joinedRequest.key,
+          expectedVersion: joinedRequest.item.recordVersion,
+        },
+      );
+      expect(replay.status).toBe('idempotent');
+      expect(replay.commandReceipt).toEqual(results[joinedIndex].commandReceipt);
+      expect(testDb.prepare(`
+        SELECT COUNT(*) AS count
+          FROM decision_action_executions
+         WHERE user_id = 210 AND tenant_id = 210 AND action_id = 'approve_script'
+      `).get()).toEqual({ count: 1 });
+      expect(testDb.prepare(`
+        SELECT workflow_version, approval_state
+          FROM content_domain_objects WHERE id = ?
+      `).get(object.id)).toEqual({
+        workflow_version: object.workflowVersion + 1,
+        approval_state: 'approved',
+      });
+    },
+  );
 
   it('enforces expected proposal versions for opted-in mutating clients', async () => {
     const { created } = await createContentApprovalDecision(22, 22, 'content:versioned');
@@ -3067,17 +3560,32 @@ describe('Decision Center facade', () => {
       reasonCode: 'user_confirmed',
     });
     expect(replay.recordVersion).toBe(approved.recordVersion);
+    const reviewReceipt = getDecisionAuditHistory(created.item!.decisionId, 24, 24)
+      .commandReceipts.find((receipt) => receipt.operation === 'review');
+    expect(reviewReceipt).toMatchObject({
+      actionId: 'review:approve',
+      status: 'succeeded',
+      requestedRecordVersion: created.item!.recordVersion,
+      resultRecordVersion: approved.recordVersion,
+      idempotencyKeyHash: createHash('sha256').update('review-attempt-1').digest('hex'),
+    });
     const approvalEvents = getDecisionLifecycleEvents(created.item!.decisionId, 24, 24)
       .filter((event) => event.event === 'approved');
     expect(approvalEvents).toHaveLength(1);
-    expect(approvalEvents[0].metadata.commandContract).toMatchObject({
+    const reviewCommandContract = approvalEvents[0].metadata.commandContract as Record<string, unknown>;
+    expect(reviewCommandContract).toMatchObject({
       schemaVersion: 'decision_mutation_command@1.0.0',
       operation: 'review',
       actionId: 'review:approve',
-      scope: { userId: 24, tenantId: 24 },
-      idempotencyKey: 'review-attempt-1',
-      readback: { expectedState: { decisionState: 'approved' } },
+      idempotencyKeyHash: createHash('sha256').update('review-attempt-1').digest('hex'),
+      approval: { requiredLevel: 'user_confirmation' },
+      execution: { executorId: 'decision.review' },
+      readback: { verifierId: 'decision.state', mode: 'versioned' },
     });
+    expect(reviewCommandContract).not.toHaveProperty('idempotencyKey');
+    expect(reviewCommandContract).not.toHaveProperty('scope');
+    expect(reviewCommandContract).not.toHaveProperty('payload');
+    expect((reviewCommandContract.readback as Record<string, unknown>)).not.toHaveProperty('expectedState');
     expect(() => reviewDecision(created.item!.decisionId, 24, 24, {
       outcome: 'reject',
       expectedVersion: created.item!.recordVersion,
@@ -3214,24 +3722,34 @@ describe('Decision Center facade', () => {
       recommendedEndAt: '2026-05-11T11:30:00.000Z',
     });
     expect(replay.recordVersion).toBe(revised.recordVersion);
+    const editReceipt = getDecisionAuditHistory(created.item!.decisionId, 25, 25)
+      .commandReceipts.find((receipt) => receipt.operation === 'edit');
+    expect(editReceipt).toMatchObject({
+      actionId: 'edit_proposal',
+      status: 'succeeded',
+      requestedRecordVersion: created.item!.recordVersion,
+      resultRecordVersion: revised.recordVersion,
+      idempotencyKeyHash: createHash('sha256').update('proposal-edit-1').digest('hex'),
+    });
     expect(testDb.prepare(`
       SELECT COUNT(*) AS count FROM decision_lifecycle_events
        WHERE decision_id = ? AND event = 'revised'
     `).get(created.item!.decisionId)).toEqual({ count: 1 });
     const revisedEvent = getDecisionLifecycleEvents(created.item!.decisionId, 25, 25)
       .find((event) => event.event === 'revised');
-    expect(revisedEvent?.metadata.commandContract).toMatchObject({
+    const editCommandContract = revisedEvent?.metadata.commandContract as Record<string, unknown>;
+    expect(editCommandContract).toMatchObject({
       schemaVersion: 'decision_mutation_command@1.0.0',
       operation: 'edit',
       actionId: 'edit_proposal',
-      idempotencyKey: 'proposal-edit-1',
-      readback: {
-        expectedState: {
-          recommendedStartAt: '2026-05-11T10:00:00.000Z',
-          recommendedEndAt: '2026-05-11T11:30:00.000Z',
-        },
-      },
+      idempotencyKeyHash: createHash('sha256').update('proposal-edit-1').digest('hex'),
+      execution: { executorId: 'decision.edit_proposal' },
+      readback: { verifierId: 'decision.proposal_window', mode: 'versioned' },
     });
+    expect(editCommandContract).not.toHaveProperty('idempotencyKey');
+    expect(editCommandContract).not.toHaveProperty('scope');
+    expect(editCommandContract).not.toHaveProperty('payload');
+    expect((editCommandContract.readback as Record<string, unknown>)).not.toHaveProperty('expectedState');
     expect(() => reviseDecisionProposal(created.item!.decisionId, 25, 25, {
       expectedVersion: created.item!.recordVersion,
       idempotencyKey: 'proposal-edit-1',
@@ -3507,6 +4025,7 @@ describe('Decision Center facade', () => {
     });
     expect(replay.status).toBe('idempotent');
     expect(replay.verification.actualEffect.snoozedUntil).toBe('2026-05-11T08:00:00.000Z');
+    expect(replay.commandReceipt?.readbackItem?.snoozedUntil).toBe('2026-05-11T08:00:00.000Z');
     await expect(performDecisionAction(nextWeek.item!.decisionId, 'snooze', 35, 35, {
       idempotencyKey: 'snooze-next-week-1',
       payload: { minutes: 30 },
@@ -3529,6 +4048,155 @@ describe('Decision Center facade', () => {
       idempotencyKey: 'snooze-invalid-1',
       payload: { minutes: Number.NaN },
     })).rejects.toMatchObject({ code: 'DECISION_INVALID_MINUTES', status: 400 });
+  });
+
+  it('backfills a predecessor succeeded snooze receipt from immutable K1 execution evidence', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 351, {
+      tenantId: 351,
+      dedupeKey: 'predecessor-snooze-receipt',
+      decisionContext: { timezone: 'Europe/Lisbon' },
+    }));
+    const first = await performDecisionAction(created.item!.decisionId, 'snooze', 351, 351, {
+      idempotencyKey: 'predecessor-snooze-key',
+      payload: { deferUntil: '2026-05-12T09:30:00.000Z' },
+    });
+    expect(first.commandReceipt?.readbackItem).toMatchObject({
+      status: 'snoozed',
+      snoozedUntil: '2026-05-12T09:30:00.000Z',
+    });
+
+    // Simulate a succeeded execution written by the predecessor binary: its
+    // action row and authoritative decision state exist, but the additive
+    // immutable response receipt and request fingerprint do not.
+    testDb.prepare(`
+      DELETE FROM decision_lifecycle_events
+       WHERE event_id = ? AND decision_id = ?
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).run(first.commandReceipt!.receiptId, created.item!.decisionId);
+    testDb.prepare(`
+      UPDATE decision_action_executions
+         SET expected_effect_json = '{"decisionStatus":"snoozed"}'
+       WHERE action_execution_id = ?
+    `).run(first.commandReceipt!.executionAttemptId);
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET record_version = record_version + 3,
+             snoozed_until = '2026-05-15T14:00:00.000Z',
+             updated_at = '2026-05-13T10:00:00.000Z'
+       WHERE item_id = ? AND user_id = 351 AND tenant_id = 351
+    `).run(created.item!.decisionId);
+
+    await expect(performDecisionAction(created.item!.decisionId, 'snooze', 351, 999, {
+      idempotencyKey: 'predecessor-snooze-key',
+      payload: { deferUntil: '2026-05-12T09:30:00.000Z' },
+    })).rejects.toMatchObject({ code: 'DECISION_NOT_FOUND', status: 404 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE decision_id = ? AND tenant_id = 999
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(created.item!.decisionId)).toEqual({ count: 0 });
+
+    await expect(performDecisionAction(created.item!.decisionId, 'snooze', 351, 351, {
+      idempotencyKey: 'predecessor-snooze-key',
+      payload: { deferUntil: '2026-05-13T09:30:00.000Z' },
+    })).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 });
+    await expect(performDecisionAction(created.item!.decisionId, 'snooze', 351, 351, {
+      idempotencyKey: 'predecessor-snooze-key',
+      expectedVersion: (first.commandReceipt!.requestedRecordVersion ?? 0) + 1,
+      payload: { deferUntil: '2026-05-12T09:30:00.000Z' },
+    })).rejects.toMatchObject({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 });
+    await expect(performDecisionAction(created.item!.decisionId, 'snooze', 351, 351, {
+      idempotencyKey: 'predecessor-snooze-key',
+      payload: { minutes: 30 },
+    })).rejects.toMatchObject({
+      code: 'DECISION_EXECUTION_RECOVERY_REQUIRED',
+      status: 409,
+      details: { recoveryAction: 'refresh' },
+    });
+
+    const replay = await performDecisionAction(created.item!.decisionId, 'snooze', 351, 351, {
+      idempotencyKey: 'predecessor-snooze-key',
+      payload: { deferUntil: '2026-05-12T09:30:00.000Z' },
+    });
+    expect(replay.status).toBe('idempotent');
+    expect(replay.item).toMatchObject({
+      recordVersion: first.item.recordVersion + 3,
+      snoozedUntil: '2026-05-15T14:00:00.000Z',
+    });
+    expect(replay.commandReceipt).toMatchObject({
+      receiptId: first.commandReceipt!.receiptId,
+      decisionId: created.item!.decisionId,
+      status: 'succeeded',
+      readbackItem: {
+        decisionId: created.item!.decisionId,
+        // The K1 readback version is proven by the snooze CAS predicate
+        // (`record_version = expected` -> `expected + 1`), never by the
+        // mutable current item (which advanced by 3 above).
+        recordVersion: first.item.recordVersion,
+        status: 'snoozed',
+        snoozedUntil: '2026-05-12T09:30:00.000Z',
+        actionId: 'snooze',
+        actionStatus: 'succeeded',
+      },
+    });
+    expect(replay.commandReceipt!.readbackItem!.recordVersion).not.toBe(replay.item.recordVersion);
+    expect(replay.verification.actualEffect.snoozedUntil).toBe('2026-05-12T09:30:00.000Z');
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_action_executions
+       WHERE decision_id = ? AND user_id = 351 AND tenant_id = 351
+         AND action_id = 'snooze'
+    `).get(created.item!.decisionId)).toEqual({ count: 1 });
+    const storedReceipt = testDb.prepare(`
+      SELECT metadata_json AS metadataJson FROM decision_lifecycle_events
+       WHERE event_id = ? AND decision_id = ? AND user_id = 351 AND tenant_id = 351
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(replay.commandReceipt!.receiptId, created.item!.decisionId) as { metadataJson: string };
+    expect(storedReceipt.metadataJson).not.toContain('predecessor-snooze-key');
+  });
+
+  it('requires typed recovery when a predecessor snooze lacks immutable K1 evidence', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 352, {
+      tenantId: 352,
+      dedupeKey: 'predecessor-snooze-missing-evidence',
+      decisionContext: { timezone: 'Europe/Lisbon' },
+    }));
+    const first = await performDecisionAction(created.item!.decisionId, 'snooze', 352, 352, {
+      idempotencyKey: 'predecessor-snooze-missing-key',
+      payload: { deferUntil: '2026-05-12T09:30:00.000Z' },
+    });
+    testDb.prepare(`
+      DELETE FROM decision_lifecycle_events
+       WHERE event_id = ? AND decision_id = ?
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).run(first.commandReceipt!.receiptId, created.item!.decisionId);
+    testDb.prepare(`
+      UPDATE decision_action_executions
+         SET expected_effect_json = '{}', result_json = '{"decisionStatus":"snoozed"}'
+       WHERE action_execution_id = ?
+    `).run(first.commandReceipt!.executionAttemptId);
+    testDb.prepare(`
+      UPDATE notification_center_items
+         SET record_version = record_version + 2,
+             snoozed_until = '2026-05-20T09:30:00.000Z'
+       WHERE item_id = ? AND user_id = 352 AND tenant_id = 352
+    `).run(created.item!.decisionId);
+
+    await expect(performDecisionAction(created.item!.decisionId, 'snooze', 352, 352, {
+      idempotencyKey: 'predecessor-snooze-missing-key',
+      payload: { deferUntil: '2026-05-12T09:30:00.000Z' },
+    })).rejects.toMatchObject({
+      code: 'DECISION_EXECUTION_RECOVERY_REQUIRED',
+      status: 409,
+      details: {
+        actionExecutionId: first.commandReceipt!.executionAttemptId,
+        recoveryAction: 'refresh',
+      },
+    });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE event_id = ? AND decision_id = ?
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(first.commandReceipt!.receiptId, created.item!.decisionId)).toEqual({ count: 0 });
   });
 
   it('marks decisions failed when fresh read-back status does not match the expected effect', async () => {
@@ -3651,6 +4319,74 @@ describe('Decision Center facade', () => {
       SELECT status FROM decision_exclusivity_claims
        WHERE user_id = 401 AND tenant_id = 401 AND exclusivity_key = 'training_state:401'
     `).get()).toMatchObject({ status: 'partially_failed' });
+    const partialReceipts = testDb.prepare(`
+      SELECT event_id AS receiptId, metadata_json AS metadataJson
+        FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 401 AND tenant_id = 401
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).all(uncertain.item!.decisionId) as Array<{ receiptId: string; metadataJson: string }>;
+    expect(partialReceipts).toHaveLength(1);
+    expect(partialReceipts[0].receiptId).toMatch(/^dcr_[a-f0-9]{64}_partial$/);
+    expect(JSON.parse(partialReceipts[0].metadataJson).commandReceipt).toMatchObject({
+      decisionId: uncertain.item!.decisionId,
+      status: 'partially_failed',
+      executionAttemptId: 'dae_expired_lease',
+    });
+    reclaimExpiredExecutionLeases(401, 401);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 401 AND tenant_id = 401
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(uncertain.item!.decisionId)).toEqual({ count: 1 });
+  });
+
+  it('rolls back an expired execution and claim when its partial receipt cannot commit', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 403, {
+      tenantId: 403,
+      dedupeKey: 'expired-lease-receipt-rollback',
+    }));
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, logical_action_hash,
+        lease_expires_at, effect_results_json, recovery_json
+      ) VALUES ('dae_expired_receipt_rollback', ?, 'open_detail', 403, 403,
+        'expired-receipt-rollback-key', 'decision_center', 'started',
+        'logical-expired-receipt-rollback', '2026-05-09T10:00:00.000Z', '[]', '{}')
+    `).run(created.item!.decisionId);
+    testDb.prepare(`
+      INSERT INTO decision_exclusivity_claims (
+        user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+        status, lease_expires_at
+      ) VALUES (403, 403, 'decision:expired-receipt-rollback',
+        'dae_expired_receipt_rollback', ?, 'started', '2026-05-09T10:00:00.000Z')
+    `).run(created.item!.decisionId);
+    testDb.exec(`
+      CREATE TRIGGER reject_expired_lease_partial_receipt
+      BEFORE INSERT ON decision_lifecycle_events
+      WHEN NEW.decision_id = '${created.item!.decisionId.replace(/'/g, "''")}'
+        AND NEW.event = 'mutation_receipt'
+        AND NEW.reason = 'immutable_command_receipt'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced expired lease receipt failure');
+      END;
+    `);
+
+    expect(() => reclaimExpiredExecutionLeases(403, 403))
+      .toThrow(/forced expired lease receipt failure/);
+    expect(testDb.prepare(`
+      SELECT status, error_code AS errorCode, failed_at AS failedAt
+        FROM decision_action_executions
+       WHERE action_execution_id = 'dae_expired_receipt_rollback'
+    `).get()).toEqual({ status: 'started', errorCode: null, failedAt: null });
+    expect(testDb.prepare(`
+      SELECT status FROM decision_exclusivity_claims
+       WHERE action_execution_id = 'dae_expired_receipt_rollback'
+    `).get()).toEqual({ status: 'started' });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE decision_id = ? AND event = 'mutation_receipt'
+    `).get(created.item!.decisionId)).toEqual({ count: 0 });
   });
 
   it('blocks lifecycle mutations while an execution is active or awaiting reconciliation', async () => {
@@ -3692,6 +4428,146 @@ describe('Decision Center facade', () => {
       .toThrow(/changed/i);
   });
 
+  it('commits a post-effect partial transition with its immutable receipt', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 419, {
+      tenantId: 419,
+      dedupeKey: 'atomic-partial-receipt',
+    }));
+    const executionId = 'dae_atomic_partial_receipt';
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, expected_effect_json,
+        result_json, expected_record_version, context_version, lease_expires_at,
+        effect_results_json, recovery_json
+      ) VALUES (?, ?, 'open_detail', 419, 419, 'atomic-partial-key', 'decision_center',
+        'started', '{}', '{}', ?, ?, '2026-05-10T11:00:00.000Z', '[]', '{}')
+    `).run(
+      executionId,
+      created.item!.decisionId,
+      created.item!.recordVersion,
+      created.item!.contextVersion ?? null,
+    );
+    testDb.prepare(`
+      INSERT INTO decision_exclusivity_claims (
+        user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+        context_version, status, lease_expires_at
+      ) VALUES (419, 419, 'atomic-partial-resource', ?, ?, ?, 'started',
+        '2026-05-10T11:00:00.000Z')
+    `).run(executionId, created.item!.decisionId, created.item!.contextVersion ?? null);
+    testDb.exec(`
+      CREATE TRIGGER force_success_ledger_failure
+      BEFORE UPDATE OF status ON decision_action_executions
+      WHEN NEW.action_execution_id = '${executionId}' AND NEW.status = 'succeeded'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced success ledger failure');
+      END;
+    `);
+
+    const outcome = reconcileCompletedExecutionAfterResponseFailure(
+      executionId,
+      419,
+      419,
+      {
+        readBackOk: true,
+        expectedEffect: { expectedStatus: 'read' },
+        actualEffect: { decisionStatus: 'read' },
+      },
+      created.item,
+    );
+
+    expect(outcome).toBe('partially_failed');
+    expect(testDb.prepare(`
+      SELECT status, error_code AS errorCode FROM decision_action_executions
+       WHERE action_execution_id = ?
+    `).get(executionId)).toEqual({
+      status: 'partially_failed',
+      errorCode: 'DECISION_SUCCESS_RECONCILIATION_REQUIRED',
+    });
+    expect(testDb.prepare(`
+      SELECT status FROM decision_exclusivity_claims
+       WHERE action_execution_id = ?
+    `).get(executionId)).toEqual({ status: 'partially_failed' });
+    const receiptRow = testDb.prepare(`
+      SELECT metadata_json AS metadataJson FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 419 AND tenant_id = 419
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(created.item!.decisionId) as { metadataJson: string };
+    expect(JSON.parse(receiptRow.metadataJson).commandReceipt).toMatchObject({
+      decisionId: created.item!.decisionId,
+      actionId: 'open_detail',
+      status: 'partially_failed',
+      executionAttemptId: executionId,
+      idempotencyKeyHash: createHash('sha256').update('atomic-partial-key').digest('hex'),
+    });
+  });
+
+  it('rolls back a post-effect partial transition when its receipt cannot commit', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 420, {
+      tenantId: 420,
+      dedupeKey: 'atomic-partial-receipt-failure',
+    }));
+    const executionId = 'dae_atomic_partial_receipt_failure';
+    testDb.prepare(`
+      INSERT INTO decision_action_executions (
+        action_execution_id, decision_id, action_id, user_id, tenant_id,
+        idempotency_key, executor_skill, status, expected_effect_json,
+        result_json, expected_record_version, context_version, lease_expires_at,
+        effect_results_json, recovery_json
+      ) VALUES (?, ?, 'open_detail', 420, 420, 'atomic-partial-failure-key', 'decision_center',
+        'started', '{}', '{}', ?, ?, '2026-05-10T11:00:00.000Z', '[]', '{}')
+    `).run(
+      executionId,
+      created.item!.decisionId,
+      created.item!.recordVersion,
+      created.item!.contextVersion ?? null,
+    );
+    testDb.prepare(`
+      INSERT INTO decision_exclusivity_claims (
+        user_id, tenant_id, exclusivity_key, action_execution_id, decision_id,
+        context_version, status, lease_expires_at
+      ) VALUES (420, 420, 'atomic-partial-failure-resource', ?, ?, ?, 'started',
+        '2026-05-10T11:00:00.000Z')
+    `).run(executionId, created.item!.decisionId, created.item!.contextVersion ?? null);
+    testDb.exec(`
+      CREATE TRIGGER reject_atomic_partial_receipt
+      BEFORE INSERT ON decision_lifecycle_events
+      WHEN NEW.decision_id = '${created.item!.decisionId.replace(/'/g, "''")}'
+        AND NEW.event = 'mutation_receipt'
+        AND NEW.reason = 'immutable_command_receipt'
+      BEGIN
+        SELECT RAISE(ABORT, 'forced receipt persistence failure');
+      END;
+    `);
+
+    const outcome = reconcileCompletedExecutionAfterResponseFailure(
+      executionId,
+      420,
+      420,
+      {
+        readBackOk: true,
+        expectedEffect: { expectedStatus: 'read' },
+        actualEffect: { decisionStatus: 'read' },
+      },
+      created.item,
+    );
+
+    expect(outcome).toBe('unknown');
+    expect(testDb.prepare(`
+      SELECT status, error_code AS errorCode, failed_at AS failedAt
+        FROM decision_action_executions WHERE action_execution_id = ?
+    `).get(executionId)).toEqual({ status: 'started', errorCode: null, failedAt: null });
+    expect(testDb.prepare(`
+      SELECT status FROM decision_exclusivity_claims
+       WHERE action_execution_id = ?
+    `).get(executionId)).toEqual({ status: 'started' });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM decision_lifecycle_events
+       WHERE decision_id = ? AND user_id = 420 AND tenant_id = 420
+         AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+    `).get(created.item!.decisionId)).toEqual({ count: 0 });
+  });
+
   it('marks execution failed when the final decision action update is ignored', async () => {
     const { created } = await createContentApprovalDecision(42, 42, 'ignored-final-decision-update');
     const decisionId = created.item!.decisionId.replace(/'/g, "''");
@@ -3704,9 +4580,30 @@ describe('Decision Center facade', () => {
       END;
     `);
 
-    await expect(performDecisionAction(created.item!.decisionId, 'approve_script', 42, 42, {
-      idempotencyKey: 'ignored-final-update',
-    })).rejects.toMatchObject({ code: 'DECISION_SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED' });
+    let actionFailure: DecisionActionError | null = null;
+    try {
+      await performDecisionAction(created.item!.decisionId, 'approve_script', 42, 42, {
+        idempotencyKey: 'ignored-final-update',
+      });
+    } catch (error) {
+      actionFailure = error as DecisionActionError;
+    }
+    expect(actionFailure).toMatchObject({
+      code: 'DECISION_SOURCE_EFFECT_VERIFIED_PROJECTION_FAILED',
+      details: {
+        commandReceipt: {
+          schemaVersion: 'decision_command_receipt@1.0.0',
+          operation: 'act',
+          actionId: 'approve_script',
+          status: 'partially_failed',
+          idempotencyKeyHash: createHash('sha256').update('ignored-final-update').digest('hex'),
+          executionAttemptId: expect.any(String),
+        },
+      },
+    });
+    expect((actionFailure?.details?.commandReceipt as { receiptId: string }).receiptId).toMatch(
+      /^dcr_[a-f0-9]{64}_partial$/,
+    );
 
     const execution = testDb.prepare(`
       SELECT status, error_code
@@ -3727,6 +4624,12 @@ describe('Decision Center facade', () => {
       expect(getDecisionLifecycleEvents(created.item!.decisionId, 42, 42)).toEqual(expect.arrayContaining([
         expect.objectContaining({ event: 'execution_reconciled', reason: 'authoritative_state_applied' }),
       ]));
+      expect(getDecisionAuditHistory(created.item!.decisionId, 42, 42).commandReceipts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ status: 'partially_failed', receiptId: expect.stringMatching(/_partial$/) }),
+          expect.objectContaining({ status: 'succeeded', receiptId: expect.not.stringMatching(/_partial$/) }),
+        ]),
+      );
     } finally {
       delete process.env.DECISION_REFRESH_ENABLED_USER_42;
     }
@@ -4910,6 +5813,14 @@ describe('Decision Center layered status (Foundation)', () => {
       expect(refreshed.contextVersion).toBe(approved.contextVersion);
       expect(replay.refreshedAt).toBe(first.refreshedAt);
       expect(replay.item.recordVersion).toBe(first.item.recordVersion);
+      expect(first.commandReceipt).toMatchObject({
+        operation: 'refresh',
+        status: 'succeeded',
+        requestedRecordVersion: approved.recordVersion,
+        resultRecordVersion: first.item.recordVersion,
+        idempotencyKeyHash: createHash('sha256').update(refreshOptions.idempotencyKey).digest('hex'),
+      });
+      expect(replay.commandReceipt).toEqual(first.commandReceipt);
       const receipts = testDb.prepare(`
         SELECT metadata_json AS metadataJson
           FROM decision_lifecycle_events
@@ -4917,16 +5828,50 @@ describe('Decision Center layered status (Foundation)', () => {
            AND event = 'verified' AND action_id = 'refresh'
       `).all(created.item!.decisionId) as Array<{ metadataJson: string }>;
       expect(receipts).toHaveLength(1);
-      expect(JSON.parse(receipts[0].metadataJson)).toMatchObject({
+      const refreshMetadata = JSON.parse(receipts[0].metadataJson) as Record<string, any>;
+      expect(refreshMetadata).toMatchObject({
         refreshedAt: first.refreshedAt,
         commandContract: {
           schemaVersion: 'decision_mutation_command@1.0.0',
           operation: 'refresh',
-          idempotencyKey: 'refresh-stable-journal-1',
-          scope: { userId: 911, tenantId: 911 },
+          idempotencyKeyHash: createHash('sha256').update('refresh-stable-journal-1').digest('hex'),
           recordVersion: approved.recordVersion,
           contextVersion: approved.contextVersion,
-          readback: { verifierId: 'decision.context_version' },
+          execution: { executorId: 'decision.refresh_context' },
+          readback: { verifierId: 'decision.context_version', mode: 'versioned' },
+        },
+      });
+      expect(refreshMetadata.commandContract).not.toHaveProperty('idempotencyKey');
+      expect(refreshMetadata.commandContract).not.toHaveProperty('scope');
+      expect(refreshMetadata.commandContract).not.toHaveProperty('payload');
+      expect(refreshMetadata.commandContract.readback).not.toHaveProperty('expectedState');
+      testDb.prepare(`
+        DELETE FROM decision_lifecycle_events
+         WHERE event_id = ? AND decision_id = ?
+           AND event = 'mutation_receipt' AND reason = 'immutable_command_receipt'
+      `).run(first.commandReceipt!.receiptId, created.item!.decisionId);
+      testDb.prepare(`
+        UPDATE notification_center_items
+           SET record_version = record_version + 5,
+               updated_at = '2026-05-12T10:00:00.000Z'
+         WHERE item_id = ? AND user_id = 911 AND tenant_id = 911
+      `).run(created.item!.decisionId);
+      const predecessorReplay = refreshDecisionItem(
+        created.item!.decisionId,
+        911,
+        911,
+        refreshOptions,
+      )!;
+      expect(predecessorReplay.item.recordVersion).toBe(first.item.recordVersion + 5);
+      expect(predecessorReplay.commandReceipt).toMatchObject({
+        receiptId: first.commandReceipt!.receiptId,
+        requestedRecordVersion: approved.recordVersion,
+        resultRecordVersion: first.item.recordVersion,
+        readbackItem: {
+          decisionId: created.item!.decisionId,
+          recordVersion: first.item.recordVersion,
+          status: first.item.status,
+          actionStatus: 'succeeded',
         },
       });
       expect(() => refreshDecisionItem(created.item!.decisionId, 911, 911, {
@@ -5154,22 +6099,119 @@ describe('Decision Center lifecycle events (SI-4)', () => {
 
     expect(first.recordVersion).toBe(created.item!.recordVersion! + 1);
     expect(replay.recordVersion).toBe(first.recordVersion);
+    const viewedReceipt = getDecisionAuditHistory(created.item!.decisionId, 805, 1805)
+      .commandReceipts.find((receipt) => receipt.operation === 'mark_viewed');
+    expect(viewedReceipt).toMatchObject({
+      status: 'succeeded',
+      requestedRecordVersion: created.item!.recordVersion,
+      resultRecordVersion: first.recordVersion,
+      idempotencyKeyHash: createHash('sha256').update(input.idempotencyKey).digest('hex'),
+    });
     const events = testDb.prepare(`
       SELECT metadata_json AS metadataJson
         FROM decision_lifecycle_events
        WHERE decision_id = ? AND event = 'viewed'
     `).all(created.item!.decisionId) as Array<{ metadataJson: string }>;
     expect(events).toHaveLength(1);
-    expect(JSON.parse(events[0].metadataJson).commandContract).toMatchObject({
+    const viewedCommandContract = JSON.parse(events[0].metadataJson).commandContract as Record<string, unknown>;
+    expect(viewedCommandContract).toMatchObject({
       operation: 'mark_viewed',
-      idempotencyKey: 'viewed-command-replay-1',
-      scope: { userId: 805, tenantId: 1805 },
+      idempotencyKeyHash: createHash('sha256').update(input.idempotencyKey).digest('hex'),
       recordVersion: created.item!.recordVersion,
+      execution: { executorId: 'decision.mark_viewed' },
+      readback: { verifierId: 'decision.status', mode: 'versioned' },
     });
+    expect(viewedCommandContract).not.toHaveProperty('idempotencyKey');
+    expect(viewedCommandContract).not.toHaveProperty('scope');
+    expect(viewedCommandContract).not.toHaveProperty('payload');
+    expect((viewedCommandContract.readback as Record<string, unknown>)).not.toHaveProperty('expectedState');
     expect(() => markDecisionViewed(created.item!.decisionId, 805, 1805, {
       ...input,
       expectedVersion: first.recordVersion,
     })).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_KEY_REUSED', status: 409 }));
+  });
+
+  it('redacts raw command keys, scope, payload, and readback values from predecessor lifecycle history', async () => {
+    const created = await createDecisionIntent(buildSkillDecisionFixtureIntent('training', 807, {
+      tenantId: 1807,
+      dedupeKey: 'legacy-command-history-redaction',
+    }));
+    const rawKey = 'legacy-history-private-journal-key';
+    const privateCopy = 'private user-authored proposal title';
+    testDb.prepare(`
+      INSERT INTO decision_lifecycle_events (
+        event_id, decision_id, user_id, tenant_id, event, action_id,
+        reason, metadata_json, created_at
+      ) VALUES (?, ?, 807, 1807, 'verified', 'mark_viewed',
+        'predecessor_full_command', ?, '2026-05-10T10:00:00.000Z')
+    `).run(
+      'legacy_full_command_history_event',
+      created.item!.decisionId,
+      JSON.stringify({
+        preservedAuditMarker: 'safe-marker',
+        commandContract: {
+          schemaVersion: 'decision_mutation_command@1.0.0',
+          commandId: 'dmc_legacy_history',
+          decisionId: created.item!.decisionId,
+          operation: 'mark_viewed',
+          actionId: null,
+          scope: { userId: 807, tenantId: 1807 },
+          channel: 'ios',
+          idempotencyKey: rawKey,
+          recordVersion: created.item!.recordVersion,
+          contextVersion: created.item!.contextVersion,
+          approval: {
+            requiredLevel: 'none',
+            evidence: { actorUserId: 807, evidenceRef: 'private-evidence' },
+          },
+          execution: {
+            executorId: 'decision.mark_viewed',
+            strategy: 'synchronous',
+            riskLevel: 'low',
+            reversible: false,
+            supportsIdempotency: true,
+          },
+          readback: {
+            verifierId: 'decision.status',
+            entityType: 'notification_center_item',
+            entityId: created.item!.decisionId,
+            mode: 'versioned',
+            expectedState: { title: privateCopy },
+          },
+          payload: { title: privateCopy },
+          requestedAt: '2026-05-10T10:00:00.000Z',
+        },
+      }),
+    );
+
+    const rawRow = testDb.prepare(`
+      SELECT metadata_json AS metadataJson FROM decision_lifecycle_events
+       WHERE event_id = 'legacy_full_command_history_event'
+    `).get() as { metadataJson: string };
+    expect(rawRow.metadataJson).toContain(rawKey);
+
+    const event = getDecisionAuditHistory(created.item!.decisionId, 807, 1807).events
+      .find((candidate) => candidate.reason === 'predecessor_full_command');
+    const serialized = JSON.stringify(event?.metadata);
+    expect(event?.metadata).toMatchObject({
+      preservedAuditMarker: 'safe-marker',
+      commandContract: {
+        schemaVersion: 'decision_mutation_command@1.0.0',
+        operation: 'mark_viewed',
+        actionId: null,
+        channel: 'ios',
+        idempotencyKeyHash: createHash('sha256').update(rawKey).digest('hex'),
+        approval: { requiredLevel: 'none' },
+        execution: { executorId: 'decision.mark_viewed' },
+        readback: { verifierId: 'decision.status', mode: 'versioned' },
+      },
+    });
+    expect(serialized).not.toContain(rawKey);
+    expect(serialized).not.toContain(privateCopy);
+    expect(serialized).not.toContain('actorUserId');
+    expect(serialized).not.toContain('scope');
+    expect(serialized).not.toContain('payload');
+    expect(serialized).not.toContain('expectedState');
   });
 
   it('replays a viewed command from the exact record after the source projection becomes stale', async () => {

@@ -161,10 +161,20 @@ import { invalidatePlanningAfterVerifiedDecisionSourceMutation } from './plannin
 
 import {
   createDecisionMutationCommand,
+  type DecisionCommandReceipt,
   type DecisionMutationApproval,
   type DecisionMutationChannel,
   type DecisionMutationCommand,
 } from './contracts';
+
+import {
+  compactDecisionCommandReadback,
+  createDecisionCommandReceipt,
+  decisionCommandReceiptId,
+  persistDecisionCommandReceipt,
+  privacySafeDecisionMutationCommandContract,
+  readDecisionCommandReceipt,
+} from './command-response-receipts';
 
 import {
   DECISION_RANK_SNAPSHOT_UNIVERSE_FINGERPRINT,
@@ -610,7 +620,7 @@ export function refreshDecisionItem(
   userId: number,
   tenantId = userId,
   options: DecisionRefreshOptions = {},
-): { item: DecisionApiItem; refreshedAt: string } | null {
+): { item: DecisionApiItem; refreshedAt: string; commandReceipt?: DecisionCommandReceipt } | null {
   assertScope(userId, tenantId, 'refresh_decision_item', { decisionId });
   const idempotencyKey = options.idempotencyKey?.trim();
   if (!idempotencyKey) {
@@ -645,8 +655,19 @@ export function refreshDecisionItem(
         409,
       );
     }
+    const commandReceipt = existing.commandReceipt ?? backfillDecisionRefreshCommandReceipt({
+      decisionId,
+      userId,
+      tenantId,
+      idempotencyKey,
+      requestFingerprint: fingerprint,
+    });
     const current = getDecisionRecord(decisionId, userId, tenantId);
-    return current ? { item: formatDecisionItemForApi(current), refreshedAt: existing.refreshedAt } : null;
+    return current ? {
+      item: formatDecisionItemForApi(current),
+      refreshedAt: existing.refreshedAt,
+      commandReceipt,
+    } : null;
   }
 
   const before = getDecisionRecord(decisionId, userId, tenantId);
@@ -717,12 +738,23 @@ export function refreshDecisionItem(
           409,
         );
       }
+      const commandReceipt = replay.commandReceipt ?? backfillDecisionRefreshCommandReceipt({
+        decisionId,
+        userId,
+        tenantId,
+        idempotencyKey,
+        requestFingerprint: fingerprint,
+      });
       const current = getDecisionRecord(decisionId, userId, tenantId);
-      return current ? { item: formatDecisionItemForApi(current), refreshedAt: replay.refreshedAt } : null;
+      return current ? {
+        item: formatDecisionItemForApi(current),
+        refreshedAt: replay.refreshedAt,
+        commandReceipt,
+      } : null;
     }
     const result = refreshDecisionItemCore(decisionId, userId, tenantId);
     if (!result) return null;
-    persistDecisionRefreshReceiptStrict({
+    const commandReceipt = persistDecisionRefreshReceiptStrict({
       decisionId,
       userId,
       tenantId,
@@ -730,14 +762,17 @@ export function refreshDecisionItem(
       requestFingerprint: fingerprint,
       refreshedAt: result.refreshedAt,
       command,
+      requestedRecordVersion: options.expectedVersion ?? null,
+      requestedContextVersion: options.contextVersion ?? null,
       readback: {
         recordVersion: result.item.recordVersion ?? null,
         contextVersion: result.item.contextVersion ?? null,
         status: result.item.status,
       },
+      item: result.item,
     });
     materializeDecisionRankSnapshotForScope(userId, tenantId);
-    return result;
+    return { ...result, commandReceipt };
   })();
 }
 
@@ -971,9 +1006,9 @@ export function readDecisionRefreshReceipt(
 ): DecisionRefreshReceipt | null {
   const row = getDb().prepare(`
     SELECT metadata_json AS metadataJson
-      FROM decision_lifecycle_events
+     FROM decision_lifecycle_events
      WHERE event_id = ? AND decision_id = ? AND user_id = ? AND tenant_id = ?
-       AND event = 'verified'
+       AND event = 'verified' AND reason = 'idempotent_refresh_receipt'
      LIMIT 1
   `).get(
     decisionRefreshReceiptEventId(decisionId, userId, tenantId, idempotencyKey),
@@ -987,7 +1022,21 @@ export function readDecisionRefreshReceipt(
   const requestFingerprint = typeof metadata.requestFingerprint === 'string'
     ? metadata.requestFingerprint
     : null;
-  return refreshedAt && requestFingerprint ? { refreshedAt, requestFingerprint } : null;
+  if (!refreshedAt || !requestFingerprint) return null;
+  const receiptId = decisionCommandReceiptId({
+    decisionId,
+    operation: 'refresh',
+    actionId: null,
+    userId,
+    tenantId,
+    idempotencyKey,
+  });
+  const commandReceipt = readDecisionCommandReceipt(receiptId, decisionId, userId, tenantId);
+  return {
+    refreshedAt,
+    requestFingerprint,
+    ...(commandReceipt ? { commandReceipt } : {}),
+  };
 }
 
 
@@ -1000,8 +1049,12 @@ export function persistDecisionRefreshReceiptStrict(input: {
   requestFingerprint: string;
   refreshedAt: string;
   command: DecisionMutationCommand<Record<string, unknown>>;
+  /** Client-sent precondition only; never the observed fallback on `command`. */
+  requestedRecordVersion?: number | null;
+  requestedContextVersion?: string | null;
   readback: Record<string, unknown>;
-}): void {
+  item: DecisionApiItem;
+}): DecisionCommandReceipt {
   getDb().prepare(`
     INSERT INTO decision_lifecycle_events
       (event_id, decision_id, user_id, tenant_id, event, to_status, action_id, reason, metadata_json)
@@ -1015,10 +1068,155 @@ export function persistDecisionRefreshReceiptStrict(input: {
     JSON.stringify({
       refreshedAt: input.refreshedAt,
       requestFingerprint: input.requestFingerprint,
-      commandContract: input.command,
+      commandContract: privacySafeDecisionMutationCommandContract(input.command),
       readback: input.readback,
     }),
   );
+  const receiptId = decisionCommandReceiptId({
+    decisionId: input.decisionId,
+    operation: 'refresh',
+    actionId: null,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: input.idempotencyKey,
+  });
+  const receipt = createDecisionCommandReceipt({
+    receiptId,
+    decisionId: input.decisionId,
+    operation: 'refresh',
+    actionId: null,
+    idempotencyKey: input.idempotencyKey,
+    status: 'succeeded',
+    completedAt: input.refreshedAt,
+    requestedRecordVersion: 'requestedRecordVersion' in input
+      ? input.requestedRecordVersion
+      : input.command.recordVersion,
+    requestedContextVersion: 'requestedContextVersion' in input
+      ? input.requestedContextVersion
+      : input.command.contextVersion,
+    readbackItem: compactDecisionCommandReadback(input.item, { actionStatus: 'succeeded' }),
+    verification: {
+      readBackOk: true,
+      expectedEffect: input.command.readback.expectedState,
+      actualEffect: input.readback,
+      message: 'The original refresh command was recorded and read back exactly.',
+    },
+  });
+  return persistDecisionCommandReceipt({
+    receipt,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  });
+}
+
+
+
+function backfillDecisionRefreshCommandReceipt(input: {
+  decisionId: string;
+  userId: number;
+  tenantId: number;
+  idempotencyKey: string;
+  requestFingerprint: string;
+}): DecisionCommandReceipt {
+  const row = getDb().prepare(`
+    SELECT metadata_json AS metadataJson
+      FROM decision_lifecycle_events
+     WHERE event_id = ? AND decision_id = ? AND user_id = ? AND tenant_id = ?
+       AND event = 'verified' AND reason = 'idempotent_refresh_receipt'
+     LIMIT 1
+  `).get(
+    decisionRefreshReceiptEventId(
+      input.decisionId,
+      input.userId,
+      input.tenantId,
+      input.idempotencyKey,
+    ),
+    input.decisionId,
+    input.userId,
+    input.tenantId,
+  ) as { metadataJson: string } | undefined;
+  const metadata = safeParseJson<Record<string, unknown>>(row?.metadataJson, {});
+  const storedFingerprint = metadata.requestFingerprint;
+  const refreshedAt = metadata.refreshedAt;
+  const readback = metadata.readback;
+  const commandContract = metadata.commandContract;
+  if (storedFingerprint !== input.requestFingerprint
+      || typeof refreshedAt !== 'string'
+      || !readback
+      || typeof readback !== 'object'
+      || Array.isArray(readback)) {
+    throw new DecisionActionError(
+      'DECISION_MUTATION_RECEIPT_INVALID',
+      'The predecessor refresh receipt cannot prove its original immutable readback.',
+      500,
+    );
+  }
+  const originalReadback = readback as Record<string, unknown>;
+  const recordVersion = originalReadback.recordVersion;
+  const status = originalReadback.status;
+  const contextVersion = originalReadback.contextVersion;
+  if (!Number.isSafeInteger(recordVersion)
+      || Number(recordVersion) < 1
+      || typeof status !== 'string'
+      || !status
+      || (contextVersion != null && (typeof contextVersion !== 'string' || !contextVersion))) {
+    throw new DecisionActionError(
+      'DECISION_MUTATION_RECEIPT_INVALID',
+      'The predecessor refresh receipt contains an invalid immutable readback.',
+      500,
+    );
+  }
+  const storedCommand = commandContract && typeof commandContract === 'object' && !Array.isArray(commandContract)
+    ? commandContract as Record<string, unknown>
+    : {};
+  const requestedRecordVersion = Number.isSafeInteger(storedCommand.recordVersion)
+    && Number(storedCommand.recordVersion) > 0
+    ? Number(storedCommand.recordVersion)
+    : undefined;
+  const requestedContextVersion = typeof storedCommand.contextVersion === 'string'
+    && storedCommand.contextVersion
+    ? storedCommand.contextVersion
+    : undefined;
+  const receipt = createDecisionCommandReceipt({
+    receiptId: decisionCommandReceiptId({
+      decisionId: input.decisionId,
+      operation: 'refresh',
+      actionId: null,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      idempotencyKey: input.idempotencyKey,
+    }),
+    decisionId: input.decisionId,
+    operation: 'refresh',
+    actionId: null,
+    idempotencyKey: input.idempotencyKey,
+    status: 'succeeded',
+    completedAt: refreshedAt,
+    requestedRecordVersion,
+    requestedContextVersion,
+    readbackItem: {
+      decisionId: input.decisionId,
+      recordVersion: Number(recordVersion),
+      ...(typeof contextVersion === 'string' ? { contextVersion } : {}),
+      status,
+      actionStatus: 'succeeded',
+    },
+    verification: {
+      readBackOk: true,
+      expectedEffect: { requestFingerprint: input.requestFingerprint },
+      actualEffect: {
+        recordVersion: Number(recordVersion),
+        ...(typeof contextVersion === 'string' ? { contextVersion } : {}),
+        status,
+      },
+      message: 'The predecessor refresh was reconciled from its exact immutable readback.',
+    },
+  });
+  return getDb().transaction(() => persistDecisionCommandReceipt({
+    receipt,
+    userId: input.userId,
+    tenantId: input.tenantId,
+  }))();
 }
 
 
