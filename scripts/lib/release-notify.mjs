@@ -40,6 +40,22 @@ export const RELEASE_FAILSAFE_NOTIFICATION_POLICY = Object.freeze({
 const MAX_MESSAGE_CHARS_FLOOR = 200;
 const RELEASE_ID = /^[0-9a-f]{32}$/;
 const FULL_SOURCE_SHA = /^[0-9a-f]{40}$/;
+const RELEASE_DEPLOYMENT_ABORT_DIAGNOSTICS = Object.freeze({
+  STAGING_APNS_MATERIAL_UNAVAILABLE: 'staging_apns_material_unavailable',
+  PRODUCTION_APNS_MATERIAL_UNAVAILABLE: 'production_apns_material_unavailable',
+  CONTROLLER_EXCEPTION: 'release_controller_exception',
+});
+
+function classifyReleaseDeploymentAbortDiagnostic(error) {
+  const message = error instanceof Error ? error.message : '';
+  if (message === 'staging APNs auth key file is absent or unsafe') {
+    return RELEASE_DEPLOYMENT_ABORT_DIAGNOSTICS.STAGING_APNS_MATERIAL_UNAVAILABLE;
+  }
+  if (message === 'production APNs auth key file is absent or unsafe') {
+    return RELEASE_DEPLOYMENT_ABORT_DIAGNOSTICS.PRODUCTION_APNS_MATERIAL_UNAVAILABLE;
+  }
+  return RELEASE_DEPLOYMENT_ABORT_DIAGNOSTICS.CONTROLLER_EXCEPTION;
+}
 
 function releaseIdForNotification(value, fallback) {
   return typeof value === 'string' && RELEASE_ID.test(value) ? value : fallback;
@@ -165,7 +181,11 @@ export async function reportReleaseDeploymentAbort({
   log = () => {},
 }) {
   const failureCode = classifyReleaseDiscoveryFailure(error);
-  log(`release deployment aborted: ${failureCode}`);
+  const diagnostic = classifyReleaseDeploymentAbortDiagnostic(error);
+  // The outer catch spans both pre-identity discovery and post-admission
+  // controller failures. Log only a closed diagnostic code: raw exception text
+  // can contain registry URLs, provider bodies, credential paths, or secrets.
+  log(`release deployment aborted: ${failureCode}; diagnostic=${diagnostic}`);
   try {
     const opened = alertStore?.openFailure({ failureCode });
     if (!opened) throw new Error('release discovery alert store is unavailable');

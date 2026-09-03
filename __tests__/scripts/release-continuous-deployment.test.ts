@@ -6815,6 +6815,9 @@ describe('release security and operations', () => {
 
     expect(result.failureCode).toBe('release_discovery_failed');
     expect(logs.join('\n')).not.toContain('user:pass');
+    expect(logs).toContain(
+      'release deployment aborted: release_discovery_failed; diagnostic=release_controller_exception',
+    );
     expect(sent).toEqual([expect.objectContaining({
       kind: RELEASE_NOTIFICATION_KINDS.FAILURE,
       release: expect.objectContaining({
@@ -6829,6 +6832,46 @@ describe('release security and operations', () => {
       }),
     })]);
   });
+
+  it.each([
+    ['staging', 'staging_apns_material_unavailable'],
+    ['production', 'production_apns_material_unavailable'],
+  ] as const)(
+    'logs a closed diagnostic when the hardened poller cannot read %s APNs material',
+    async (environment, diagnostic) => {
+      const missingKey = join(workspace, 'env', `${environment}-missing.p8`);
+      writeFileSync(
+        policy.environments[environment].backendEnvFile,
+        [
+          `INTERNAL_API_SECRET=${environment}-shared-secret`,
+          'APNS_ENABLED=true',
+          `APNS_AUTH_KEY_P8=${missingKey}`,
+          '',
+        ].join('\n'),
+      );
+      let gateError: unknown;
+      try {
+        createReleaseEnvironmentGate({ policy }).verify(environment);
+      } catch (error) {
+        gateError = error;
+      }
+      expect(gateError).toBeInstanceOf(Error);
+
+      const logs: string[] = [];
+      await reportReleaseDeploymentAbort({
+        alertStore: discoveryAlertStore(),
+        notifier: { send: async () => ({ delivered: true, reason: 'sent' }) },
+        error: gateError,
+        log: (message: string) => logs.push(message),
+      });
+
+      expect(logs).toContain(
+        `release deployment aborted: release_discovery_failed; diagnostic=${diagnostic}`,
+      );
+      expect(logs.join('\n')).not.toContain(missingKey);
+      expect(logs.join('\n')).not.toContain('.p8');
+    },
+  );
 
   it('classifies an incompatible envelope without inventing an untrusted identity', async () => {
     const sent: Array<Record<string, any>> = [];
