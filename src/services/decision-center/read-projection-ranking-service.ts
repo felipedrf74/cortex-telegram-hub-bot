@@ -1714,6 +1714,8 @@ export function formatDecisionItemForApi(
   const mutualExclusionGroupId = conflictPolicyActive
     ? mutualExclusionGroupIdForRecord(item, structuredContext.conflictEvaluation)
     : null;
+  const recommendedStartAt = canonicalStoredDecisionContextTimestamp(item.decisionContext?.recommendedStartAt);
+  const recommendedEndAt = canonicalStoredDecisionContextTimestamp(item.decisionContext?.recommendedEndAt);
   return {
     decisionId: item.itemId,
     itemId: item.itemId,
@@ -1814,6 +1816,8 @@ export function formatDecisionItemForApi(
     approvalLevel,
     reviewSupported,
     editableProposalFields,
+    recommendedStartAt,
+    recommendedEndAt,
     reversibility: normalizedAction?.reversibility ?? null,
     execution,
     refreshSupported: decisionRefreshSupportedForRecord(item),
@@ -1837,6 +1841,19 @@ export function formatDecisionItemForApi(
     rollbackAvailable: rollback.available,
     rollbackActionId: rollback.actionId,
   };
+}
+
+
+
+/**
+ * Full-detail and mutation readback payloads expose proposal timestamps from
+ * the durable decision context. Normalize legacy offsets and reject malformed
+ * values so clients compare one canonical representation after an edit.
+ */
+export function canonicalStoredDecisionContextTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 

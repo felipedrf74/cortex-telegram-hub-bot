@@ -308,6 +308,9 @@ describe('Decision routes', () => {
       actionability: 'confirmation_required',
       recordVersion: 4,
       contextVersion: 'ctx-current-4',
+      recommendedStartAt: '2026-05-20T10:00:00.000Z',
+      recommendedEndAt: '2026-05-20T11:00:00.000Z',
+      snoozedUntil: null,
       analysis: {
         whyNow: 'The schedule conflict is today.',
         costOfDelay: 'Waiting will remove the safe option.',
@@ -318,7 +321,15 @@ describe('Decision routes', () => {
     mockGetDecisionItemForCommand.mockImplementation((...args: unknown[]) => mockGetDecisionItem(...args));
     mockPerformDecisionAction.mockResolvedValue({ actionId: 'open_detail', idempotent: false, status: 'succeeded', item: { decisionId: 'nc_1', status: 'read' } });
     mockReviewDecision.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'approved' });
-    mockReviseDecisionProposal.mockReturnValue({ decisionId: 'nc_1', status: 'read', recordVersion: 2, decisionState: 'ready_for_review' });
+    mockReviseDecisionProposal.mockReturnValue({
+      decisionId: 'nc_1',
+      status: 'read',
+      recordVersion: 2,
+      decisionState: 'ready_for_review',
+      recommendedStartAt: '2026-05-20T10:00:00.000Z',
+      recommendedEndAt: '2026-05-20T11:00:00.000Z',
+      snoozedUntil: null,
+    });
     mockGetDecisionLifecycleEvents.mockReturnValue([{ event: 'created', createdAt: '2026-05-19T10:00:00.000Z' }]);
     mockGetDecisionAuditHistory.mockReturnValue({
       events: [{ event: 'created', createdAt: '2026-05-19T10:00:00.000Z' }],
@@ -373,6 +384,11 @@ describe('Decision routes', () => {
     const detail = await dispatch(router, 'GET', '/nc_1');
     expect(detail.statusCode).toBe(200);
     expect(detail.body.data.item.decisionId).toBe('nc_1');
+    expect(detail.body.data.item).toMatchObject({
+      recommendedStartAt: '2026-05-20T10:00:00.000Z',
+      recommendedEndAt: '2026-05-20T11:00:00.000Z',
+      snoozedUntil: null,
+    });
     expect(detail.body.data.schemaVersion).toBeUndefined();
 
     process.env.DECISION_API_V2_ENABLED = 'true';
@@ -411,6 +427,11 @@ describe('Decision routes', () => {
       recommendedEndAt: '2026-05-20T11:00:00.000Z',
     });
     expect(revised.statusCode).toBe(200);
+    expect(revised.body.data.item).toMatchObject({
+      recommendedStartAt: '2026-05-20T10:00:00.000Z',
+      recommendedEndAt: '2026-05-20T11:00:00.000Z',
+      snoozedUntil: null,
+    });
     expect(mockReviseDecisionProposal).toHaveBeenCalledWith('nc_1', 7, 7, expect.objectContaining({
       expectedVersion: 1,
       idempotencyKey: 'proposal-edit-1',
@@ -804,7 +825,25 @@ describe('Decision routes', () => {
 
   it('routes snooze through the idempotent command contract and maps refresh errors', async () => {
     const router = decisionRoutes();
-    await dispatch(router, 'PATCH', '/nc_1/snooze', {}, { minutes: 30, expectedVersion: 4 }, {}, { tenantId: 17 });
+    mockPerformDecisionAction.mockResolvedValueOnce({
+      actionId: 'snooze',
+      idempotent: false,
+      status: 'succeeded',
+      item: {
+        decisionId: 'nc_1',
+        status: 'snoozed',
+        snoozedUntil: '2026-09-03T11:00:00.000Z',
+      },
+    });
+    const snoozed = await dispatch(router, 'PATCH', '/nc_1/snooze', {}, { minutes: 30, expectedVersion: 4 }, {}, { tenantId: 17 });
+    expect(snoozed.body.data.item.snoozedUntil).toBe('2026-09-03T11:00:00.000Z');
+    mockGetDecisionItem.mockReturnValueOnce({
+      decisionId: 'nc_1',
+      status: 'snoozed',
+      snoozedUntil: '2026-09-03T11:00:00.000Z',
+    });
+    const exactReadback = await dispatch(router, 'GET', '/nc_1', {}, {}, {}, { tenantId: 17 });
+    expect(exactReadback.body.data.item.snoozedUntil).toBe(snoozed.body.data.item.snoozedUntil);
     expect(mockPerformDecisionAction).toHaveBeenCalledWith('nc_1', 'snooze', 7, 17, {
       idempotencyKey: expect.stringMatching(/^legacy-rest:snooze:nc_1:v4:[a-f0-9]{24}$/),
       expectedVersion: 4,
