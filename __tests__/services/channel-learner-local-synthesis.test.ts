@@ -88,7 +88,10 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   writeGovernedSignal: writeSignal,
 }));
 
-vi.mock('../../src/services/cache-coherence-registry', () => ({
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry',
+  )),
   invalidateContentDerivedCaches,
 }));
 

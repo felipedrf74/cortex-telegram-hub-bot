@@ -329,7 +329,10 @@ vi.mock('../../src/services/report-document-store', () => ({
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: (...args: unknown[]) => mockComposeDailyBrief(...args),
 }));
-vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+vi.mock('../../src/services/weekly-plan-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/weekly-plan-orchestrator')>(
+    '../../src/services/weekly-plan-orchestrator',
+  )),
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 // Dispatch timing and persistence have their own focused suite. This broad

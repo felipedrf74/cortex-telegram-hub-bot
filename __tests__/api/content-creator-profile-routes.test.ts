@@ -47,7 +47,10 @@ vi.mock('../../src/services/content-radar-workspace-actions', () => ({
   recordContentRadarWorkspaceAction: (...args: unknown[]) => mocks.recordContentRadarWorkspaceAction(...args),
 }));
 
-vi.mock('../../src/services/content-agent-lifecycle', () => ({
+vi.mock('../../src/services/content-agent-lifecycle', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-agent-lifecycle')>(
+    '../../src/services/content-agent-lifecycle',
+  )),
   isPausedContentAgent: (...args: unknown[]) => mocks.isPausedContentAgent(...args),
 }));
 
@@ -56,7 +59,10 @@ vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) =>
   invalidateContentDerivedCaches: (...args: unknown[]) => mocks.invalidateContentDerivedCaches(...args),
 }));
 
-vi.mock('../../src/services/app-summary-read-models', () => ({
+vi.mock('../../src/services/app-summary-read-models', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/app-summary-read-models')>(
+    '../../src/services/app-summary-read-models',
+  )),
   markSummaryStale: (...args: unknown[]) => mocks.markSummaryStale(...args),
 }));
 

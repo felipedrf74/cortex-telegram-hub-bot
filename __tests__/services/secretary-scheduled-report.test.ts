@@ -13,7 +13,10 @@ vi.mock('../../src/services/secretary-planning-context', async () => ({
   planLanguageLocale: (language: string) => language,
 }));
 
-vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+vi.mock('../../src/services/weekly-plan-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/weekly-plan-orchestrator')>(
+    '../../src/services/weekly-plan-orchestrator',
+  )),
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 

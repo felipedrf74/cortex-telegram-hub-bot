@@ -4,7 +4,10 @@ import { createMigratedTestDatabase } from '../../../src/testing/migrated-test-d
 
 let testDb: Database.Database;
 
-vi.mock('../../../src/services/database', () => ({
+vi.mock('../../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/services/database')>(
+    '../../../src/services/database',
+  )),
   getDb: () => testDb,
   initDatabase: vi.fn(),
   closeDatabase: vi.fn(),

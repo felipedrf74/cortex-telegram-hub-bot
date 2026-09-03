@@ -5,13 +5,19 @@ const mocks = vi.hoisted(() => ({
   getOwnerBootstrapTarget: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  )),
   getDb: () => ({
     prepare: () => ({ all: (...args: unknown[]) => mocks.all(...args) }),
   }),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getOwnerBootstrapTarget: (...args: unknown[]) => mocks.getOwnerBootstrapTarget(...args),
 }));
 

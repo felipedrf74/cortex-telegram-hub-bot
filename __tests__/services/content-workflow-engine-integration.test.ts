@@ -37,13 +37,19 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/gemini-provider', () => ({
+vi.mock('../../src/services/gemini-provider', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/gemini-provider')>(
+    '../../src/services/gemini-provider',
+  )),
   completeOneShotWithFallback: vi.fn(),
   completeOneShotWithSearch: vi.fn(),
   isGeminiProviderConfigured: vi.fn(() => true),
 }));
 
-vi.mock('../../src/services/openai-provider', () => ({
+vi.mock('../../src/services/openai-provider', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/openai-provider')>(
+    '../../src/services/openai-provider',
+  )),
   completeOneShotWithWebSearch: vi.fn(),
   isOpenAIConfigured: vi.fn(() => false),
 }));
@@ -52,39 +58,63 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 
-vi.mock('../../src/services/entitlement', () => ({
+vi.mock('../../src/services/entitlement', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/entitlement')>(
+    '../../src/services/entitlement',
+  )),
   isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
 }));
 
-vi.mock('../../src/services/cost-guardrail', () => ({
+vi.mock('../../src/services/cost-guardrail', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cost-guardrail')>(
+    '../../src/services/cost-guardrail',
+  )),
   getActiveAiBudgetReservationMarker: integrationMocks.getActiveAiBudgetReservationMarker,
   withAiBudgetReservation: integrationMocks.withAiBudgetReservation,
 }));
 
-vi.mock('../../src/state/content-references', () => ({
+vi.mock('../../src/state/content-references', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-references')>(
+    '../../src/state/content-references',
+  )),
   buildKnowledgePromptBlock: vi.fn(() => ''),
   getAllKnowledge: integrationMocks.getAllKnowledge,
 }));
 
-vi.mock('../../src/services/content-reference-context', () => ({
+vi.mock('../../src/services/content-reference-context', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-reference-context')>(
+    '../../src/services/content-reference-context',
+  )),
   buildAuthorizedContentReferenceContext:
     integrationMocks.buildAuthorizedContentReferenceContext,
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getUserLanguage: integrationMocks.getUserLanguage,
 }));
 
-vi.mock('../../src/services/intelligence-bus', () => ({
+vi.mock('../../src/services/intelligence-bus', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/intelligence-bus')>(
+    '../../src/services/intelligence-bus',
+  )),
   readSignals: integrationMocks.readSignals,
 }));
 
-vi.mock('../../src/services/cache-store', () => ({
+vi.mock('../../src/services/cache-store', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-store')>(
+    '../../src/services/cache-store',
+  )),
   getCached: integrationMocks.getCached,
   setCache: integrationMocks.setCache,
 }));
 
-vi.mock('../../src/services/content-workspace-capture', () => ({
+vi.mock('../../src/services/content-workspace-capture', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-capture')>(
+    '../../src/services/content-workspace-capture',
+  )),
   saveGeneratedScriptToWorkspace: integrationMocks.saveGeneratedScriptToWorkspace,
 }));
 

@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
   persistContentArtifacts: vi.fn(),
 }));
 
-vi.mock('../../src/services/content-engine', () => ({
+vi.mock('../../src/services/content-engine', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-engine')>(
+    '../../src/services/content-engine',
+  )),
   deepSearch: (...args: unknown[]) => mocks.deepSearch(...args),
   getSources: (...args: unknown[]) => mocks.getSources(...args),
   getHooks: (...args: unknown[]) => mocks.getHooks(...args),
@@ -25,7 +28,10 @@ vi.mock('../../src/services/content-engine', () => ({
   getRepurpose: (...args: unknown[]) => mocks.getRepurpose(...args),
 }));
 
-vi.mock('../../src/services/content-token-artifact-store', () => ({
+vi.mock('../../src/services/content-token-artifact-store', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-token-artifact-store')>(
+    '../../src/services/content-token-artifact-store',
+  )),
   getContentSourcePackage: (...args: unknown[]) => mocks.getContentSourcePackage(...args),
   persistContentArtifacts: (...args: unknown[]) => mocks.persistContentArtifacts(...args),
 }));

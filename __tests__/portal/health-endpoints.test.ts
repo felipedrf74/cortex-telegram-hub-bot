@@ -258,7 +258,10 @@ vi.mock('../../src/services/garmin-coach', () => ({
   ) => operation(new AbortController().signal)),
   runWithCoachBriefingAccountLifecycle: vi.fn(),
 }));
-vi.mock('../../src/services/content-discovery', () => ({
+vi.mock('../../src/services/content-discovery', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-discovery')>(
+    '../../src/services/content-discovery',
+  )),
   runContentDiscovery: vi.fn(),
 }));
 vi.mock('../../src/state/conversation', () => ({

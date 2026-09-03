@@ -118,11 +118,17 @@ vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) =>
   invalidateContentDerivedCaches,
 }));
 
-vi.mock('../../src/state/content-creator-profile', () => ({
+vi.mock('../../src/state/content-creator-profile', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-creator-profile')>(
+    '../../src/state/content-creator-profile',
+  )),
   getContentCreatorProfile,
 }));
 
-vi.mock('../../src/services/content-intelligence', () => ({
+vi.mock('../../src/services/content-intelligence', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-intelligence')>(
+    '../../src/services/content-intelligence',
+  )),
   getActiveContentPillars,
 }));
 

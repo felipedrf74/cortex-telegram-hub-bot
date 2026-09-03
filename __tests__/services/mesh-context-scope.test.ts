@@ -76,7 +76,10 @@ vi.mock('../../src/services/content-dashboard-service', () => ({
   getVoiceDna: (...args: unknown[]) => mockGetVoiceDna(...args),
 }));
 
-vi.mock('../../src/services/content-workspace-scheduling', () => ({
+vi.mock('../../src/services/content-workspace-scheduling', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-scheduling')>(
+    '../../src/services/content-workspace-scheduling',
+  )),
   getContentCalendar: (...args: unknown[]) => mockGetContentCalendar(...args),
 }));
 
@@ -135,7 +138,10 @@ vi.mock('../../src/services/unified-calendar', () => ({
   hasWritableCalendarForUser: (...args: unknown[]) => mockHasWritableCalendarForUser(...args),
 }));
 
-vi.mock('../../src/services/user-service', () => ({
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
   getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
 }));
 

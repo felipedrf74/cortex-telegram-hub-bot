@@ -43,7 +43,10 @@ vi.mock('../../src/services/user-service', () => ({
   getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
 }));
 
-vi.mock('../../src/services/content-workspace-read-models', () => ({
+vi.mock('../../src/services/content-workspace-read-models', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-read-models')>(
+    '../../src/services/content-workspace-read-models',
+  )),
   getContentWorkspaceSummaryCounts: (...args: unknown[]) => mockGetContentWorkspaceSummaryCounts(...args),
 }));
 
@@ -56,7 +59,10 @@ vi.mock('../../src/services/tenant-scope-observability', () => ({
   recordTenantScopeAnomaly: vi.fn(),
 }));
 
-vi.mock('../../src/services/content-discovery', () => ({
+vi.mock('../../src/services/content-discovery', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-discovery')>(
+    '../../src/services/content-discovery',
+  )),
   runContentDiscovery: mockRunContentDiscovery,
 }));
 
@@ -107,7 +113,10 @@ vi.mock('../../src/services/content-intelligence', () => ({
   localizeFilmingRecommendation: vi.fn((recommendation: any) => recommendation),
 }));
 
-vi.mock('../../src/services/content-radar-preferences', () => ({
+vi.mock('../../src/services/content-radar-preferences', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-radar-preferences')>(
+    '../../src/services/content-radar-preferences',
+  )),
   getContentRadarPreferences: (...args: unknown[]) => mockGetContentRadarPreferences(...args),
   setContentRadarPreferences: vi.fn(),
   filterSignalsForRadarPreferences: vi.fn((signals: any[]) => signals),

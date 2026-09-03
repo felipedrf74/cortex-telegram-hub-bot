@@ -21,7 +21,10 @@ vi.mock('../../src/services/task-store/task-service', () => ({
   listTasksForUser: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  )),
   getDb: () => ({}),
 }));
 
@@ -72,7 +75,10 @@ vi.mock('../../src/services/content-learning-store', () => ({
   getPerformanceSummary: vi.fn(),
 }));
 
-vi.mock('../../src/services/content-workspace-read-models', () => ({
+vi.mock('../../src/services/content-workspace-read-models', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-read-models')>(
+    '../../src/services/content-workspace-read-models',
+  )),
   getContentWorkspaceSummaryCounts: vi.fn(),
 }));
 

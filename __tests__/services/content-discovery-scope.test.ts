@@ -41,7 +41,10 @@ vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: (...args: unknown[]) => mocks.getUserLanguage(...args),
 }));
 
-vi.mock('../../src/state/content-creator-profile', () => ({
+vi.mock('../../src/state/content-creator-profile', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-creator-profile')>(
+    '../../src/state/content-creator-profile',
+  )),
   getContentCreatorProfile: (...args: unknown[]) => mocks.getContentCreatorProfile(...args),
 }));
 

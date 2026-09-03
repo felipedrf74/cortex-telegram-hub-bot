@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runWithContext } from '../../src/utils/request-context';
 
-vi.mock('../../src/state/content-creator-profile', () => ({
+vi.mock('../../src/state/content-creator-profile', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-creator-profile')>(
+    '../../src/state/content-creator-profile',
+  )),
   getContentCreatorProfile: vi.fn(() => ({
     pillars: [],
     niches: [],

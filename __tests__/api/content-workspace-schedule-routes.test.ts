@@ -19,7 +19,10 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-vi.mock('../../src/services/cache-coherence-registry', () => ({
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry',
+  )),
   invalidateContentDerivedCaches: mockInvalidateContentDerivedCaches,
 }));
 
