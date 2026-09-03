@@ -262,6 +262,21 @@ describe('portal Decision Center routes', () => {
     mocks.updateDecisionPreferencesViaCommand.mockReturnValue({
       preferences: { profile: { pushEnabled: false } },
       idempotent: false,
+      commandReceipt: {
+        schemaVersion: 'decision_command_receipt@1.0.0',
+        receiptId: `dcr_${'e'.repeat(64)}`,
+        decisionId: 'decision_preferences:7:7',
+        operation: 'update_preferences',
+        idempotencyKeyHash: 'f'.repeat(64),
+        status: 'succeeded',
+        completedAt: '2026-05-10T10:00:00.000Z',
+        verification: {
+          readBackOk: true,
+          expectedEffect: { preferencePatchHash: '1'.repeat(64) },
+          actualEffect: { preferenceStateHash: '2'.repeat(64) },
+          message: 'Decision update_preferences succeeded; authoritative readback matched.',
+        },
+      },
     });
     mocks.performDecisionAction.mockResolvedValue({
       actionId: 'mark_paid',
@@ -269,6 +284,35 @@ describe('portal Decision Center routes', () => {
       idempotent: false,
       item: sampleDecision({ status: 'actioned' }),
       verification: { readBackOk: true, expectedEffect: {}, actualEffect: {}, message: 'ok' },
+      commandReceipt: {
+        schemaVersion: 'decision_command_receipt@1.0.0',
+        receiptId: `dcr_${'a'.repeat(64)}`,
+        decisionId: 'nc_1',
+        operation: 'act',
+        actionId: 'mark_paid',
+        idempotencyKeyHash: 'b'.repeat(64),
+        status: 'succeeded',
+        executionAttemptId: 'dae_portal_action_1',
+        completedAt: '2026-05-10T10:00:00.000Z',
+        requestedRecordVersion: 3,
+        requestedContextVersion: 'ctx_3',
+        resultRecordVersion: 4,
+        resultContextVersion: 'ctx_4',
+        readbackItem: {
+          decisionId: 'nc_1',
+          recordVersion: 4,
+          contextVersion: 'ctx_4',
+          status: 'actioned',
+          actionId: 'mark_paid',
+          actionStatus: 'succeeded',
+        },
+        verification: {
+          readBackOk: true,
+          expectedEffect: { evidenceHash: 'c'.repeat(64) },
+          actualEffect: { evidenceHash: 'd'.repeat(64), executionStatus: 'succeeded' },
+          message: 'Decision act succeeded; authoritative readback matched.',
+        },
+      },
     });
     mocks.isDecisionDashboardEnabled.mockReturnValue(false);
     mocks.buildDecisionDashboardSnapshot.mockReturnValue({
@@ -456,6 +500,46 @@ describe('portal Decision Center routes', () => {
     }));
     expect(payload.statusCode).toBe(200);
     expect((payload.body as any).item.status).toBe('actioned');
+    expect((payload.body as any).commandReceipt).toMatchObject({
+      schemaVersion: 'decision_command_receipt@1.0.0',
+      decisionId: 'nc_1',
+      operation: 'act',
+      actionId: 'mark_paid',
+      idempotencyKeyHash: 'b'.repeat(64),
+      status: 'succeeded',
+    });
+  });
+
+  it.each([
+    'IDEMPOTENCY_KEY_REUSED',
+    'DECISION_ACTION_PAYLOAD_MISMATCH',
+    'DECISION_ACTION_PAYLOAD_REQUIRED',
+  ])('strips a prior receipt from %s portal conflicts like the iOS route', async (code) => {
+    const { app, routes } = makeApp();
+    registerPortalDecisionCenterRoutes(app as any);
+    const handler = routes.get('POST /api/users/:userId/decision-center/decisions/:decisionId/actions')?.[2]!;
+    const { payload, res } = makeResponse();
+    const { DecisionActionError } = await import('../../src/services/decision-center');
+    mocks.performDecisionAction.mockRejectedValueOnce(new DecisionActionError(
+      code,
+      'The command does not match the prior attempt.',
+      409,
+      {
+        priorActionId: 'mark_paid',
+        commandReceipt: { schemaVersion: 'decision_command_receipt@1.0.0', receiptId: 'dcr_prior', status: 'succeeded' },
+      },
+    ));
+
+    handler({
+      params: { userId: '7', decisionId: 'nc_1' },
+      body: { actionId: 'mark_paid', idempotencyKey: 'portal-tap-1', payload: { month: '2026-06' } },
+      query: {},
+    }, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(payload.statusCode).toBe(409);
+    expect((payload.body as any).error.code).toBe(code);
+    expect((payload.body as any).error.details).toEqual({ priorActionId: 'mark_paid' });
   });
 
   it('derives a version-bound replay key for an old portal action client', async () => {
@@ -534,5 +618,11 @@ describe('portal Decision Center routes', () => {
     expect(mocks.logPortalAdminMutation).toHaveBeenCalledWith(expect.any(Object), 7, 'portal.decision_center.preferences', { tenantId: 7 });
     expect(payload.statusCode).toBe(200);
     expect((payload.body as any).preferences.profile.pushEnabled).toBe(false);
+    expect((payload.body as any).idempotent).toBe(false);
+    expect((payload.body as any).commandReceipt).toMatchObject({
+      operation: 'update_preferences',
+      idempotencyKeyHash: 'f'.repeat(64),
+      status: 'succeeded',
+    });
   });
 });

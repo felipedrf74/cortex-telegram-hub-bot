@@ -17,6 +17,7 @@ import {
   getDecisionOverview,
   getDecisionItem,
   getDecisionItemForCommand,
+  getDecisionMutationCommandReceipt,
   getDecisionAuditHistory,
   getDecisionPreferences,
   getDecisionSummary,
@@ -63,7 +64,10 @@ import {
   createDecisionMutationCommand,
   type DecisionMutationOperation,
 } from '../../services/decision-center/contracts';
-import { executeDecisionMutationWithReceipt } from '../../services/decision-center/command-receipts';
+import {
+  executeDecisionMutationWithReceipt,
+  type DecisionMutationReceiptResult,
+} from '../../services/decision-center/command-receipts';
 import { readDecisionRankSnapshotPageFromCurrentDatabase } from '../../services/decision-center/rank-snapshot-service';
 
 function routeTenantId(
@@ -130,6 +134,89 @@ function decisionError(res: Response, err: unknown, fallbackCode = 'DECISION_ERR
   );
 }
 
+/**
+ * Errors that are not `DecisionActionError` are normalized here so the receipt
+ * can ride on `details`. The normalization must preserve `decisionError`'s
+ * fallback-code and warn-log semantics, otherwise a generic executor error
+ * with a prior receipt would surface as `DECISION_INTERNAL_ERROR` instead of
+ * the route's documented fallback.
+ */
+function normalizeRouteDecisionError(
+  err: unknown,
+  fallbackCode: string,
+): { code: string; message: string; status: number; details?: Record<string, unknown> } {
+  logger.warn({ err }, 'Decision route rejected request');
+  const normalized = normalizeDecisionCenterError(err);
+  return {
+    code: normalized.code === 'DECISION_INTERNAL_ERROR' ? fallbackCode : normalized.code,
+    message: normalized.message,
+    status: normalized.status,
+    details: normalized.details,
+  };
+}
+
+function attachRouteCommandReceipt(
+  err: unknown,
+  commandReceipt: ReturnType<typeof getDecisionMutationCommandReceipt>,
+  fallbackCode = 'DECISION_ERROR',
+): unknown {
+  const code = err && typeof err === 'object' && 'code' in err
+    ? String((err as { code?: unknown }).code ?? '')
+    : '';
+  // A receipt found by key alone proves only the prior command. It must never
+  // be attached to a request whose payload/fingerprint was rejected, because
+  // clients would otherwise retire the conflicting attempt as that earlier
+  // success.
+  if (code === 'IDEMPOTENCY_KEY_REUSED'
+      || code === 'DECISION_ACTION_PAYLOAD_MISMATCH'
+      || code === 'DECISION_ACTION_PAYLOAD_REQUIRED') {
+    if (err instanceof DecisionActionError) {
+      if (err.details?.commandReceipt) {
+        const safeDetails = { ...err.details };
+        delete safeDetails.commandReceipt;
+        err.details = safeDetails;
+      }
+      return err;
+    }
+    const normalized = normalizeRouteDecisionError(err, fallbackCode);
+    const safeDetails = { ...(normalized.details ?? {}) } as Record<string, unknown>;
+    delete safeDetails.commandReceipt;
+    return new DecisionActionError(
+      normalized.code,
+      normalized.message,
+      normalized.status,
+      safeDetails,
+    );
+  }
+  if (!commandReceipt) return err;
+  if (err instanceof DecisionActionError) {
+    err.details = { ...(err.details ?? {}), commandReceipt };
+    return err;
+  }
+  const normalized = normalizeRouteDecisionError(err, fallbackCode);
+  return new DecisionActionError(
+    normalized.code,
+    normalized.message,
+    normalized.status,
+    { ...(normalized.details ?? {}), commandReceipt },
+  );
+}
+
+function safeRouteCommandReceipt(
+  input: Parameters<typeof getDecisionMutationCommandReceipt>[0],
+): ReturnType<typeof getDecisionMutationCommandReceipt> {
+  try {
+    return getDecisionMutationCommandReceipt(input);
+  } catch (receiptError) {
+    logger.error({
+      err: receiptError,
+      decisionId: input.decisionId,
+      operation: input.operation,
+    }, 'Decision route could not recover an immutable command receipt for an error response');
+    return null;
+  }
+}
+
 function mutationIdempotencyKey(
   body: Record<string, unknown>,
   actionId: string,
@@ -184,7 +271,7 @@ function executeRouteDecisionMutation<Result>(input: {
   entityType: string;
   payload: Readonly<Record<string, unknown>>;
   mutate: () => Result;
-}): { result: Result; idempotent: boolean } {
+}): DecisionMutationReceiptResult<Result> {
   ensureDecisionCenterTables();
   const requestedAt = new Date(Date.now()).toISOString();
   const commandKey = createHash('sha256').update(input.idempotencyKey).digest('hex');
@@ -474,7 +561,10 @@ export function decisionRoutes(): Router {
         payload: { decisionIds: rawIds },
         mutate: () => recordDecisionItemExposuresByIds(rawIds, userId, tenantId),
       });
-      sendSuccess(res, receipt.result);
+      sendSuccess(res, {
+        ...receipt.result,
+        ...(receipt.commandReceipt ? { commandReceipt: receipt.commandReceipt } : {}),
+      });
     } catch (err) {
       decisionError(res, err, 'DECISION_EXPOSURE_FAILED');
     }
@@ -558,7 +648,10 @@ export function decisionRoutes(): Router {
         channel: 'rest',
         patch,
       });
-      sendSuccess(res, receipt.preferences);
+      sendSuccess(res, {
+        ...receipt.preferences,
+        ...(receipt.commandReceipt ? { commandReceipt: receipt.commandReceipt } : {}),
+      });
     } catch (err) {
       decisionError(res, err, 'INVALID_DECISION_PREFERENCES');
     }
@@ -604,7 +697,9 @@ export function decisionRoutes(): Router {
     try {
       const receipt = executeRouteDecisionMutation({
         operation: 'suppress_type',
-        resourceId: `decision-suppression:${sourceSkill}:${type}:${recipe ?? '*'}`,
+        resourceId: `decision-suppression:${createHash('sha256')
+          .update(stableRouteJson({ sourceSkill, type, recipe }))
+          .digest('hex')}`,
         userId,
         tenantId,
         idempotencyKey,
@@ -621,7 +716,10 @@ export function decisionRoutes(): Router {
           return { suppressions: listDecisionTypeSuppressions(userId, tenantId) };
         },
       });
-      sendSuccess(res, receipt.result, { status: 201 });
+      sendSuccess(res, {
+        ...receipt.result,
+        ...(receipt.commandReceipt ? { commandReceipt: receipt.commandReceipt } : {}),
+      }, { status: 201 });
     } catch (err) {
       // Map service-layer DecisionActionError (VALIDATION / INVALID_SCOPE) to its intended 4xx instead of a
       // 500, consistent with every other handler in this file.
@@ -657,7 +755,9 @@ export function decisionRoutes(): Router {
     try {
       const receipt = executeRouteDecisionMutation({
         operation: 'unsuppress_type',
-        resourceId: `decision-suppression:${sourceSkill}:${type}:${recipe ?? '*'}`,
+        resourceId: `decision-suppression:${createHash('sha256')
+          .update(stableRouteJson(receiptPayload))
+          .digest('hex')}`,
         userId,
         tenantId,
         idempotencyKey,
@@ -668,7 +768,10 @@ export function decisionRoutes(): Router {
           return { suppressions: listDecisionTypeSuppressions(userId, tenantId) };
         },
       });
-      sendSuccess(res, receipt.result);
+      sendSuccess(res, {
+        ...receipt.result,
+        ...(receipt.commandReceipt ? { commandReceipt: receipt.commandReceipt } : {}),
+      });
     } catch (err) {
       decisionError(res, err, 'DECISION_UNSUPPRESS_FAILED');
       return;
@@ -717,6 +820,10 @@ export function decisionRoutes(): Router {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
       return;
     }
+    if (body.contextVersion != null && (typeof body.contextVersion !== 'string' || !body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
+      return;
+    }
     const decisionId = String(req.params.id || '');
     const idempotencyKey = mutationIdempotencyKey(
       body,
@@ -732,12 +839,28 @@ export function decisionRoutes(): Router {
       const item = markDecisionViewed(decisionId, userId, tenantId, {
         idempotencyKey,
         expectedVersion: typeof expectedVersion === 'number' ? expectedVersion : undefined,
+        contextVersion: typeof body.contextVersion === 'string' ? body.contextVersion : undefined,
         channel: 'rest',
       });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item });
+      const commandReceipt = getDecisionMutationCommandReceipt({
+        decisionId,
+        operation: 'mark_viewed',
+        actionId: null,
+        userId,
+        tenantId,
+        idempotencyKey,
+      });
+      sendSuccess(res, { item, ...(commandReceipt ? { commandReceipt } : {}) });
     } catch (err) {
-      decisionError(res, err, 'DECISION_VIEW_FAILED');
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation: 'mark_viewed',
+        actionId: null,
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'DECISION_VIEW_FAILED'), 'DECISION_VIEW_FAILED');
     }
   }));
 
@@ -799,9 +922,17 @@ export function decisionRoutes(): Router {
         schemaVersion,
         item: version === 'v2' ? buildDecisionCardSummary(result.item) : result.item,
         refreshedAt: result.refreshedAt,
+        ...(result.commandReceipt ? { commandReceipt: result.commandReceipt } : {}),
       });
     } catch (err) {
-      decisionError(res, err, 'DECISION_REFRESH_FAILED');
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation: 'refresh',
+        actionId: null,
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'DECISION_REFRESH_FAILED'), 'DECISION_REFRESH_FAILED');
     }
   }));
 
@@ -835,6 +966,11 @@ export function decisionRoutes(): Router {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
       return;
     }
+    if (req.body?.contextVersion != null
+        && (typeof req.body.contextVersion !== 'string' || !req.body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
+      return;
+    }
     const replacementChoiceId = typeof req.body?.replacementChoiceId === 'string'
       && DECISION_REPLACEMENT_CHOICES.has(req.body.replacementChoiceId as DecisionReplacementChoice)
       ? req.body.replacementChoiceId as DecisionReplacementChoice
@@ -857,6 +993,7 @@ export function decisionRoutes(): Router {
       const item = reviewDecision(String(req.params.id || ''), userId, tenantId, {
         outcome,
         expectedVersion,
+        contextVersion: typeof req.body?.contextVersion === 'string' ? req.body.contextVersion : undefined,
         idempotencyKey,
         deferUntil: typeof req.body?.deferUntil === 'string' ? req.body.deferUntil : undefined,
         reasonCode: typeof req.body?.reasonCode === 'string' ? req.body.reasonCode : undefined,
@@ -867,9 +1004,26 @@ export function decisionRoutes(): Router {
           : undefined,
       });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item });
+      const decisionId = String(req.params.id || '');
+      const commandReceipt = getDecisionMutationCommandReceipt({
+        decisionId,
+        operation: 'review',
+        actionId: `review:${outcome}`,
+        userId,
+        tenantId,
+        idempotencyKey,
+      });
+      sendSuccess(res, { item, ...(commandReceipt ? { commandReceipt } : {}) });
     } catch (err) {
-      decisionError(res, err, 'DECISION_REVIEW_FAILED');
+      const decisionId = String(req.params.id || '');
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation: 'review',
+        actionId: `review:${outcome}`,
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'DECISION_REVIEW_FAILED'), 'DECISION_REVIEW_FAILED');
     }
   }));
 
@@ -882,6 +1036,11 @@ export function decisionRoutes(): Router {
     const expectedVersion = req.body?.expectedVersion ?? req.body?.recordVersion;
     if (!Number.isSafeInteger(expectedVersion) || expectedVersion <= 0) {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    if (req.body?.contextVersion != null
+        && (typeof req.body.contextVersion !== 'string' || !req.body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
       return;
     }
     const idempotencyKey = mutationIdempotencyKey(
@@ -897,15 +1056,33 @@ export function decisionRoutes(): Router {
     try {
       const item = reviseDecisionProposal(String(req.params.id || ''), userId, tenantId, {
         expectedVersion,
+        contextVersion: typeof req.body?.contextVersion === 'string' ? req.body.contextVersion : undefined,
         idempotencyKey,
         channel: 'rest',
         recommendedStartAt: typeof req.body?.recommendedStartAt === 'string' ? req.body.recommendedStartAt : undefined,
         recommendedEndAt: typeof req.body?.recommendedEndAt === 'string' ? req.body.recommendedEndAt : undefined,
       });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item });
+      const decisionId = String(req.params.id || '');
+      const commandReceipt = getDecisionMutationCommandReceipt({
+        decisionId,
+        operation: 'edit',
+        actionId: 'edit_proposal',
+        userId,
+        tenantId,
+        idempotencyKey,
+      });
+      sendSuccess(res, { item, ...(commandReceipt ? { commandReceipt } : {}) });
     } catch (err) {
-      decisionError(res, err, 'DECISION_PROPOSAL_EDIT_FAILED');
+      const decisionId = String(req.params.id || '');
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation: 'edit',
+        actionId: 'edit_proposal',
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'DECISION_PROPOSAL_EDIT_FAILED'), 'DECISION_PROPOSAL_EDIT_FAILED');
     }
   }));
 
@@ -928,6 +1105,10 @@ export function decisionRoutes(): Router {
     }
     if (body.deferUntil != null && typeof body.deferUntil !== 'string') {
       sendError(res, 'VALIDATION', 'deferUntil must be an ISO timestamp', 400);
+      return;
+    }
+    if (body.contextVersion != null && (typeof body.contextVersion !== 'string' || !body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
       return;
     }
     const idempotencyKey = mutationIdempotencyKey(
@@ -953,9 +1134,19 @@ export function decisionRoutes(): Router {
         },
       });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item: result.item });
+      sendSuccess(res, {
+        item: result.item,
+        ...(result.commandReceipt ? { commandReceipt: result.commandReceipt } : {}),
+      });
     } catch (err) {
-      decisionError(res, err, 'DECISION_SNOOZE_FAILED');
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation: 'snooze',
+        actionId: 'snooze',
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'DECISION_SNOOZE_FAILED'), 'DECISION_SNOOZE_FAILED');
     }
   }));
 
@@ -970,6 +1161,10 @@ export function decisionRoutes(): Router {
     const expectedVersion = body.expectedVersion;
     if (expectedVersion != null && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) <= 0)) {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    if (body.contextVersion != null && (typeof body.contextVersion !== 'string' || !body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
       return;
     }
     const idempotencyKey = mutationIdempotencyKey(
@@ -991,9 +1186,19 @@ export function decisionRoutes(): Router {
         payload: typeof body.reason === 'string' ? { reason: body.reason } : {},
       });
       invalidateNotificationInboxCaches(userId, tenantId);
-      sendSuccess(res, { item: result.item });
+      sendSuccess(res, {
+        item: result.item,
+        ...(result.commandReceipt ? { commandReceipt: result.commandReceipt } : {}),
+      });
     } catch (err) {
-      decisionError(res, err, 'DECISION_DISMISS_FAILED');
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation: 'dismiss',
+        actionId: 'dismiss',
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'DECISION_DISMISS_FAILED'), 'DECISION_DISMISS_FAILED');
     }
   }));
 
@@ -1013,6 +1218,10 @@ export function decisionRoutes(): Router {
       || expectedVersion <= 0
     )) {
       sendError(res, 'VALIDATION', 'expectedVersion must be a positive integer', 400);
+      return;
+    }
+    if (body.contextVersion != null && (typeof body.contextVersion !== 'string' || !body.contextVersion.trim())) {
+      sendError(res, 'VALIDATION', 'contextVersion must be a non-empty string', 400);
       return;
     }
     const idempotencyKey = mutationIdempotencyKey(
@@ -1064,7 +1273,19 @@ export function decisionRoutes(): Router {
       invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result);
     } catch (err) {
-      decisionError(res, err, 'INVALID_DECISION_ACTION');
+      const operation = actionId === 'snooze'
+        ? 'snooze'
+        : actionId === 'dismiss' || actionId === 'not_now'
+          ? 'dismiss'
+          : 'act';
+      decisionError(res, attachRouteCommandReceipt(err, safeRouteCommandReceipt({
+        decisionId,
+        operation,
+        actionId,
+        userId,
+        tenantId,
+        idempotencyKey,
+      }), 'INVALID_DECISION_ACTION'), 'INVALID_DECISION_ACTION');
     }
   }));
 

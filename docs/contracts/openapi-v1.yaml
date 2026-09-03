@@ -13210,7 +13210,7 @@ paths:
 
         Input accepts { idempotencyKey?: string, weekStart?: string, date?: string } in the JSON body and an optional Idempotency-Key header. At least one idempotency key is required; when both are present, the body field is authoritative. Dates must be exact YYYY-MM-DD values; weekStart must be a Monday and date must fall within that week. Omitted dates resolve from one captured clock in the authenticated user's canonical IANA timezone.
 
-        Notes: A scoped leased receipt makes exact retries return the stored result without invalidation or orchestration. Reusing a key for a different normalized request returns 409. The first execution invalidates the user's planning caches, composes the week once with signal sync, and projects today from that exact week. The weekly composer durably synchronizes derived mesh signals only when the requested week is the captured current week in the authenticated user's timezone; historical or future recomputes remain read-only in-memory projections and cannot retire another week's coordination state. Week and Today share one captured generatedAt and include timezone, warnings, warningCodes, and sourceHealth. Internal snapshot and receipt identities are not exposed. Recompute is deterministic and token-zero; AI-copy quota may suppress creative copy but does not make otherwise healthy source state degraded.
+        Notes: A scoped leased receipt makes exact retries return the stored result without invalidation or orchestration. Reusing a key for a different normalized request returns 409. The first execution invalidates the user's planning caches, composes the week once with signal sync, and projects today from that exact week. The weekly composer durably synchronizes derived mesh signals only when the requested week is the captured current week in the authenticated user's timezone; historical or future recomputes remain read-only in-memory projections and cannot retire another week's coordination state. Week and Today share one captured generatedAt and include timezone, warnings, warningCodes, and sourceHealth. Internal snapshot and receipt identities are not exposed; an additive privacy-minimized commandReceipt is returned as immutable replay evidence. Recompute is deterministic and token-zero; AI-copy quota may suppress creative copy but does not make otherwise healthy source state degraded.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/plan.ts:104 (mounted src/api/router.ts:405)"
       parameters:
@@ -13243,7 +13243,7 @@ paths:
                   description: "Daily projection date; must fall within weekStart when both are supplied."
       responses:
         "200":
-          description: "apiSuccess { week: WeeklyPlanResponse, today: DailyBrief }. Both share one generatedAt and today is projected from the returned week. Week and Today include timezone, warningCodes, warnings, and sourceHealth. Week source keys are calendar, tasks, mail, focus, training, cooking, content, finance; Today adds decision_center. Each source status is ready, stale, degraded, or unavailable."
+          description: "apiSuccess { week: WeeklyPlanResponse, today: DailyBrief, commandReceipt?: DecisionCommandReceipt }. Both share one generatedAt and today is projected from the returned week. Week and Today include timezone, warningCodes, warnings, and sourceHealth. Week source keys are calendar, tasks, mail, focus, training, cooking, content, finance; Today adds decision_center. Each source status is ready, stale, degraded, or unavailable."
         "400":
           description: "Error envelope. Stable code(s): INVALID_INPUT, PLANNING_RECOMPUTE_INVALID, PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED."
         "401":
@@ -14032,7 +14032,7 @@ paths:
               description: "Evidenced fields: decisionIds: array of 1-100 non-empty strings (each <=200 chars), required; idempotencyKey?: stable string <=200 (old clients receive a deterministic compatibility key). Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "recordDecisionItemExposuresByIds result (Standard success envelope unless noted.)"
+          description: "recordDecisionItemExposuresByIds result plus additive commandReceipt (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, DECISION_EXPOSURE_FAILED."
         "401":
@@ -14091,7 +14091,7 @@ paths:
               description: "Evidenced fields: decision intent fields (spread from body); userId/tenantId always overridden from auth. Route validation code is authoritative for exact shapes."
       responses:
         "201":
-          description: "createDecisionIntent result; 201 when an item was created, 202 when accepted without an item (Standard success envelope unless noted.)"
+          description: "createDecisionIntent result plus additive commandReceipt; 201 when an item was created, 202 when accepted without an item (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): INVALID_DECISION_INTENT."
         "401":
@@ -14131,7 +14131,7 @@ paths:
               description: "Evidenced fields: optional fixture overrides (spread into buildSkillDecisionFixtureIntent); sourceSkill param defaults to 'secretary' when empty. Route validation code is authoritative for exact shapes."
       responses:
         "201":
-          description: "createDecisionIntent result; 201 when item created, 202 otherwise (Standard success envelope unless noted.)"
+          description: "createDecisionIntent result plus additive commandReceipt; 201 when item created, 202 otherwise (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): INVALID_DECISION_FIXTURE."
         "401":
@@ -14219,7 +14219,7 @@ paths:
               description: "Evidenced fields: preferences patch object plus idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "updateDecisionPreferences result (Standard success envelope unless noted.)"
+          description: "updateDecisionPreferences result plus additive commandReceipt (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): INVALID_DECISION_PREFERENCES."
         "401":
@@ -14249,7 +14249,7 @@ paths:
               description: "Evidenced fields: sourceSkill (string, required), type (string, required), mode ('dont_show_type'|'snooze_type', required), untilDays (positive int, default 7, max 365, snooze mode only), recipe (string, optional), idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "201":
-          description: "{ suppressions[] } (Standard success envelope unless noted.)"
+          description: "{ suppressions[], commandReceipt?: DecisionCommandReceipt } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, DECISION_SUPPRESS_FAILED."
         "401":
@@ -14287,7 +14287,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ suppressions[] } (Standard success envelope unless noted.)"
+          description: "{ suppressions[], commandReceipt?: DecisionCommandReceipt } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, DECISION_UNSUPPRESS_FAILED."
         "401":
@@ -14387,7 +14387,7 @@ paths:
 
         Request body (evidenced fields): actionId (string); idempotencyKey?: stable string <=200, payload (object), channel (string), expectedVersion/recordVersion (positive integer if present), contextVersion (string). New clients persist and reuse idempotencyKey; old clients receive a deterministic request/version-bound compatibility key.
 
-        Notes: DecisionActionError instances pass through with service-defined code/status/details. APNs requires current record/context versions and an exact low-risk executable action; otherwise the response directs the client to open the app without executing. Successful action responses include action-specific exact readback.
+        Notes: DecisionActionError instances pass through with service-defined code/status/details. APNs requires current record/context versions and an exact low-risk executable action; otherwise the response directs the client to open the app without executing. Successful action responses include action-specific exact readback and a commandReceipt. Failed or partially-failed claimed attempts carry the same immutable receipt at error.details.commandReceipt. A replay keeps the original receipt even when the top-level current item has advanced. Replay conflicts: IDEMPOTENCY_KEY_REUSED (409) when the key was already bound to different parameters; DECISION_EXECUTION_RECOVERY_REQUIRED (409, details.recoveryAction = "refresh") when a predecessor execution row cannot prove the exact request bound to the key. Both are terminal for that key: clients retire the stale command, refresh the item, and read the completed effect from the current execution projection instead of retrying the same key. Conflict responses never carry a commandReceipt.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:589"
       parameters:
@@ -14405,7 +14405,7 @@ paths:
               description: "Evidenced fields: actionId (string); idempotencyKey?: stable string <=200, payload (object), channel (string), expectedVersion/recordVersion (positive integer if present), contextVersion (string). Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "performDecisionAction result (Standard success envelope unless noted.)"
+          description: "performDecisionAction result including commandReceipt (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, INVALID_DECISION_ACTION."
         "401":
@@ -14441,7 +14441,7 @@ paths:
               description: "Evidenced fields: optional reason (string), expectedVersion (positive integer), contextVersion (string), and idempotencyKey (stable string <=200). Legacy omissions receive deterministic compatibility behavior. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ item } (Standard success envelope unless noted.)"
+          description: "{ item, commandReceipt?: DecisionCommandReceipt } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): DECISION_DISMISS_FAILED."
         "401":
@@ -14467,7 +14467,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ decisionId, ...audit history } (Standard success envelope unless noted.)"
+          description: "{ decisionId, events[], conflicts[], executions[], commandReceipts[] } where commandReceipts contains scoped immutable DecisionCommandReceipt entries (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): DECISION_HISTORY_FAILED."
         "401":
@@ -14485,7 +14485,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:523
 
-        Request body (evidenced fields): expectedVersion/recordVersion (positive integer, required); idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings)
+        Request body (evidenced fields): expectedVersion/recordVersion (positive integer, required); contextVersion?: non-empty string; idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings)
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:523"
       parameters:
@@ -14500,10 +14500,10 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: expectedVersion/recordVersion (positive integer, required); idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: expectedVersion/recordVersion (positive integer, required); contextVersion?: non-empty string; idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings). Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ item } with canonical nullable recommendedStartAt/recommendedEndAt read back from the updated stored decision context. (Standard success envelope unless noted.)"
+          description: "{ item, commandReceipt?: DecisionCommandReceipt } with canonical nullable recommendedStartAt/recommendedEndAt read back from the updated stored decision context. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, DECISION_PROPOSAL_EDIT_FAILED."
         "401":
@@ -14534,7 +14534,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ schemaVersion, item (card summary in v2), refreshedAt } (Standard success envelope unless noted.)"
+          description: "{ schemaVersion, item (card summary in v2), refreshedAt, commandReceipt?: DecisionCommandReceipt } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): DECISION_REFRESH_FAILED."
         "401":
@@ -14554,7 +14554,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:480
 
-        Request body (evidenced fields): outcome ('approve'|'reject'|'defer', required); expectedVersion (positive integer, required); optional idempotencyKey, deferUntil, reasonCode, strongConfirmationText (strings); optional replacementChoiceId (one of keep_existing_commitment|replace_with_candidate|choose_another_time|review_tradeoff)
+        Request body (evidenced fields): outcome ('approve'|'reject'|'defer', required); expectedVersion (positive integer, required); optional contextVersion, idempotencyKey, deferUntil, reasonCode, strongConfirmationText (strings); optional replacementChoiceId (one of keep_existing_commitment|replace_with_candidate|choose_another_time|review_tradeoff)
 
         Notes: DecisionActionError instances pass through with service-defined code/status (e.g. version-conflict errors)
       x-nexus-kind: "deterministic"
@@ -14571,10 +14571,10 @@ paths:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: outcome ('approve'|'reject'|'defer', required); expectedVersion (positive integer, required); optional idempotencyKey, deferUntil, reasonCode, strongConfirmationText (strings); optional replacementChoiceId (one of keep_existing_commitment|replace_with_candidate|choose_another_time|review_tradeoff). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: outcome ('approve'|'reject'|'defer', required); expectedVersion (positive integer, required); optional contextVersion, idempotencyKey, deferUntil, reasonCode, strongConfirmationText (strings); optional replacementChoiceId (one of keep_existing_commitment|replace_with_candidate|choose_another_time|review_tradeoff). Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ item } (Standard success envelope unless noted.)"
+          description: "{ item, commandReceipt?: DecisionCommandReceipt } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, DECISION_REVIEW_FAILED."
         "401":
@@ -14610,7 +14610,7 @@ paths:
               description: "Evidenced fields: deferUntil?: absolute ISO timestamp; minutes?: positive integer retained for legacy clients; followUp?: string; expectedVersion?: positive integer; contextVersion?: string; idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ item } with canonical snoozedUntil identical to an immediate exact GET of the decision. (Standard success envelope unless noted.)"
+          description: "{ item, commandReceipt?: DecisionCommandReceipt } with canonical snoozedUntil on the current item and immutable original-command readback in the receipt. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): DECISION_SNOOZE_FAILED."
         "401":
@@ -14628,7 +14628,7 @@ paths:
       description: |-
         Source: src/api/routes/decisions.ts:421
 
-        Request body: idempotencyKey?: stable string <=200 and expectedVersion/recordVersion?: positive integer. Old clients receive a deterministic compatibility key.
+        Request body: idempotencyKey?: stable string <=200, expectedVersion/recordVersion?: positive integer, and contextVersion?: non-empty string. Old clients receive a deterministic compatibility key.
 
         Notes: DecisionActionError instances pass through with service-defined code/status. This is an explicit mutation; decision GET routes never mark an item viewed.
       x-nexus-kind: "deterministic"
@@ -14641,7 +14641,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ item } (Standard success envelope unless noted.)"
+          description: "{ item, commandReceipt?: DecisionCommandReceipt } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): DECISION_VIEW_FAILED."
         "401":
@@ -15533,6 +15533,203 @@ components:
         type: "string"
         example: "en-US"
   schemas:
+    DecisionCommandReceiptReadbackItem:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "decisionId"
+        - "recordVersion"
+        - "status"
+      properties:
+        decisionId:
+          type: "string"
+          minLength: 1
+        recordVersion:
+          type: "integer"
+          minimum: 1
+        contextVersion:
+          type: "string"
+          minLength: 1
+        status:
+          type: "string"
+          minLength: 1
+          description: "Decision domain state at completion, such as read, snoozed, dismissed, or actioned."
+        snoozedUntil:
+          type: "string"
+          format: "date-time"
+        actionId:
+          type: "string"
+          minLength: 1
+        actionStatus:
+          type: "string"
+          enum:
+            - "succeeded"
+            - "partially_failed"
+            - "failed"
+          description: "When present, exactly equals the enclosing receipt status."
+    DecisionCommandReceiptVerification:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "readBackOk"
+        - "expectedEffect"
+        - "actualEffect"
+        - "message"
+      properties:
+        readBackOk:
+          type: "boolean"
+        expectedEffect:
+          type: "object"
+          additionalProperties: true
+          description: "Privacy-minimized expected evidence; never contains raw command, prompt, user copy, scope IDs, or idempotency key."
+        actualEffect:
+          type: "object"
+          additionalProperties: true
+          description: "Privacy-minimized authoritative effect evidence."
+        message:
+          type: "string"
+          minLength: 1
+          maxLength: 240
+          description: "Bounded server-authored receipt explanation."
+    DecisionCommandReceipt:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "schemaVersion"
+        - "receiptId"
+        - "decisionId"
+        - "operation"
+        - "idempotencyKeyHash"
+        - "status"
+        - "completedAt"
+      properties:
+        schemaVersion:
+          const: "decision_command_receipt@1.0.0"
+        receiptId:
+          type: "string"
+          pattern: "^dcr_[a-f0-9]{64}(?:_partial)?$"
+          description: "Deterministic and bound to authenticated tenant/user scope, operation, action, decision resource, and stable key. The _partial suffix preserves the first uncertain terminal observation; later reconciliation appends the canonical base receipt instead of mutating it."
+        decisionId:
+          type: "string"
+          minLength: 1
+        operation:
+          type: "string"
+          enum:
+            - "create_intent"
+            - "act"
+            - "review"
+            - "edit"
+            - "snooze"
+            - "dismiss"
+            - "mark_viewed"
+            - "refresh"
+            - "update_preferences"
+            - "suppress_type"
+            - "unsuppress_type"
+            - "record_exposure"
+            - "recompute_plan"
+        actionId:
+          type: "string"
+          minLength: 1
+        idempotencyKeyHash:
+          type: "string"
+          pattern: "^[a-f0-9]{64}$"
+          description: "Lowercase SHA-256 of the raw stable key with no prefix. The raw key is never returned."
+        status:
+          type: "string"
+          enum:
+            - "succeeded"
+            - "partially_failed"
+            - "failed"
+        executionAttemptId:
+          type: "string"
+          minLength: 1
+        completedAt:
+          type: "string"
+          format: "date-time"
+        requestedRecordVersion:
+          type: "integer"
+          minimum: 1
+        requestedContextVersion:
+          type: "string"
+          minLength: 1
+        resultRecordVersion:
+          type: "integer"
+          minimum: 1
+        resultContextVersion:
+          type: "string"
+          minLength: 1
+        readbackItem:
+          "$ref": "#/components/schemas/DecisionCommandReceiptReadbackItem"
+        verification:
+          "$ref": "#/components/schemas/DecisionCommandReceiptVerification"
+      allOf:
+        - if:
+            properties:
+              status:
+                const: "succeeded"
+            required:
+              - "status"
+          then:
+            required:
+              - "verification"
+        - if:
+            properties:
+              status:
+                const: "succeeded"
+              operation:
+                enum:
+                  - "act"
+                  - "review"
+                  - "edit"
+                  - "snooze"
+                  - "dismiss"
+                  - "mark_viewed"
+                  - "refresh"
+            required:
+              - "status"
+              - "operation"
+          then:
+            anyOf:
+              - required:
+                  - "readbackItem"
+                  - "resultRecordVersion"
+              - required:
+                  - "executionAttemptId"
+        - if:
+            properties:
+              status:
+                const: "succeeded"
+            required:
+              - "status"
+            anyOf:
+              - properties:
+                  operation:
+                    const: "snooze"
+                required:
+                  - "operation"
+              - properties:
+                  operation:
+                    const: "review"
+                  actionId:
+                    const: "review:defer"
+                required:
+                  - "operation"
+                  - "actionId"
+          then:
+            required:
+              - "readbackItem"
+              - "resultRecordVersion"
+            properties:
+              readbackItem:
+                allOf:
+                  - "$ref": "#/components/schemas/DecisionCommandReceiptReadbackItem"
+                  - required:
+                      - "snoozedUntil"
+                    properties:
+                      status:
+                        const: "snoozed"
+      description: "Immutable privacy-minimized evidence for the original stable-key mutation. The top-level item may be newer on replay; this receipt never changes to describe a later command. Successful receipts require complete verification; successful item mutations additionally require compact readback or an execution attempt, and snooze/review-defer success always carries the resolved snooze instant. Optional receipt absence/null remains compatible only with predecessor responses and rows."
     SecretaryRoutineWindow:
       type: "object"
       additionalProperties: false

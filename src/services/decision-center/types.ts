@@ -161,6 +161,7 @@ import { invalidatePlanningAfterVerifiedDecisionSourceMutation } from './plannin
 
 import {
   createDecisionMutationCommand,
+  type DecisionCommandReceipt,
   type DecisionMutationApproval,
   type DecisionMutationChannel,
   type DecisionMutationCommand,
@@ -866,6 +867,8 @@ export interface DecisionActionResult {
     actualEffect: Record<string, unknown>;
     message: string;
   };
+  /** Immutable evidence for the original stable command key. */
+  commandReceipt?: DecisionCommandReceipt;
 }
 
 
@@ -1001,6 +1004,7 @@ export interface DecisionProposalReceipt {
   commandContract: Omit<DecisionMutationCommand, 'idempotencyKey'> & {
     idempotencyKeyHash: string;
   };
+  commandReceipt?: DecisionCommandReceipt;
 }
 
 
@@ -1018,6 +1022,7 @@ export interface DecisionRefreshOptions {
 export interface DecisionRefreshReceipt {
   refreshedAt: string;
   requestFingerprint: string;
+  commandReceipt?: DecisionCommandReceipt;
 }
 
 

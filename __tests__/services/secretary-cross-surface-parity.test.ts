@@ -121,6 +121,18 @@ describe('Secretary canonical snapshot cross-surface parity', () => {
         updated_at TEXT NOT NULL,
         UNIQUE (user_id, tenant_id, idempotency_key_hash)
       );
+      CREATE TABLE decision_lifecycle_events (
+        event_id TEXT PRIMARY KEY,
+        decision_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        tenant_id INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        to_status TEXT,
+        action_id TEXT,
+        reason TEXT,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
     vi.clearAllMocks();
     mocks.getUserById.mockReturnValue({ id: 7, timezone: 'UTC', language: 'en-US' });

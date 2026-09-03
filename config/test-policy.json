@@ -268,8 +268,8 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/portal/decision-center-routes.ts:386-392",
-            "anchor": "const { preferences } = updateDecisionPreferencesViaCommand({",
+            "pattern": "src/portal/decision-center-routes.ts:399-405",
+            "anchor": "const { preferences, idempotent, commandReceipt } = updateDecisionPreferencesViaCommand({",
             "behavior": "Portal preference mutations use the canonical scoped idempotent command contract and retain the portal channel in the receipt.",
             "replacementTest": "__tests__/portal/portal-decision-center-routes.test.ts",
             "ownerTestNamePattern": "updates portal Decision Center preferences through the canonical preferences service and audits it$",
@@ -348,7 +348,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/decision-center/command-service.ts:2781-2781",
+            "pattern": "src/services/decision-center/command-service.ts:3666-3666",
             "anchor": "'DECISION_VERSION_CONFLICT',",
             "behavior": "The product-learning approval action rejects a stale record version before mutation while accepting the exact current record and context versions.",
             "replacementTest": "__tests__/services/product-learning.test.ts",
@@ -1541,7 +1541,7 @@
         ],
         "mutationTargets": [
           {
-          "pattern": "src/services/notification-contracts.ts:187-187",
+            "pattern": "src/services/notification-contracts.ts:187-187",
             "anchor": "return ['reconnect', 'open_detail'];",
             "behavior": "Sync-failure decisions stop advertising an unimplemented retry and instead expose an enabled navigation-only reconnect action.",
             "replacementTest": "__tests__/services/decision-center.test.ts",
@@ -2158,7 +2158,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/planning-recompute-service.ts:419-419",
+            "pattern": "src/services/planning-recompute-service.ts:556-556",
             "anchor": "receipt.status === 'completed'",
             "behavior": "A completed planning receipt replays the exact coherent week and day without invalidation, composition, or provider work.",
             "replacementTest": "__tests__/services/planning-recompute-service.test.ts",
@@ -2295,6 +2295,26 @@
           }
         ],
         "reason": "The retained package suite replaces stale Fossa and job-placement assertions with complete one-owner mappings plus parent and child gate enforcement."
+      },
+      {
+        "test": "__tests__/services/decision-center-command-receipts.test.ts",
+        "replacementTests": [
+          "__tests__/services/decision-center-command-receipts.test.ts"
+        ],
+        "sources": [
+          "src/services/decision-center/command-receipts.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/decision-center/command-receipts.ts:94-97",
+            "anchor": "if (receipt.schemaVersion !== DECISION_MUTATION_RECEIPT_SCHEMA_VERSION",
+            "behavior": "A stored mutation receipt replays only for the same schema, operation, and compatible request identity; any other reuse of the key is a typed IDEMPOTENCY_KEY_REUSED conflict instead of a silent replay.",
+            "replacementTest": "__tests__/services/decision-center-command-receipts.test.ts",
+            "ownerTestNamePattern": "rejects reuse of a key for a different command payload$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained receipts suite replaces whole-object toEqual snapshots of {result, idempotent} with field assertions plus the additive immutable commandReceipt contract; the replay/conflict identity guard remains directly owned."
       }
     ],
     "ownerTestMappings": [],

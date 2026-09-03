@@ -165,10 +165,25 @@ import { invalidatePlanningAfterVerifiedDecisionSourceMutation } from './plannin
 
 import {
   createDecisionMutationCommand,
+  type DecisionCommandReceipt,
+  type DecisionCommandReceiptReadbackItem,
   type DecisionMutationApproval,
   type DecisionMutationChannel,
   type DecisionMutationCommand,
 } from './contracts';
+
+import {
+  compactDecisionCommandReadback,
+  compactDecisionExecutionReceiptEvidence,
+  createDecisionCommandReceipt,
+  decisionCommandReceiptId,
+  decisionIdempotencyKeyHash,
+  listDecisionCommandReceipts,
+  persistDecisionCommandReceipt,
+  privacySafeDecisionMutationCommandContract,
+  readDecisionCommandReceipt,
+  verifiedDecisionExecutionReadback,
+} from './command-response-receipts';
 
 import {
   DECISION_RANK_SNAPSHOT_UNIVERSE_FINGERPRINT,
@@ -304,6 +319,15 @@ async function performDecisionActionLegacyCore(
     tenantId,
     opts,
   });
+  const replayCommandIdentity: DecisionActionReplayCommandIdentity = {
+    idempotencyKey,
+    requestFingerprint,
+    // An alias receipt describes the command that actually arrived. Never
+    // substitute the mutable state observed by a later retry for an omitted
+    // client precondition: that would make K2 look like immutable K1 input.
+    requestedRecordVersion: opts.expectedVersion,
+    requestedContextVersion: opts.contextVersion,
+  };
   // Idempotency short-circuits BEFORE re-validating availability: a key we have already seen is replayed
   // based on its prior outcome regardless of whether the action is still "available" now. This matters for
   // a dynamically-surfaced action whose availability precondition is consumed by its own execution —
@@ -324,18 +348,41 @@ async function performDecisionActionLegacyCore(
       { priorActionId: existingForKey.action_id },
     );
   }
-  if (existing) assertDecisionActionReplayFingerprint(existing, requestFingerprint);
+  if (existing) {
+    assertDecisionActionExecutionReplayIdentity(existing, requestFingerprint, actionId, opts);
+  }
   if (existing && existing.status === 'succeeded') {
-    return idempotentActionResult(decisionId, actionId, userId, tenantId, existing);
+    return idempotentActionResult(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      existing,
+      replayCommandIdentity,
+    );
   }
   if (existing && existing.status === 'started') {
-    return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+    return waitForExistingExecution(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      idempotencyKey,
+      replayCommandIdentity,
+    );
   }
   if (existing && existing.status === 'partially_failed') {
     const reconciliation = reconcilePartialDecisionExecution(record);
     const reconciled = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
     if (reconciliation === 'applied' && reconciled?.status === 'succeeded') {
-      return idempotentActionResult(decisionId, actionId, userId, tenantId, reconciled);
+      return idempotentActionResult(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        reconciled,
+        replayCommandIdentity,
+      );
     }
     throw executionReplayError(reconciled ?? existing, reconciliation === 'unknown'
       ? 'Prior decision action outcome still requires recovery review'
@@ -344,6 +391,22 @@ async function performDecisionActionLegacyCore(
   if (existing && existing.status === 'failed') {
     throw executionReplayError(existing, 'Prior decision action attempt failed');
   }
+  const coalescedReceiptReplay = replayCoalescedDecisionActionReceipt({
+    decisionId,
+    actionId,
+    userId,
+    tenantId,
+    command: replayCommandIdentity,
+  });
+  if (coalescedReceiptReplay) return coalescedReceiptReplay;
+  const durableJoinReplay = await replayDurableDecisionActionLogicalJoin({
+    decisionId,
+    actionId,
+    userId,
+    tenantId,
+    command: replayCommandIdentity,
+  });
+  if (durableJoinReplay) return durableJoinReplay;
   if (opts.channel === 'apns' && !isDecisionActionAllowedFromApns(actionId)) {
     throw new DecisionActionError(
       'APNS_ACTION_NOT_ALLOWED',
@@ -368,14 +431,42 @@ async function performDecisionActionLegacyCore(
       userId,
       tenantId,
     }, 'Decision logical duplicate joined an active execution');
-    return waitForExecutionById(decisionId, actionId, userId, tenantId, existingLogical.action_execution_id);
+    return waitForExecutionById(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      existingLogical.action_execution_id,
+      replayCommandIdentity,
+    );
   }
   if (existingLogical?.status === 'succeeded' && actionId !== 'undo_reflow') {
-    guardActionable(record, actionId);
-    return idempotentActionResult(decisionId, actionId, userId, tenantId, existingLogical);
+    if (existingLogical.decision_id === decisionId
+        && !hasDurableDecisionActionLogicalJoin({
+          decisionId,
+          actionId,
+          userId,
+          tenantId,
+          executionId: existingLogical.action_execution_id,
+          command: replayCommandIdentity,
+        })) {
+      guardActionable(record, actionId);
+    }
+    return idempotentActionResult(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      existingLogical,
+      replayCommandIdentity,
+    );
   }
   if (existingLogical?.status === 'partially_failed') {
-    throw executionReplayError(existingLogical, 'An equivalent decision action requires recovery review');
+    throw executionReplayError(
+      existingLogical,
+      'An equivalent decision action requires recovery review',
+      { decisionId, actionId, command: replayCommandIdentity },
+    );
   }
   guardDecisionLifecycleMutation(record, 'perform_action', {
     allowExecution: { actionId, idempotencyKey },
@@ -450,12 +541,30 @@ async function performDecisionActionLegacyCore(
   );
   if (!claimed.isNew) {
     if (claimed.execution.status === 'succeeded') {
-      return idempotentActionResult(decisionId, actionId, userId, tenantId, claimed.execution);
+      return idempotentActionResult(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        claimed.execution,
+        replayCommandIdentity,
+      );
     }
     if (claimed.execution.status === 'started') {
-      return waitForExecutionById(decisionId, actionId, userId, tenantId, claimed.execution.action_execution_id);
+      return waitForExecutionById(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        claimed.execution.action_execution_id,
+        replayCommandIdentity,
+      );
     }
-    throw executionReplayError(claimed.execution, 'Prior decision action attempt failed');
+    throw executionReplayError(
+      claimed.execution,
+      'Prior decision action attempt failed',
+      { decisionId, actionId, command: replayCommandIdentity },
+    );
   }
 
   emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_started', actionId });
@@ -466,6 +575,7 @@ async function performDecisionActionLegacyCore(
     actualEffect: Record<string, unknown>;
     message: string;
   } | null = null;
+  let completedReadback: DecisionApiItem | null = null;
   try {
     const claimedRecord = getDecisionRecord(decisionId, userId, tenantId);
     if (!claimedRecord) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing before execution', 404);
@@ -498,13 +608,31 @@ async function performDecisionActionLegacyCore(
     // From this point onward the authoritative domain executor returned after its read-back.
     // Post-success projection/audit errors must never rewrite that completed effect as failed.
     sourceEffectCompleted = true;
-    markExecutionSucceeded(
+    // Capture the original attempt readback before a later command can advance
+    // this decision. Replays return this immutable receipt beside the current
+    // top-level item, so K1 can never be mistaken for a later K2 state.
+    const receiptRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const receiptReadback = receiptRecord && isDecisionRecord(receiptRecord)
+      ? formatDecisionItemForApi(receiptRecord)
+      : null;
+    if (!receiptReadback) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
+    completedReadback = receiptReadback;
+    const commandReceipt = markExecutionSucceeded(
       claimed.execution.action_execution_id,
       userId,
       tenantId,
       execution.expectedEffect,
       execution.actualEffect,
+      receiptReadback,
+      execution.message,
     );
+    // Execution status is stored in the execution ledger and projected into
+    // the API item. Re-read after the terminal write so the top-level current
+    // item never reports the pre-terminal `started` state.
+    const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
+    if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action receipt finalization', 500);
+    completedReadback = updated;
     invalidatePlanningAfterVerifiedDecisionSourceMutation({
       actionId,
       userId,
@@ -528,9 +656,6 @@ async function performDecisionActionLegacyCore(
     // hide it. This matters for actions that mutate their own source state: choose_another_time moves the
     // agenda so the recomputed advice degrades and the filtered read would drop the decision, throwing a
     // spurious "Decision missing" after a write that actually succeeded.
-    const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
-    const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
-    if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     try {
       recordVerifiedDecisionAction(record, action, actionId, execution);
       resolveDecisionConflictAudit(
@@ -587,6 +712,7 @@ async function performDecisionActionLegacyCore(
         actualEffect: execution.actualEffect,
         message: execution.message,
       },
+      commandReceipt,
     };
   } catch (err) {
     if (sourceEffectCompleted && completedExecution) {
@@ -595,6 +721,7 @@ async function performDecisionActionLegacyCore(
         userId,
         tenantId,
         completedExecution,
+        completedReadback,
       );
       logger.error({
         event: 'decision.post_success_response_failed',
@@ -624,7 +751,7 @@ async function performDecisionActionLegacyCore(
           }, 'Completed decision action could not be projected for the immediate replay response');
         }
       }
-      throw new DecisionActionError(
+      throw attachDecisionExecutionReceipt(new DecisionActionError(
         'DECISION_POST_SUCCESS_RESPONSE_FAILED',
         'The action completed, but Nexus could not finish the response. Retry with the same idempotency key.',
         500,
@@ -634,7 +761,7 @@ async function performDecisionActionLegacyCore(
           retryWithSameIdempotencyKey: reconciliationStatus === 'succeeded',
           reconciliationStatus,
         },
-      );
+      ), claimed.execution.action_execution_id, userId, tenantId);
     }
     const error = err instanceof DecisionActionError
       ? err
@@ -704,7 +831,12 @@ async function performDecisionActionLegacyCore(
       partialFailure: failureOutcome === 'partially_failed',
       timeToActionMs: timeToActionMs(record),
     });
-    throw error;
+    throw attachDecisionExecutionReceipt(
+      error,
+      claimed.execution.action_execution_id,
+      userId,
+      tenantId,
+    );
   }
 }
 
@@ -718,6 +850,101 @@ export function decisionLifecycleMutationReceiptId(input: {
   idempotencyKey: string;
 }): string {
   return `dle_command_${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
+}
+
+
+
+function isContentApprovalActionId(actionId: string): boolean {
+  return actionId === 'approve_script' || actionId === 'request_rewrite';
+}
+
+
+
+export function persistSucceededDecisionMutationReceipt(
+  command: DecisionMutationCommand<Record<string, unknown>>,
+  item: DecisionApiItem,
+  input: {
+    verificationMessage: string;
+    actualEffect?: Record<string, unknown>;
+    /**
+     * The precondition the client actually sent. The command itself may carry
+     * the observed record/context version as a guard fallback; that observed
+     * state must never be recorded as a requested precondition on the receipt.
+     */
+    requestedRecordVersion?: number | null;
+    requestedContextVersion?: string | null;
+  },
+): DecisionCommandReceipt {
+  const baseReceiptId = decisionCommandReceiptId({
+    decisionId: command.decisionId,
+    operation: command.operation,
+    actionId: command.actionId,
+    userId: command.scope.userId,
+    tenantId: command.scope.tenantId,
+    idempotencyKey: command.idempotencyKey,
+  });
+  const receipt = createDecisionCommandReceipt({
+    receiptId: baseReceiptId,
+    decisionId: command.decisionId,
+    operation: command.operation,
+    actionId: command.actionId,
+    idempotencyKey: command.idempotencyKey,
+    status: 'succeeded',
+    completedAt: appNowIso(),
+    requestedRecordVersion: 'requestedRecordVersion' in input
+      ? input.requestedRecordVersion
+      : command.recordVersion,
+    requestedContextVersion: 'requestedContextVersion' in input
+      ? input.requestedContextVersion
+      : command.contextVersion,
+    readbackItem: compactDecisionCommandReadback(item, {
+      actionId: command.actionId,
+      actionStatus: 'succeeded',
+    }),
+    verification: {
+      readBackOk: true,
+      expectedEffect: command.readback.expectedState,
+      actualEffect: input.actualEffect ?? {
+        decisionStatus: item.status,
+        decisionState: item.decisionState,
+        recordVersion: item.recordVersion,
+        contextVersion: item.contextVersion ?? null,
+        snoozedUntil: item.snoozedUntil,
+      },
+      message: input.verificationMessage,
+    },
+  });
+  return persistDecisionCommandReceipt({
+    receipt,
+    userId: command.scope.userId,
+    tenantId: command.scope.tenantId,
+  });
+}
+
+
+
+export function getDecisionMutationCommandReceipt(input: {
+  decisionId: string;
+  operation: DecisionMutationCommand['operation'];
+  actionId?: string | null;
+  userId: number;
+  tenantId: number;
+  idempotencyKey: string;
+}): DecisionCommandReceipt | null {
+  const receiptId = decisionCommandReceiptId(input);
+  const terminal = readDecisionCommandReceipt(
+    receiptId,
+    input.decisionId,
+    input.userId,
+    input.tenantId,
+  );
+  if (terminal) return terminal;
+  return readDecisionCommandReceipt(
+    `${receiptId}_partial`,
+    input.decisionId,
+    input.userId,
+    input.tenantId,
+  );
 }
 
 
@@ -811,10 +1038,413 @@ export async function performDecisionAction(
 
 
 
+export interface DecisionActionReplayCommandIdentity {
+  readonly idempotencyKey: string;
+  readonly requestFingerprint: string;
+  readonly requestedRecordVersion?: number;
+  readonly requestedContextVersion?: string | null;
+}
+
+
+
+interface DecisionActionReplayRequestOptions {
+  readonly payload?: Record<string, unknown>;
+  readonly channel?: string;
+  readonly expectedVersion?: number;
+  readonly contextVersion?: string;
+  readonly automaticResolution?: boolean;
+}
+
+
+
+/**
+ * Validate a replay against the immutable request fingerprint. The only
+ * predecessor exception is a canonical explicit snooze whose normalized
+ * instant and version are recoverable from the terminal execution row. Other
+ * missing-fingerprint rows remain recoverable, but are never treated as an
+ * exact retry because their original payload/channel cannot be reconstructed.
+ */
+function assertDecisionActionExecutionReplayIdentity(
+  execution: any,
+  requestFingerprint: string,
+  actionId: string,
+  options: DecisionActionReplayRequestOptions,
+): void {
+  const expectedEffect = safeParseJson<Record<string, unknown>>(
+    execution?.expected_effect_json,
+    {},
+  );
+  if (expectedEffect.idempotencyRequestFingerprint != null) {
+    assertDecisionActionReplayFingerprint(execution, requestFingerprint);
+    return;
+  }
+
+  const mismatch = (): never => {
+    throw new DecisionActionError(
+      'IDEMPOTENCY_KEY_REUSED',
+      'This idempotency key was already used with different Decision Center mutation parameters.',
+      409,
+    );
+  };
+  const storedVersion = execution?.expected_record_version;
+  if (options.expectedVersion != null && options.expectedVersion !== storedVersion) mismatch();
+  const storedContextVersion = typeof execution?.context_version === 'string'
+    && execution.context_version.length > 0
+    ? execution.context_version
+    : null;
+  if (options.contextVersion != null && options.contextVersion !== storedContextVersion) mismatch();
+  // Predecessor rows never stored a channel. Automation is a distinct command
+  // identity (it changes authorization), but rest/internal/portal retries of
+  // the same key are the same user command and must reach the proven-snooze
+  // path or the typed recovery error instead of a false IDEMPOTENCY_KEY_REUSED.
+  if (options.automaticResolution === true) mismatch();
+
+  let predecessorIdentityProven = false;
+  if (execution?.status === 'succeeded'
+      && Number.isSafeInteger(storedVersion)
+      && storedVersion > 0
+      && actionId === 'snooze') {
+    const payload = options.payload ?? {};
+    const payloadKeys = Object.keys(payload).sort();
+    const requestedInstant = payloadKeys.length === 1 && payloadKeys[0] === 'deferUntil'
+      ? normalizeTimestamp(payload.deferUntil)
+      : null;
+    const result = safeParseJson<Record<string, unknown>>(execution?.result_json, {});
+    const completedInstant = normalizeTimestamp(result.snoozedUntil);
+    if (requestedInstant && completedInstant && requestedInstant !== completedInstant) mismatch();
+    predecessorIdentityProven = expectedEffect.decisionStatus === 'snoozed'
+      && result.decisionStatus === 'snoozed'
+      && requestedInstant != null
+      && requestedInstant === completedInstant;
+  }
+
+  assertDecisionActionReplayFingerprint(execution, requestFingerprint, {
+    predecessorIdentityProven,
+  });
+}
+
+
+
+function findDecisionActionCommandReceiptForKey(input: {
+  decisionId: string;
+  userId: number;
+  tenantId: number;
+  idempotencyKey: string;
+}): DecisionCommandReceipt | null {
+  const idempotencyKeyHash = decisionIdempotencyKeyHash(input.idempotencyKey);
+  return listDecisionCommandReceipts(input.decisionId, input.userId, input.tenantId)
+    .find((receipt) => receipt.idempotencyKeyHash === idempotencyKeyHash) ?? null;
+}
+
+
+
+function assertCoalescedReceiptRequestFingerprint(
+  receipt: DecisionCommandReceipt,
+  requestFingerprint: string,
+): void {
+  const storedFingerprint = receipt.verification?.expectedEffect.requestFingerprint;
+  if (typeof storedFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(storedFingerprint)) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The coalesced Decision action receipt is missing its immutable request binding.',
+      500,
+    );
+  }
+  if (storedFingerprint !== requestFingerprint) {
+    throw new DecisionActionError(
+      'IDEMPOTENCY_KEY_REUSED',
+      'This idempotency key was already used with different Decision Center mutation parameters.',
+      409,
+    );
+  }
+}
+
+
+
+function replayCoalescedDecisionActionReceipt(input: {
+  decisionId: string;
+  actionId: string;
+  userId: number;
+  tenantId: number;
+  command: DecisionActionReplayCommandIdentity;
+}): DecisionActionResult | null {
+  const receiptForKey = findDecisionActionCommandReceiptForKey({
+    decisionId: input.decisionId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: input.command.idempotencyKey,
+  });
+  if (!receiptForKey) return null;
+  const operation = decisionActionOperation(input.actionId);
+  if (receiptForKey.operation !== operation || receiptForKey.actionId !== input.actionId) {
+    throw new DecisionActionError(
+      'IDEMPOTENCY_KEY_REUSED',
+      'This idempotency key was already used for a different decision action.',
+      409,
+      { priorActionId: receiptForKey.actionId ?? receiptForKey.operation },
+    );
+  }
+  const expectedBaseReceiptId = decisionCommandReceiptId({
+    decisionId: input.decisionId,
+    operation,
+    actionId: input.actionId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: input.command.idempotencyKey,
+  });
+  const expectedReceiptId = receiptForKey.status === 'partially_failed'
+    ? `${expectedBaseReceiptId}_partial`
+    : expectedBaseReceiptId;
+  if (receiptForKey.receiptId !== expectedReceiptId
+      || typeof receiptForKey.executionAttemptId !== 'string') {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The coalesced Decision action receipt cannot prove a completed execution.',
+      500,
+    );
+  }
+  assertCoalescedReceiptRequestFingerprint(receiptForKey, input.command.requestFingerprint);
+  const execution = getDb().prepare(`
+    SELECT * FROM decision_action_executions
+     WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(
+    receiptForKey.executionAttemptId,
+    input.userId,
+    input.tenantId,
+  ) as any;
+  if (!execution
+      || execution.action_id !== input.actionId) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The coalesced Decision action receipt no longer matches its scoped execution evidence.',
+      500,
+    );
+  }
+  if (execution.status === 'succeeded') {
+    return idempotentActionResult(
+      input.decisionId,
+      input.actionId,
+      input.userId,
+      input.tenantId,
+      execution,
+      input.command,
+    );
+  }
+  if (execution.status !== receiptForKey.status) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The coalesced Decision action receipt disagrees with its terminal execution state.',
+      500,
+    );
+  }
+  throw executionReplayError(
+    execution,
+    'Prior logical decision action attempt failed',
+    { decisionId: input.decisionId, actionId: input.actionId, command: input.command },
+  );
+}
+
+
+
+async function replayDurableDecisionActionLogicalJoin(input: {
+  decisionId: string;
+  actionId: string;
+  userId: number;
+  tenantId: number;
+  command: DecisionActionReplayCommandIdentity;
+}): Promise<DecisionActionResult | null> {
+  const join = readDecisionActionLogicalJoin({
+    decisionId: input.decisionId,
+    actionId: input.actionId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: input.command.idempotencyKey,
+    requestFingerprint: input.command.requestFingerprint,
+  });
+  if (!join) return null;
+  const execution = getDb().prepare(`
+    SELECT * FROM decision_action_executions
+     WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(join.executionAttemptId, input.userId, input.tenantId) as any;
+  if (!execution || execution.action_id !== input.actionId) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The durable Decision logical join no longer matches its scoped execution.',
+      500,
+    );
+  }
+  if (execution.status === 'succeeded') {
+    return idempotentActionResult(
+      input.decisionId,
+      input.actionId,
+      input.userId,
+      input.tenantId,
+      execution,
+      input.command,
+    );
+  }
+  if (execution.status === 'started') {
+    return waitForExecutionById(
+      input.decisionId,
+      input.actionId,
+      input.userId,
+      input.tenantId,
+      join.executionAttemptId,
+      input.command,
+    );
+  }
+  throw executionReplayError(
+    execution,
+    'Prior logical decision action attempt failed',
+    { decisionId: input.decisionId, actionId: input.actionId, command: input.command },
+  );
+}
+
+
+
+function logicalJoinEventId(input: {
+  decisionId: string;
+  actionId: string;
+  userId: number;
+  tenantId: number;
+  idempotencyKey: string;
+}): string {
+  return `dlj_${createHash('sha256').update(JSON.stringify({
+    decisionId: input.decisionId,
+    actionId: input.actionId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: input.idempotencyKey,
+  })).digest('hex')}`;
+}
+
+
+
+function persistDecisionActionLogicalJoin(input: {
+  decisionId: string;
+  actionId: string;
+  userId: number;
+  tenantId: number;
+  executionId: string;
+  command: DecisionActionReplayCommandIdentity;
+}): void {
+  const eventId = logicalJoinEventId({ ...input, idempotencyKey: input.command.idempotencyKey });
+  const metadata = {
+    schemaVersion: 'decision_logical_join@1.0.0',
+    executionAttemptId: input.executionId,
+    requestFingerprint: input.command.requestFingerprint,
+    idempotencyKeyHash: decisionIdempotencyKeyHash(input.command.idempotencyKey),
+  };
+  const inserted = getDb().prepare(`
+    INSERT OR IGNORE INTO decision_lifecycle_events (
+      event_id, decision_id, user_id, tenant_id, event, action_id,
+      reason, metadata_json, created_at
+    ) VALUES (?, ?, ?, ?, 'action_started', ?, 'logical_execution_join', ?, ?)
+  `).run(
+    eventId,
+    input.decisionId,
+    input.userId,
+    input.tenantId,
+    input.actionId,
+    JSON.stringify(metadata),
+    appNowIso(),
+  );
+  if (inserted.changes === 1) return;
+  if (!hasDurableDecisionActionLogicalJoin(input)) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The durable Decision logical join does not match this command.',
+      500,
+    );
+  }
+}
+
+
+
+function hasDurableDecisionActionLogicalJoin(input: {
+  decisionId: string;
+  actionId: string;
+  userId: number;
+  tenantId: number;
+  executionId: string;
+  command: DecisionActionReplayCommandIdentity;
+}): boolean {
+  const join = readDecisionActionLogicalJoin({
+    decisionId: input.decisionId,
+    actionId: input.actionId,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    idempotencyKey: input.command.idempotencyKey,
+    requestFingerprint: input.command.requestFingerprint,
+  });
+  if (!join) return false;
+  if (join.executionAttemptId !== input.executionId) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The durable Decision logical join points to a different execution.',
+      500,
+    );
+  }
+  return true;
+}
+
+
+
+function readDecisionActionLogicalJoin(input: {
+  decisionId: string;
+  actionId: string;
+  userId: number;
+  tenantId: number;
+  idempotencyKey: string;
+  requestFingerprint?: string;
+}): { executionAttemptId: string } | null {
+  const row = getDb().prepare(`
+    SELECT metadata_json AS metadataJson
+      FROM decision_lifecycle_events
+     WHERE event_id = ? AND decision_id = ? AND user_id = ? AND tenant_id = ?
+       AND event = 'action_started' AND action_id = ?
+       AND reason = 'logical_execution_join'
+     LIMIT 1
+  `).get(
+    logicalJoinEventId(input),
+    input.decisionId,
+    input.userId,
+    input.tenantId,
+    input.actionId,
+  ) as { metadataJson: string } | undefined;
+  if (!row) return null;
+  const metadata = safeParseJson<Record<string, unknown>>(row.metadataJson, {});
+  if (metadata.schemaVersion !== 'decision_logical_join@1.0.0'
+      || typeof metadata.executionAttemptId !== 'string'
+      || !metadata.executionAttemptId
+      || metadata.idempotencyKeyHash !== decisionIdempotencyKeyHash(input.idempotencyKey)
+      || typeof metadata.requestFingerprint !== 'string') {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The durable Decision logical join contains invalid command evidence.',
+      500,
+    );
+  }
+  if (input.requestFingerprint != null
+      && metadata.requestFingerprint !== input.requestFingerprint) {
+    throw new DecisionActionError(
+      'IDEMPOTENCY_KEY_REUSED',
+      'This idempotency key was already used with different Decision Center mutation parameters.',
+      409,
+    );
+  }
+  return { executionAttemptId: metadata.executionAttemptId };
+}
+
+
+
 /**
  * True only when this exact scoped action/idempotency tuple already owns a
- * durable execution-ledger row. APNs callers use it to distinguish safe
- * outcome reconciliation from a fresh background authorization request.
+ * durable execution-ledger row or a command-bound coalescing receipt. APNs
+ * callers use it to distinguish safe outcome reconciliation from a fresh
+ * background authorization request.
  */
 export function isDecisionActionAttemptReplay(input: {
   decisionId: string;
@@ -831,13 +1461,29 @@ export function isDecisionActionAttemptReplay(input: {
   ensureDecisionCenterTables();
   const idempotencyKey = input.idempotencyKey.trim();
   if (!idempotencyKey) return false;
-  return getExistingExecution(
+  const execution = getExistingExecution(
     input.decisionId,
     input.actionId,
     input.userId,
     tenantId,
     idempotencyKey,
-  ) !== null;
+  );
+  const receipt = findDecisionActionCommandReceiptForKey({
+    decisionId: input.decisionId,
+    userId: input.userId,
+    tenantId,
+    idempotencyKey,
+  });
+  const logicalJoin = readDecisionActionLogicalJoin({
+    decisionId: input.decisionId,
+    actionId: input.actionId,
+    userId: input.userId,
+    tenantId,
+    idempotencyKey,
+  });
+  return execution !== null || logicalJoin !== null || (receipt != null
+    && receipt.operation === decisionActionOperation(input.actionId)
+    && receipt.actionId === input.actionId);
 }
 
 
@@ -877,17 +1523,47 @@ export function assertDecisionEngineInvocationAuthorized(command: {
         idempotencyKey,
       )
     : null;
+  const recordedReceipt = idempotencyKey
+    ? findDecisionActionCommandReceiptForKey({
+        decisionId: command.decisionId,
+        userId: command.userId,
+        tenantId: command.tenantId,
+        idempotencyKey,
+      })
+    : null;
+  const recordedLogicalJoin = idempotencyKey
+    ? readDecisionActionLogicalJoin({
+        decisionId: command.decisionId,
+        actionId: command.actionId,
+        userId: command.userId,
+        tenantId: command.tenantId,
+        idempotencyKey,
+        requestFingerprint,
+      })
+    : null;
   if (recordedExecution) {
-    assertDecisionActionReplayFingerprint(recordedExecution, requestFingerprint);
+    assertDecisionActionExecutionReplayIdentity(
+      recordedExecution,
+      requestFingerprint,
+      command.actionId,
+      command.opts,
+    );
   }
-  const isRecordedReplay = typeof command.opts.idempotencyKey === 'string'
-    && isDecisionActionAttemptReplay({
-      decisionId: command.decisionId,
-      actionId: command.actionId,
-      userId: command.userId,
-      tenantId: command.tenantId,
-      idempotencyKey: command.opts.idempotencyKey,
-    });
+  if (!recordedExecution && recordedReceipt) {
+    if (recordedReceipt.operation !== decisionActionOperation(command.actionId)
+        || recordedReceipt.actionId !== command.actionId) {
+      throw new DecisionActionError(
+        'IDEMPOTENCY_KEY_REUSED',
+        'This idempotency key was already used for a different decision action.',
+        409,
+        { priorActionId: recordedReceipt.actionId ?? recordedReceipt.operation },
+      );
+    }
+    assertCoalescedReceiptRequestFingerprint(recordedReceipt, requestFingerprint);
+  }
+  const isRecordedReplay = recordedExecution !== null
+    || recordedReceipt !== null
+    || recordedLogicalJoin !== null;
   if (isRecordedReplay) return;
   if (command.opts.channel === 'apns') {
     const apnsPolicy = evaluateDecisionApnsActionRequest({
@@ -926,11 +1602,6 @@ export function assertDecisionEngineInvocationAuthorized(command: {
         { currentItem: formatDecisionItemForApi(record) },
       );
     }
-    validateExpectedDecisionVersion(
-      record,
-      command.opts.expectedVersion,
-      VERSIONED_DECISION_ACTIONS.has(command.actionId),
-    );
   }
   // Action-specific payload binding, lifecycle, permission, and approval
   // checks run inside the selected engine before any execution claim. Keeping
@@ -971,6 +1642,12 @@ async function performDecisionActionCore(
     tenantId,
     opts,
   });
+  const replayCommandIdentity: DecisionActionReplayCommandIdentity = {
+    idempotencyKey,
+    requestFingerprint,
+    requestedRecordVersion: opts.expectedVersion,
+    requestedContextVersion: opts.contextVersion,
+  };
   // A known key is replayed before any current-state authorization check.
   // That cannot create a new logical write: the durable ledger row binds the
   // exact scope, decision, action, and key to its original outcome.
@@ -989,18 +1666,41 @@ async function performDecisionActionCore(
       { priorActionId: existingForKey.action_id },
     );
   }
-  if (existing) assertDecisionActionReplayFingerprint(existing, requestFingerprint);
+  if (existing) {
+    assertDecisionActionExecutionReplayIdentity(existing, requestFingerprint, actionId, opts);
+  }
   if (existing && existing.status === 'succeeded') {
-    return idempotentActionResult(decisionId, actionId, userId, tenantId, existing);
+    return idempotentActionResult(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      existing,
+      replayCommandIdentity,
+    );
   }
   if (existing && existing.status === 'started') {
-    return waitForExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
+    return waitForExistingExecution(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      idempotencyKey,
+      replayCommandIdentity,
+    );
   }
   if (existing && existing.status === 'partially_failed') {
     const reconciliation = reconcilePartialDecisionExecution(record);
     const reconciled = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
     if (reconciliation === 'applied' && reconciled?.status === 'succeeded') {
-      return idempotentActionResult(decisionId, actionId, userId, tenantId, reconciled);
+      return idempotentActionResult(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        reconciled,
+        replayCommandIdentity,
+      );
     }
     throw executionReplayError(reconciled ?? existing, reconciliation === 'unknown'
       ? 'Prior decision action outcome still requires recovery review'
@@ -1009,6 +1709,22 @@ async function performDecisionActionCore(
   if (existing && existing.status === 'failed') {
     throw executionReplayError(existing, 'Prior decision action attempt failed');
   }
+  const coalescedReceiptReplay = replayCoalescedDecisionActionReceipt({
+    decisionId,
+    actionId,
+    userId,
+    tenantId,
+    command: replayCommandIdentity,
+  });
+  if (coalescedReceiptReplay) return coalescedReceiptReplay;
+  const durableJoinReplay = await replayDurableDecisionActionLogicalJoin({
+    decisionId,
+    actionId,
+    userId,
+    tenantId,
+    command: replayCommandIdentity,
+  });
+  if (durableJoinReplay) return durableJoinReplay;
   if (opts.channel === 'apns') {
     const apnsPolicy = evaluateDecisionApnsActionRequest({
       decisionId,
@@ -1043,14 +1759,42 @@ async function performDecisionActionCore(
       userId,
       tenantId,
     }, 'Decision logical duplicate joined an active execution');
-    return waitForExecutionById(decisionId, actionId, userId, tenantId, existingLogical.action_execution_id);
+    return waitForExecutionById(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      existingLogical.action_execution_id,
+      replayCommandIdentity,
+    );
   }
   if (existingLogical?.status === 'succeeded' && actionId !== 'undo_reflow') {
-    guardActionable(record, actionId);
-    return idempotentActionResult(decisionId, actionId, userId, tenantId, existingLogical);
+    if (existingLogical.decision_id === decisionId
+        && !hasDurableDecisionActionLogicalJoin({
+          decisionId,
+          actionId,
+          userId,
+          tenantId,
+          executionId: existingLogical.action_execution_id,
+          command: replayCommandIdentity,
+        })) {
+      guardActionable(record, actionId);
+    }
+    return idempotentActionResult(
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      existingLogical,
+      replayCommandIdentity,
+    );
   }
   if (existingLogical?.status === 'partially_failed') {
-    throw executionReplayError(existingLogical, 'An equivalent decision action requires recovery review');
+    throw executionReplayError(
+      existingLogical,
+      'An equivalent decision action requires recovery review',
+      { decisionId, actionId, command: replayCommandIdentity },
+    );
   }
   guardDecisionLifecycleMutation(record, 'perform_action', {
     allowExecution: { actionId, idempotencyKey },
@@ -1148,12 +1892,30 @@ async function performDecisionActionCore(
   );
   if (!claimed.isNew) {
     if (claimed.execution.status === 'succeeded') {
-      return idempotentActionResult(decisionId, actionId, userId, tenantId, claimed.execution);
+      return idempotentActionResult(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        claimed.execution,
+        replayCommandIdentity,
+      );
     }
     if (claimed.execution.status === 'started') {
-      return waitForExecutionById(decisionId, actionId, userId, tenantId, claimed.execution.action_execution_id);
+      return waitForExecutionById(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        claimed.execution.action_execution_id,
+        replayCommandIdentity,
+      );
     }
-    throw executionReplayError(claimed.execution, 'Prior decision action attempt failed');
+    throw executionReplayError(
+      claimed.execution,
+      'Prior decision action attempt failed',
+      { decisionId, actionId, command: replayCommandIdentity },
+    );
   }
 
   emitDecisionLifecycleEvent({ decisionId, userId, tenantId, event: 'action_started', actionId });
@@ -1164,6 +1926,7 @@ async function performDecisionActionCore(
     actualEffect: Record<string, unknown>;
     message: string;
   } | null = null;
+  let completedReadback: DecisionApiItem | null = null;
   try {
     const claimedRecord = getDecisionRecord(decisionId, userId, tenantId);
     if (!claimedRecord) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing before execution', 404);
@@ -1192,13 +1955,31 @@ async function performDecisionActionCore(
     // From this point onward the authoritative domain executor returned after its read-back.
     // Post-success projection/audit errors must never rewrite that completed effect as failed.
     sourceEffectCompleted = true;
-    markExecutionSucceeded(
+    // Capture the original attempt readback before a later command can advance
+    // this decision. Replays return this immutable receipt beside the current
+    // top-level item, so K1 can never be mistaken for a later K2 state.
+    const receiptRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const receiptReadback = receiptRecord && isDecisionRecord(receiptRecord)
+      ? formatDecisionItemForApi(receiptRecord)
+      : null;
+    if (!receiptReadback) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
+    completedReadback = receiptReadback;
+    const commandReceipt = markExecutionSucceeded(
       claimed.execution.action_execution_id,
       userId,
       tenantId,
       execution.expectedEffect,
       execution.actualEffect,
+      receiptReadback,
+      execution.message,
     );
+    // Execution status is stored in the execution ledger and projected into
+    // the API item. Re-read after the terminal write so the top-level current
+    // item never reports the pre-terminal `started` state.
+    const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
+    if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action receipt finalization', 500);
+    completedReadback = updated;
     invalidatePlanningAfterVerifiedDecisionSourceMutation({
       actionId,
       userId,
@@ -1222,9 +2003,6 @@ async function performDecisionActionCore(
     // hide it. This matters for actions that mutate their own source state: choose_another_time moves the
     // agenda so the recomputed advice degrades and the filtered read would drop the decision, throwing a
     // spurious "Decision missing" after a write that actually succeeded.
-    const updatedRecord = getDecisionRecord(decisionId, userId, tenantId);
-    const updated = updatedRecord && isDecisionRecord(updatedRecord) ? formatDecisionItemForApi(updatedRecord) : null;
-    if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after action execution', 500);
     try {
       recordVerifiedDecisionAction(record, action, actionId, execution);
       resolveDecisionConflictAudit(
@@ -1281,6 +2059,7 @@ async function performDecisionActionCore(
         actualEffect: execution.actualEffect,
         message: execution.message,
       },
+      commandReceipt,
     };
   } catch (err) {
     if (sourceEffectCompleted && completedExecution) {
@@ -1289,6 +2068,7 @@ async function performDecisionActionCore(
         userId,
         tenantId,
         completedExecution,
+        completedReadback,
       );
       logger.error({
         event: 'decision.post_success_response_failed',
@@ -1318,7 +2098,7 @@ async function performDecisionActionCore(
           }, 'Completed decision action could not be projected for the immediate replay response');
         }
       }
-      throw new DecisionActionError(
+      throw attachDecisionExecutionReceipt(new DecisionActionError(
         'DECISION_POST_SUCCESS_RESPONSE_FAILED',
         'The action completed, but Nexus could not finish the response. Retry with the same idempotency key.',
         500,
@@ -1328,7 +2108,7 @@ async function performDecisionActionCore(
           retryWithSameIdempotencyKey: reconciliationStatus === 'succeeded',
           reconciliationStatus,
         },
-      );
+      ), claimed.execution.action_execution_id, userId, tenantId);
     }
     const error = err instanceof DecisionActionError
       ? err
@@ -1398,7 +2178,12 @@ async function performDecisionActionCore(
       partialFailure: failureOutcome === 'partially_failed',
       timeToActionMs: timeToActionMs(record),
     });
-    throw error;
+    throw attachDecisionExecutionReceipt(
+      error,
+      claimed.execution.action_execution_id,
+      userId,
+      tenantId,
+    );
   }
 }
 
@@ -1411,6 +2196,7 @@ export function reviewDecision(
   input: {
     outcome: DecisionReviewOutcome;
     expectedVersion?: number;
+    contextVersion?: string;
     idempotencyKey?: string;
     deferUntil?: string;
     reasonCode?: string;
@@ -1429,8 +2215,12 @@ export function reviewDecision(
     throw new DecisionActionError('DECISION_VERSION_REQUIRED', 'Decision reviews require the current record version', 428);
   }
   const expectedVersion = input.expectedVersion;
+  // Predecessor rows hashed without a contextVersion key. Only add it when the
+  // client actually sent one so an exact retry of a pre-receipt review keeps
+  // its original fingerprint instead of surfacing as IDEMPOTENCY_KEY_REUSED.
   const reviewAttemptHash = logicalActionAttemptHash(`review:${decisionId}`, input.outcome, {
     expectedVersion,
+    ...(input.contextVersion != null ? { contextVersion: input.contextVersion } : {}),
     idempotencyKey,
     deferUntil: input.deferUntil ?? null,
     reasonCode: input.reasonCode ?? null,
@@ -1467,6 +2257,20 @@ export function reviewDecision(
     || approvalLevelForRecord(record) === 'strong_confirmation'
   ))) {
     throw new DecisionActionError('DECISION_REVIEW_UNAVAILABLE', 'Versioned decision review is not enabled for this account.', 409);
+  }
+  if (input.contextVersion != null && !input.contextVersion.trim()) {
+    throw new DecisionActionError('DECISION_CONTEXT_VERSION_INVALID', 'contextVersion must be non-empty.', 400);
+  }
+  if (input.contextVersion != null && decisionContextVersion(record) !== input.contextVersion) {
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_VERSION_CONFLICT',
+      'Decision context changed before the review was recorded.',
+      409,
+      {
+        currentContextVersion: decisionContextVersion(record),
+        recordVersion: record.recordVersion,
+      },
+    );
   }
   guardDecisionLifecycleMutation(record, `review_${input.outcome}`);
   const approvalLevel = approvalLevelForRecord(record);
@@ -1563,7 +2367,7 @@ export function reviewDecision(
     channel: normalizeDecisionMutationChannel(input.channel),
     idempotencyKey,
     recordVersion: expectedVersion,
-    contextVersion: decisionContextVersion(record),
+    contextVersion: input.contextVersion ?? decisionContextVersion(record),
     approval: input.outcome === 'approve'
       ? {
           requiredLevel: approvalLevel === 'strong_confirmation' ? 'strong_confirmation' : 'user_confirmation',
@@ -1670,7 +2474,7 @@ export function reviewDecision(
         replacementChoiceId: input.replacementChoiceId ?? null,
         confirmationStrength: approvalLevel === 'strong_confirmation' ? 'strong' : 'standard',
         idempotencyRequestFingerprint: reviewAttemptHash,
-        commandContract: reviewCommand,
+        commandContract: privacySafeDecisionMutationCommandContract(reviewCommand),
       }),
     );
     if (input.outcome === 'reject'
@@ -1696,6 +2500,23 @@ export function reviewDecision(
     );
     resolveDecisionConflictAudit(decisionId, userId, tenantId, `review_${input.outcome}`);
     materializeDecisionRankSnapshotForScope(userId, tenantId);
+    const receiptRecord = getDecisionRecord(decisionId, userId, tenantId);
+    if (!receiptRecord) {
+      throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing before review receipt finalization', 500);
+    }
+    const receiptItem = formatDecisionItemForApi(receiptRecord);
+    persistSucceededDecisionMutationReceipt(reviewCommand, receiptItem, {
+      requestedRecordVersion: expectedVersion,
+      requestedContextVersion: input.contextVersion ?? null,
+      verificationMessage: 'The original review command was recorded and read back exactly.',
+      actualEffect: {
+        decisionState: receiptItem.decisionState,
+        status: receiptItem.status,
+        recordVersion: receiptItem.recordVersion,
+        contextVersion: receiptItem.contextVersion ?? null,
+        snoozedUntil: receiptItem.snoozedUntil,
+      },
+    });
   })();
 
   const updated = getDecisionRecord(decisionId, userId, tenantId);
@@ -1711,6 +2532,7 @@ export function reviseDecisionProposal(
   tenantId: number,
   input: {
     expectedVersion?: number;
+    contextVersion?: string;
     idempotencyKey?: string;
     channel?: string;
     recommendedStartAt?: string;
@@ -1729,6 +2551,7 @@ export function reviseDecisionProposal(
   const expectedVersion = input.expectedVersion;
   const editAttemptHash = logicalActionAttemptHash(`edit:${decisionId}`, 'edit_proposal', {
     expectedVersion,
+    ...(input.contextVersion != null ? { contextVersion: input.contextVersion } : {}),
     idempotencyKey,
     recommendedStartAt: input.recommendedStartAt ?? null,
     recommendedEndAt: input.recommendedEndAt ?? null,
@@ -1760,6 +2583,20 @@ export function reviseDecisionProposal(
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!(record && decisionFlowV1EnforcedForRecord(record))) {
     throw new DecisionActionError('DECISION_EDIT_UNAVAILABLE', 'Versioned proposal editing is not enabled for this account.', 409);
+  }
+  if (input.contextVersion != null && !input.contextVersion.trim()) {
+    throw new DecisionActionError('DECISION_CONTEXT_VERSION_INVALID', 'contextVersion must be non-empty.', 400);
+  }
+  if (input.contextVersion != null && decisionContextVersion(record) !== input.contextVersion) {
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_VERSION_CONFLICT',
+      'Decision context changed before the proposal edit was saved.',
+      409,
+      {
+        currentContextVersion: decisionContextVersion(record),
+        recordVersion: record.recordVersion,
+      },
+    );
   }
   guardDecisionLifecycleMutation(record, 'edit_proposal');
   validateExpectedDecisionVersion(record, expectedVersion, true);
@@ -1833,7 +2670,7 @@ export function reviseDecisionProposal(
     channel: normalizeDecisionMutationChannel(input.channel),
     idempotencyKey,
     recordVersion: expectedVersion,
-    contextVersion,
+    contextVersion: input.contextVersion ?? decisionContextVersion(record),
     approval: { requiredLevel: 'none', evidence: null },
     execution: {
       executorId: 'decision.edit_proposal',
@@ -1923,12 +2760,30 @@ export function reviseDecisionProposal(
         nextVersion: expectedVersion + 1,
         fields: ['recommended_window'],
         idempotencyRequestFingerprint: editAttemptHash,
-        commandContract: proposalCommand,
+        commandContract: privacySafeDecisionMutationCommandContract(proposalCommand),
       }),
     );
     resolveDecisionConflictAudit(decisionId, userId, tenantId, 'proposal_revised');
     if (revisedConflict) recordDecisionConflictEvaluation(record, revisedConflict);
     materializeDecisionRankSnapshotForScope(userId, tenantId);
+    const receiptRecord = getDecisionRecord(decisionId, userId, tenantId);
+    if (!receiptRecord) {
+      throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing before edit receipt finalization', 500);
+    }
+    const receiptItem = formatDecisionItemForApi(receiptRecord);
+    persistSucceededDecisionMutationReceipt(proposalCommand, receiptItem, {
+      requestedRecordVersion: expectedVersion,
+      requestedContextVersion: input.contextVersion ?? null,
+      verificationMessage: 'The original proposal edit was saved and read back exactly.',
+      actualEffect: {
+        decisionState: receiptItem.decisionState,
+        status: receiptItem.status,
+        recordVersion: receiptItem.recordVersion,
+        contextVersion: receiptItem.contextVersion ?? null,
+        recommendedStartAt: receiptItem.recommendedStartAt,
+        recommendedEndAt: receiptItem.recommendedEndAt,
+      },
+    });
   })();
   const updated = getDecisionRecord(decisionId, userId, tenantId);
   if (!updated) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision missing after proposal edit', 500);
@@ -2144,7 +2999,12 @@ export function markDecisionViewed(
   decisionId: string,
   userId: number,
   tenantId = userId,
-  options: { idempotencyKey?: string; expectedVersion?: number; channel?: string } = {},
+  options: {
+    idempotencyKey?: string;
+    expectedVersion?: number;
+    contextVersion?: string;
+    channel?: string;
+  } = {},
 ): DecisionApiItem {
   assertScope(userId, tenantId, 'mark_decision_viewed', { decisionId });
   const idempotencyKey = options.idempotencyKey?.trim();
@@ -2163,6 +3023,7 @@ export function markDecisionViewed(
   const attemptHash = logicalActionAttemptHash(`viewed:${decisionId}`, 'mark_viewed', {
     idempotencyKey,
     expectedVersion: options.expectedVersion ?? null,
+    ...(options.contextVersion != null ? { contextVersion: options.contextVersion } : {}),
   });
   const actionId = `viewed:${attemptHash}`;
   const detailReceiptId = `dle_view_detail_${attemptHash}`;
@@ -2197,6 +3058,20 @@ export function markDecisionViewed(
   }
   const record = getDecisionRecord(decisionId, userId, tenantId);
   if (!record) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found', 404);
+  if (options.contextVersion != null && !options.contextVersion.trim()) {
+    throw new DecisionActionError('DECISION_CONTEXT_VERSION_INVALID', 'contextVersion must be non-empty.', 400);
+  }
+  if (options.contextVersion != null && decisionContextVersion(record) !== options.contextVersion) {
+    throw new DecisionActionError(
+      'DECISION_CONTEXT_VERSION_CONFLICT',
+      'Decision context changed before it could be marked viewed.',
+      409,
+      {
+        currentContextVersion: decisionContextVersion(record),
+        recordVersion: record.recordVersion,
+      },
+    );
+  }
   if (options.expectedVersion != null) validateExpectedDecisionVersion(record, options.expectedVersion, true);
   const requestedAt = appNowIso();
   const command = createDecisionMutationCommand({
@@ -2208,7 +3083,7 @@ export function markDecisionViewed(
     channel: normalizeDecisionMutationChannel(options.channel),
     idempotencyKey,
     recordVersion: options.expectedVersion ?? record.recordVersion,
-    contextVersion: decisionContextVersion(record),
+    contextVersion: options.contextVersion ?? decisionContextVersion(record),
     approval: { requiredLevel: 'none', evidence: null },
     execution: {
       executorId: 'decision.mark_viewed',
@@ -2300,10 +3175,20 @@ export function markDecisionViewed(
       actionId,
       JSON.stringify({
         idempotencyRequestFingerprint: attemptHash,
-        commandContract: command,
+        commandContract: privacySafeDecisionMutationCommandContract(command),
       }),
     );
     materializeDecisionRankSnapshotForScope(userId, tenantId);
+    persistSucceededDecisionMutationReceipt(command, decision, {
+      requestedRecordVersion: options.expectedVersion ?? null,
+      requestedContextVersion: options.contextVersion ?? null,
+      verificationMessage: 'The original viewed command was recorded and read back exactly.',
+      actualEffect: {
+        status: decision.status,
+        recordVersion: decision.recordVersion,
+        contextVersion: decision.contextVersion ?? null,
+      },
+    });
   })();
   return decision!;
 }
@@ -3740,6 +4625,27 @@ export function reconcilePartialDecisionExecution(record: DecisionRecord): Decis
         executionId: execution.executionId,
       });
     }
+    const terminalExecution = getDb().prepare(`
+      SELECT * FROM decision_action_executions
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(execution.executionId, record.userId, record.tenantId) as any;
+    const receiptRecord = getDecisionRecord(record.itemId, record.userId, record.tenantId);
+    const receiptItem = receiptRecord && isDecisionRecord(receiptRecord)
+      ? formatDecisionItemForApi(receiptRecord)
+      : null;
+    if (!decisionActionCommandReceiptForExecution(terminalExecution, {
+      readbackItem: receiptItem,
+      verificationMessage: verification.outcome === 'applied'
+        ? 'The original action was reconciled as applied against authoritative source state.'
+        : 'The original action was reconciled as not applied against authoritative source state.',
+    })) {
+      throw new DecisionActionError(
+        'DECISION_COMMAND_RECEIPT_INVALID',
+        'Decision reconciliation completed without an immutable command receipt.',
+        500,
+      );
+    }
   })();
   if (verification.outcome === 'applied') {
     invalidatePlanningAfterVerifiedDecisionSourceMutation({
@@ -3749,6 +4655,12 @@ export function reconcilePartialDecisionExecution(record: DecisionRecord): Decis
       readBackOk: true,
       idempotent: true,
     });
+    // The original attempt died between the verified content effect and its
+    // cache invalidation; the reconciled effect is now authoritative, so the
+    // content read models must be invalidated here too.
+    if (isContentApprovalActionId(execution.actionId)) {
+      invalidateContentDerivedCaches(record.userId);
+    }
   }
   emitDecisionLifecycleEvent({
     decisionId: record.itemId,
@@ -4078,36 +4990,66 @@ export function hasContentRewriteDecisionEvidence(record: DecisionRecord, object
 
 export function reclaimExpiredExecutionLeases(userId: number, tenantId: number): void {
   const reclaimed = getDb().transaction(() => {
-    const executions = getDb().prepare(`
-      UPDATE decision_action_executions
-         SET status = 'partially_failed', error_code = 'DECISION_EXECUTION_LEASE_EXPIRED',
-             failed_at = COALESCE(failed_at, datetime('now')),
-             effect_results_json = ?,
-             recovery_json = ?
+    const candidates = getDb().prepare(`
+      SELECT action_execution_id AS actionExecutionId
+        FROM decision_action_executions
        WHERE user_id = ? AND tenant_id = ? AND status = 'started'
          AND ((lease_expires_at IS NOT NULL AND datetime(lease_expires_at) <= datetime('now'))
            OR (lease_expires_at IS NULL AND datetime(created_at, ?) <= datetime('now')))
-    `).run(
-      JSON.stringify([{
-        effectId: 'decision_action',
-        status: 'unknown',
-        reasonCode: 'execution_lease_expired',
-      }]),
-      JSON.stringify({
-        message: 'The previous execution lease expired with an uncertain external outcome. Refresh source state before any recovery.',
-        actions: [{ id: 'refresh', label: 'Refresh', style: 'secondary' }],
-      }),
+       ORDER BY created_at ASC, action_execution_id ASC
+    `).all(
       userId,
       tenantId,
       `+${DECISION_EXECUTION_LEASE_SECONDS} seconds`,
-    ).changes;
-    getDb().prepare(`
-      UPDATE decision_exclusivity_claims
-         SET status = 'partially_failed', updated_at = datetime('now')
-       WHERE user_id = ? AND tenant_id = ? AND status = 'started'
-         AND datetime(lease_expires_at) <= datetime('now')
-    `).run(userId, tenantId);
-    return executions;
+    ) as Array<{ actionExecutionId: string }>;
+    let transitions = 0;
+    for (const candidate of candidates) {
+      const executionUpdate = getDb().prepare(`
+        UPDATE decision_action_executions
+           SET status = 'partially_failed', error_code = 'DECISION_EXECUTION_LEASE_EXPIRED',
+               failed_at = COALESCE(failed_at, datetime('now')),
+               effect_results_json = ?,
+               recovery_json = ?
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+      `).run(
+        JSON.stringify([{
+          effectId: 'decision_action',
+          status: 'unknown',
+          reasonCode: 'execution_lease_expired',
+        }]),
+        JSON.stringify({
+          message: 'The previous execution lease expired with an uncertain external outcome. Refresh source state before any recovery.',
+          actions: [{ id: 'refresh', label: 'Refresh', style: 'secondary' }],
+        }),
+        candidate.actionExecutionId,
+        userId,
+        tenantId,
+      );
+      if (executionUpdate.changes !== 1) continue;
+      getDb().prepare(`
+        UPDATE decision_exclusivity_claims
+           SET status = 'partially_failed', updated_at = datetime('now')
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+      `).run(candidate.actionExecutionId, userId, tenantId);
+      const terminalExecution = getDb().prepare(`
+        SELECT * FROM decision_action_executions
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(candidate.actionExecutionId, userId, tenantId) as any;
+      const receipt = decisionActionCommandReceiptForExecution(terminalExecution);
+      if (!receipt
+          || receipt.status !== 'partially_failed'
+          || !receipt.receiptId.endsWith('_partial')) {
+        throw new DecisionActionError(
+          'DECISION_COMMAND_RECEIPT_INVALID',
+          'An expired Decision execution could not commit its immutable recovery receipt.',
+          500,
+          { actionExecutionId: candidate.actionExecutionId },
+        );
+      }
+      transitions += 1;
+    }
+    return transitions;
   })();
   if (reclaimed > 0) {
     logger.warn({ event: 'decision.execution_lease_uncertain', userId, tenantId, count: reclaimed }, 'Expired execution leases require source reconciliation');
@@ -4267,11 +5209,15 @@ export function idempotentActionResult(
   userId: number,
   tenantId: number,
   execution: any,
+  replayCommand?: DecisionActionReplayCommandIdentity,
 ): DecisionActionResult {
-  if (execution?.status !== 'succeeded') {
+  if (execution?.status !== 'succeeded'
+      || execution.user_id !== userId
+      || execution.tenant_id !== tenantId
+      || execution.action_id !== actionId) {
     throw new DecisionActionError(
       'DECISION_EXECUTION_STATE_CONFLICT',
-      'Only a durably verified decision execution can be replayed as successful.',
+      'Only a matching, scoped, durably verified decision execution can be replayed as successful.',
       409,
     );
   }
@@ -4282,38 +5228,91 @@ export function idempotentActionResult(
     readBackOk: true,
     idempotent: true,
   });
-  if (typeof execution.decision_id === 'string' && execution.decision_id !== decisionId) {
-    retireLogicalDuplicateDecision(decisionId, execution.decision_id, userId, tenantId);
-  }
-  // Same direct-record path as performDecisionAction's success branch: a duplicate (idempotent) replay of
-  // an action that mutated its own source state — e.g. choose_another_time moving the agenda — must return
-  // the actioned decision, not be hidden by getDecisionItem's active-inbox visibility filter (which would
-  // throw a spurious 404 on a replay of a write that already succeeded).
-  const replayRecord = getDecisionRecord(decisionId, userId, tenantId);
+  const isCoalescedCommand = replayCommand != null
+    && (execution.decision_id !== decisionId
+      || execution.idempotency_key !== replayCommand.idempotencyKey);
+  const replay = getDb().transaction(() => {
+    if (typeof execution.decision_id === 'string' && execution.decision_id !== decisionId) {
+      retireLogicalDuplicateDecision(decisionId, execution.decision_id, userId, tenantId);
+    }
+    // Same direct-record path as performDecisionAction's success branch: a duplicate (idempotent) replay of
+    // an action that mutated its own source state — e.g. choose_another_time moving the agenda — must return
+    // the actioned decision, not be hidden by getDecisionItem's active-inbox visibility filter (which would
+    // throw a spurious 404 on a replay of a write that already succeeded).
+    const replayRecord = getDecisionRecord(decisionId, userId, tenantId);
+    const current = replayRecord && isDecisionRecord(replayRecord) ? formatDecisionItemForApi(replayRecord) : null;
+    if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
+    const winnerReceipt = isCoalescedCommand
+      ? decisionActionCommandReceiptForExecution(execution)
+      : null;
+    const commandReceipt = decisionActionCommandReceiptForExecution(execution, {
+      // A same-decision alias may reuse the winner's immutable compact K1
+      // readback. A cross-decision alias deliberately omits it because the
+      // winner's decision identity cannot be projected onto another record.
+      // The current top-level item remains independently useful UI state.
+      receiptReadbackItem: execution.decision_id === decisionId
+        ? winnerReceipt?.readbackItem
+        : undefined,
+      commandIdentity: replayCommand
+        ? {
+            decisionId,
+            actionId,
+            idempotencyKey: replayCommand.idempotencyKey,
+            requestFingerprint: replayCommand.requestFingerprint,
+            requestedRecordVersion: replayCommand.requestedRecordVersion,
+            requestedContextVersion: replayCommand.requestedContextVersion,
+          }
+        : undefined,
+    });
+    if (!commandReceipt) {
+      throw new DecisionActionError(
+        'DECISION_COMMAND_RECEIPT_INVALID',
+        'The verified Decision action could not produce an immutable replay receipt.',
+        500,
+      );
+    }
+    const exactActionReadback = verifiedDecisionExecutionReadback(
+      commandReceipt,
+      safeParseJson<Record<string, unknown>>(execution.result_json, {}),
+    );
+    return { replayRecord, current, commandReceipt, exactActionReadback };
+  })();
   if (actionId === 'approve_product_learning_case'
-      && replayRecord?.relatedEntityType === 'product_learning_case'
-      && replayRecord.relatedEntityId
+      && replay.replayRecord?.relatedEntityType === 'product_learning_case'
+      && replay.replayRecord.relatedEntityId
       && typeof execution.action_execution_id === 'string') {
     recordLearningCaseReviewApproval({
       tenantId,
       userId,
-      caseId: replayRecord.relatedEntityId,
+      caseId: replay.replayRecord.relatedEntityId,
       actionExecutionId: execution.action_execution_id,
     });
   }
-  const current = replayRecord && isDecisionRecord(replayRecord) ? formatDecisionItemForApi(replayRecord) : null;
-  if (!current) throw new DecisionActionError('DECISION_NOT_FOUND', 'Decision not found after idempotent action', 404);
+  const { current, commandReceipt, exactActionReadback } = replay;
   return {
     actionId,
     status: 'idempotent',
     idempotent: true,
     item: current,
-    verification: {
-      readBackOk: true,
-      expectedEffect: safeParseJson(execution.expected_effect_json, {}),
-      actualEffect: safeParseJson(execution.result_json, {}),
-      message: 'Duplicate action returned the original verified result.',
-    },
+    verification: commandReceipt?.verification
+      ? {
+          readBackOk: commandReceipt.verification.readBackOk,
+          expectedEffect: { ...commandReceipt.verification.expectedEffect },
+          // The response is recovered from the already-scoped execution row,
+          // then authenticated against the receipt digest. This preserves the
+          // complete executor-specific readback (including Content workflow
+          // fields and Secretary rollback state) without copying private
+          // values into lifecycle/audit metadata.
+          actualEffect: { ...exactActionReadback },
+          message: commandReceipt.verification.message,
+        }
+      : {
+          readBackOk: true,
+          expectedEffect: safeParseJson(execution.expected_effect_json, {}),
+          actualEffect: safeParseJson(execution.result_json, {}),
+          message: 'Duplicate action returned the original verified result.',
+        },
+    ...(commandReceipt ? { commandReceipt } : {}),
   };
 }
 
@@ -4363,15 +5362,27 @@ export async function waitForExistingExecution(
   userId: number,
   tenantId: number,
   idempotencyKey: string,
+  replayCommand?: DecisionActionReplayCommandIdentity,
 ): Promise<DecisionActionResult> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 25));
     const execution = getExistingExecution(decisionId, actionId, userId, tenantId, idempotencyKey);
     if (!execution || execution.status === 'started') continue;
     if (execution.status === 'succeeded') {
-      return idempotentActionResult(decisionId, actionId, userId, tenantId, execution);
+      return idempotentActionResult(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        execution,
+        replayCommand,
+      );
     }
-    throw executionReplayError(execution, 'Prior decision action attempt failed');
+    throw executionReplayError(
+      execution,
+      'Prior decision action attempt failed',
+      replayCommand ? { decisionId, actionId, command: replayCommand } : undefined,
+    );
   }
 
   throw new DecisionActionError('DECISION_ACTION_IN_PROGRESS', 'Decision action is already in progress', 409);
@@ -4385,7 +5396,18 @@ export async function waitForExecutionById(
   userId: number,
   tenantId: number,
   executionId: string,
+  replayCommand?: DecisionActionReplayCommandIdentity,
 ): Promise<DecisionActionResult> {
+  if (replayCommand) {
+    persistDecisionActionLogicalJoin({
+      decisionId,
+      actionId,
+      userId,
+      tenantId,
+      executionId,
+      command: replayCommand,
+    });
+  }
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 25));
     const execution = getDb().prepare(`
@@ -4395,17 +5417,51 @@ export async function waitForExecutionById(
     `).get(executionId, userId, tenantId) as any;
     if (!execution || execution.status === 'started') continue;
     if (execution.status === 'succeeded') {
-      return idempotentActionResult(decisionId, actionId, userId, tenantId, execution);
+      return idempotentActionResult(
+        decisionId,
+        actionId,
+        userId,
+        tenantId,
+        execution,
+        replayCommand,
+      );
     }
-    throw executionReplayError(execution, 'Prior logical decision action attempt failed');
+    throw executionReplayError(
+      execution,
+      'Prior logical decision action attempt failed',
+      replayCommand ? { decisionId, actionId, command: replayCommand } : undefined,
+    );
   }
   throw new DecisionActionError('DECISION_ACTION_IN_PROGRESS', 'Decision action is already in progress', 409);
 }
 
 
 
-export function executionReplayError(execution: any, message: string): DecisionActionError {
+export function executionReplayError(
+  execution: any,
+  message: string,
+  requested?: {
+    decisionId: string;
+    actionId: string;
+    command: DecisionActionReplayCommandIdentity;
+  },
+): DecisionActionError {
   const partial = execution?.status === 'partially_failed';
+  const isCoalescedCommand = requested != null
+    && (execution?.decision_id !== requested.decisionId
+      || execution?.idempotency_key !== requested.command.idempotencyKey);
+  const commandReceipt = decisionActionCommandReceiptForExecution(execution, {
+    commandIdentity: isCoalescedCommand && requested
+      ? {
+          decisionId: requested.decisionId,
+          actionId: requested.actionId,
+          idempotencyKey: requested.command.idempotencyKey,
+          requestFingerprint: requested.command.requestFingerprint,
+          requestedRecordVersion: requested.command.requestedRecordVersion,
+          requestedContextVersion: requested.command.requestedContextVersion,
+        }
+      : undefined,
+  });
   return new DecisionActionError(
     partial ? 'DECISION_PARTIALLY_FAILED' : execution?.error_code || 'DECISION_ACTION_FAILED',
     partial ? 'The prior attempt partially completed and requires recovery review.' : message,
@@ -4415,6 +5471,7 @@ export function executionReplayError(execution: any, message: string): DecisionA
       effectResults: safeParseJson(execution?.effect_results_json, []),
       recovery: safeParseJson(execution?.recovery_json, {}),
       originalErrorCode: execution?.error_code ?? null,
+      ...(commandReceipt ? { commandReceipt } : {}),
     },
   );
 }
@@ -5443,15 +6500,215 @@ export function executeContentApprovalDecision(
 
 
 
+export function decisionActionOperation(actionId: string): 'act' | 'snooze' | 'dismiss' {
+  if (actionId === 'snooze') return 'snooze';
+  if (actionId === 'dismiss' || actionId === 'not_now') return 'dismiss';
+  return 'act';
+}
+
+
+
+export function decisionActionCommandReceiptForExecution(
+  execution: any,
+  options: {
+    readbackItem?: DecisionApiItem | null;
+    receiptReadbackItem?: DecisionCommandReceiptReadbackItem | null;
+    verificationMessage?: string;
+    commandIdentity?: {
+      decisionId: string;
+      actionId: string;
+      idempotencyKey: string;
+      requestFingerprint: string;
+      requestedRecordVersion?: number;
+      requestedContextVersion?: string | null;
+    };
+  } = {},
+): DecisionCommandReceipt | null {
+  if (!execution
+      || !['succeeded', 'partially_failed', 'failed'].includes(String(execution.status))
+      || typeof execution.action_execution_id !== 'string'
+      || typeof execution.decision_id !== 'string'
+      || typeof execution.action_id !== 'string'
+      || typeof execution.idempotency_key !== 'string'
+      || !Number.isSafeInteger(execution.user_id)
+      || !Number.isSafeInteger(execution.tenant_id)) return null;
+
+  const commandIdentity = options.commandIdentity;
+  if (commandIdentity
+      && (commandIdentity.actionId !== execution.action_id
+        || !/^[a-f0-9]{64}$/.test(commandIdentity.requestFingerprint))) {
+    throw new DecisionActionError(
+      'DECISION_COMMAND_RECEIPT_INVALID',
+      'The coalesced Decision command identity does not match its execution evidence.',
+      500,
+    );
+  }
+  const receiptDecisionId = commandIdentity?.decisionId ?? execution.decision_id;
+  const receiptActionId = commandIdentity?.actionId ?? execution.action_id;
+  const receiptIdempotencyKey = commandIdentity?.idempotencyKey ?? execution.idempotency_key;
+  const operation = decisionActionOperation(receiptActionId);
+  const baseReceiptId = decisionCommandReceiptId({
+    decisionId: receiptDecisionId,
+    operation,
+    actionId: receiptActionId,
+    userId: execution.user_id,
+    tenantId: execution.tenant_id,
+    idempotencyKey: receiptIdempotencyKey,
+  });
+  // A partially-failed receipt is immutable evidence for the uncertain
+  // response. A later exact refresh may append the final receipt under the
+  // canonical base id without rewriting that earlier evidence.
+  const receiptId = execution.status === 'partially_failed'
+    ? `${baseReceiptId}_partial`
+    : baseReceiptId;
+  const existing = readDecisionCommandReceipt(
+    receiptId,
+    receiptDecisionId,
+    execution.user_id,
+    execution.tenant_id,
+  );
+  if (existing) {
+    if (commandIdentity) {
+      assertCoalescedReceiptRequestFingerprint(existing, commandIdentity.requestFingerprint);
+    }
+    return existing;
+  }
+
+  const expectedEffect = safeParseJson<Record<string, unknown>>(execution.expected_effect_json, {});
+  const actualEffect = safeParseJson<Record<string, unknown>>(execution.result_json, {});
+  const status = execution.status as 'succeeded' | 'partially_failed' | 'failed';
+  const evidence = compactDecisionExecutionReceiptEvidence({
+    expectedEffect,
+    actualEffect,
+    effectResults: safeParseJson(execution.effect_results_json, []),
+    status,
+    errorCode: execution.error_code,
+  });
+  const completedAt = execution.completed_at ?? execution.failed_at ?? appNowIso();
+  const readbackItem = options.receiptReadbackItem
+    ?? (options.readbackItem
+    ? compactDecisionCommandReadback(options.readbackItem, {
+        actionId: receiptActionId,
+        actionStatus: status,
+      })
+    : status === 'succeeded' && receiptActionId === 'snooze'
+      ? predecessorSnoozeReceiptReadback(execution)
+      : undefined);
+  const receipt = createDecisionCommandReceipt({
+    receiptId,
+    decisionId: receiptDecisionId,
+    operation,
+    actionId: receiptActionId,
+    idempotencyKey: receiptIdempotencyKey,
+    status,
+    executionAttemptId: execution.action_execution_id,
+    completedAt,
+    requestedRecordVersion: commandIdentity
+      ? commandIdentity.requestedRecordVersion
+      : execution.expected_record_version,
+    requestedContextVersion: commandIdentity
+      ? commandIdentity.requestedContextVersion
+      : execution.context_version,
+    readbackItem,
+    verification: {
+      readBackOk: status === 'succeeded',
+      expectedEffect: commandIdentity
+        ? {
+            ...evidence.expectedEffect,
+            requestFingerprint: commandIdentity.requestFingerprint,
+          }
+        : evidence.expectedEffect,
+      actualEffect: evidence.actualEffect,
+      message: options.verificationMessage ?? (status === 'succeeded'
+        ? 'The original decision action completed and its effects were verified.'
+        : status === 'partially_failed'
+          ? 'The original decision action has an uncertain or partially completed outcome.'
+          : 'The original decision action failed without a verified completed effect.'),
+    },
+  });
+  return persistDecisionCommandReceipt({
+    receipt,
+    userId: execution.user_id,
+    tenantId: execution.tenant_id,
+  });
+}
+
+
+
+function predecessorSnoozeReceiptReadback(
+  execution: any,
+): DecisionCommandReceiptReadbackItem {
+  const result = safeParseJson<Record<string, unknown>>(execution?.result_json, {});
+  const expectedRecordVersion = execution?.expected_record_version;
+  const snoozedUntil = result.snoozedUntil;
+  const decisionStatus = result.decisionStatus;
+  const parsedSnoozedUntil = typeof snoozedUntil === 'string'
+    ? DateTime.fromISO(snoozedUntil, { setZone: true })
+    : null;
+  if (decisionStatus !== 'snoozed'
+      || !parsedSnoozedUntil?.isValid
+      || !Number.isSafeInteger(expectedRecordVersion)
+      || expectedRecordVersion < 1
+      || !Number.isSafeInteger(expectedRecordVersion + 1)) {
+    throw new DecisionActionError(
+      'DECISION_EXECUTION_RECOVERY_REQUIRED',
+      'The original snooze completed, but its immutable readback evidence is unavailable. Refresh before reconciling this attempt.',
+      409,
+      {
+        actionExecutionId: execution?.action_execution_id ?? null,
+        actionId: 'snooze',
+        recoveryAction: 'refresh',
+      },
+    );
+  }
+  const contextVersion = typeof execution.context_version === 'string'
+    && execution.context_version.length > 0
+    ? execution.context_version
+    : undefined;
+  return Object.freeze({
+    decisionId: execution.decision_id,
+    recordVersion: expectedRecordVersion + 1,
+    ...(contextVersion ? { contextVersion } : {}),
+    status: 'snoozed',
+    snoozedUntil: parsedSnoozedUntil.toUTC().toISO()!,
+    actionId: 'snooze',
+    actionStatus: 'succeeded',
+  });
+}
+
+
+
+export function attachDecisionExecutionReceipt(
+  error: DecisionActionError,
+  executionId: string,
+  userId: number,
+  tenantId: number,
+): DecisionActionError {
+  const execution = getDb().prepare(`
+    SELECT * FROM decision_action_executions
+     WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+     LIMIT 1
+  `).get(executionId, userId, tenantId) as any;
+  const commandReceipt = decisionActionCommandReceiptForExecution(execution);
+  if (commandReceipt) {
+    error.details = { ...(error.details ?? {}), commandReceipt };
+  }
+  return error;
+}
+
+
+
 export function markExecutionSucceeded(
   executionId: string,
   userId: number,
   tenantId: number,
   expectedEffect: Record<string, unknown>,
   actualEffect: Record<string, unknown>,
-): void {
+  readbackItem?: DecisionApiItem | null,
+  verificationMessage?: string,
+): DecisionCommandReceipt {
   const effects = expectedEffectResultsForExecution(executionId, 'succeeded');
-  getDb().transaction(() => {
+  return getDb().transaction(() => {
     const claimed = getDb().prepare(`
       SELECT expected_effect_json AS expectedEffectJson
         FROM decision_action_executions
@@ -5464,6 +6721,7 @@ export function markExecutionSucceeded(
       ...expectedEffect,
       ...(claimedExpected.commandContract ? { commandContract: claimedExpected.commandContract } : {}),
     };
+    const completedAt = appNowIso();
     const executionUpdate = getDb().prepare(`
       UPDATE decision_action_executions
          SET status = 'succeeded',
@@ -5471,10 +6729,18 @@ export function markExecutionSucceeded(
              result_json = ?,
              effect_results_json = ?,
              recovery_json = '{}',
-             completed_at = datetime('now')
+             completed_at = ?
        WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
          AND status = 'started'
-    `).run(JSON.stringify(durableExpected), JSON.stringify(actualEffect), JSON.stringify(effects), executionId, userId, tenantId);
+    `).run(
+      JSON.stringify(durableExpected),
+      JSON.stringify(actualEffect),
+      JSON.stringify(effects),
+      completedAt,
+      executionId,
+      userId,
+      tenantId,
+    );
     if (executionUpdate.changes !== 1) {
       throw new DecisionActionError(
         'DECISION_EXECUTION_STATE_CONFLICT',
@@ -5488,6 +6754,23 @@ export function markExecutionSucceeded(
          SET status = 'succeeded', updated_at = datetime('now')
        WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
     `).run(executionId, userId, tenantId);
+    const execution = getDb().prepare(`
+      SELECT * FROM decision_action_executions
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(executionId, userId, tenantId) as any;
+    const receipt = decisionActionCommandReceiptForExecution(execution, {
+      readbackItem,
+      verificationMessage,
+    });
+    if (!receipt) {
+      throw new DecisionActionError(
+        'DECISION_COMMAND_RECEIPT_INVALID',
+        'Decision execution completed without an immutable command receipt.',
+        500,
+      );
+    }
+    return receipt;
   })();
 }
 
@@ -5502,9 +6785,17 @@ export function reconcileCompletedExecutionAfterResponseFailure(
     expectedEffect: Record<string, unknown>;
     actualEffect: Record<string, unknown>;
   },
+  readbackItem?: DecisionApiItem | null,
 ): 'succeeded' | 'partially_failed' | 'unknown' {
   try {
-    markExecutionSucceeded(executionId, userId, tenantId, execution.expectedEffect, execution.actualEffect);
+    markExecutionSucceeded(
+      executionId,
+      userId,
+      tenantId,
+      execution.expectedEffect,
+      execution.actualEffect,
+      readbackItem,
+    );
     return 'succeeded';
   } catch (retryError) {
     logger.warn({
@@ -5515,11 +6806,14 @@ export function reconcileCompletedExecutionAfterResponseFailure(
   }
   try {
     const current = getDb().prepare(`
-      SELECT status FROM decision_action_executions
+      SELECT * FROM decision_action_executions
        WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? LIMIT 1
-    `).get(executionId, userId, tenantId) as { status: string } | undefined;
+    `).get(executionId, userId, tenantId) as any;
     if (current?.status === 'succeeded') return 'succeeded';
-    if (current?.status === 'partially_failed') return 'partially_failed';
+    if (current?.status === 'partially_failed') {
+      const receipt = decisionActionCommandReceiptForExecution(current, { readbackItem });
+      return receipt ? 'partially_failed' : 'unknown';
+    }
 
     const successfulEffects = expectedEffectResultsForExecution(executionId, execution.readBackOk ? 'succeeded' : 'unknown');
     const effectResults: DecisionEffectResult[] = [
@@ -5559,6 +6853,19 @@ export function reconcileCompletedExecutionAfterResponseFailure(
            SET status = 'partially_failed', updated_at = datetime('now')
          WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
       `).run(executionId, userId, tenantId);
+      const terminalExecution = getDb().prepare(`
+        SELECT * FROM decision_action_executions
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+         LIMIT 1
+      `).get(executionId, userId, tenantId) as any;
+      const receipt = decisionActionCommandReceiptForExecution(terminalExecution, { readbackItem });
+      if (!receipt) {
+        throw new DecisionActionError(
+          'DECISION_COMMAND_RECEIPT_INVALID',
+          'Decision reconciliation could not commit its immutable partial receipt.',
+          500,
+        );
+      }
     })();
     logger.warn({
       event: 'decision.execution_reconciliation_required',
@@ -5666,15 +6973,16 @@ export function markExecutionFailed(
       : 'The action did not complete. Refresh the decision before retrying.',
     actions: [{ id: 'refresh', label: 'Refresh', style: 'secondary' }],
   };
+  const failedAt = appNowIso();
   getDb().transaction(() => {
-    getDb().prepare(`
+    const executionUpdate = getDb().prepare(`
       UPDATE decision_action_executions
          SET status = ?,
              error_code = ?,
              result_json = ?,
              effect_results_json = ?,
              recovery_json = ?,
-             failed_at = datetime('now')
+             failed_at = ?
        WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
          AND status = 'started'
     `).run(
@@ -5683,15 +6991,40 @@ export function markExecutionFailed(
       JSON.stringify(details ?? {}),
       JSON.stringify(inferredEffects),
       JSON.stringify(recovery),
+      failedAt,
       executionId,
       userId,
       tenantId,
     );
-    getDb().prepare(`
-      UPDATE decision_exclusivity_claims
-         SET status = ?, updated_at = datetime('now')
-       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
-    `).run(status, executionId, userId, tenantId);
+    if (executionUpdate.changes !== 1) {
+      // A concurrent lease reclaim or reconciliation already terminalized this
+      // row. Its receipt is immutable evidence of that outcome; never overwrite
+      // it and never let this bookkeeping conflict mask the original failure
+      // the caller is about to propagate.
+      logger.warn({
+        event: 'decision.execution_failure_already_terminal',
+        executionId,
+        errorCode,
+      }, 'Decision execution was already terminal when its failure was recorded');
+    } else {
+      getDb().prepare(`
+        UPDATE decision_exclusivity_claims
+           SET status = ?, updated_at = datetime('now')
+         WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ? AND status = 'started'
+      `).run(status, executionId, userId, tenantId);
+    }
+    const execution = getDb().prepare(`
+      SELECT * FROM decision_action_executions
+       WHERE action_execution_id = ? AND user_id = ? AND tenant_id = ?
+       LIMIT 1
+    `).get(executionId, userId, tenantId) as any;
+    if (!decisionActionCommandReceiptForExecution(execution)) {
+      throw new DecisionActionError(
+        'DECISION_COMMAND_RECEIPT_INVALID',
+        'Decision execution failed without an immutable command receipt.',
+        500,
+      );
+    }
   })();
   if (partiallyFailed) {
     logger.warn({ event: 'decision.execution_partially_failed', executionId, errorCode }, 'Decision execution partially failed');

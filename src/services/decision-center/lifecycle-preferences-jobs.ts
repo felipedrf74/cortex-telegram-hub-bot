@@ -161,6 +161,7 @@ import { invalidatePlanningAfterVerifiedDecisionSourceMutation } from './plannin
 
 import {
   createDecisionMutationCommand,
+  type DecisionCommandReceipt,
   type DecisionMutationApproval,
   type DecisionMutationChannel,
   type DecisionMutationCommand,
@@ -199,6 +200,10 @@ import {
 } from './projection-policy';
 
 import { executeDecisionMutationWithReceipt } from './command-receipts';
+import {
+  listDecisionCommandReceipts,
+  privacySafeDecisionLifecycleMetadata,
+} from './command-response-receipts';
 
 import {
   DecisionActionError,
@@ -1555,7 +1560,7 @@ export function getDecisionLifecycleEvents(decisionId: string, userId: number, t
     actionId: row.actionId ?? null,
     reason: row.reason ?? null,
     createdAt: row.createdAt,
-    metadata: safeParseJson(row.metadataJson, {}),
+    metadata: privacySafeDecisionLifecycleMetadata(safeParseJson(row.metadataJson, {})),
   })) as DecisionLifecycleEventRow[];
 }
 
@@ -1565,6 +1570,7 @@ export function getDecisionAuditHistory(decisionId: string, userId: number, tena
   events: DecisionLifecycleEventRow[];
   conflicts: Array<Record<string, unknown>>;
   executions: Array<Record<string, unknown>>;
+  commandReceipts: DecisionCommandReceipt[];
 } {
   assertScope(userId, tenantId, 'decision_audit_history', { decisionId });
   ensureDecisionCenterTables();
@@ -1618,7 +1624,12 @@ export function getDecisionAuditHistory(decisionId: string, userId: number, tena
     completedAt: row.completedAt ?? null,
     failedAt: row.failedAt ?? null,
   }));
-  return { events: getDecisionLifecycleEvents(decisionId, userId, tenantId), conflicts, executions };
+  return {
+    events: getDecisionLifecycleEvents(decisionId, userId, tenantId),
+    conflicts,
+    executions,
+    commandReceipts: listDecisionCommandReceipts(decisionId, userId, tenantId),
+  };
 }
 
 
@@ -2606,10 +2617,16 @@ export interface UpdateDecisionPreferencesCommandInput {
  */
 export function updateDecisionPreferencesViaCommand(
   input: UpdateDecisionPreferencesCommandInput,
-): { preferences: Record<string, unknown>; idempotent: boolean } {
+): {
+  preferences: Record<string, unknown>;
+  idempotent: boolean;
+  commandReceipt?: DecisionCommandReceipt;
+} {
   const requestedAt = input.requestedAt ?? new Date().toISOString();
   const keyHash = createHash('sha256').update(input.idempotencyKey).digest('hex');
-  const resourceId = `decision-preferences:${input.tenantId}:${input.userId}`;
+  // Scope lives only in the ledger columns and receipt-id digest. Keeping the
+  // public resource identity opaque avoids reflecting authenticated IDs.
+  const resourceId = 'decision-preferences';
   const command = createDecisionMutationCommand({
     commandId: `preferences:${keyHash}`,
     decisionId: resourceId,
@@ -2644,5 +2661,6 @@ export function updateDecisionPreferencesViaCommand(
   return {
     preferences: receipt.result,
     idempotent: receipt.idempotent,
+    ...(receipt.commandReceipt ? { commandReceipt: receipt.commandReceipt } : {}),
   };
 }

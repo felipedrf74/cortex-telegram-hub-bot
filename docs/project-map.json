@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "f2ee82820d67ff3cc4e5d9bfc6cb321997d2d6adde600d3d0147dbee0de6a45e",
-    "baseCommit": "13eb34aaa9cc170728ad11aedbb1fee8fc939673",
-    "baseCommitTimestamp": "2026-09-03T11:23:15+01:00",
-    "trackedFiles": 3598,
-    "sourceFiles": 1261
+    "sourceDigest": "4d807698d640fcc4be50dcfc30e291bd9979f9e9919deaae11fde13c1e688c0e",
+    "baseCommit": "18b06498b56d219ddaf7cbd95a18ae53e8966422",
+    "baseCommitTimestamp": "2026-09-03T12:35:30+01:00",
+    "trackedFiles": 3599,
+    "sourceFiles": 1262
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 931
+      "files": 932
     },
     {
       "path": "src/skills",
@@ -6052,7 +6052,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 803959,
+      "bytes": 811968,
       "generated": false
     },
     {
@@ -6076,6 +6076,11 @@
       "generated": true
     },
     {
+      "path": "__tests__/services/decision-center.test.ts",
+      "bytes": 364925,
+      "generated": false
+    },
+    {
       "path": "__tests__/scripts/release-continuous-deployment.test.ts",
       "bytes": 328566,
       "generated": false
@@ -6083,11 +6088,6 @@
     {
       "path": "__tests__/api/chat-routes.test.ts",
       "bytes": 319399,
-      "generated": false
-    },
-    {
-      "path": "__tests__/services/decision-center.test.ts",
-      "bytes": 316177,
       "generated": false
     },
     {
@@ -6108,6 +6108,11 @@
     {
       "path": "src/services/notification-orchestrator.ts",
       "bytes": 291592,
+      "generated": false
+    },
+    {
+      "path": "src/services/decision-center/command-service.ts",
+      "bytes": 285712,
       "generated": false
     }
   ]
