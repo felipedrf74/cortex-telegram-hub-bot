@@ -555,6 +555,9 @@ export interface DecisionApiItem {
   approvalLevel: DecisionApprovalLevel;
   reviewSupported: boolean;
   editableProposalFields: string[];
+  /** Canonical UTC proposal window persisted in the decision context. */
+  recommendedStartAt: string | null;
+  recommendedEndAt: string | null;
   reversibility: NormalizedDecisionAction['reversibility'] | null;
   execution: DecisionExecutionSummary;
   /** Whether the token-zero refresh/revalidation route is available for this scope. */
