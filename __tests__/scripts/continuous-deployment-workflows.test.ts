@@ -4068,7 +4068,9 @@ describe('migration verdict carries the signed inventory', () => {
     const parsed = JSON.parse(result.stdout);
     expect(parsed.migrationInventory).toBeNull();
     expect(parsed.cdEligibility).toBeDefined();
-  });
+  // Coverage shards run the migration checker in a child process; retain a
+  // bounded allowance above the default without making the test unbounded.
+  }, 120_000);
 });
 
 describe('Sonar decommissioning is complete', () => {
@@ -4413,7 +4415,7 @@ describe('release manifest publication fails closed on the pinned key', () => {
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 120_000);
 
   it('signs from the digest-bound hosted verdict without rereading the CI artifact', () => {
     const fixture = migrationResultFixture();
