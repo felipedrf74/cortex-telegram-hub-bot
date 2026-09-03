@@ -23,6 +23,7 @@ import {
 } from '../../services/content-editorial-workflow';
 import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
 import { logger } from '../../utils/logger';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -292,7 +293,7 @@ function resolveScope(
   operation: string,
 ): { userId: number; tenantId: number } | null {
   if (!ensureValidContentRouteScope(res, req.userId, operation)) return null;
-  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+  if (!Number.isSafeInteger(req.tenantId) || Number(req.tenantId) <= 0) {
     sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
     return null;
   }
@@ -314,7 +315,7 @@ function sendEditorialError(
     sendError(res, error.code, error.message, error.status, error.details);
     return;
   }
-  logger.error({ err: error, userId: scope.userId, tenantId: scope.tenantId }, message);
+  logger.error({ ...safeContentLogErrorFields(error), userId: scope.userId, tenantId: scope.tenantId }, message);
   sendInternalError(res, 'The Content workspace action could not be completed. Existing content was preserved.');
 }
 

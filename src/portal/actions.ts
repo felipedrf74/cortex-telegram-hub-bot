@@ -1,9 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
-import { runReactionRadar } from '../agents/reaction-radar-agent';
-import { runSEOAgent } from '../agents/seo-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { sendDailyBriefing, refreshConnectedGarminUsersWithLease } from '../services/scheduler';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
@@ -14,6 +11,10 @@ import { synthesizeKnowledge as reSynthesizeKnowledge } from '../services/channe
 import { logger } from '../utils/logger';
 import { pushEvent } from './telemetry';
 
+/*
+ * Performance, Reaction Radar, and SEO agents are paused, so no portal imports/actions.
+ * Re-enable only through the canonical lifecycle policy.
+ */
 export type PortalActionResult = { ok: boolean; message: string };
 
 export const VALID_PORTAL_ACTIONS = new Set([
@@ -23,10 +24,7 @@ export const VALID_PORTAL_ACTIONS = new Set([
   'test-invoice-storage',
   'test-graph',
   'resynthesize-knowledge',
-  'run-performance-agent',
   'run-voice-evolution',
-  'run-reaction-radar',
-  'run-seo-agent',
   'run-pipeline-agent',
 ]);
 
@@ -135,21 +133,9 @@ export async function handlePortalAction(
       return { ok: true, message: 'Content knowledge re-synthesized from all active channels' };
     }
 
-    case 'run-performance-agent': {
-      await runPerformanceAgent();
-      return { ok: true, message: 'Performance Agent completed' };
-    }
     case 'run-voice-evolution': {
       await runVoiceEvolutionAgent();
       return { ok: true, message: 'Voice Evolution Agent completed' };
-    }
-    case 'run-reaction-radar': {
-      await runReactionRadar();
-      return { ok: true, message: 'Reaction Radar completed' };
-    }
-    case 'run-seo-agent': {
-      await runSEOAgent();
-      return { ok: true, message: 'SEO Agent completed' };
     }
     case 'run-pipeline-agent': {
       const ownerTarget = getOwnerBootstrapTarget();

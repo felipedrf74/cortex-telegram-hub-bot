@@ -429,7 +429,7 @@ describe('ai-credit-ledger', () => {
       expect(recordOperatorAlertMock).toHaveBeenCalledWith(expect.objectContaining({
         severity: 'critical',
         dedupeKey: `ai_credit_capture_conflict:${reserved.reservation.id}`,
-      }));
+      }), db);
       // No second allocation happened.
       const rows = db.prepare('SELECT COUNT(*) AS n FROM ai_credit_captures WHERE reservation_id = ?')
         .get(reserved.reservation.id) as { n: number };
@@ -451,7 +451,7 @@ describe('ai-credit-ledger', () => {
       expect(recordOperatorAlertMock).toHaveBeenCalledWith(expect.objectContaining({
         severity: 'warning',
         dedupeKey: `ai_credit_capture_shortfall:${reserved.reservation.id}`,
-      }));
+      }), db);
     });
   });
 });

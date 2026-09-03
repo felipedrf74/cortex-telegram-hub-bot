@@ -19,7 +19,7 @@
  *
  * Consumers:
  *   - content-workspace-capture.ts — owns positive-user script persistence
- *   - voice-evolution-agent.ts — calls getRecentScripts() for voice learning
+ *   - voice-evolution-agent.ts — persists scoped patterns after canonical revision-pair analysis
  *   - iOS API routes — calls getPerformanceSummary(), getLearnedPatterns()
  *   - portal dashboard — calls getArtifactChain() for pipeline inspection
  */
@@ -154,7 +154,12 @@ export interface ArtifactChain {
   } | null;
   pipeline: {
     id: number; stage: string; scriptPath: string | null;
-    youtubeVideoId: string | null; publishedAt: string | null;
+    youtubeVideoId: string | null; publishedAt: null;
+    publicationTracking: {
+      availability: 'unavailable';
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED';
+      publicationExecution: 'not_supported';
+    };
   } | null;
   script: {
     id: number; scriptText: string | null; hook: string | null;
@@ -245,8 +250,9 @@ export function storeScript(opts: {
 }
 
 /**
- * Retrieve recent scripts for voice learning. Returns raw script text
- * that the voice-evolution-agent can compare against published transcripts.
+ * Retrieve recent scripts for scoped consumers. A script snapshot alone is
+ * not creator-authorship or publication evidence; voice learning uses direct
+ * canonical agent-to-user revision lineage instead.
  */
 export function getRecentScripts(userId: number, days = 30, limit = 20, tenantId?: number): StoredScript[] {
   const db = getDb();
@@ -671,18 +677,6 @@ export function getArtifactChain(
     content: currentRevision.content,
   } : null;
 
-  const publishedAt = db.prepare(`
-    SELECT MAX(created_at) AS published_at
-      FROM content_workflow_events
-     WHERE tenant_id = ? AND owner_user_id = ?
-       AND visibility_scope = 'user_private'
-       AND scope_status = 'active'
-       AND object_type = 'content_item'
-       AND object_id = ?
-       AND action = 'workspace_state_changed'
-       AND to_state = 'published'
-  `).get(tenantId, userId, String(item.id)) as { published_at: string | null } | undefined;
-
   const performanceLinksAvailable = tableExists(db, 'content_performance_workspace_links');
   const canonicalPerfRows = performanceLinksAvailable ? db.prepare(`
     SELECT performance.id, performance.pipeline_id, performance.video_url,
@@ -778,7 +772,14 @@ export function getArtifactChain(
       stage: item.productionState,
       scriptPath: null,
       youtubeVideoId: null,
-      publishedAt: publishedAt?.published_at ?? null,
+      // `published` is an internal production state, not proof that Nexus
+      // executed or observed an external platform publication.
+      publishedAt: null,
+      publicationTracking: {
+        availability: 'unavailable',
+        reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+        publicationExecution: 'not_supported',
+      },
     },
     script,
     performance: perfRows.map(mapPerformance),

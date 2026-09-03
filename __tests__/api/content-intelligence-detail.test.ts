@@ -27,6 +27,16 @@ let mockJobs = [
     lastError: null,
   },
   {
+    name: 'seo_agent',
+    label: 'SEO Tracker',
+    cronExpression: '0 6 * * 1',
+    domain: 'content',
+    lastRunAt: '2026-04-12T06:00:00.000Z',
+    lastResult: 'success',
+    lastDurationMs: 5100,
+    lastError: null,
+  },
+  {
     name: 'autoresearch',
     label: 'Autoresearch',
     cronExpression: '0 3 * * 0',
@@ -247,9 +257,19 @@ describe('Content API — intelligence detail', () => {
     `).run(user.id, 'Tópicos prontos para esta semana', 'Há novas ideias a aguardar decisão.', '2026-04-14T09:10:00.000Z');
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id, provenance_json)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, ?, ?)
     `);
+    const learningProvenance = JSON.stringify({
+      producerVersion: 'cross-agent-learning.v3',
+      source: 'runtime',
+      observedAt: recentOptimizationAt,
+    });
+    const inputEligibility = {
+      policyVersion: 'active-content-agent-sources.v1',
+      sourceAgents: ['autoresearch'],
+      sourceSignalIds: [1],
+    };
 
     insertSignal.run(
       'reaction-radar',
@@ -257,7 +277,9 @@ describe('Content API — intelligence detail', () => {
       JSON.stringify({ title: 'Tariff shift explainer', summary: 'Macro topic is climbing fast.' }),
       'urgent',
       recentDiscoveryAt,
-      user.id
+      user.id,
+      user.id,
+      '{}'
     );
     insertSignal.run(
       'performance-agent',
@@ -265,7 +287,9 @@ describe('Content API — intelligence detail', () => {
       JSON.stringify({ pillar: 'training', summary: 'Training is outperforming other pillars this week.' }),
       'normal',
       recentOptimizationAt,
-      user.id
+      user.id,
+      user.id,
+      '{}'
     );
     insertSignal.run(
       'performance-agent',
@@ -273,7 +297,19 @@ describe('Content API — intelligence detail', () => {
       JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }),
       'normal',
       recentOptimizationAt,
-      user.id
+      user.id,
+      user.id,
+      '{}'
+    );
+    insertSignal.run(
+      'autoresearch',
+      'creator_learning_digest',
+      JSON.stringify({ summary: 'Keep the current repeatable format.', inputEligibility }),
+      'normal',
+      recentOptimizationAt,
+      user.id,
+      user.id,
+      learningProvenance
     );
     recordCanonicalPerformance(user.id, 'strong', {
       views: 8600,
@@ -306,13 +342,14 @@ describe('Content API — intelligence detail', () => {
       { name: 'Training', keywordCount: 3 },
       { name: 'Recovery', keywordCount: 2 },
     ]);
-    expect(response.body.data.discovery.recentSignals).toHaveLength(1);
-    expect(response.body.data.discovery.recentSignals[0]).toMatchObject({
-      type: 'reaction_opportunity',
-      title: 'Tariff shift explainer',
-      summary: 'Janela de reação ativa: Macro topic is climbing fast.',
-      priority: 'urgent',
+    expect(response.body.data.discovery).toMatchObject({
+      reactionRadarLifecycle: 'paused',
+      cadenceHours: null,
+      activeCount: 0,
+      lastRunAt: null,
+      lastStatus: 'paused',
     });
+    expect(response.body.data.discovery.recentSignals).toEqual([]);
     expect(response.body.data.script.entries).toHaveLength(2);
     expect(response.body.data.script.entries[0]).toMatchObject({
       category: 'brand_voice',
@@ -330,16 +367,25 @@ describe('Content API — intelligence detail', () => {
       ])
     );
     expect(response.body.data.schedule.status).toBe('ready');
-    expect(response.body.data.schedule.filmingRecommendation).toBeTruthy();
-    expect(response.body.data.optimization.recentSignals).toHaveLength(2);
-    expect(response.body.data.optimization.recentSignals[0]).toMatchObject({
-      type: 'learning_digest',
-      summary: 'Aprendizagem recente: Hooks with stronger contrast won this week.',
+    expect(response.body.data.schedule).toMatchObject({
+      statusSemantics: 'recommendation_availability_not_calendar_authority',
+      calendarAuthority: 'not_included',
+      recommendationSemantics: 'proposal_not_calendar_reservation',
     });
-    expect(response.body.data.optimization.recentSignals[1]).toMatchObject({
-      type: 'pillar_performance',
-      title: 'Treino',
-      summary: 'Performance de Treino: Training is outperforming other pillars this week.',
+    expect(response.body.data.schedule.filmingRecommendation).toBeTruthy();
+    expect(response.body.data.optimization).toMatchObject({
+      activeInsightCount: 1,
+      performanceLifecycle: 'paused',
+      performanceLastRunAt: null,
+      performanceLastStatus: 'paused',
+      seoLifecycle: 'paused',
+      seoLastRunAt: null,
+      seoLastStatus: 'paused',
+    });
+    expect(response.body.data.optimization.recentSignals).toHaveLength(1);
+    expect(response.body.data.optimization.recentSignals[0]).toMatchObject({
+      type: 'creator_learning_digest',
+      summary: 'Aprendizagem recente: Keep the current repeatable format.',
     });
     expect(response.body.data.optimization.performanceSummary).toMatchObject({
       count: 2,
@@ -398,11 +444,7 @@ describe('Content API — intelligence detail', () => {
       { name: 'fitness', keywordCount: 1 },
       { name: 'training consistency', keywordCount: 1 },
     ]);
-    expect(response.body.data.discovery.recentSignals).toHaveLength(1);
-    expect(response.body.data.discovery.recentSignals[0]).toMatchObject({
-      title: 'Training',
-      summary: 'Reaction window: treino com forte gancho',
-    });
+    expect(response.body.data.discovery.recentSignals).toEqual([]);
   });
 
   it('keeps intelligence details private across tenant scope and limits NULL legacy rows to personal tenant', async () => {

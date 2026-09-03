@@ -205,14 +205,14 @@ describe('channel-learner: re-learn new-video gate + failure backoff (migration 
       if (href.startsWith('https://www.googleapis.com/youtube/v3/channels')) {
         const id = parsed.searchParams.get('id') || '';
         if (!resolvableChannels.has(id)) {
-          return { json: async () => ({ items: [] }) } as Response;
+          return { ok: true, status: 200, json: async () => ({ items: [] }) } as Response;
         }
-        return { json: async () => ({ items: [{ id, snippet: { title: `Channel ${id}` } }] }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items: [{ id, snippet: { title: `Channel ${id}` } }] }) } as Response;
       }
       if (href.startsWith('https://www.googleapis.com/youtube/v3/search')) {
         const channelId = parsed.searchParams.get('channelId') || '';
         const vids = videosByChannel[channelId] || [];
-        return { json: async () => ({ items: vids.map((v) => ({ id: { videoId: v.videoId } })) }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items: vids.map((v) => ({ id: { videoId: v.videoId } })) }) } as Response;
       }
       if (href.startsWith('https://www.googleapis.com/youtube/v3/videos')) {
         const ids = (parsed.searchParams.get('id') || '').split(',').filter(Boolean);
@@ -229,7 +229,7 @@ describe('channel-learner: re-learn new-video gate + failure backoff (migration 
             statistics: { viewCount: String(v.viewCount), likeCount: '10', commentCount: '2' },
             contentDetails: { duration: 'PT10M' },
           })));
-        return { json: async () => ({ items }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items }) } as Response;
       }
       throw new Error(`Unexpected fetch ${href}`);
     }));

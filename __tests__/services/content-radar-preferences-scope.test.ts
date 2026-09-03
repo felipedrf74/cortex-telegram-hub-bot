@@ -26,6 +26,8 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  ContentRadarPreferencesUnavailableError,
+  ContentRadarPreferencesValidationError,
   getContentRadarPreferences,
   setContentRadarPreferences,
 } from '../../src/services/content-radar-preferences';
@@ -74,5 +76,28 @@ describe('content radar preferences tenant scope', () => {
     setContentRadarPreferences(77, ['tenant-local topic'], 7007);
     expect(getContentRadarPreferences(77, 7007).topics).toEqual(['tenant-local topic']);
     expect(getContentRadarPreferences(77, 77).topics).toEqual(['legacy topic']);
+  });
+
+  it('withholds malformed stored preference truth from strict callers', () => {
+    setContentRadarPreferences(42, ['AI workflows'], 42);
+    testDb.prepare('UPDATE content_radar_preferences SET topics_json = ? WHERE tenant_id = ? AND owner_user_id = ?')
+      .run('["valid",7]', 42, 42);
+
+    expect(() => getContentRadarPreferences(42, 42, { strict: true }))
+      .toThrow(ContentRadarPreferencesUnavailableError);
+    expect(getContentRadarPreferences(42, 42)).toEqual({ topics: [], updatedAt: null });
+  });
+
+  it.each([
+    [['a,b']],
+    [['']],
+    [[`line\nbreak`]],
+    [['x'.repeat(121)]],
+    [Array.from({ length: 13 }, (_, index) => `topic-${index}`)],
+  ])('rejects noncanonical or over-limit write input without mutation: %j', (topics) => {
+    expect(() => setContentRadarPreferences(42, topics, 42))
+      .toThrow(ContentRadarPreferencesValidationError);
+    expect(testDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'content_radar_preferences'").get())
+      .toBeUndefined();
   });
 });

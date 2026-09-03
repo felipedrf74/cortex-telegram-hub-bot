@@ -16,7 +16,10 @@ const mockGetUserLanguageById = vi.fn();
 const mockGetUserTimezoneById = vi.fn();
 let mockEffectivePlan: 'free' | 'pro' | 'max' | 'owner' = 'max';
 
-vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+vi.mock('../../src/services/weekly-plan-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/weekly-plan-orchestrator')>(
+    '../../src/services/weekly-plan-orchestrator',
+  )),
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 
@@ -563,6 +566,27 @@ describe('plan routes', () => {
     expect(mockGetUserById).not.toHaveBeenCalled();
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
     expect(mockSetCacheSWR).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicitly invalid authenticated tenant before cache or planner access', async () => {
+    const response = await dispatch('GET', '/week?weekStart=2026-04-13', { tenantId: 0 });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toEqual({
+      code: 'INVALID_INPUT',
+      message: 'The active tenant must match the authenticated user.',
+    });
+    expect(mockGetCachedSWR).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'plan_route_week',
+        reason: 'tenant_mismatch',
+        userId: 12,
+        details: expect.objectContaining({ tenantId: 0 }),
+      }),
+    ]);
   });
 
   it('returns a client-safe error when the daily plan build throws unexpectedly', async () => {

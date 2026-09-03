@@ -31,6 +31,7 @@ import re
 import struct
 import uuid
 from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -60,12 +61,32 @@ _ATTRIBUTION_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar(
     default=None,
 )
 
+_SAFE_PROVIDER_LOG_VALUES = {
+    "anthropic",
+    "cloud-gate",
+    "gemini",
+    "ollama",
+    "openai",
+    "unknown",
+}
+
+
+def _safe_provider_log_value(value: Any) -> str:
+    return value if isinstance(value, str) and value in _SAFE_PROVIDER_LOG_VALUES else "unknown"
+
 
 _STABLE_AI_BUDGET_CODES = {
     "AI_PLAN_REQUIRED",
     "AI_DAILY_LIMIT_REACHED",
     "AI_MONTHLY_LIMIT_REACHED",
     "SERVICE_DEGRADED",
+}
+
+_STABLE_AI_BUDGET_MESSAGES = {
+    "AI_PLAN_REQUIRED": "An active paid plan is required.",
+    "AI_DAILY_LIMIT_REACHED": "Daily AI quota reached.",
+    "AI_MONTHLY_LIMIT_REACHED": "Monthly AI quota reached.",
+    "SERVICE_DEGRADED": "AI service is temporarily unavailable.",
 }
 
 _STABLE_LOCAL_INFERENCE_CODES = {
@@ -80,12 +101,123 @@ _STABLE_LOCAL_INFERENCE_CODES = {
     "INFERENCE_CONTEXT_LIMIT_EXCEEDED",
     "INFERENCE_EMPTY_OUTPUT",
     "INFERENCE_SCHEMA_VALUE_INVALID",
+    "LOCAL_INFERENCE_FAILED",
     "LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE",
     "INTERNAL_ATTRIBUTION_INVALID",
     "INTERNAL_INFERENCE_ATTRIBUTION_INVALID",
     "INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH",
     "ACCOUNT_DELETION_IN_PROGRESS",
 }
+
+_STABLE_LOCAL_INFERENCE_MESSAGES = {
+    "LOCAL_PRIMARY_DISABLED": "Local-primary Content inference is not enabled.",
+    "LOCAL_PLAN_REQUIRED": "This plan does not include model-backed local operations.",
+    "LOCAL_FAIR_USE_REACHED": "Local model fair-use limit reached.",
+    "LOCAL_CAPACITY_BUSY": "Local inference capacity is temporarily busy.",
+    "LOCAL_QUEUE_FULL": "Local inference queue is full.",
+    "LOCAL_QUEUE_DEADLINE": "Local inference request expired while waiting for capacity.",
+    "LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE": "Local inference attribution is temporarily unavailable.",
+    "INTERNAL_ATTRIBUTION_INVALID": "Signed Content inference scope was rejected.",
+    "INTERNAL_INFERENCE_ATTRIBUTION_INVALID": "Signed Content inference scope was rejected.",
+    "INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH": "Signed Content inference scope was rejected.",
+    "ACCOUNT_DELETION_IN_PROGRESS": "No new Content inference can start while this account is being deleted.",
+    "PRIVATE_LOCAL_ROUTE_UNAVAILABLE": "This private workload is local-only and local routing is not currently available.",
+    "INFERENCE_PROVIDER_UNAVAILABLE": "Inference provider routing is unavailable.",
+    "INFERENCE_CONTEXT_LIMIT_EXCEEDED": "The compiled inference context exceeds this plan and model limit.",
+    "INFERENCE_EMPTY_OUTPUT": "Inference provider returned no usable output.",
+    "INFERENCE_SCHEMA_VALUE_INVALID": "Inference output did not match the server-owned schema.",
+    "LOCAL_INFERENCE_FAILED": "Local content generation is temporarily unavailable.",
+}
+
+_MACHINE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_AI_BUDGET_MACHINE_DETAIL_KEYS = (
+    "window",
+    "requiredPlan",
+    "currentPlan",
+    "blockReason",
+)
+_AI_BUDGET_TIMESTAMP_DETAIL_KEYS = (
+    "resetAt",
+    "unblocksAt",
+    "dailyResetAt",
+    "monthlyResetAt",
+)
+_LOCAL_INFERENCE_INTEGER_DETAIL_KEYS = (
+    "hourlyLimit",
+    "dailyLimit",
+    "contextLimitTokens",
+)
+
+
+def _bounded_machine_token(value: Any) -> str | None:
+    return value if isinstance(value, str) and _MACHINE_TOKEN_PATTERN.fullmatch(value) else None
+
+
+def _bounded_timestamp(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value
+
+
+def _bounded_non_negative_integer(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 1_000_000_000 else None
+
+
+def _bounded_retry_after(value: Any) -> str | None:
+    # Bound before int conversion: Python rejects extremely long digit strings,
+    # and an upstream response header must never be able to break the closed
+    # public error mapper instead of simply being discarded.
+    if (
+        not isinstance(value, str)
+        or len(value) > 10
+        or not value.isascii()
+        or not value.isdigit()
+    ):
+        return None
+    seconds = int(value)
+    if seconds <= 0:
+        return None
+    return str(min(seconds, 2_678_400))
+
+
+def _safe_ai_budget_details(raw_details: Any) -> dict[str, Any]:
+    if not isinstance(raw_details, dict):
+        return {}
+    details: dict[str, Any] = {}
+    for key in _AI_BUDGET_MACHINE_DETAIL_KEYS:
+        safe_value = _bounded_machine_token(raw_details.get(key))
+        if safe_value is not None:
+            details[key] = safe_value
+    for key in _AI_BUDGET_TIMESTAMP_DETAIL_KEYS:
+        raw_value = raw_details.get(key)
+        if raw_value is None and key in raw_details:
+            details[key] = None
+            continue
+        safe_value = _bounded_timestamp(raw_value)
+        if safe_value is not None:
+            details[key] = safe_value
+    if isinstance(raw_details.get("retryable"), bool):
+        details["retryable"] = raw_details["retryable"]
+    return details
+
+
+def _safe_local_inference_details(raw_details: Any, expected_status: int) -> dict[str, Any]:
+    candidate = raw_details if isinstance(raw_details, dict) else {}
+    details: dict[str, Any] = {}
+    if isinstance(candidate.get("retryable"), bool):
+        details["retryable"] = candidate["retryable"]
+    for key in _LOCAL_INFERENCE_INTEGER_DETAIL_KEYS:
+        safe_value = _bounded_non_negative_integer(candidate.get(key))
+        if safe_value is not None:
+            details[key] = safe_value
+    details.setdefault("retryable", expected_status >= 500)
+    return details
 
 
 class AiProxyError(Exception):
@@ -129,6 +261,8 @@ def _stable_ai_proxy_error(response: httpx.Response) -> AiProxyError | None:
     if not isinstance(error, dict):
         return None
     code = error.get("code")
+    if not isinstance(code, str):
+        return None
     if code not in _STABLE_AI_BUDGET_CODES and code not in _STABLE_LOCAL_INFERENCE_CODES:
         return None
     expected_statuses = {
@@ -152,17 +286,27 @@ def _stable_ai_proxy_error(response: httpx.Response) -> AiProxyError | None:
         "INFERENCE_CONTEXT_LIMIT_EXCEEDED": {400},
         "INFERENCE_EMPTY_OUTPUT": {502},
         "INFERENCE_SCHEMA_VALUE_INVALID": {502},
+        "LOCAL_INFERENCE_FAILED": {503},
     }
     if response.status_code not in expected_statuses.get(code, set()):
         return None
-    message = error.get("message")
-    details = error.get("details")
+    is_budget_error = code in _STABLE_AI_BUDGET_CODES
+    public_message = (
+        _STABLE_AI_BUDGET_MESSAGES[code]
+        if is_budget_error
+        else _STABLE_LOCAL_INFERENCE_MESSAGES[code]
+    )
+    details = (
+        _safe_ai_budget_details(error.get("details"))
+        if is_budget_error
+        else _safe_local_inference_details(error.get("details"), response.status_code)
+    )
     return AiProxyError(
         status_code=response.status_code,
         code=code,
-        message=message if isinstance(message, str) and message else code,
-        details=details if isinstance(details, dict) else {},
-        retry_after=response.headers.get("retry-after"),
+        message=public_message,
+        details=details,
+        retry_after=_bounded_retry_after(response.headers.get("retry-after")),
     )
 
 
@@ -231,46 +375,6 @@ def _extract_json_candidate(raw: str) -> str:
                 return cleaned[start:idx + 1].strip()
 
     return cleaned[start:].strip()
-
-
-async def _repair_json_response(
-    raw: str,
-    system: str,
-    category: str,
-    max_tokens: int,
-    user_id: int | None = None,
-    tenant_id: int | None = None,
-    attribution_token: str | None = None,
-) -> dict | list | None:
-    repair_prompt = f"""Repair the following model output into valid JSON only.
-Preserve the original structure and data. Do not summarize. Do not add markdown.
-If a string contains a line break, escape it correctly. Return only the JSON object or array.
-
-BROKEN OUTPUT:
-{raw[:12000]}"""
-    try:
-        repaired = await ask_claude(
-            repair_prompt,
-            system=system,
-            max_tokens=min(max_tokens, 4096),
-            temperature=0.0,
-            # A repair is another stage of the same signed workload/run, not
-            # a new billable category. Reusing the original category lets the
-            # TS proxy re-enter the live outer reservation exactly.
-            category=category,
-            json_mode=True,
-            user_id=user_id,
-            tenant_id=tenant_id,
-            attribution_token=attribution_token,
-        )
-        return json.loads(_extract_json_candidate(repaired))
-    except AiProxyError:
-        # Plan/quota errors are authoritative and must survive the repair hop;
-        # returning a raw/degraded success would hide the user's reset state.
-        raise
-    except Exception as exc:
-        logger.warning("AI JSON repair failed for category=%s: %s", category, exc)
-        return None
 
 
 def _canonical_inference_temperature(value: float) -> str:
@@ -489,8 +593,11 @@ async def ask_claude(
 
         data = resp.json()
 
-    text = data.get("text", "")
-    provider = data.get("provider", "unknown")
+    if not isinstance(data, dict):
+        data = {}
+    raw_text = data.get("text", "")
+    text = raw_text if isinstance(raw_text, str) else ""
+    provider = _safe_provider_log_value(data.get("provider"))
     logger.info("AI complete via %s for category=%s (%d chars)", provider, category, len(text))
 
     if not text:
@@ -529,18 +636,12 @@ async def ask_claude_json(
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        repaired = await _repair_json_response(
-            raw,
-            system,
+        logger.warning(
+            "AI proxy returned non-JSON for category=%s (%d chars)",
             category,
-            max_tokens,
-            user_id,
-            tenant_id,
-            attribution_token,
+            len(raw),
         )
-        if repaired is not None:
-            logger.info("AI JSON response repaired for category=%s", category)
-            return repaired
-
-        logger.warning("AI proxy returned non-JSON after repair attempt for category=%s (%d chars)", category, len(raw))
-        return {"raw": raw}
+        # Invalid output is terminal for this single-attempt request: there is
+        # no provider-level replay identity that could make a repair completion
+        # safe. Preserve the legacy sentinel without propagating provider bytes.
+        return {"raw": ""}

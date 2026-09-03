@@ -105,6 +105,11 @@ export function buildBackendIosContractFixture() {
         editing: [],
         published: [],
       },
+      publicationTracking: {
+        availability: 'unavailable',
+        reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+        publicationExecution: 'not_supported',
+      },
     },
     ideas: [],
     topics: [],
@@ -114,7 +119,7 @@ export function buildBackendIosContractFixture() {
     filmingRecommendation: {
       date: '2026-07-03',
       confidence: 'high',
-      localizedReason: 'The next recording window is protected.',
+      localizedReason: 'The next recording window is recommended and not yet reserved.',
       localizedConfidenceLabel: 'High confidence',
     },
     hasAttemptedLoad: true,

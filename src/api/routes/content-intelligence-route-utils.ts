@@ -3,6 +3,7 @@
 import { formatSignalDigest, localizeKnowledgeCategoryLabel, localizeVoiceEntryLabel, summarizeContentJobStatus, summarizeOptimizationStatus, truncateText } from './content-home-route-utils';
 import type { Lang } from '../../utils/i18n';
 import type { AgentSignal } from '../../services/intelligence-bus';
+import { filterActiveContentAgentSignals } from '../../services/content-agent-lifecycle';
 
 type JobStatus = {
   lastRunAt?: string | null;
@@ -40,6 +41,22 @@ type MonitoredPillar = {
 
 type DeskItem = Record<string, any>;
 
+const PAUSED_OPTIMIZATION_AGENT_STATE = Object.freeze({
+  performanceLifecycle: 'paused' as const,
+  performanceLastRunAt: null,
+  performanceLastStatus: 'paused' as const,
+  seoLifecycle: 'paused' as const,
+  seoLastRunAt: null,
+  seoLastStatus: 'paused' as const,
+});
+
+const PAUSED_REACTION_RADAR_STATE = Object.freeze({
+  reactionRadarLifecycle: 'paused' as const,
+  cadenceHours: null,
+  lastRunAt: null,
+  lastStatus: 'paused' as const,
+});
+
 export type ContentPerformanceSummary = {
   count: number;
   avgViews: number;
@@ -71,8 +88,6 @@ export type ContentPerformanceSummary = {
 
 export function buildContentIntelligenceSummary(params: {
   language: Lang;
-  reactionJob?: JobStatus | null;
-  performanceJob?: JobStatus | null;
   autoresearchJob?: JobStatus | null;
   discoverySignals: AgentSignal[];
   optimizationSignals: AgentSignal[];
@@ -80,7 +95,8 @@ export function buildContentIntelligenceSummary(params: {
   voiceEntries: VoiceEntry[];
   knowledgeStats: KnowledgeStats;
 }) {
-  const { language, reactionJob, performanceJob, autoresearchJob, discoverySignals, optimizationSignals, performanceSummary, voiceEntries, knowledgeStats } = params;
+  const { language, autoresearchJob, discoverySignals, optimizationSignals, performanceSummary, voiceEntries, knowledgeStats } = params;
+  const activeDiscoverySignals = filterActiveContentAgentSignals(discoverySignals);
   const latestVoiceUpdate = voiceEntries
     .map((entry) => entry.updatedAt)
     .sort((a, b) => b.localeCompare(a))[0] ?? null;
@@ -90,11 +106,9 @@ export function buildContentIntelligenceSummary(params: {
 
   return {
     discovery: {
-      status: summarizeContentJobStatus(reactionJob?.lastResult ?? undefined, discoverySignals.length),
-      cadenceHours: 4,
-      activeCount: discoverySignals.length,
-      lastRunAt: reactionJob?.lastRunAt ?? null,
-      lastStatus: reactionJob?.lastResult ?? 'never',
+      status: summarizeContentJobStatus(undefined, activeDiscoverySignals.length),
+      activeCount: activeDiscoverySignals.length,
+      ...PAUSED_REACTION_RADAR_STATE,
     },
     script: {
       status: voiceEntries.length > 0 ? 'ready' : knowledgeStats.referenceChannels > 0 ? 'warming_up' : 'needs_setup',
@@ -105,17 +119,18 @@ export function buildContentIntelligenceSummary(params: {
       lastUpdatedAt: latestVoiceUpdate,
     },
     optimization: {
-      status: summarizeOptimizationStatus(performanceJob?.lastResult ?? undefined, autoresearchJob?.lastResult ?? undefined, optimizationSignals.length),
+      status: summarizeOptimizationStatus(undefined, autoresearchJob?.lastResult ?? undefined, optimizationSignals.length),
       cadence: 'weekly',
       activeInsightCount: optimizationSignals.length,
-      performanceLastRunAt: performanceJob?.lastRunAt ?? null,
-      performanceLastStatus: performanceJob?.lastResult ?? 'never',
+      ...PAUSED_OPTIMIZATION_AGENT_STATE,
       autoresearchLastRunAt: autoresearchJob?.lastRunAt ?? null,
       autoresearchLastStatus: autoresearchJob?.lastResult ?? 'never',
       performanceSummary: performanceSummary ?? emptyPerformanceSummary(),
     },
     schedule: {
       status: 'ready',
+      statusSemantics: 'feature_availability_not_calendar_authority',
+      calendarAuthority: 'not_included',
     },
     localized: language.startsWith('pt')
       ? {
@@ -130,8 +145,6 @@ export function buildContentIntelligenceSummary(params: {
 
 export function buildContentIntelligenceDetail(params: {
   language: Lang;
-  reactionJob?: JobStatus | null;
-  performanceJob?: JobStatus | null;
   autoresearchJob?: JobStatus | null;
   discoverySignals: AgentSignal[];
   optimizationSignals: AgentSignal[];
@@ -145,8 +158,6 @@ export function buildContentIntelligenceDetail(params: {
 }) {
   const {
     language,
-    reactionJob,
-    performanceJob,
     autoresearchJob,
     discoverySignals,
     optimizationSignals,
@@ -158,6 +169,7 @@ export function buildContentIntelligenceDetail(params: {
     monitoredPillars,
     deskItems,
   } = params;
+  const activeDiscoverySignals = filterActiveContentAgentSignals(discoverySignals);
   const latestVoiceUpdate = voiceEntries
     .map((entry) => entry.updatedAt)
     .sort((a, b) => b.localeCompare(a))[0] ?? null;
@@ -167,16 +179,14 @@ export function buildContentIntelligenceDetail(params: {
 
   return {
     discovery: {
-      status: summarizeContentJobStatus(reactionJob?.lastResult ?? undefined, discoverySignals.length),
-      cadenceHours: 4,
-      activeCount: discoverySignals.length,
-      lastRunAt: reactionJob?.lastRunAt ?? null,
-      lastStatus: reactionJob?.lastResult ?? 'never',
+      status: summarizeContentJobStatus(undefined, activeDiscoverySignals.length),
+      activeCount: activeDiscoverySignals.length,
+      ...PAUSED_REACTION_RADAR_STATE,
       deskReadyCount: deskItems.length,
       deskItems,
       preferredTopics,
       monitoredPillars,
-      recentSignals: discoverySignals.map((signal) => formatSignalDigest(signal, language)),
+      recentSignals: activeDiscoverySignals.map((signal) => formatSignalDigest(signal, language)),
     },
     script: {
       status: voiceEntries.length > 0 ? 'ready' : knowledgeStats.referenceChannels > 0 ? 'warming_up' : 'needs_setup',
@@ -203,14 +213,16 @@ export function buildContentIntelligenceDetail(params: {
     },
     schedule: {
       status: filmingRecommendation ? 'ready' : 'warming_up',
+      statusSemantics: 'recommendation_availability_not_calendar_authority',
+      calendarAuthority: 'not_included',
+      recommendationSemantics: 'proposal_not_calendar_reservation',
       filmingRecommendation,
     },
     optimization: {
-      status: summarizeOptimizationStatus(performanceJob?.lastResult ?? undefined, autoresearchJob?.lastResult ?? undefined, optimizationSignals.length),
+      status: summarizeOptimizationStatus(undefined, autoresearchJob?.lastResult ?? undefined, optimizationSignals.length),
       cadence: 'weekly',
       activeInsightCount: optimizationSignals.length,
-      performanceLastRunAt: performanceJob?.lastRunAt ?? null,
-      performanceLastStatus: performanceJob?.lastResult ?? 'never',
+      ...PAUSED_OPTIMIZATION_AGENT_STATE,
       autoresearchLastRunAt: autoresearchJob?.lastRunAt ?? null,
       autoresearchLastStatus: autoresearchJob?.lastResult ?? 'never',
       performanceSummary: performanceSummary ?? emptyPerformanceSummary(),

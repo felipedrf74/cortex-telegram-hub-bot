@@ -17,6 +17,16 @@ import {
 } from '../../services/content-workspace-scheduling';
 import type { ContentWorkspaceScope } from '../../services/content-workspace';
 import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
+import {
+  ContentScheduleSignalReconciliationError,
+  dismissContentFilmingSignalsForItem,
+} from '../../services/content-schedule-signal-reconciliation';
+import {
+  ContentIdempotencyKeyError,
+  resolveContentIdempotencyKey,
+} from './content-idempotency-key';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -78,7 +88,7 @@ export function registerContentWorkspaceScheduleRoutes(
         deadlineAt: req.body?.deadlineAt,
         priority: req.body?.priority,
         shareContentTitle: req.body?.shareContentTitle,
-        idempotencyKey: readIdempotencyKey(req),
+        idempotencyKey: resolveContentIdempotencyKey(req),
       });
       sendSuccess(res, {
         schemaVersion: CONTENT_SCHEDULE_SCHEMA_VERSION,
@@ -105,8 +115,9 @@ export function registerContentWorkspaceScheduleRoutes(
         scope,
         previewKey: req.params.previewKey,
         selectedSlot: req.body?.selectedSlot,
-        idempotencyKey: readIdempotencyKey(req),
+        idempotencyKey: resolveContentIdempotencyKey(req),
       });
+      if (result.changed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_SCHEDULE_SCHEMA_VERSION,
         schedule: result.value,
@@ -151,14 +162,34 @@ export function registerContentWorkspaceScheduleRoutes(
       const result = cancelContentSchedule({
         scope,
         itemId: Number(req.params.itemId),
-        idempotencyKey: readIdempotencyKey(req),
+        idempotencyKey: resolveContentIdempotencyKey(req),
       });
+      // Secretary may retain the cancelled agenda row as current audit
+      // authority. The local lifecycle, not row existence, determines whether
+      // the old filming block may still influence Training. Invalidate before
+      // immediate reconciliation so a committed cancellation cannot remain in
+      // plan caches when signal cleanup reports a retryable failure. Replays
+      // also invalidate because the first response may have failed after the
+      // canonical cancellation committed.
+      if (result.value.localAgendaState !== 'scheduled') {
+        invalidateContentDerivedCaches(scope.userId);
+        dismissContentFilmingSignalsForItem(scope, result.value.itemId);
+      } else if (result.changed) {
+        invalidateContentDerivedCaches(scope.userId);
+      }
       sendSuccess(res, {
         schemaVersion: CONTENT_SCHEDULE_SCHEMA_VERSION,
         schedule: result.value,
         mutation: { replayed: result.replayed, changed: result.changed },
       });
     } catch (error) {
+      if (error instanceof ContentScheduleError
+          && error.details?.secretaryCancellationMayBeCommitted === true) {
+        // Queue persistence can fail after Secretary has already cancelled its
+        // agenda authority. Clear cached plans even though the local binding
+        // transaction rolled back, so they cannot present stale protection.
+        invalidateContentDerivedCaches(scope.userId);
+      }
       sendScheduleError(res, error, scope, 'content schedule cancellation failed');
     }
   });
@@ -172,7 +203,7 @@ function resolveScheduleScope(
   details?: Record<string, unknown>,
 ): ContentWorkspaceScope | null {
   if (!ensureValidContentRouteScope(res, req.userId, operation, details)) return null;
-  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+  if (!Number.isSafeInteger(req.tenantId) || Number(req.tenantId) <= 0) {
     sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
     return null;
   }
@@ -181,11 +212,6 @@ function resolveScheduleScope(
     return null;
   }
   return { tenantId: Number(req.tenantId), userId: req.userId };
-}
-
-function readIdempotencyKey(req: { body?: any; header(name: string): string | undefined }): string {
-  if (typeof req.body?.idempotencyKey === 'string') return req.body.idempotencyKey;
-  return req.header('x-idempotency-key') ?? '';
 }
 
 function readRequiredQueryString(value: unknown, field: string): string {
@@ -219,6 +245,10 @@ function sendScheduleError(
   scope: ContentWorkspaceScope,
   logMessage: string,
 ): void {
+  if (error instanceof ContentIdempotencyKeyError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
   if (error instanceof ContentWorkspaceWriteDisabledError) {
     sendError(res, error.code, error.message, error.status, error.details);
     return;
@@ -227,8 +257,12 @@ function sendScheduleError(
     sendError(res, error.code, error.message, error.status, error.details);
     return;
   }
+  if (error instanceof ContentScheduleSignalReconciliationError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
   logger.error({
-    err: error,
+    ...safeContentLogErrorFields(error),
     tenantId: scope.tenantId,
     userId: scope.userId,
   }, logMessage);

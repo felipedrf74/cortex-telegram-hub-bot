@@ -10,6 +10,7 @@ import { isGoogleDriveEnabled } from '../services/google-drive';
 import { getPendingCount as getInvoiceQueuePending } from '../services/invoice-queue';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
 import { getActiveSignalCount, getAgentStats } from '../services/intelligence-bus';
+import { isPausedContentAgent, PAUSED_CONTENT_AGENT_IDS } from '../services/content-agent-lifecycle';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isOutlookCalendarConfigured } from '../services/outlook-calendar';
 import { isOutlookMailConfigured } from '../services/outlook-mail';
@@ -36,6 +37,12 @@ import {
 
 // ─── Types ──────────────────────────────────────────────────────────
 
+type SchedulerJobStatus = ReturnType<typeof getJobStatuses>[number];
+type PortalJobStatus = Omit<SchedulerJobStatus, 'lastResult'> & {
+  lifecycle: 'active' | 'paused';
+  lastResult: SchedulerJobStatus['lastResult'] | 'paused';
+};
+
 export interface PortalSnapshotResponse {
   version: string;
   generatedAt: string;
@@ -58,7 +65,7 @@ export interface PortalSnapshotResponse {
     tokenHealth?: 'valid' | 'expired' | 'warning' | 'not_configured';
     lastApiCall?: string | null;
   }[];
-  jobs: ReturnType<typeof getJobStatuses>;
+  jobs: PortalJobStatus[];
   jobHistory: Record<string, { result: string; ts: string }[]>;
   nextRuns: { label: string; cronExpression: string; nextFireAt: string; humanDelta: string; domain: string }[];
   apiUsage: {
@@ -93,6 +100,7 @@ export interface PortalSnapshotResponse {
       label: string;
       cronExpression: string;
       domain: string;
+      lifecycle: 'active' | 'paused';
       runs: { day: string; hour: number; result: string; ts: string; durationMs: number | null }[];
       scheduled: { day: string; hour: number }[];
     }[];
@@ -391,10 +399,15 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
   }
 
   // ── Next runs (computed from cron expressions) ─────────────────
-  const jobs = getJobStatuses();
+  const jobs: PortalJobStatus[] = getJobStatuses().map((job) => (
+    isPausedContentAgent(job.name)
+      ? { ...job, lifecycle: 'paused', lastResult: 'paused' }
+      : { ...job, lifecycle: 'active' }
+  ));
   const nextRuns: PortalSnapshotResponse['nextRuns'] = [];
   const tz = config.app.timezone;
   for (const job of jobs) {
+    if (job.lifecycle === 'paused') continue;
     try {
       const interval = CronExpressionParser.parse(job.cronExpression, { tz });
       const next = interval.next().toDate();
@@ -413,7 +426,7 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
   nextRuns.sort((a, b) => new Date(a.nextFireAt).getTime() - new Date(b.nextFireAt).getTime());
 
   // ── Health summary ─────────────────────────────────────────────
-  const jobsWithRuns = jobs.filter(j => j.lastResult !== 'never');
+  const jobsWithRuns = jobs.filter(j => j.lifecycle === 'active' && j.lastResult !== 'never');
   const healthSummary: PortalSnapshotResponse['healthSummary'] = {
     jobsOk: jobsWithRuns.filter(j => j.lastResult === 'success').length,
     jobsTotal: jobsWithRuns.length,
@@ -449,26 +462,28 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
 
       // Compute future scheduled fire times for the next 45 days (covers month view navigation)
       const scheduled: { day: string; hour: number }[] = [];
-      try {
-        const interval = CronExpressionParser.parse(job.cronExpression, { tz });
-        const endDate = new Date();
-        endDate.setDate(endDate.getDate() + 45);
-        // Only include jobs that fire at most a few times per day to avoid flooding the calendar
-        const isHighFreq = job.cronExpression.startsWith('*') || job.cronExpression.startsWith('*/5') || job.cronExpression.startsWith('*/15') || job.cronExpression.startsWith('*/30');
-        if (!isHighFreq) {
-          let next = interval.next().toDate();
-          let safety = 0;
-          while (next.getTime() <= endDate.getTime() && safety < 200) {
-            scheduled.push({
-              day: next.toISOString().slice(0, 10),
-              hour: next.getHours(),
-            });
-            next = interval.next().toDate();
-            safety++;
+      if (job.lifecycle === 'active') {
+        try {
+          const interval = CronExpressionParser.parse(job.cronExpression, { tz });
+          const endDate = new Date();
+          endDate.setDate(endDate.getDate() + 45);
+          // Only include jobs that fire at most a few times per day to avoid flooding the calendar
+          const isHighFreq = job.cronExpression.startsWith('*') || job.cronExpression.startsWith('*/5') || job.cronExpression.startsWith('*/15') || job.cronExpression.startsWith('*/30');
+          if (!isHighFreq) {
+            let next = interval.next().toDate();
+            let safety = 0;
+            while (next.getTime() <= endDate.getTime() && safety < 200) {
+              scheduled.push({
+                day: next.toISOString().slice(0, 10),
+                hour: next.getHours(),
+              });
+              next = interval.next().toDate();
+              safety++;
+            }
           }
+        } catch {
+          // skip unparseable expressions
         }
-      } catch {
-        // skip unparseable
       }
 
       calendarJobs.push({
@@ -476,6 +491,7 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
         label: job.label,
         cronExpression: job.cronExpression,
         domain: job.domain,
+        lifecycle: job.lifecycle,
         runs,
         scheduled,
       });
@@ -532,8 +548,13 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
     let totalSignals = 0;
     try {
       const agentStats = getAgentStats();
-      activeAgentCount = agentStats.filter((a: any) => a.last_status === 'success').length;
-      totalSignals = getActiveSignalCount();
+      activeAgentCount = agentStats.filter((a: any) => (
+        a.last_status === 'success' && !isPausedContentAgent(String(a.agent ?? ''))
+      )).length;
+      totalSignals = getActiveSignalCount(undefined, undefined, {
+        excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+        excludeIneligibleContentLearningDigests: true,
+      });
     } catch { /* ignore — table may not exist */ }
 
     const garminConnected = isGarminConfigured();

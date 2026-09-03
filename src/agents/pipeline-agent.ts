@@ -17,6 +17,7 @@ import {
 } from '../services/content-workspace-read-models';
 import type { ContentWorkspaceScope } from '../services/content-workspace';
 import { logger } from '../utils/logger';
+import { safeContentLogErrorFields } from '../services/content-log-safety';
 
 const PIPELINE_SIGNAL_PRODUCER_VERSION = 'pipeline-agent.v2';
 
@@ -29,8 +30,9 @@ export function getPipelineStats(scope: ContentWorkspaceScope): PipelineStats {
 // ─── Operational Metrics (April 2026) ──────────────────────────────
 //
 // These metrics power the portal pipeline dashboard and the iOS
-// content health card. They answer operational questions:
-//   - What's my idea → publish conversion rate?
+// content health card. They answer operational questions that the canonical
+// workspace can support. Publication metrics stay explicitly unavailable
+// until an external publication receipt contract exists.
 //   - How long do scripts sit before getting filmed?
 //   - Which format or niche is stuck?
 //   - What inventory is going stale?
@@ -90,7 +92,7 @@ export async function runPipelineAgent(scope: ContentWorkspaceScope): Promise<vo
         },
         payload: {
           active_items: stats.totalActive,
-          published_this_week: stats.publishedThisWeek,
+          publication_tracking: stats.publicationTracking,
           sprint_mode: sprintMode,
           stats,
         },
@@ -102,9 +104,10 @@ export async function runPipelineAgent(scope: ContentWorkspaceScope): Promise<vo
 
     logAgentRun('pipeline-agent', 'success', signalsProduced, signalsConsumed, Date.now() - start);
     logger.info({ stats, signalsProduced }, 'Pipeline agent completed');
-  } catch (err: any) {
-    logAgentRun('pipeline-agent', 'error', signalsProduced, signalsConsumed, Date.now() - start, err.message);
-    logger.error({ err }, 'Pipeline agent failed');
+  } catch (err: unknown) {
+    const { errorName } = safeContentLogErrorFields(err);
+    logAgentRun('pipeline-agent', 'error', signalsProduced, signalsConsumed, Date.now() - start, errorName);
+    logger.error({ errorName }, 'Pipeline agent failed');
     throw err;
   }
 }

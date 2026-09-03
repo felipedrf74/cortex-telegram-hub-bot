@@ -531,10 +531,23 @@ describe('SkillManager — edge cases', () => {
   });
 
   it('getSkillStatus defaults to enabled when skill not in DB', () => {
-    // No seedDefaultSkills() called — skills default to enabled (fail-open)
+    // No seedDefaultSkills() called — parent skills remain available while
+    // sub-skills preserve their declared defaults.
     const status = getSkillStatus('secretary');
     expect(status.enabled).toBe(true);
     expect(status.subSkills.every(s => s.enabled)).toBe(true);
+
+    const content = getSkillStatus('content');
+    const paused = new Set(['meme-scout', 'seo-tracker', 'reaction-radar', 'performance-intel']);
+    for (const subSkill of content.subSkills) {
+      expect(subSkill.enabled).toBe(!paused.has(subSkill.name));
+    }
+
+    registry.install({ name: 'content' });
+    const partialContent = getSkillStatus('content');
+    for (const subSkill of partialContent.subSkills) {
+      expect(subSkill.enabled).toBe(!paused.has(subSkill.name));
+    }
   });
 
   it('disabling all sub-skills results in no tools', () => {

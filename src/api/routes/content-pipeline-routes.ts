@@ -7,10 +7,10 @@ import { getDb } from '../../services/database';
 import { getContentWorkspaceItem, type ContentWorkspaceScope } from '../../services/content-workspace';
 import {
   readContentCompatibilityProjection,
-  readContentPublishedThisMonth,
 } from './content-home-route-utils';
 import { recordContentWorkspaceProductSignal } from '../../services/content-workspace-observability';
 import { logger } from '../../utils/logger';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -42,20 +42,14 @@ export function registerContentPipelineRoutes(
     try {
       const db = getDb();
       const projection = readContentCompatibilityProjection(db, scope.userId, scope.tenantId);
-      const publishedMetric = readContentPublishedThisMonth(db, scope.userId, scope.tenantId);
 
       sendSuccess(res, {
         schemaVersion: projection.schemaVersion,
         stages: projection.stages,
         stats: {
           totalIdeas: projection.stages.ideas.length + projection.stages.scripted.length,
-          publishedThisMonth: publishedMetric.count,
-          publishedThisMonthStatus: {
-            availability: 'available',
-            source: publishedMetric.source,
-            windowStart: publishedMetric.windowStart,
-            windowEnd: publishedMetric.windowEnd,
-          },
+          publishedThisMonth: null,
+          publishedThisMonthStatus: projection.publicationTracking,
         },
         workspace: { source: 'content_workspace', canonical: true },
         compatibility: {
@@ -66,7 +60,10 @@ export function registerContentPipelineRoutes(
             scripted: { tracking: 'derived', source: 'artifact_phase' },
             filmed: { tracking: 'not_tracked', reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED' },
             editing: { tracking: 'not_tracked', reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED' },
-            published: { tracking: 'derived', source: 'production_state' },
+            published: {
+              tracking: 'not_tracked',
+              reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+            },
           },
           implicitAdvance: {
             supported: false,
@@ -75,7 +72,7 @@ export function registerContentPipelineRoutes(
         },
       });
     } catch (err) {
-      logger.error({ err, ...scope, reasonCode: 'CONTENT_PIPELINE_STORE_UNAVAILABLE' }, 'Content pipeline compatibility read failed');
+      logger.error({ ...safeContentLogErrorFields(err), ...scope, reasonCode: 'CONTENT_PIPELINE_STORE_UNAVAILABLE' }, 'Content pipeline compatibility read failed');
       sendPipelineUnavailable(res);
     }
   });
@@ -107,7 +104,7 @@ export function registerContentPipelineRoutes(
         },
       });
     } catch (err) {
-      logger.error({ err, ...scope, reasonCode: 'CONTENT_IDEAS_STORE_UNAVAILABLE' }, 'Content ideas compatibility read failed');
+      logger.error({ ...safeContentLogErrorFields(err), ...scope, reasonCode: 'CONTENT_IDEAS_STORE_UNAVAILABLE' }, 'Content ideas compatibility read failed');
       sendError(
         res,
         'CONTENT_IDEAS_UNAVAILABLE',
@@ -170,7 +167,7 @@ export function registerContentPipelineRoutes(
         },
       );
     } catch (err) {
-      logger.error({ err, ...scope, itemId }, 'Content legacy advance compatibility lookup failed');
+      logger.error({ ...safeContentLogErrorFields(err), ...scope, itemId }, 'Content legacy advance compatibility lookup failed');
       sendPipelineUnavailable(res);
     }
   });
@@ -184,7 +181,7 @@ function resolveScope(
   details?: Record<string, unknown>,
 ): ContentWorkspaceScope | null {
   if (!ensureValidContentRouteScope(res, req.userId, operation, details)) return null;
-  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+  if (!Number.isSafeInteger(req.tenantId) || Number(req.tenantId) <= 0) {
     sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
     return null;
   }

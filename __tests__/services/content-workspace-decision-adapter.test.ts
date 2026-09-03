@@ -206,6 +206,24 @@ describe('canonical Content workspace Decision adapter', () => {
       expectedWorkflowVersion: item.workflowVersion + 20,
       idempotencyKey: 'decision-adapter-stale-001',
     }, db)).toMatchObject({ ok: false, status: 'version_conflict' });
+    expect(decideContentWorkspaceReview({
+      userId: SCOPE.userId,
+      tenantId: SCOPE.tenantId,
+      objectId: item.id,
+      decision: 'approved',
+      approvalType: 'content_review',
+      expectedWorkflowVersion: item.workflowVersion,
+      idempotencyKey: 'decision-key\u0085hidden',
+    }, db)).toMatchObject({ ok: false, status: 'invalid_transition', reasonCodes: ['idempotency_key_required'] });
+    expect(decideContentWorkspaceReview({
+      userId: SCOPE.userId,
+      tenantId: SCOPE.tenantId,
+      objectId: item.id,
+      decision: 'approved',
+      approvalType: 'content_review',
+      expectedWorkflowVersion: Number.MAX_SAFE_INTEGER + 1,
+      idempotencyKey: 'decision-unsafe-version-001',
+    }, db)).toMatchObject({ ok: false, status: 'version_conflict' });
     expect(getContentDecisionWorkspaceObject(SCOPE.userId, item.id, 999, db)).toBeNull();
     expect(getContentWorkspaceItem(SCOPE, item.id, db)?.productionState).toBe('active');
   });

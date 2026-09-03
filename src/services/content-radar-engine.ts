@@ -15,6 +15,7 @@ import {
   getContentWorkspaceItem,
   type ContentWorkspaceItem,
 } from './content-workspace';
+import { invalidateContentDerivedCaches } from './cache-coherence-registry';
 
 export type ContentRadarLifecycleState =
   | 'detected'
@@ -656,6 +657,7 @@ export function convertContentRadarSignal(input: {
     if (update.changes !== 1) throw new Error('CONTENT_RADAR_CONVERSION_CONFLICT');
     return getContentWorkspaceItem(scope, item.id, db) ?? item;
   }).immediate();
+  invalidateContentDerivedCaches(input.userId);
   return {
     ok: true,
     status: 'converted',

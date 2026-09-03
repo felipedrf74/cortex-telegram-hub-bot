@@ -3,6 +3,9 @@ import Database from 'better-sqlite3';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database;
+const cacheMocks = vi.hoisted(() => ({
+  invalidateContentDerivedCaches: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -11,6 +14,11 @@ vi.mock('../../src/services/database', () => ({
   findUnexpectedMigrationPrefixCollisions: vi.fn(() => []),
   assertNoUnexpectedMigrationPrefixCollisions: vi.fn(),
   withDatabaseForTestAsync: vi.fn(),
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => cacheMocks.invalidateContentDerivedCaches(...args),
 }));
 
 import {
@@ -33,6 +41,7 @@ const OWNER = { userId: 501, tenantId: 501 };
 
 describe('deprecated editorial workflow compatibility facade', () => {
   beforeEach(() => {
+    cacheMocks.invalidateContentDerivedCaches.mockClear();
     testDb = createMigratedTestDatabase();
   });
 
@@ -95,6 +104,22 @@ describe('deprecated editorial workflow compatibility facade', () => {
       approvalConfirmed: true,
     });
     expect(missingConcurrency).toMatchObject({ ok: false, status: 'replacement_required' });
+    expect(transitionContentWorkflow({
+      ...OWNER,
+      objectId: draft.id,
+      action: 'archive',
+      approvalConfirmed: true,
+      expectedWorkflowVersion: draft.workflowVersion,
+      idempotencyKey: 'archive-key\u0085hidden',
+    })).toMatchObject({ ok: false, status: 'replacement_required' });
+    expect(transitionContentWorkflow({
+      ...OWNER,
+      objectId: draft.id,
+      action: 'archive',
+      approvalConfirmed: true,
+      expectedWorkflowVersion: Number.MAX_SAFE_INTEGER + 1,
+      idempotencyKey: 'archive-unsafe-version-001',
+    })).toMatchObject({ ok: false, status: 'replacement_required' });
 
     const archived = transitionContentWorkflow({
       ...OWNER,
@@ -240,6 +265,8 @@ describe('deprecated editorial workflow compatibility facade', () => {
     expect(replay).toMatchObject({ ok: true, reasonCodes: ['canonical_idempotent_replay'], object: { id: first.object!.id } });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_domain_objects WHERE title = ?').get('A durable idea'))
       .toEqual({ count: 1 });
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(OWNER.userId);
   });
 
   it('preserves pure approval-policy evaluation while tenant and owner reads fail closed', () => {

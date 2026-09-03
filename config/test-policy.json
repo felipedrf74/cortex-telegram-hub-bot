@@ -408,7 +408,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/weekly-plan-orchestrator.ts:230-230",
+            "pattern": "src/services/weekly-plan-orchestrator.ts:350-350",
             "anchor": ": 'compose_weekly_plan',",
             "behavior": "An invalid weekly planning scope is rejected before reads and records the privacy-safe invalid-scope anomaly classification.",
             "replacementTest": "__tests__/services/weekly-plan-orchestrator.test.ts",
@@ -621,7 +621,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:219-219",
+            "pattern": "src/services/event-backbone-worker.ts:230-230",
             "anchor": "jobType: 'training_plan_calendar_sync'",
             "behavior": "The wildcard event router converts a Training calendar-sync request into the dedicated durable worker job without performing provider work itself.",
             "replacementTest": "__tests__/services/training-plan-calendar-sync-worker.test.ts",
@@ -641,7 +641,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/portal/actions.ts:60-61",
+            "pattern": "src/portal/actions.ts:59-59",
             "anchor": "if (guarded.status !== 'completed')",
             "behavior": "Manual Garmin refresh delegates to the leased fan-out and treats every non-completed result as an overlap or disabled execution.",
             "replacementTest": "__tests__/portal/portal-garmin-refresh-action.test.ts",
@@ -1099,7 +1099,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:196-196",
+            "pattern": "src/services/event-backbone-worker.ts:207-207",
             "anchor": "jobType: 'project_read_models'",
             "behavior": "Projectable Training revision events enqueue exactly one idempotent read-model projection job and no calendar worker job.",
             "replacementTest": "__tests__/services/training-plan-revision-outbox.test.ts",
@@ -1139,7 +1139,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/tool-executor.ts:856-860",
+            "pattern": "src/services/tool-executor.ts:864-864",
             "anchor": "Model attempted direct training plan creation; returning plan-builder handoff instead of writing a row",
             "behavior": "The raw model tool cannot create an active plan projection and returns a reviewed Training Plan Builder handoff instead.",
             "replacementTest": "__tests__/services/training-plans-tools.test.ts",
@@ -1778,7 +1778,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/content-script-jobs.ts:2675-2675",
+            "pattern": "src/services/content-script-jobs.ts:2899-2899",
             "anchor": "legacyBatchEmptyOutputExhausted ? 1 : 0",
             "behavior": "A legacy scheduled empty-output exhaustion consumes its poisoned generation exactly once before the same durable job is reopened.",
             "replacementTest": "__tests__/services/content-script-jobs.test.ts",
@@ -1798,7 +1798,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/content-script-provider-batches.ts:1156-1156",
+            "pattern": "src/services/content-script-provider-batches.ts:1157-1157",
             "anchor": "now.getTime() - retentionDays * 24 * 60 * 60 * 1_000",
             "behavior": "Provider Batch files remain retained for the full parent-job retry window regardless of the age of an individual Batch stage.",
             "replacementTest": "__tests__/services/content-script-provider-batches.test.ts",
@@ -2058,7 +2058,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/cache-coherence-registry.ts:354-358",
+            "pattern": "src/services/cache-coherence-registry.ts:365-365",
             "anchor": "clearCacheByPrefix('coach-briefing:');",
             "behavior": "Every Training mutation invalidates the bounded tenant-first coach briefing cache family before derived surfaces are reused.",
             "replacementTest": "__tests__/services/cache-coherence-registry.test.ts",
@@ -2118,7 +2118,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/event-backbone-worker.ts:333-333",
+            "pattern": "src/services/event-backbone-worker.ts:344-344",
             "anchor": "decision: { ...result },",
             "behavior": "The event-backbone worker records the exact scoped notification delivery result instead of draining or summarizing unrelated intents.",
             "replacementTest": "__tests__/services/event-backbone.test.ts",
@@ -2198,7 +2198,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/scheduler.ts:4290-4290",
+            "pattern": "src/services/scheduler.ts:4276-4276",
             "anchor": "if (!isCronJobEnabled('daily_briefing')) return false;",
             "behavior": "Manual daily briefing callbacks honor the same Secretary parent and briefings sub-skill gate as scheduled and recovery callbacks.",
             "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
@@ -2206,7 +2206,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/scheduler.ts:4258-4258",
+            "pattern": "src/services/scheduler.ts:4244-4244",
             "anchor": "projectSecretaryScheduledReport(snapshot, 'morning_briefing')",
             "behavior": "Scheduled morning reports project from the same canonical scoped Secretary snapshot used by the other report surfaces.",
             "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
@@ -2226,7 +2226,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/domains/secretary.ts:408-408",
+            "pattern": "src/domains/secretary.ts:413-413",
             "anchor": "hasUserScope && needs.calendar && calendarEnabled && scopedUserId !== null",
             "behavior": "Secretary performs the diagnostic calendar read only for an authenticated calendar-shaped request with the calendar sub-skill enabled.",
             "replacementTest": "__tests__/services/secretary-context.test.ts",
@@ -2286,7 +2286,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/skills/skill-manager.ts:328-328",
+            "pattern": "src/skills/skill-manager.ts:327-327",
             "anchor": "if (!getSkillStatus(owner.domain).enabled) return false;",
             "behavior": "Disabling the parent Secretary capability blocks every owned child job and callback before sub-skill state is considered.",
             "replacementTest": "__tests__/skills/secretary-skill-package.test.ts",

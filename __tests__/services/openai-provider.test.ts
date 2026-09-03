@@ -200,6 +200,7 @@ import { OpenAIProvider, _openAIBatchSleep, _sleep, completeOneShot, completeOne
 import { pushEvent } from '../../src/portal/telemetry';
 import { config } from '../../src/config';
 import { _resetOverrides, setDomainModel } from '../../src/services/model-config';
+import { _resetApiUsagePersistenceFailureForTests } from '../../src/services/api-usage-fallback';
 
 const mockPushEvent = vi.mocked(pushEvent);
 
@@ -299,6 +300,7 @@ describe('OpenAIProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetOverrides();
+    _resetApiUsagePersistenceFailureForTests();
     config.openai.model = 'gpt-4o';
     config.openai.batchApiKey = '';
     config.openai.batchProjectId = '';
@@ -1635,6 +1637,65 @@ describe('OpenAIProvider', () => {
       category: 'cloud_local_reasoning',
     })).resolves.toEqual({ status: 'cancelling' });
     expect(mockBatchCancel).toHaveBeenCalledWith('batch-reconcile', { maxRetries: 0 });
+  });
+
+  it('fails closed when a cancelled Batch has billable output without valid usage metadata', async () => {
+    const customId = 'e'.repeat(64);
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-cancelled-billable',
+      status: 'cancelled',
+      output_file_id: 'batch-cancelled-billable-output',
+      model: 'gpt-5.6-luna',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: customId,
+        response: {
+          status_code: 200,
+          body: {
+            choices: [{ message: { content: 'completed before cancellation' }, finish_reason: 'stop' }],
+            model: 'gpt-5.6-luna',
+          },
+        },
+        error: null,
+      })}\n`,
+    });
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'batch-cancelled-billable',
+      customId,
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).rejects.toMatchObject({
+      name: 'ApiUsagePersistenceError',
+      code: 'AI_USAGE_PERSISTENCE_FAILED',
+    });
+  });
+
+  it('treats only an identity-absent cancelled output as having no billable request', async () => {
+    mockBatchRetrieve.mockResolvedValueOnce({
+      id: 'batch-cancelled-empty',
+      status: 'cancelled',
+      output_file_id: 'batch-cancelled-empty-output',
+    });
+    mockFileContent.mockResolvedValueOnce({
+      text: async () => `${JSON.stringify({
+        custom_id: 'f'.repeat(64),
+        error: { code: 'cancelled', message: 'request cancelled' },
+      })}\n`,
+    });
+
+    await expect(provider.cancelStructuredGenerationBatch({
+      providerBatchId: 'batch-cancelled-empty',
+      customId: 'e'.repeat(64),
+      userId: 7,
+      tenantId: 7,
+      category: 'cloud_local_reasoning',
+    })).resolves.toEqual({
+      status: 'cancelled',
+      outputFileId: 'batch-cancelled-empty-output',
+    });
   });
 
   it('deletes each retained Batch file exactly once and treats an absent file as already removed', async () => {

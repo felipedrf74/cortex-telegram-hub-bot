@@ -130,6 +130,11 @@ describe('canHandle predicates', () => {
     expect(tokenZeroShortcutStage.canHandle(ctxWith({ normalizedAttachments: [{} as never] }))).toBe(false);
     expect(tokenZeroShortcutStage.canHandle(ctxWith({ bypassReadFastPathsForWriteIntent: true }))).toBe(false);
     expect(tokenZeroShortcutStage.canHandle(ctxWith({ bypassNaturalLanguageTokenZeroForChatCoreV2: true }))).toBe(false);
+    expect(tokenZeroShortcutStage.canHandle(ctxWith({
+      normalizedText: '/hooks first line\nsecond line',
+      bypassReadFastPathsForWriteIntent: true,
+      bypassNaturalLanguageTokenZeroForChatCoreV2: true,
+    }))).toBe(true);
   });
 
   it('deterministic-read variants share the base guard; only gated honors the write-intent bypass', () => {

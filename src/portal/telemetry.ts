@@ -21,6 +21,7 @@ import {
   DEFAULT_SCHEDULED_JOB_LEASE_HEARTBEAT_MS,
   type ScheduledJobExecutionClaim,
 } from '../services/scheduled-job-execution-state';
+import { safeContentLogErrorFields } from '../services/content-log-safety';
 
 // ─── Activity Event Ring Buffer ──────────────────────────────────────
 
@@ -162,6 +163,35 @@ export interface ScheduledJobWrapOptions {
   requestSource?: RequestSource;
   /** Keep false for auxiliary invocations so DST recovery retains the cron callback. */
   storeForRecovery?: boolean;
+  /** Persist, notify, and rethrow only bounded machine metadata for private jobs. */
+  failureDetailPolicy?: 'default' | 'machine_only';
+}
+
+function usesMachineOnlyFailureDetails(
+  status: JobStatus,
+  options: ScheduledJobWrapOptions,
+): boolean {
+  return status.domain === 'content' || options.failureDetailPolicy === 'machine_only';
+}
+
+function scheduledJobFailureDetail(error: unknown, machineOnly: boolean): string {
+  if (!machineOnly) return error instanceof Error ? error.message : String(error);
+  return safeContentLogErrorFields(error).errorCode ?? 'CONTENT_SCHEDULED_JOB_FAILED';
+}
+
+function scheduledJobFailureLogFields(error: unknown, machineOnly: boolean): Record<string, unknown> {
+  return machineOnly
+    ? { ...safeContentLogErrorFields(error) }
+    : { err: error instanceof Error ? error.message : String(error) };
+}
+
+function safeScheduledJobRethrow(error: unknown, machineOnly: boolean): unknown {
+  if (!machineOnly) return error;
+  const detail = scheduledJobFailureDetail(error, true);
+  return Object.assign(new Error(detail), {
+    name: 'ScheduledJobFailure',
+    code: detail,
+  });
 }
 
 function recordOverlapSkip(name: string, status: JobStatus): void {
@@ -180,10 +210,11 @@ function recordJobFailure(
   startIso: string,
   startedAtMs: number,
   err: unknown,
+  machineOnly: boolean,
 ): void {
   status.lastResult = 'failed';
   status.lastDurationMs = Date.now() - startedAtMs;
-  status.lastError = err instanceof Error ? err.message : String(err);
+  status.lastError = scheduledJobFailureDetail(err, machineOnly);
   pushEvent({
     ts: startIso,
     type: 'error',
@@ -206,6 +237,7 @@ export function wrapJob(
   if (!status) {
     throw new Error(`Cannot wrap unregistered scheduled job: ${name}`);
   }
+  const machineOnlyFailureDetails = usesMachineOnlyFailureDetails(status, options);
 
   const wrapped = async () => {
     // Each invocation runs inside its own request context so all log lines
@@ -252,7 +284,7 @@ export function wrapJob(
             } catch (err) {
               if (err instanceof ScheduledJobLeaseLostError) throw err;
               logger.error(
-                { job: name, err: err instanceof Error ? err.message : String(err) },
+                { job: name, ...scheduledJobFailureLogFields(err, machineOnlyFailureDetails) },
                 'Cron job durable lease effect guard failed',
               );
               throw markLeaseLost();
@@ -286,7 +318,7 @@ export function wrapJob(
             } catch (err) {
               markLeaseLost();
               logger.error(
-                { job: name, err: err instanceof Error ? err.message : String(err) },
+                { job: name, ...scheduledJobFailureLogFields(err, machineOnlyFailureDetails) },
                 'Cron job durable lease heartbeat failed',
               );
             }
@@ -296,8 +328,15 @@ export function wrapJob(
           // F36: an unavailable cluster fence is an operational failure, not
           // permission to run potentially duplicated work without a lease.
           status.lastRunAt = leaseStartIso;
-          recordJobFailure(name, status, leaseStartIso, leaseStartedAtMs, err);
-          throw err;
+          recordJobFailure(
+            name,
+            status,
+            leaseStartIso,
+            leaseStartedAtMs,
+            err,
+            machineOnlyFailureDetails,
+          );
+          throw safeScheduledJobRethrow(err, machineOnlyFailureDetails);
         }
 
         const startIso = new Date().toISOString();
@@ -331,8 +370,10 @@ export function wrapJob(
           });
           persistJobRun(name, 'success', status.lastDurationMs);
         } catch (err: any) {
-          recordJobFailure(name, status, startIso, start, err);
-          throw err; // re-throw so existing catch blocks in scheduler still fire
+          recordJobFailure(name, status, startIso, start, err, machineOnlyFailureDetails);
+          // Private Content jobs preserve failure semantics without forwarding
+          // provider/database messages into cron-library diagnostics.
+          throw safeScheduledJobRethrow(err, machineOnlyFailureDetails);
         } finally {
           inFlightJobs.delete(name);
           if (durableLeaseHeartbeat) clearInterval(durableLeaseHeartbeat);
@@ -344,7 +385,7 @@ export function wrapJob(
               }
             } catch (err: any) {
               logger.warn(
-                { job: name, err: err?.message ?? String(err) },
+                { job: name, ...scheduledJobFailureLogFields(err, machineOnlyFailureDetails) },
                 'Cron job durable lease release failed',
               );
             }

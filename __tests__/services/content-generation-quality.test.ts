@@ -93,6 +93,9 @@ describe('Content generation quality pipeline', () => {
     expect(linkedin.outputContract.requiredFields).toContain('discussionPrompt');
     expect(linkedin.outputContract.structure).toContain('scroll_stop_line');
     expect(youtube.promptBlock).not.toEqual(linkedin.promptBlock);
+    expect(youtube.promptBlock).toContain('Candidate structure:');
+    expect(youtube.promptBlock).toContain('bounded review hypotheses');
+    expect(youtube.promptBlock).not.toContain('6-18 minutes');
   });
 
   it('applies tenant-scoped voice and brand memory to the generation contract', () => {
@@ -203,7 +206,8 @@ describe('Content generation quality pipeline', () => {
       'shortScript',
       'visualBeats',
     ]));
-    expect(generation.outputContract.platformNotes.join('\n')).toContain('Fast but warm');
+    expect(generation.outputContract.platformNotes.join('\n')).toContain('request and saved creator evidence');
+    expect(generation.outputContract.platformNotes.join('\n')).not.toContain('7-45 seconds');
   });
 
   it('adapts content across platforms with target-specific contracts', () => {

@@ -7,6 +7,7 @@ import type { SecretaryAgendaItem } from '../../src/services/secretary-schedulin
 import type { MonthlyBudgetView, MonthlySummary } from '../../src/services/finance-tracker';
 import type { ContentDeskItem, ContentSignalDigest } from '../../src/services/content-intelligence';
 import type { ContentTopic } from '../../src/services/content-scheduler';
+import type { ContentWorkspaceSummaryCounts } from '../../src/services/content-workspace-read-models';
 import type { MealPlan, PantryItem, ShoppingList } from '../../src/services/cooking-chef';
 import type {
   TrainingPlan,
@@ -18,6 +19,13 @@ import type {
 vi.mock('../../src/services/task-store/task-service', () => ({
   listTasks: vi.fn(),
   listTasksForUser: vi.fn(),
+}));
+
+vi.mock('../../src/services/database', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/database')>(
+    '../../src/services/database',
+  )),
+  getDb: () => ({}),
 }));
 
 vi.mock('../../src/services/decision-center', () => ({
@@ -34,6 +42,10 @@ vi.mock('../../src/services/integration-status', () => ({
 
 vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
   listSecretaryAgendaItems: vi.fn(),
+  previewSecretarySchedulingIntent: vi.fn(),
+  submitSecretarySchedulingIntent: vi.fn(),
+  getSecretaryAgendaItemById: vi.fn(),
+  cancelSecretaryAgendaItem: vi.fn(),
 }));
 
 vi.mock('../../src/services/finance-tracker', () => ({
@@ -63,6 +75,13 @@ vi.mock('../../src/services/content-learning-store', () => ({
   getPerformanceSummary: vi.fn(),
 }));
 
+vi.mock('../../src/services/content-workspace-read-models', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-read-models')>(
+    '../../src/services/content-workspace-read-models',
+  )),
+  getContentWorkspaceSummaryCounts: vi.fn(),
+}));
+
 vi.mock('../../src/services/stripe-service', () => ({
   getSubscriptionStatus: vi.fn(),
 }));
@@ -76,6 +95,7 @@ vi.mock('../../src/services/cooking-chef', () => ({
 import { getActiveContentPillars, getContentDeskItems, getRankedContentSignals } from '../../src/services/content-intelligence';
 import { getLearnedPatterns, getPerformanceSummary } from '../../src/services/content-learning-store';
 import { getTopics } from '../../src/services/content-scheduler';
+import { getContentWorkspaceSummaryCounts } from '../../src/services/content-workspace-read-models';
 import { getMealPlan, getPantryItems, getShoppingList } from '../../src/services/cooking-chef';
 import { getDecisionSummary } from '../../src/services/decision-center';
 import { getMonthlyBudgetView, getMonthlySummary } from '../../src/services/finance-tracker';
@@ -319,6 +339,24 @@ function contentSignal(overrides: Partial<ContentSignalDigest> = {}): ContentSig
   };
 }
 
+function contentWorkSchedule(
+  overrides: Partial<ContentWorkspaceSummaryCounts> = {},
+): ContentWorkspaceSummaryCounts {
+  return {
+    schemaVersion: 'content-workspace-operational-read-model-v2',
+    availability: 'available',
+    source: 'content_workspace',
+    ideasNeedingReview: 0,
+    scriptsInProgress: 0,
+    scheduledThisWeek: 0,
+    scheduleAttentionThisWeek: 0,
+    scheduleAuthorityStatus: 'current',
+    pendingCount: 0,
+    scheduleSemantics: 'private_work_session',
+    ...overrides,
+  };
+}
+
 function mealPlan(overrides: Partial<MealPlan> = {}): MealPlan {
   return {
     id: 601,
@@ -501,6 +539,8 @@ describe('Chat Core v2 deterministic read route', () => {
     vi.mocked(getRankedContentSignals).mockReset();
     vi.mocked(getLearnedPatterns).mockReset();
     vi.mocked(getPerformanceSummary).mockReset();
+    vi.mocked(getContentWorkspaceSummaryCounts).mockReset();
+    vi.mocked(getContentWorkspaceSummaryCounts).mockReturnValue(contentWorkSchedule());
     vi.mocked(getSubscriptionStatus).mockReset();
     vi.mocked(getMealPlan).mockReset();
     vi.mocked(getShoppingList).mockReset();
@@ -991,8 +1031,8 @@ describe('Chat Core v2 deterministic read route', () => {
     });
 
     expect(result).not.toBeNull();
-    expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20 });
-    expect(getContentDeskItems).toHaveBeenCalledWith(42, 5);
+    expect(getTopics).toHaveBeenCalledWith(42, { includeTerminal: false, limit: 20, tenantId: 42 });
+    expect(getContentDeskItems).toHaveBeenCalledWith(42, 5, 42);
     expect(getRankedContentSignals).toHaveBeenCalledWith(42, 5, 42);
     expect(listTasksForUser).not.toHaveBeenCalled();
     expect(getDecisionSummary).not.toHaveBeenCalled();
@@ -1010,13 +1050,14 @@ describe('Chat Core v2 deterministic read route', () => {
       cards: [],
       reasonCodes: ['deterministic_read', 'content.pipeline_summary'],
     });
-    expect(result?.response.text).toContain('Content pipeline: 3 tracked topics.');
+    expect(result?.response.text).toContain('Content pipeline: 2 tracked topics.');
     expect(result?.response.text).toContain('1 ready');
     expect(result?.response.text).toContain('1 drafting');
     expect(result?.response.text).toContain('1 desk-ready item');
     expect(result?.response.text).toContain('1 urgent signal');
     expect(result?.response.text).toContain('Race-week fueling mistakes');
     expect(result?.response.text).toContain('Recovery reel draft');
+    expect(result?.response.text).not.toContain('Published archive note');
     expect(result?.response.text).not.toContain('Full private script body');
     expect(result?.response.text).not.toContain('Full private signal summary');
     expect(result?.response.text).not.toContain('calendar_private');
@@ -1030,11 +1071,16 @@ describe('Chat Core v2 deterministic read route', () => {
       sensitivity: 'personal',
       freshness: { status: 'live' },
       data: {
-        topicCount: 3,
+        topicCount: 2,
         readyCount: 1,
         draftingCount: 1,
-        publishedCount: 1,
-        scheduledCount: 2,
+        publishedCount: null,
+        publicationTracking: {
+          availability: 'unavailable',
+          reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+          publicationExecution: 'not_supported',
+        },
+        scheduledCount: 1,
         deskReadyCount: 1,
         urgentSignalCount: 1,
       },
@@ -1042,10 +1088,120 @@ describe('Chat Core v2 deterministic read route', () => {
     expect(result?.contextPack.sourceEntityIds).toEqual([
       'content_topic:401',
       'content_topic:402',
-      'content_topic:403',
       'content_desk:501',
       expect.stringMatching(/^content_signal:[a-f0-9]{12}$/),
+      'content_work_schedule',
     ]);
+  });
+
+  it.each([
+    {
+      label: 'confirmed',
+      schedule: contentWorkSchedule({ scheduledThisWeek: 2, scheduleAttentionThisWeek: 1 }),
+      expectedStatus: 'confirmed',
+      expectedNext: 'They reserve work, not publication.',
+    },
+    {
+      label: 'attention-only unplanned',
+      schedule: contentWorkSchedule({ scheduleAttentionThisWeek: 1 }),
+      expectedStatus: 'unplanned',
+      expectedNext: 'Review 1 attention item(s); they are not proposals or reservations.',
+    },
+    {
+      label: 'unplanned',
+      schedule: contentWorkSchedule(),
+      expectedStatus: 'unplanned',
+      expectedNext: 'there is no confirmed private block',
+    },
+    {
+      label: 'partial',
+      schedule: contentWorkSchedule({
+        scheduledThisWeek: 1,
+        scheduleAttentionThisWeek: 1,
+        scheduleAuthorityStatus: 'partially_unavailable',
+      }),
+      expectedStatus: 'partial',
+      expectedNext: 'overall authority is partial',
+    },
+    {
+      label: 'unavailable',
+      schedule: contentWorkSchedule({ scheduleAuthorityStatus: 'unavailable' }),
+      expectedStatus: 'unavailable',
+      expectedNext: 'I cannot claim that any block is reserved',
+    },
+  ])('reports $label filming-plan authority without turning topic deadlines into reservations', ({
+    schedule,
+    expectedStatus,
+    expectedNext,
+  }) => {
+    vi.mocked(getTopics).mockReturnValue([
+      contentTopic({ status: 'ready', scheduled_date: '2026-05-27' }),
+    ]);
+    vi.mocked(getContentDeskItems).mockReturnValue([]);
+    vi.mocked(getRankedContentSignals).mockReturnValue([]);
+    vi.mocked(getContentWorkspaceSummaryCounts).mockReturnValue(schedule);
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'How should I schedule filming around my week?',
+      userId: 42,
+      tenantId: 42,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result?.response.reasonCodes).toContain('content_shortcut:filming');
+    expect(result?.response.text).toContain(`Plan status: ${expectedStatus}`);
+    expect(result?.response.text).toContain('Counts include every work kind, not filming alone');
+    expect(result?.response.text).toContain('Schedule authority: Secretary');
+    expect(result?.response.text).toContain('Active topic deadlines: 1 (targets, not reservations or publication)');
+    expect(result?.response.text).toContain(expectedNext);
+  });
+
+  it('reports filming-plan authority unavailable when the canonical schedule read fails', () => {
+    vi.mocked(getTopics).mockReturnValue([]);
+    vi.mocked(getContentDeskItems).mockReturnValue([]);
+    vi.mocked(getRankedContentSignals).mockReturnValue([]);
+    vi.mocked(getContentWorkspaceSummaryCounts).mockImplementation(() => {
+      throw new Error('schedule projection unavailable');
+    });
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'How should I schedule filming around my week?',
+      userId: 42,
+      tenantId: 42,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result?.response.text).toContain('Schedule authority: Secretary (unavailable)');
+    expect(result?.response.text).toContain('Plan status: unavailable');
+    expect(result?.response.text).toContain('I cannot claim that any block is reserved');
+  });
+
+  it('preserves current Secretary schedule authority in the empty next-publish fallback', () => {
+    vi.mocked(getTopics).mockReturnValue([]);
+    vi.mocked(getContentDeskItems).mockReturnValue([]);
+    vi.mocked(getRankedContentSignals).mockReturnValue([]);
+    vi.mocked(getContentWorkspaceSummaryCounts).mockReturnValue(contentWorkSchedule({ scheduledThisWeek: 1 }));
+
+    const result = tryBuildChatCoreV2DeterministicReadRoute({
+      normalizedText: 'what should i publish next',
+      userId: 42,
+      tenantId: 42,
+      locale: 'en-US',
+      timezone: 'Europe/Lisbon',
+      now: FIXED_NOW,
+      env: ENABLED_ENV,
+    });
+
+    expect(result?.response.reasonCodes).toContain('content_shortcut:next_publish');
+    expect(result?.response.text).toContain('Plan status: confirmed');
+    expect(result?.response.text).not.toContain('Schedule authority: Secretary (unavailable)');
+    expect(result?.contextPack.sourceEntityIds).toContain('content_work_schedule');
   });
 
   it('fails closed before every Content producer for a same-user distinct-tenant read', () => {
@@ -1104,7 +1260,10 @@ describe('Chat Core v2 deterministic read route', () => {
       'content_shortcut:pillars',
     ]);
     expect(result?.response.text).toContain('I do not see any active content pillars yet.');
-    expect(result?.contextPack.sourceEntityIds).toEqual(['content_shortcut:pillars']);
+    expect(result?.contextPack.sourceEntityIds).toEqual([
+      'content_shortcut:pillars',
+      'content_work_schedule',
+    ]);
   });
 
   it('does not route content write-like requests through deterministic reads', () => {

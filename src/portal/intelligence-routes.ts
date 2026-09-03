@@ -16,6 +16,11 @@ import {
 } from '../agents/pipeline-agent';
 import { sendPortalInternalError } from './http';
 import { clearPortalSnapshotCache } from './snapshot-cache';
+import {
+  filterActiveContentAgentSignals,
+  isPausedContentAgent,
+  PAUSED_CONTENT_AGENT_IDS,
+} from '../services/content-agent-lifecycle';
 
 const DEFAULT_RANKED_SIGNAL_TYPES: SignalType[] = [
   'hook_effectiveness',
@@ -57,7 +62,18 @@ function parseRequiredSignalScope(req: Request, res: Response): { userId: number
 export function registerPortalIntelligenceRoutes(app: Express): void {
   app.get('/api/agents', (_req: Request, res: Response) => {
     try {
-      const stats = getAgentStats();
+      const stats = getAgentStats().map((agent) => (
+        isPausedContentAgent(agent.agent)
+          ? {
+            ...agent,
+            last_run: null,
+            last_status: 'paused',
+            signals_produced: 0,
+            total_runs: 0,
+            lifecycle: 'paused' as const,
+          }
+          : { ...agent, lifecycle: 'active' as const }
+      ));
       res.json({ ok: true, agents: stats });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
@@ -70,11 +86,22 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
       if (!scope) return;
       const limit = parsePositiveInt(req.query.limit, 50, 200);
       const typeFilter = req.query.type ? String(req.query.type) : undefined;
-      let signals = getSignalLog(limit, scope.userId, scope.tenantId);
+      let signals = filterActiveContentAgentSignals(
+        getSignalLog(limit, scope.userId, scope.tenantId, {
+          excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+        }),
+      );
       if (typeFilter) {
         signals = signals.filter((signal) => signal.signal_type === typeFilter);
       }
-      res.json({ ok: true, signals, activeCount: getActiveSignalCount(scope.userId, scope.tenantId) });
+      res.json({
+        ok: true,
+        signals,
+        activeCount: getActiveSignalCount(scope.userId, scope.tenantId, {
+          excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+          excludeIneligibleContentLearningDigests: true,
+        }),
+      });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }
@@ -133,14 +160,17 @@ export function registerPortalIntelligenceRoutes(app: Express): void {
         .map((type) => type.trim())
         .filter(Boolean);
       const requestedTypes = (types.length > 0 ? types : DEFAULT_RANKED_SIGNAL_TYPES) as SignalType[];
-      const ranked = readRankedSignals('portal-inspector', requestedTypes, {
-        limit: parsePositiveInt(req.query.limit, 20, 200),
-        userId: scope.userId,
-        tenantId: scope.tenantId,
-        pillar: (req.query.pillar as string) || undefined,
-        format: (req.query.format as string) || undefined,
-        minConfidence: parseFloat(String(req.query.minConfidence || '0.1')),
-      });
+      const ranked = filterActiveContentAgentSignals(
+        readRankedSignals('portal-inspector', requestedTypes, {
+          limit: parsePositiveInt(req.query.limit, 20, 200),
+          userId: scope.userId,
+          tenantId: scope.tenantId,
+          pillar: (req.query.pillar as string) || undefined,
+          format: (req.query.format as string) || undefined,
+          minConfidence: parseFloat(String(req.query.minConfidence || '0.1')),
+          excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+        }),
+      );
 
       res.json({
         ok: true,

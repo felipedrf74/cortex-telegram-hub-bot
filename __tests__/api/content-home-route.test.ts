@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
 
-const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (userId: number) => ({
+const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (_options: {
+  userId: number;
+  tenantId: number;
+  abortSignal?: AbortSignal;
+}) => ({
   ideas: ['Creator operating system'],
   provider: 'gemini',
   fullContent: '# Content Ideas',
@@ -12,9 +16,13 @@ const mockRunContentDiscovery = vi.hoisted(() => vi.fn(async (userId: number) =>
 
 const mockCaptureDiscoveredIdea = vi.hoisted(() => vi.fn(() => ({ replayed: false })));
 const mockIsDuplicateIdea = vi.hoisted(() => vi.fn(async () => ({ isDuplicate: false, confidence: 0 })));
+const mockIsDuplicateIdeaInBatch = vi.hoisted(() => vi.fn(() => ({ isDuplicate: false, confidence: 0 })));
 const mockGetContentRadarPreferences = vi.hoisted(() => vi.fn(() => ({ topics: [], updatedAt: null })));
 const mockGetCachedSWR = vi.hoisted(() => vi.fn(() => null));
 const mockSetCacheSWR = vi.hoisted(() => vi.fn());
+const mockGetContentWorkspaceSummaryCounts = vi.hoisted(() => vi.fn());
+const mockGetUserTimezoneById = vi.hoisted(() => vi.fn(() => 'Europe/Lisbon'));
+const mockReadSignals = vi.hoisted(() => vi.fn((..._args: unknown[]): any[] => []));
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -32,6 +40,14 @@ vi.mock('../../src/services/user-service', () => ({
   // Identity-safety: content route uses the strict by-id helper.
   getUserLanguage: vi.fn(() => 'pt-BR'),
   getUserLanguageById: vi.fn(() => 'pt-BR'),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+}));
+
+vi.mock('../../src/services/content-workspace-read-models', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-read-models')>(
+    '../../src/services/content-workspace-read-models',
+  )),
+  getContentWorkspaceSummaryCounts: (...args: unknown[]) => mockGetContentWorkspaceSummaryCounts(...args),
 }));
 
 vi.mock('../../src/services/entitlement', () => ({
@@ -43,7 +59,10 @@ vi.mock('../../src/services/tenant-scope-observability', () => ({
   recordTenantScopeAnomaly: vi.fn(),
 }));
 
-vi.mock('../../src/services/content-discovery', () => ({
+vi.mock('../../src/services/content-discovery', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-discovery')>(
+    '../../src/services/content-discovery',
+  )),
   runContentDiscovery: mockRunContentDiscovery,
 }));
 
@@ -53,6 +72,7 @@ vi.mock('../../src/services/content-workspace-capture', () => ({
 
 vi.mock('../../src/services/content-dedup', () => ({
   isDuplicateIdea: (...args: unknown[]) => mockIsDuplicateIdea(...args),
+  isDuplicateIdeaInBatch: (...args: unknown[]) => mockIsDuplicateIdeaInBatch(...args),
 }));
 
 vi.mock('../../src/portal/telemetry', () => ({
@@ -93,7 +113,10 @@ vi.mock('../../src/services/content-intelligence', () => ({
   localizeFilmingRecommendation: vi.fn((recommendation: any) => recommendation),
 }));
 
-vi.mock('../../src/services/content-radar-preferences', () => ({
+vi.mock('../../src/services/content-radar-preferences', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-radar-preferences')>(
+    '../../src/services/content-radar-preferences',
+  )),
   getContentRadarPreferences: (...args: unknown[]) => mockGetContentRadarPreferences(...args),
   setContentRadarPreferences: vi.fn(),
   filterSignalsForRadarPreferences: vi.fn((signals: any[]) => signals),
@@ -108,7 +131,7 @@ vi.mock('../../src/services/content-dashboard-service', () => ({
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  readSignals: vi.fn(() => []),
+  readSignals: (...args: unknown[]) => mockReadSignals(...args),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
@@ -254,7 +277,13 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(path = '/home', method = 'GET', userId = 12, headers: Record<string, string> = {}): Request {
+function mockReq(
+  path = '/home',
+  method = 'GET',
+  userId = 12,
+  headers: Record<string, string> = {},
+  body: unknown = {},
+): Request {
   return {
     method,
     url: path,
@@ -267,16 +296,22 @@ function mockReq(path = '/home', method = 'GET', userId = 12, headers: Record<st
     header(name: string) {
       return (this.headers as any)[name.toLowerCase()] ?? (this.headers as any)[name];
     },
-    body: {},
+    body,
     userId,
     tenantId: userId,
   } as any;
 }
 
-async function dispatch(path = '/home', method = 'GET', userId = 12, headers: Record<string, string> = {}): Promise<MockRes> {
+async function dispatch(
+  path = '/home',
+  method = 'GET',
+  userId = 12,
+  headers: Record<string, string> = {},
+  body: unknown = {},
+): Promise<MockRes> {
   const { contentRoutes } = await import('../../src/api/routes/content');
   const router = contentRoutes();
-  const req = mockReq(path, method, userId, headers);
+  const req = mockReq(path, method, userId, headers, body);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -303,6 +338,15 @@ describe('Content API — home route', () => {
     });
     mockIsDuplicateIdea.mockResolvedValue({ isDuplicate: false, confidence: 0 });
     mockGetContentRadarPreferences.mockReturnValue({ topics: [], updatedAt: null });
+    mockGetContentWorkspaceSummaryCounts.mockReturnValue({
+      scheduledThisWeek: 0,
+      scheduleAttentionThisWeek: 0,
+      scheduleAuthorityStatus: 'current',
+      scheduleSemantics: 'private_work_session',
+    });
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mockReadSignals.mockReset();
+    mockReadSignals.mockReturnValue([]);
     mockGetCachedSWR.mockReturnValue(null);
     mockSetCacheSWR.mockClear();
   });
@@ -316,13 +360,119 @@ describe('Content API — home route', () => {
     expect(response.body.data.hero.primaryAction.target).toBe('schedule');
     expect(response.body.data.flow.steps).toHaveLength(4);
     expect(response.body.data.pipelineHealth.metrics.length).toBeGreaterThan(0);
+    expect(response.body.data.pipelineHealth.publicationTracking).toEqual({
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    });
+    expect(response.body.data.pipelineHealth.metrics).toContainEqual(expect.objectContaining({
+      id: 'published',
+      value: 'Não monitorizada',
+    }));
+    expect(mockGetContentWorkspaceSummaryCounts).toHaveBeenCalledWith(
+      { tenantId: 12, userId: 12 },
+      expect.any(Object),
+      expect.any(Date),
+      'Europe/Lisbon',
+    );
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      'u:12:t:12:content:home:pt-BR',
-      expect.objectContaining({ hero: expect.any(Object) }),
+      'content:home:active-content-agents.v3:u:12:t:12:pt-BR:tz:Europe/Lisbon:publication-truth.v3',
+      expect.objectContaining({
+        hero: expect.any(Object),
+        workSchedule: expect.objectContaining({
+          authority: 'secretary',
+          authorityStatus: 'current',
+          planStatus: 'proposed',
+        }),
+      }),
       120,
       600,
     );
     expect(response.headers.etag).toMatch(/^"[a-f0-9]{32}"$/);
+  });
+
+  it('hides historical Reaction Radar signals while that producer is paused', async () => {
+    mockReadSignals.mockImplementation((_source: string, types: string[]) => (
+      types.includes('reaction_opportunity')
+        ? [{ source_agent: 'reaction-radar', signal_type: 'reaction_opportunity', payload: { title: 'Paused reaction signal' } }]
+        : []
+    ));
+
+    const response = await dispatch('/home');
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.stringify(response.body)).not.toContain('Paused reaction signal');
+  });
+
+  it('uses the current user timezone in the content home cache identity', async () => {
+    await dispatch('/home');
+    mockGetUserTimezoneById.mockReturnValue('America/Los_Angeles');
+    await dispatch('/home');
+
+    expect(mockGetCachedSWR).toHaveBeenNthCalledWith(1, 'content:home:active-content-agents.v3:u:12:t:12:pt-BR:tz:Europe/Lisbon:publication-truth.v3');
+    expect(mockGetCachedSWR).toHaveBeenNthCalledWith(2, 'content:home:active-content-agents.v3:u:12:t:12:pt-BR:tz:America/Los_Angeles:publication-truth.v3');
+    expect(mockGetContentWorkspaceSummaryCounts).toHaveBeenNthCalledWith(
+      2,
+      { tenantId: 12, userId: 12 },
+      expect.any(Object),
+      expect.any(Date),
+      'America/Los_Angeles',
+    );
+  });
+
+  it.each([
+    ['partially_unavailable', 'partial', 'CONTENT_SCHEDULE_AUTHORITY_PARTIAL'],
+    ['unavailable', 'unavailable', 'CONTENT_SCHEDULE_AUTHORITY_UNAVAILABLE'],
+  ] as const)('labels %s schedule authority with an explicit %s plan', async (authorityStatus, planStatus, reasonCode) => {
+    mockGetContentWorkspaceSummaryCounts.mockReturnValue({
+      scheduledThisWeek: authorityStatus === 'partially_unavailable' ? 1 : 0,
+      scheduleAttentionThisWeek: 1,
+      scheduleAuthorityStatus: authorityStatus,
+      scheduleSemantics: 'private_work_session',
+    });
+
+    const response = await dispatch('/home');
+
+    expect(response.body.data.workSchedule).toMatchObject({
+      authority: 'secretary',
+      authorityStatus,
+      planStatus,
+    });
+    expect(response.body.data.meta.isPartial).toBe(true);
+    expect(response.body.data.meta.reasonCodes).toContain(reasonCode);
+  });
+
+  it('filters historical paused-agent optimization signals from Content Home', async () => {
+    const signal = (sourceAgent: string, summary: string) => ({
+      id: sourceAgent === 'performance-agent' ? 1 : 2,
+      source_agent: sourceAgent,
+      signal_type: 'creator_learning_digest',
+      payload: { summary },
+      priority: 'normal',
+      consumed_by: [],
+      status: 'active',
+      created_at: '2026-08-29T12:00:00.000Z',
+      expires_at: '2026-09-05T12:00:00.000Z',
+      user_id: 12,
+      tenant_id: 12,
+      confidence: 0.8,
+      format_tag: null,
+      pillar_tag: null,
+      evidence_count: 1,
+    });
+    mockReadSignals.mockImplementation((_source, signalTypes) => (
+      Array.isArray(signalTypes) && signalTypes.includes('creator_learning_digest')
+        ? [
+          signal('performance-agent', 'Stale paused performance claim.'),
+          signal('autoresearch', 'Active scoped learning.'),
+        ]
+        : []
+    ));
+
+    const response = await dispatch('/home');
+    const learningStep = response.body.data.flow.steps.find((entry: any) => entry.id === 'learn');
+    expect(learningStep).toMatchObject({ status: 'complete', summary: '1 sinais' });
+    expect(JSON.stringify(response.body)).not.toContain('Stale paused performance claim');
   });
 
   it('returns cached content home with stable ETag and honors If-None-Match', async () => {
@@ -380,6 +530,53 @@ describe('Content API — home route', () => {
         title: 'Training creator stack',
       }),
     ]);
+    expect(mockRunContentDiscovery).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 12,
+      tenantId: 12,
+      abortSignal: expect.any(Object),
+    }));
+  });
+
+  it('rejects malformed fallback topics before live discovery starts', async () => {
+    const response = await dispatch('/discover', 'POST', 12, {}, {
+      topic: 'x'.repeat(161),
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('CONTENT_VALIDATION_FAILED');
+    expect(response.body.error.details).toEqual({ field: 'topic' });
+    expect(mockRunContentDiscovery).not.toHaveBeenCalled();
+  });
+
+  it('withholds service-controlled lifecycle and provenance fields from discovery responses', async () => {
+    mockRunContentDiscovery.mockResolvedValueOnce({
+      ideas: [{
+        id: 'provider-controlled',
+        title: 'Bounded discovery idea',
+        score: 1,
+        lifecycleState: 'published',
+        approvalState: 'approved',
+        provenanceSources: [{ url: 'https://provider.invalid' }],
+      }] as unknown as string[],
+      provider: 'gemini',
+      fullContent: '# Content Ideas',
+      filePath: null,
+      storage: 'content_workspace',
+      searchCount: 1,
+    });
+
+    const response = await dispatch('/discover', 'POST', 12);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.ideas).toEqual([
+      expect.objectContaining({
+        title: 'Bounded discovery idea',
+        lifecycleState: 'discovered',
+        approvalState: 'pending_review',
+        provenanceSources: [],
+      }),
+    ]);
+    expect(response.body.data.ideas[0].id).not.toBe('provider-controlled');
   });
 
   it('falls back to saved radar topics when live discovery fails', async () => {
@@ -395,13 +592,57 @@ describe('Content API — home route', () => {
     expect(response.body.ok).toBe(true);
     expect(response.body.data.degraded).toBe(true);
     expect(response.body.data.generation.provider).toBe('local-fallback');
+    expect(response.body.data.generation.providerSemantics).toBe('deterministic_local');
+    expect(response.body.data.persistence).toEqual({
+      status: 'complete',
+      confirmedCount: 4,
+      createdCount: 4,
+      replayedCount: 0,
+      duplicateCount: 0,
+    });
     expect(response.body.data.ideas[0]).toMatchObject({
       title: expect.stringContaining('AI automation'),
       workflowBlockers: ['Sem pesquisa ao vivo'],
     });
+    expect(response.body.data.ideas.map((idea: { title: string }) => idea.title).join('\n'))
+      .not.toMatch(/o que mudou|esta semana|what changed|this week/i);
     expect(mockCaptureDiscoveredIdea).toHaveBeenCalledWith(expect.objectContaining({
       scope: { tenantId: 12, userId: 12 },
       provider: 'local-fallback',
     }));
+  });
+
+  it('returns typed dedup unavailability without attempting a local write fallback', async () => {
+    mockRunContentDiscovery.mockRejectedValueOnce(Object.assign(new Error('dedup unavailable'), {
+      code: 'CONTENT_DEDUP_UNAVAILABLE',
+      status: 503,
+      retryable: true,
+    }));
+
+    const response = await dispatch('/discover', 'POST', 12);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_DEDUP_UNAVAILABLE',
+      details: { retryable: true },
+    });
+    expect(mockCaptureDiscoveredIdea).not.toHaveBeenCalled();
+  });
+
+  it('returns confirmed partial-write truth when discovery persistence is unavailable', async () => {
+    mockRunContentDiscovery.mockRejectedValueOnce(Object.assign(new Error('workspace unavailable'), {
+      code: 'CONTENT_DISCOVERY_PERSISTENCE_UNAVAILABLE',
+      status: 503,
+      details: { confirmedBeforeFailure: 2, retryable: true },
+    }));
+
+    const response = await dispatch('/discover', 'POST', 12);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_DISCOVERY_PERSISTENCE_UNAVAILABLE',
+      details: { confirmedBeforeFailure: 2, retryable: true },
+    });
+    expect(mockCaptureDiscoveredIdea).not.toHaveBeenCalled();
   });
 });

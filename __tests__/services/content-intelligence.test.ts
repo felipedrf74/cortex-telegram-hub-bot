@@ -28,7 +28,10 @@ vi.mock('../../src/services/content-notification-store', () => ({
   getUnreadNotifications: (...args: unknown[]) => mockGetUnreadNotifications(...args),
 }));
 
-vi.mock('../../src/services/intelligence-bus', () => ({
+vi.mock('../../src/services/intelligence-bus', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/intelligence-bus')>(
+    '../../src/services/intelligence-bus',
+  )),
   readRankedSignals: (...args: unknown[]) => mockReadRankedSignals(...args),
 }));
 
@@ -225,18 +228,40 @@ describe('content-intelligence', () => {
     );
   });
 
-  it('reads creator digests only through the explicit tenant scope', () => {
-    mockReadRankedSignals.mockReturnValue([]);
+  it('reads creator digests only through explicit scope and excludes paused producer identities', () => {
+    mockReadRankedSignals.mockReturnValue([
+      {
+        source_agent: 'seo-agent',
+        signal_type: 'content_formula',
+        payload: { title: 'Stale paused formula' },
+        priority: 'urgent',
+        relevanceScore: 1,
+        confidence: 1,
+      },
+      {
+        source_agent: 'reaction-radar',
+        signal_type: 'reaction_opportunity',
+        payload: { title: 'Historical paused reaction' },
+        priority: 'normal',
+        relevanceScore: 0.7,
+        confidence: 0.8,
+      },
+    ]);
 
     expect(getRankedContentSignals(7001, 6, 9001)).toEqual([]);
     expect(mockReadRankedSignals).toHaveBeenCalledWith(
       'content-intelligence',
       expect.arrayContaining(['learning_digest', 'creator_learning_digest']),
-      expect.objectContaining({ userId: 7001, tenantId: 9001, limit: 6 }),
+      expect.objectContaining({
+        userId: 7001,
+        tenantId: 9001,
+        limit: 6,
+        excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
+      }),
     );
   });
 
-  it('prefers a ready scheduled topic for the next execution hint', async () => {
+  it('presents a ready topic date as a private deadline rather than a confirmed publish slot', async () => {
     const hint = await getNextContentExecutionHint(7001, {
       topics: [
         {
@@ -260,9 +285,13 @@ describe('content-intelligence', () => {
       mode: 'publish_ready',
       title: 'Race-week fueling mistakes',
       scheduledDate: '2026-04-25',
+      dateSemantics: 'private_deadline',
+      calendarConfirmed: false,
       confidence: 'high',
-      sourceType: 'topic_ready',
+      sourceType: 'topic_ready_deadline',
     });
+    expect(hint?.summary).toContain('private target deadline');
+    expect(hint?.summary).toContain('No publishing slot is confirmed');
   });
 
   it('loads every execution-hint dependency with secure defaults when options are omitted', async () => {
@@ -300,6 +329,8 @@ describe('content-intelligence', () => {
         tenantId: undefined,
         limit: 4,
         minConfidence: 0.2,
+        strict: true,
+        excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
       },
     );
     expect(mockGetFilmingRecommendation).toHaveBeenCalledOnce();
@@ -347,6 +378,9 @@ describe('content-intelligence', () => {
     })).resolves.toMatchObject({
       mode: 'film_window',
       scheduledDate: '2026-07-29',
+      dateSemantics: 'recommended_work_date',
+      calendarConfirmed: false,
+      summary: expect.stringContaining('not a reserved calendar block'),
     });
 
     expect(mockGetTopics).not.toHaveBeenCalled();

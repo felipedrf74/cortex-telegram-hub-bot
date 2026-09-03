@@ -9,7 +9,12 @@ import {
   type ContentSignalDigest,
 } from '../../content-intelligence';
 import { getLearnedPatterns, getPerformanceSummary } from '../../content-learning-store';
-import { getTopics, getUpcomingTopicCount, type ContentTopic } from '../../content-scheduler';
+import { getTopics, type ContentTopic } from '../../content-scheduler';
+import { getDb } from '../../database';
+import {
+  getContentWorkspaceSummaryCounts,
+  type ContentWorkspaceSummaryCounts,
+} from '../../content-workspace-read-models';
 import { parseContentStateShortcut, type ContentStateShortcut } from '../../../api/routes/chat-shortcut-parsers';
 import {
   buildChatCoreV2ReadContextPack,
@@ -38,6 +43,8 @@ const CONTENT_TOPIC_SCAN_LIMIT = 20;
 const CONTENT_DESK_SCAN_LIMIT = 5;
 const CONTENT_SIGNAL_SCAN_LIMIT = 5;
 
+type ContentFilmingPlanStatus = 'confirmed' | 'proposed' | 'unplanned' | 'partial' | 'unavailable';
+
 export function buildContentPipelineSummaryRoute(
   input: BuildChatCoreV2DeterministicReadRouteInput,
   routeGuess: ChatCoreV2ShadowRouteGuess,
@@ -48,28 +55,48 @@ export function buildContentPipelineSummaryRoute(
   // tenant-scoped, leave the request unhandled before reading any Content data.
   if (input.tenantId !== input.userId) return null;
   const now = input.now ?? new Date();
-  const topics = getTopics(input.userId, { includeTerminal: false, limit: CONTENT_TOPIC_SCAN_LIMIT });
-  const deskItems = getContentDeskItems(input.userId, CONTENT_DESK_SCAN_LIMIT);
+  const topics = getTopics(input.userId, {
+    includeTerminal: false,
+    limit: CONTENT_TOPIC_SCAN_LIMIT,
+    tenantId: input.tenantId,
+  });
+  const deskItems = getContentDeskItems(input.userId, CONTENT_DESK_SCAN_LIMIT, input.tenantId);
   const signals = getRankedContentSignals(input.userId, CONTENT_SIGNAL_SCAN_LIMIT, input.tenantId);
+  let workSchedule: ContentWorkspaceSummaryCounts | null = null;
+  try {
+    workSchedule = getContentWorkspaceSummaryCounts(
+      { tenantId: input.tenantId, userId: input.userId },
+      getDb(),
+      now,
+      input.timezone ?? 'UTC',
+    );
+  } catch {
+    // The response below remains explicit that schedule authority is unavailable.
+  }
   const shortcut = parseContentStateShortcut(input.normalizedText);
   const data = buildContentPipelineSummaryData(topics, deskItems, signals);
   const sourceEntityIds = data.topItems.map((item) => item.entityId);
   if (shortcut) sourceEntityIds.push(contentShortcutEntityId(shortcut));
+  if (shortcut === 'filming' || shortcut === 'next_publish') sourceEntityIds.push('content_work_schedule');
   const summary = buildContentPipelineSummaryTextForRequest({
     shortcut,
     data,
     topics,
     deskItems,
     signals,
+    workSchedule,
     userId: input.userId,
+    tenantId: input.tenantId,
     locale: input.locale,
   });
+  const sourceVersions = sourceVersionsForContent(topics, deskItems, signals);
+  if (workSchedule) sourceVersions.content_work_schedule = hashStable(workSchedule);
   const readModel = buildChatCoreV2ReadModelResult<ChatCoreV2ContentPipelineSummaryData>({
     capabilityId: CONTENT_PIPELINE_SUMMARY_CAPABILITY,
     domain: 'content',
     data,
     sourceEntityIds,
-    sourceVersions: sourceVersionsForContent(topics, deskItems, signals),
+    sourceVersions,
     generatedAt: now.toISOString(),
     maxSourceAgeSeconds: 60,
     sensitivity: 'personal',
@@ -105,14 +132,16 @@ function buildContentPipelineSummaryTextForRequest(input: {
   topics: ContentTopic[];
   deskItems: ContentDeskItem[];
   signals: ContentSignalDigest[];
+  workSchedule: ContentWorkspaceSummaryCounts | null;
   userId: number;
+  tenantId: number;
   locale: string | null | undefined;
 }): string {
   if (!input.shortcut) return buildContentPipelineSummaryText(input.data, input.locale);
   const normalizedLocale = normalizeChatCoreV2Locale(input.locale);
 
   if (input.shortcut === 'pillars') {
-    return buildContentPillarsText(getActiveContentPillars(input.userId), normalizedLocale);
+    return buildContentPillarsText(getActiveContentPillars(input.userId, input.tenantId), normalizedLocale);
   }
   if (input.shortcut === 'performance') {
     return buildContentPerformanceText(input.userId, normalizedLocale);
@@ -121,10 +150,10 @@ function buildContentPipelineSummaryTextForRequest(input: {
     return buildContentLearningText(input.userId, normalizedLocale);
   }
   if (input.shortcut === 'filming') {
-    return buildContentFilmingText(input.userId, normalizedLocale);
+    return buildContentFilmingText(input.topics, input.workSchedule, normalizedLocale);
   }
   if (input.shortcut === 'next_publish') {
-    return buildContentNextPriorityText(input.userId, input.topics, input.deskItems, input.signals, normalizedLocale);
+    return buildContentNextPriorityText(input.topics, input.deskItems, input.signals, input.workSchedule, normalizedLocale);
   }
   if (input.shortcut === 'desk') {
     return buildContentDeskText(input.deskItems, normalizedLocale);
@@ -219,24 +248,88 @@ function buildContentLearningText(userId: number, locale: ChatCoreV2NormalizedLo
   return `Here is what the learning loop is picking up right now:\n\n${lines.join('\n')}`;
 }
 
-function buildContentFilmingText(userId: number, locale: ChatCoreV2NormalizedLocale): string {
-  const upcomingCount = getUpcomingTopicCount(userId, 7);
-  const today = new Date();
-  const dayLabel = formatContentDate(today.toISOString().slice(0, 10), locale);
+function buildContentFilmingText(
+  topics: ContentTopic[],
+  workSchedule: ContentWorkspaceSummaryCounts | null,
+  locale: ChatCoreV2NormalizedLocale,
+): string {
+  const deadlineCount = topics.filter((topic) => Boolean(topic.scheduled_date)).length;
+  const confirmed = workSchedule?.scheduledThisWeek ?? 0;
+  const attention = workSchedule?.scheduleAttentionThisWeek ?? 0;
+  const authority = workSchedule?.scheduleAuthorityStatus ?? 'unavailable';
+  const planStatus = resolveContentFilmingPlanStatus(workSchedule);
+
   if (locale === 'pt-BR') {
-    return `Esta é a melhor janela de filmagem que consigo inferir para esta semana:\n\n- Melhor dia: ${dayLabel}\n- Confiança: média\n- Tópicos agendados para os próximos 7 dias: ${upcomingCount}\n- Conecte o calendário em Configurações para eu reservar este bloco com mais precisão.`;
+    return `Este é o estado do planejamento de trabalho de Conteúdo relevante para filmagem. As contagens incluem todos os tipos de trabalho, não só gravação:\n\n- Blocos privados de trabalho confirmados nos próximos 7 dias: ${confirmed}\n- Blocos que precisam de atenção: ${attention}\n- Autoridade de agenda: Secretário (${authority})\n- Prazos ativos de tópicos: ${deadlineCount} (são metas, não reservas nem publicação)\n- Estado do plano: ${contentPlanStatusLabel(planStatus, locale)}\n\n${contentFilmingPlanNextStep(planStatus, confirmed, attention, locale)}`;
   }
   if (locale === 'pt-PT') {
-    return `Esta é a melhor janela de filmagem que consigo inferir para esta semana:\n\n- Melhor dia: ${dayLabel}\n- Confiança: média\n- Tópicos agendados para os próximos 7 dias: ${upcomingCount}\n- Liga o calendário nas Definições para eu reservar este bloco com mais precisão.`;
+    return `Este é o estado do planeamento de trabalho de Conteúdo relevante para filmagem. As contagens incluem todos os tipos de trabalho, não apenas gravação:\n\n- Blocos privados de trabalho confirmados nos próximos 7 dias: ${confirmed}\n- Blocos que precisam de atenção: ${attention}\n- Autoridade da agenda: Secretary (${authority})\n- Prazos ativos de tópicos: ${deadlineCount} (são metas, não reservas nem publicação)\n- Estado do plano: ${contentPlanStatusLabel(planStatus, locale)}\n\n${contentFilmingPlanNextStep(planStatus, confirmed, attention, locale)}`;
   }
-  return `This is the best filming window I can infer for your week:\n\n- Best day: ${dayLabel}\n- Confidence: medium\n- Upcoming scheduled topics: ${upcomingCount}\n- Connect your calendar in Settings so I can reserve this block more precisely.`;
+  return `This is the Content work-plan status relevant to filming. Counts include every work kind, not filming alone:\n\n- Confirmed private Content work blocks in the next 7 days: ${confirmed}\n- Blocks needing attention: ${attention}\n- Schedule authority: Secretary (${authority})\n- Active topic deadlines: ${deadlineCount} (targets, not reservations or publication)\n- Plan status: ${contentPlanStatusLabel(planStatus, locale)}\n\n${contentFilmingPlanNextStep(planStatus, confirmed, attention, locale)}`;
+}
+
+function resolveContentFilmingPlanStatus(
+  workSchedule: ContentWorkspaceSummaryCounts | null,
+): ContentFilmingPlanStatus {
+  if (!workSchedule || workSchedule.scheduleAuthorityStatus === 'unavailable') return 'unavailable';
+  if (workSchedule.scheduleAuthorityStatus === 'partially_unavailable') return 'partial';
+  if (workSchedule.scheduledThisWeek > 0) return 'confirmed';
+  // This deterministic read has no actionable filming-recommendation input.
+  // Cancellation/provider attention therefore stays separate from plan status
+  // and cannot be promoted into a proposal.
+  return 'unplanned';
+}
+
+function contentPlanStatusLabel(
+  status: ContentFilmingPlanStatus,
+  locale: ChatCoreV2NormalizedLocale,
+): string {
+  if (locale === 'en') return status;
+  const labels: Record<ContentFilmingPlanStatus, string> = {
+    confirmed: 'confirmado',
+    proposed: 'proposto',
+    unplanned: locale === 'pt-BR' ? 'não planejado' : 'não planeado',
+    partial: 'parcial',
+    unavailable: 'indisponível',
+  };
+  return labels[status];
+}
+
+function contentFilmingPlanNextStep(
+  status: ContentFilmingPlanStatus,
+  confirmed: number,
+  attention: number,
+  locale: ChatCoreV2NormalizedLocale,
+): string {
+  if (locale === 'pt-BR') {
+    if (status === 'confirmed') return 'Abra Conteúdo para ver os blocos privados confirmados. Eles reservam trabalho, não publicação.';
+    if (status === 'partial') return `${confirmed} bloco(s) confirmado(s) continuam visíveis, mas a autoridade geral está parcial. Revise os itens com atenção no Secretário.`;
+    if (status === 'unavailable') return 'A autoridade do Secretário está indisponível, então não posso afirmar que exista um bloco reservado.';
+    if (status === 'proposed') return 'Existem itens que precisam de revisão; nenhum horário adicional fica protegido até o Secretário confirmá-lo.';
+    if (attention > 0) return `O Secretário está atual e não há bloco privado confirmado. Revise ${attention} item(ns) de atenção; eles não são propostas nem reservas.`;
+    return 'O Secretário está atual, mas não há bloco privado confirmado. Pré-visualize uma proposta em Conteúdo para planejar trabalho.';
+  }
+  if (locale === 'pt-PT') {
+    if (status === 'confirmed') return 'Abre Conteúdo para ver os blocos privados confirmados. Eles reservam trabalho, não publicação.';
+    if (status === 'partial') return `${confirmed} bloco(s) confirmado(s) continuam visíveis, mas a autoridade global está parcial. Revê os itens com atenção na Secretary.`;
+    if (status === 'unavailable') return 'A autoridade da Secretary está indisponível, por isso não posso afirmar que exista um bloco reservado.';
+    if (status === 'proposed') return 'Existem itens que precisam de revisão; nenhum horário adicional fica protegido até a Secretary o confirmar.';
+    if (attention > 0) return `A Secretary está atual e não há bloco privado confirmado. Revê ${attention} item(ns) de atenção; não são propostas nem reservas.`;
+    return 'A Secretary está atual, mas não há bloco privado confirmado. Pré-visualiza uma proposta em Conteúdo para planear trabalho.';
+  }
+  if (status === 'confirmed') return 'Open Content to view the confirmed private blocks. They reserve work, not publication.';
+  if (status === 'partial') return `${confirmed} confirmed block(s) remain visible, but overall authority is partial. Review the attention items with Secretary.`;
+  if (status === 'unavailable') return 'Secretary authority is unavailable, so I cannot claim that any block is reserved.';
+  if (status === 'proposed') return 'Some schedule items need review; no additional time is protected until Secretary confirms it.';
+  if (attention > 0) return `Secretary authority is current and no private block is confirmed. Review ${attention} attention item(s); they are not proposals or reservations.`;
+  return 'Secretary authority is current, but there is no confirmed private block. Preview a proposal in Content to plan work.';
 }
 
 function buildContentNextPriorityText(
-  userId: number,
   topics: ContentTopic[],
   deskItems: ContentDeskItem[],
   signals: ContentSignalDigest[],
+  workSchedule: ContentWorkspaceSummaryCounts | null,
   locale: ChatCoreV2NormalizedLocale,
 ): string {
   const nextTopic = chooseNextContentPriority(topics);
@@ -250,9 +343,9 @@ function buildContentNextPriorityText(
 
   const scriptReady = deskItems.find((item) => item.type === 'script_ready');
   if (scriptReady) {
-    if (locale === 'pt-BR') return `O candidato mais claro para publicar a seguir já está na sua mesa:\n\n- ${scriptReady.title}\n\nAbra Conteúdo para rever o roteiro e avançar com ele.`;
-    if (locale === 'pt-PT') return `O candidato mais claro para publicar a seguir já está na tua mesa:\n\n- ${scriptReady.title}\n\nAbre Conteúdo para rever o roteiro e avançar com ele.`;
-    return `The clearest next publish candidate is already on your desk:\n\n- ${scriptReady.title}\n\nOpen Content to review the script and move it forward.`;
+    if (locale === 'pt-BR') return `O candidato mais claro para preparar para publicação já está na sua mesa:\n\n- ${scriptReady.title}\n\nAbra Conteúdo para rever o roteiro e avançar. O Nexus ainda não publicou este item.`;
+    if (locale === 'pt-PT') return `O candidato mais claro para preparar para publicação já está na tua mesa:\n\n- ${scriptReady.title}\n\nAbre Conteúdo para rever o roteiro e avançar. O Nexus ainda não publicou este item.`;
+    return `The clearest candidate to prepare for publication is already on your desk:\n\n- ${scriptReady.title}\n\nOpen Content to review the script and move it forward. Nexus has not published this item.`;
   }
 
   const signal = signals.find((item) => item.priority === 'urgent') ?? signals[0] ?? null;
@@ -262,8 +355,8 @@ function buildContentNextPriorityText(
     return `The strongest next content move is to react while this signal is still fresh:\n\n- ${signal.title}\n- Priority: ${signal.priority}\n\nOpen Content to turn this into a script or capture block.`;
   }
 
-  // Keep a conservative filming suggestion when there is no publishable item.
-  return buildContentFilmingText(userId, locale);
+  // Keep an explicitly unconfirmed planning status when no production item leads.
+  return buildContentFilmingText(topics, workSchedule, locale);
 }
 
 function chooseNextContentPriority(topics: ContentTopic[]): ContentTopic | null {
@@ -282,15 +375,6 @@ function formatContentNumber(value: number, locale: ChatCoreV2NormalizedLocale):
   return new Intl.NumberFormat(formatterLocale, { maximumFractionDigits: 0 }).format(value);
 }
 
-function formatContentDate(date: string, locale: ChatCoreV2NormalizedLocale): string {
-  const formatterLocale = locale === 'en' ? 'en-US' : locale;
-  return new Intl.DateTimeFormat(formatterLocale, {
-    weekday: 'short',
-    day: '2-digit',
-    month: '2-digit',
-  }).format(new Date(`${date}T12:00:00Z`));
-}
-
 function contentShortcutEntityId(shortcut: ContentStateShortcut): string {
   return `content_shortcut:${shortcut}`;
 }
@@ -300,19 +384,25 @@ function buildContentPipelineSummaryData(
   deskItems: ContentDeskItem[],
   signals: ContentSignalDigest[],
 ): ChatCoreV2ContentPipelineSummaryData {
-  const visibleTopics = topics.slice(0, MAX_VISIBLE_CONTENT_ITEMS).map(topicToSummaryItem);
+  const operationalTopics = topics.filter((topic) => normalizeStatus(topic.status) !== 'published');
+  const visibleTopics = operationalTopics.slice(0, MAX_VISIBLE_CONTENT_ITEMS).map(topicToSummaryItem);
   const remainingSlots = Math.max(0, MAX_VISIBLE_CONTENT_ITEMS - visibleTopics.length);
   const visibleDeskItems = deskItems.slice(0, remainingSlots).map(deskItemToSummaryItem);
   const remainingSignalSlots = Math.max(0, MAX_VISIBLE_CONTENT_ITEMS - visibleTopics.length - visibleDeskItems.length);
   const visibleSignals = signals.slice(0, remainingSignalSlots).map(signalToSummaryItem);
 
   return {
-    topicCount: topics.length,
-    plannedCount: countTopics(topics, 'planned'),
-    draftingCount: countTopics(topics, 'drafting'),
-    readyCount: countTopics(topics, 'ready'),
-    publishedCount: countTopics(topics, 'published'),
-    scheduledCount: topics.filter((topic) => Boolean(topic.scheduled_date)).length,
+    topicCount: operationalTopics.length,
+    plannedCount: countTopics(operationalTopics, 'planned'),
+    draftingCount: countTopics(operationalTopics, 'drafting'),
+    readyCount: countTopics(operationalTopics, 'ready'),
+    publishedCount: null,
+    publicationTracking: {
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    },
+    scheduledCount: operationalTopics.filter((topic) => Boolean(topic.scheduled_date)).length,
     deskReadyCount: deskItems.length,
     urgentSignalCount: signals.filter((signal) => signal.priority === 'urgent').length,
     topItems: [...visibleTopics, ...visibleDeskItems, ...visibleSignals],
@@ -397,13 +487,13 @@ function countPhrase(
   if (locale === 'pt-BR' || locale === 'pt-PT') {
     if (kind === 'ready') return `${count} ${plural(count, 'pronto', 'prontos')}`;
     if (kind === 'drafting') return `${count} em rascunho`;
-    if (kind === 'scheduled') return `${count} ${plural(count, 'agendado', 'agendados')}`;
+    if (kind === 'scheduled') return `${count} com ${plural(count, 'prazo', 'prazos')}`;
     if (kind === 'desk') return `${count} ${plural(count, 'item pronto na mesa', 'itens prontos na mesa')}`;
     return `${count} ${plural(count, 'sinal urgente', 'sinais urgentes')}`;
   }
   if (kind === 'ready') return `${count} ready`;
   if (kind === 'drafting') return `${count} drafting`;
-  if (kind === 'scheduled') return `${count} scheduled`;
+  if (kind === 'scheduled') return `${count} with ${plural(count, 'deadline', 'deadlines')}`;
   if (kind === 'desk') return `${count} desk-ready ${plural(count, 'item', 'items')}`;
   return `${count} urgent ${plural(count, 'signal', 'signals')}`;
 }
@@ -445,7 +535,7 @@ function statusLabel(status: string, locale: ChatCoreV2NormalizedLocale): string
       planned: 'planeado',
       drafting: 'em rascunho',
       ready: 'pronto',
-      published: 'publicado',
+      published: 'publicação não verificada',
       script_ready: 'script pronto',
       topic_candidates_ready: 'ideias prontas',
       weekly_package_ready: 'pacote semanal pronto',
@@ -455,12 +545,13 @@ function statusLabel(status: string, locale: ChatCoreV2NormalizedLocale): string
     };
     return labels[normalized] ?? normalized.replace(/_/g, ' ');
   }
+  if (normalized === 'published') return 'publication unverified';
   return normalized.replace(/_/g, ' ');
 }
 
 function scheduledDatePhrase(date: string, locale: ChatCoreV2NormalizedLocale): string {
-  if (locale === 'pt-BR' || locale === 'pt-PT') return `agendado para ${date}`;
-  return `scheduled ${date}`;
+  if (locale === 'pt-BR' || locale === 'pt-PT') return `prazo-alvo ${date} (não é publicação)`;
+  return `advisory deadline ${date} (not publication)`;
 }
 
 function urgentLabel(locale: ChatCoreV2NormalizedLocale): string {
@@ -474,7 +565,9 @@ function sourceVersionsForContent(
   signals: ContentSignalDigest[],
 ): Record<string, string> {
   const versions: Record<string, string> = {};
-  for (const topic of topics.slice(0, MAX_VISIBLE_CONTENT_ITEMS)) {
+  for (const topic of topics
+    .filter((candidate) => normalizeStatus(candidate.status) !== 'published')
+    .slice(0, MAX_VISIBLE_CONTENT_ITEMS)) {
     versions[contentTopicEntityId(topic.id)] = hashStable({
       title: topic.title,
       status: topic.status,

@@ -7,6 +7,7 @@ import {
   ensureContentTenantScopeColumns,
   resolveContentTenantId,
 } from '../services/content-tenant-scope';
+import { safeContentLogErrorFields } from '../services/content-log-safety';
 import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -217,9 +218,9 @@ export function listRadarFeedback(
     `).all(...params, limit) as Array<Record<string, unknown>>;
     return rows.map(rowToRecord);
   } catch (err) {
-    logger.warn({ err, userId, tenantId: resolvedTenantId, options },
+    logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId: resolvedTenantId },
       'content-radar-feedback.list failed');
-    return [];
+    throw err;
   }
 }
 
@@ -270,6 +271,6 @@ function ensureRadarFeedbackIdempotencyIndex(db: any): void {
         WHERE scope_status = 'active';
     `);
   } catch (err) {
-    logger.debug({ err }, 'content-radar-feedback.idempotency-index ensure failed');
+    logger.debug(safeContentLogErrorFields(err), 'content-radar-feedback.idempotency-index ensure failed');
   }
 }

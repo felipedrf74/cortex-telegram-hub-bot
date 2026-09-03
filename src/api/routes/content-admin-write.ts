@@ -13,6 +13,7 @@
 // Mount: /api/v1/admin/content (sibling to /api/v1/admin/content-dashboard)
 
 import { Router, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import {
@@ -44,28 +45,95 @@ import { getContentPerformanceAggregate } from '../../state/content-performance-
 // CONTENT-UI-O4: portal canonical lifecycle alias
 import { summarizeCanonicalLifecycle } from '../../state/content-lifecycle';
 import { isOwnedYoutubeChannelMarker } from '../../services/youtube-channel-scope';
+import { upsertKnowledge, type PatternCategory } from '../../state/content-references';
 import {
   isSkillInferenceAccountDeletionError,
   runWithSkillInferenceAccountAdmission,
 } from '../../services/skill-inference-account-lifecycle';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
+import { bindContentRequestCancellation } from './content-request-cancellation';
+import { extractClientIp } from '../rate-limiter';
+
+const CONTENT_ADMIN_CHANNEL_URL_MAX_CHARS = 2_048;
+const CONTENT_ADMIN_CHANNEL_UNSUPPORTED_SCOPE_MESSAGE = 'Channel analysis and synthesis currently support user-default tenant only';
+
+function sendChannelSourceUnavailable(res: Response, error: any): boolean {
+  if (error?.code !== 'CONTENT_CHANNEL_SOURCE_UNAVAILABLE') return false;
+  sendError(
+    res,
+    'CONTENT_CHANNEL_SOURCE_UNAVAILABLE',
+    'The YouTube channel source is temporarily unavailable.',
+    503,
+    {
+      retryable: true,
+      source: 'youtube',
+      reason: ['configuration', 'transport', 'http', 'invalid_response'].includes(error?.reason)
+        ? error.reason
+        : 'transport',
+    },
+  );
+  return true;
+}
+
+function sendCreatorProfileUnavailable(res: Response, error: any): boolean {
+  if (error?.code !== 'CONTENT_CREATOR_PROFILE_UNAVAILABLE') return false;
+  sendError(
+    res,
+    'CONTENT_CREATOR_PROFILE_UNAVAILABLE',
+    'The creator profile is temporarily unavailable. Channel learning was not started.',
+    503,
+    { retryable: true },
+  );
+  return true;
+}
+const CONTENT_ADMIN_BOOK_FIELD_MAX_CHARS = 240;
+const CONTENT_ADMIN_VOICE_CATEGORY_MAX_CHARS = 160;
+const CONTENT_ADMIN_VOICE_LABEL_MAX_CHARS = 240;
+const CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS = 20_000;
+const CONTENT_ADMIN_SETUP_SAFE_LANGUAGE = 'en-US';
+const CONTENT_ADMIN_RATE_LIMIT_PER_MINUTE = 30;
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
   res.json({ ok: true, ...data });
 }
 
-function sendError(res: Response, code: string, message: string, status = 400): void {
-  res.status(status).json({ ok: false, error: { code, message } });
+function sendError(
+  res: Response,
+  code: string,
+  message: string,
+  status = 400,
+  details?: Record<string, unknown>,
+): void {
+  res.status(status).json({
+    ok: false,
+    error: details ? { code, message, details } : { code, message },
+  });
 }
 
 function sendInternalError(res: Response, message: string): void {
   sendApiInternalError(res, message);
 }
 
+function safeContentAdminErrorFields(error: unknown): { errorName: string; errorCode?: string } {
+  const errorName = error instanceof Error && error.name
+    ? error.name.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80)
+    : typeof error;
+  const rawCode = typeof error === 'object' && error !== null
+    ? (error as { code?: unknown }).code
+    : undefined;
+  const errorCode = typeof rawCode === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(rawCode)
+    ? rawCode
+    : undefined;
+  return errorCode ? { errorName, errorCode } : { errorName };
+}
+
 function parsePositiveInt(value: unknown): number | undefined {
   if (Array.isArray(value)) value = value[0];
   if (value == null || value === '') return undefined;
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  const raw = String(value);
+  if (!/^[1-9]\d*$/u.test(raw)) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function firstValue(...values: unknown[]): unknown {
@@ -110,6 +178,34 @@ function normalizeString(value: unknown, max = 512): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, max) : null;
+}
+
+function readNonEmptyBoundedString(value: unknown, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxChars) return null;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function serializeBoundedJsonOrString(
+  value: unknown,
+  maxChars: number,
+  options: { allowEmptyString?: boolean } = {},
+): string | null {
+  if (typeof value === 'string') {
+    const serialized = options.allowEmptyString ? value : value.trim();
+    if ((!options.allowEmptyString && !serialized) || serialized.length > maxChars) return null;
+    return serialized;
+  }
+
+  try {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string' || serialized.length > maxChars) return null;
+    return serialized;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeStringList(value: unknown, maxItems = 25): string[] {
@@ -166,7 +262,31 @@ function buildPortalHistoricalComparisonHints(decision: ReturnType<typeof assess
 
 export function contentAdminWriteRoutes(): Router {
   const router = Router();
+  router.use(rateLimit({
+    windowMs: 60_000,
+    limit: CONTENT_ADMIN_RATE_LIMIT_PER_MINUTE,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfterSeconds = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      sendError(
+        res,
+        'RATE_LIMITED',
+        'Too many Content admin requests from this IP. Slow down.',
+        options.statusCode,
+        { retryAfterSeconds },
+      );
+    },
+  }));
   router.use(requirePortalTokenByMethod);
+  router.use((req, _res, next) => {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      req.body = {};
+    }
+    next();
+  });
 
   // ═══════════════════════════════════════════════════════════════════
   // LINKS — Tenant-scoped reference links for portal power-console work
@@ -189,7 +309,7 @@ export function contentAdminWriteRoutes(): Router {
       `).all(...contentScopeParams(scope.userId, scope.tenantId));
       sendSuccess(res, { links: rows, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: list content links failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: list content links failed');
       sendInternalError(res, 'Failed to list links');
     }
   });
@@ -255,7 +375,7 @@ export function contentAdminWriteRoutes(): Router {
       );
       sendSuccess(res, { id: result.lastInsertRowid, scope: scopeTarget, created: true });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: upsert content link failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: upsert content link failed');
       sendInternalError(res, 'Failed to upsert link');
     }
   });
@@ -264,8 +384,8 @@ export function contentAdminWriteRoutes(): Router {
   router.delete('/links/:id', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid link id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid link id');
     try {
       const info = getDb().prepare(`
         DELETE FROM content_reference_registry
@@ -276,7 +396,7 @@ export function contentAdminWriteRoutes(): Router {
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Link not found in requested scope', 404);
       sendSuccess(res, { removed: true, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: delete content link failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: delete content link failed');
       sendInternalError(res, 'Failed to delete link');
     }
   });
@@ -302,7 +422,7 @@ export function contentAdminWriteRoutes(): Router {
       });
       sendSuccess(res, { provenance, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: list content provenance failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: list content provenance failed');
       sendInternalError(res, 'Failed to list provenance');
     }
   });
@@ -351,7 +471,7 @@ export function contentAdminWriteRoutes(): Router {
         scope,
       });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: build content provenance review pack failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: build content provenance review pack failed');
       sendInternalError(res, 'Failed to build provenance review pack');
     }
   });
@@ -368,7 +488,7 @@ export function contentAdminWriteRoutes(): Router {
       const aggregate = getContentPerformanceAggregate(scope.userId, scope.tenantId);
       sendSuccess(res, { performance: aggregate, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: get content performance aggregate failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: get content performance aggregate failed');
       sendInternalError(res, 'Failed to read performance aggregate');
     }
   });
@@ -379,9 +499,20 @@ export function contentAdminWriteRoutes(): Router {
     if (!scope) return;
     try {
       const lifecycle = summarizeCanonicalLifecycle(scope.userId, scope.tenantId);
-      sendSuccess(res, { lifecycle, scope });
+      sendSuccess(res, {
+        lifecycle,
+        bucketSemantics: {
+          published: 'internal_production_state_only',
+        },
+        publicationTracking: {
+          availability: 'unavailable',
+          reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+          publicationExecution: 'not_supported',
+        },
+        scope,
+      });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: get content canonical lifecycle failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: get content canonical lifecycle failed');
       sendInternalError(res, 'Failed to read canonical lifecycle');
     }
   });
@@ -398,7 +529,7 @@ export function contentAdminWriteRoutes(): Router {
         : listContentReuseHistory({ userId: scope.userId, tenantId: scope.tenantId, limit });
       sendSuccess(res, { reuseHistory, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: list content reuse history failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: list content reuse history failed');
       sendInternalError(res, 'Failed to list reuse history');
     }
   });
@@ -477,7 +608,7 @@ export function contentAdminWriteRoutes(): Router {
         scope,
       });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: historical content comparison failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: historical content comparison failed');
       sendInternalError(res, 'Failed to compare candidate against historical content');
     }
   });
@@ -491,8 +622,13 @@ export function contentAdminWriteRoutes(): Router {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
     const { url, addedVia } = req.body;
-    if (!url || typeof url !== 'string') {
-      return sendError(res, 'BAD_REQUEST', 'url is required');
+    const normalizedUrl = readNonEmptyBoundedString(url, CONTENT_ADMIN_CHANNEL_URL_MAX_CHARS);
+    if (!normalizedUrl) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `url must be a non-empty string without control characters and at most ${CONTENT_ADMIN_CHANNEL_URL_MAX_CHARS} characters`,
+      );
     }
     if (isOwnedYoutubeChannelMarker(addedVia)) {
       return sendError(
@@ -506,9 +642,28 @@ export function contentAdminWriteRoutes(): Router {
     if (!safeAddedVia) {
       return sendError(res, 'BAD_REQUEST', 'addedVia must be one of manual, portal, or bot');
     }
+    if (scope.tenantId !== scope.userId) {
+      return sendError(
+        res,
+        'UNSUPPORTED_SCOPE',
+        CONTENT_ADMIN_CHANNEL_UNSUPPORTED_SCOPE_MESSAGE,
+        409,
+      );
+    }
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_channel_add');
     try {
-      const { addAndAnalyzeChannel } = await import('../../services/channel-learner');
-      const result = await addAndAnalyzeChannel(url.trim(), safeAddedVia, scope.userId, scope.tenantId);
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId: scope.userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
+        const { addAndAnalyzeChannel } = await import('../../services/channel-learner');
+        return addAndAnalyzeChannel(normalizedUrl, safeAddedVia, scope.userId, scope.tenantId, {
+          requestSource: 'interactive',
+          jobName: 'channel_add_manual',
+          abortSignal,
+        });
+      });
+      if (requestCancellation.signal.aborted) return;
       sendSuccess(res, {
         channel: { id: result.channel.id, name: result.channel.channel_name },
         analysis: {
@@ -519,9 +674,28 @@ export function contentAdminWriteRoutes(): Router {
         },
       });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: add channel failed');
+      if (requestCancellation.signal.aborted) return;
+      if (err?.code === 'UNSUPPORTED_SCOPE') {
+        return sendError(res, 'UNSUPPORTED_SCOPE', CONTENT_ADMIN_CHANNEL_UNSUPPORTED_SCOPE_MESSAGE, 409);
+      }
+      if (sendCreatorProfileUnavailable(res, err)) return;
+      if (sendChannelSourceUnavailable(res, err)) return;
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        return sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new channel analysis can start while this account is being deleted.',
+          409,
+        );
+      }
+      logger.error(
+        safeContentAdminErrorFields(err),
+        'Portal: add channel failed',
+      );
       sendInternalError(res, 'Failed to add channel');
+    } finally {
+      requestCancellation.cleanup();
     }
   });
 
@@ -529,8 +703,8 @@ export function contentAdminWriteRoutes(): Router {
   router.delete('/channels/:id', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid channel id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid channel id');
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -545,9 +719,10 @@ export function contentAdminWriteRoutes(): Router {
            AND ${contentScopePredicate()}
       `).run(id, ...contentScopeParams(scope.userId, scope.tenantId));
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Channel not found in requested scope', 404);
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, { removed: true, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: remove channel failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: remove channel failed');
       sendInternalError(res, 'Failed to remove channel');
     }
   });
@@ -556,8 +731,9 @@ export function contentAdminWriteRoutes(): Router {
   router.post('/channels/:id/reanalyze', async (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid channel id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid channel id');
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_channel_reanalyze');
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -567,19 +743,26 @@ export function contentAdminWriteRoutes(): Router {
            AND ${contentScopePredicate()}
       `).get(id, ...contentScopeParams(scope.userId, scope.tenantId));
       if (!channel) return sendError(res, 'NOT_FOUND', 'Channel not found in requested scope', 404);
-      await runWithSkillInferenceAccountAdmission({ userId: scope.userId }, async (abortSignal) => {
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId: scope.userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
         const { analyzeChannel } = await import('../../services/channel-learner');
-        const result = await analyzeChannel(id, {
+        return analyzeChannel(id, {
           budgetContext: {
             requestSource: 'interactive',
             jobName: 'channel_reanalyze_manual',
             abortSignal,
           },
         });
-        sendSuccess(res, { analysis: result });
       });
+      if (requestCancellation.signal.aborted) return;
+      sendSuccess(res, { analysis: result });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: reanalyze channel failed');
+      if (requestCancellation.signal.aborted) return;
+      logger.error(safeContentAdminErrorFields(err), 'Portal: reanalyze channel failed');
+      if (sendCreatorProfileUnavailable(res, err)) return;
+      if (sendChannelSourceUnavailable(res, err)) return;
       if (sendAiBudgetError(res, err)) return;
       if (isSkillInferenceAccountDeletionError(err)) {
         return sendError(
@@ -590,6 +773,8 @@ export function contentAdminWriteRoutes(): Router {
         );
       }
       sendInternalError(res, 'Failed to reanalyze');
+    } finally {
+      requestCancellation.cleanup();
     }
   });
 
@@ -605,18 +790,26 @@ export function contentAdminWriteRoutes(): Router {
         409,
       );
     }
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_channel_relearn');
     try {
-      await runWithSkillInferenceAccountAdmission({ userId: scope.userId }, async (abortSignal) => {
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId: scope.userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
         const { processAllChannels } = await import('../../services/channel-learner');
-        const result = await processAllChannels(true, scope.userId, {
+        return processAllChannels(true, scope.userId, {
           requestSource: 'interactive',
           jobName: 'channel_relearn_manual',
           abortSignal,
         });
-        sendSuccess(res, { result });
       });
+      if (requestCancellation.signal.aborted) return;
+      sendSuccess(res, { result });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: channel relearn failed');
+      if (requestCancellation.signal.aborted) return;
+      logger.error(safeContentAdminErrorFields(err), 'Portal: channel relearn failed');
+      if (sendCreatorProfileUnavailable(res, err)) return;
+      if (sendChannelSourceUnavailable(res, err)) return;
       if (sendAiBudgetError(res, err)) return;
       if (isSkillInferenceAccountDeletionError(err)) {
         return sendError(
@@ -627,6 +820,8 @@ export function contentAdminWriteRoutes(): Router {
         );
       }
       sendInternalError(res, 'Failed to run channel relearn');
+    } finally {
+      requestCancellation.cleanup();
     }
   });
 
@@ -639,21 +834,55 @@ export function contentAdminWriteRoutes(): Router {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
     const { title, author } = req.body;
-    if (!title || !author) {
-      return sendError(res, 'BAD_REQUEST', 'title and author are required');
+    const normalizedTitle = readNonEmptyBoundedString(title, CONTENT_ADMIN_BOOK_FIELD_MAX_CHARS);
+    const normalizedAuthor = readNonEmptyBoundedString(author, CONTENT_ADMIN_BOOK_FIELD_MAX_CHARS);
+    if (!normalizedTitle || !normalizedAuthor) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `title and author must be non-empty strings without control characters and at most ${CONTENT_ADMIN_BOOK_FIELD_MAX_CHARS} characters`,
+      );
     }
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_book_extract');
     try {
-      const { handleAddBookFromPortal } = await import('../../commands/books');
-      const result = await handleAddBookFromPortal(title.trim(), author.trim(), scope);
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId: scope.userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
+        const { handleAddBookFromPortal } = await import('../../commands/books');
+        return handleAddBookFromPortal(normalizedTitle, normalizedAuthor, scope, { abortSignal });
+      });
+      if (requestCancellation.signal.aborted) return;
       if (result.ok) {
-        sendSuccess(res, { message: result.message, scope });
+        sendSuccess(res, {
+          message: result.message,
+          scope,
+          ...(result.degraded ? { degraded: true, warnings: result.warnings } : {}),
+        });
       } else {
-        sendError(res, 'EXTRACTION_FAILED', result.message, 500);
+        sendError(
+          res,
+          result.code ?? 'CONTENT_BOOK_EXTRACTION_FAILED',
+          result.message,
+          result.status ?? 503,
+          result.details,
+        );
       }
     } catch (err: any) {
-      logger.error({ err }, 'Portal: add book failed');
+      if (requestCancellation.signal.aborted) return;
+      logger.error(safeContentAdminErrorFields(err), 'Portal: add book failed');
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        return sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No new book extraction can start while this account is being deleted.',
+          409,
+        );
+      }
       sendInternalError(res, 'Failed to add book');
+    } finally {
+      requestCancellation.cleanup();
     }
   });
 
@@ -661,8 +890,8 @@ export function contentAdminWriteRoutes(): Router {
   router.delete('/books/:id', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid book id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid book id');
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -674,7 +903,7 @@ export function contentAdminWriteRoutes(): Router {
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Book not found in requested scope', 404);
       sendSuccess(res, { removed: true, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: delete book failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: delete book failed');
       sendInternalError(res, 'Failed to delete book');
     }
   });
@@ -683,8 +912,9 @@ export function contentAdminWriteRoutes(): Router {
   router.post('/books/:id/retry', async (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid book id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid book id');
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_book_retry');
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -696,25 +926,45 @@ export function contentAdminWriteRoutes(): Router {
         { title: string; author: string } | undefined;
       if (!book) return sendError(res, 'NOT_FOUND', 'Book not found in requested scope', 404);
 
-      // Reset to pending then re-extract
-      db.prepare(`
-        UPDATE book_library
-           SET extraction_status = 'pending',
-               updated_at = datetime('now')
-         WHERE id = ?
-           AND ${contentScopePredicate()}
-      `).run(id, ...contentScopeParams(scope.userId, scope.tenantId));
-      const { handleAddBookFromPortal } = await import('../../commands/books');
-      const result = await handleAddBookFromPortal(book.title, book.author, scope);
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId: scope.userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
+        const { handleAddBookFromPortal } = await import('../../commands/books');
+        return handleAddBookFromPortal(book.title, book.author, scope, { abortSignal });
+      });
+      if (requestCancellation.signal.aborted) return;
       if (result.ok) {
-        sendSuccess(res, { retried: true, message: result.message, scope });
+        sendSuccess(res, {
+          retried: true,
+          message: result.message,
+          scope,
+          ...(result.degraded ? { degraded: true, warnings: result.warnings } : {}),
+        });
       } else {
-        sendError(res, 'EXTRACTION_FAILED', result.message, 500);
+        sendError(
+          res,
+          result.code ?? 'CONTENT_BOOK_EXTRACTION_FAILED',
+          result.message,
+          result.status ?? 503,
+          result.details,
+        );
       }
     } catch (err: any) {
-      logger.error({ err }, 'Portal: retry book extraction failed');
+      if (requestCancellation.signal.aborted) return;
+      logger.error(safeContentAdminErrorFields(err), 'Portal: retry book extraction failed');
       if (sendAiBudgetError(res, err)) return;
+      if (isSkillInferenceAccountDeletionError(err)) {
+        return sendError(
+          res,
+          'ACCOUNT_DELETION_IN_PROGRESS',
+          'No book extraction can restart while this account is being deleted.',
+          409,
+        );
+      }
       sendInternalError(res, 'Failed to retry extraction');
+    } finally {
+      requestCancellation.cleanup();
     }
   });
 
@@ -722,10 +972,22 @@ export function contentAdminWriteRoutes(): Router {
   router.patch('/books/:id/notes', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid book id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid book id');
     const { notes } = req.body;
     if (notes === undefined) return sendError(res, 'BAD_REQUEST', 'notes field is required');
+    const serializedNotes = serializeBoundedJsonOrString(
+      notes,
+      CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS,
+      { allowEmptyString: true },
+    );
+    if (serializedNotes === null) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `notes must be a JSON value or string serialized to at most ${CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS} characters`,
+      );
+    }
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -735,11 +997,11 @@ export function contentAdminWriteRoutes(): Router {
                updated_at = datetime('now')
          WHERE id = ?
            AND ${contentScopePredicate()}
-      `).run(typeof notes === 'string' ? notes : JSON.stringify(notes), id, ...contentScopeParams(scope.userId, scope.tenantId));
+      `).run(serializedNotes, id, ...contentScopeParams(scope.userId, scope.tenantId));
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Book not found in requested scope', 404);
       sendSuccess(res, { updated: true, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: update book notes failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: update book notes failed');
       sendInternalError(res, 'Failed to update notes');
     }
   });
@@ -767,7 +1029,7 @@ export function contentAdminWriteRoutes(): Router {
       }));
       sendSuccess(res, { pillars });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: list pillars failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: list pillars failed');
       sendInternalError(res, 'Failed to list pillars');
     }
   });
@@ -797,7 +1059,7 @@ export function contentAdminWriteRoutes(): Router {
         pillarName.toLowerCase(),
         JSON.stringify(pillarKeywords),
         weight ?? 1.0,
-        normalizeString(language, 32) ?? 'pt-BR',
+        normalizeString(language, 32) ?? CONTENT_ADMIN_SETUP_SAFE_LANGUAGE,
         scope.userId,
         insertScope.tenantId,
         insertScope.ownerUserId,
@@ -808,12 +1070,13 @@ export function contentAdminWriteRoutes(): Router {
         insertScope.updatedBy,
         insertScope.auditMetadataJson,
       );
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, { id: info.lastInsertRowid, scope });
     } catch (err: any) {
       if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         return sendError(res, 'DUPLICATE', `Pillar "${pillarName}" already exists for this user`);
       }
-      logger.error({ err }, 'Portal: add pillar failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: add pillar failed');
       sendInternalError(res, 'Failed to add pillar');
     }
   });
@@ -822,8 +1085,8 @@ export function contentAdminWriteRoutes(): Router {
   router.patch('/pillars/:id', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid pillar id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid pillar id');
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -858,9 +1121,10 @@ export function contentAdminWriteRoutes(): Router {
           AND ${contentScopePredicate()}
       `).run(...params);
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Pillar not found in requested scope', 404);
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, { updated: true });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: update pillar failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: update pillar failed');
       sendInternalError(res, 'Failed to update pillar');
     }
   });
@@ -869,8 +1133,8 @@ export function contentAdminWriteRoutes(): Router {
   router.delete('/pillars/:id', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid pillar id');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid pillar id');
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
@@ -880,9 +1144,10 @@ export function contentAdminWriteRoutes(): Router {
           AND ${contentScopePredicate()}
       `).run(id, ...contentScopeParams(scope.userId, scope.tenantId));
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Pillar not found in requested scope', 404);
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, { removed: true });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: delete pillar failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: delete pillar failed');
       sendInternalError(res, 'Failed to delete pillar');
     }
   });
@@ -896,17 +1161,49 @@ export function contentAdminWriteRoutes(): Router {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
     const { category, label, payload } = req.body;
-    if (!category || !payload) {
-      return sendError(res, 'BAD_REQUEST', 'category and payload are required');
+    const normalizedCategory = readNonEmptyBoundedString(category, CONTENT_ADMIN_VOICE_CATEGORY_MAX_CHARS);
+    if (!normalizedCategory) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `category must be a non-empty string without control characters and at most ${CONTENT_ADMIN_VOICE_CATEGORY_MAX_CHARS} characters`,
+      );
+    }
+    if (!Object.prototype.hasOwnProperty.call(req.body, 'payload')) {
+      return sendError(res, 'BAD_REQUEST', 'payload is required');
+    }
+    const normalizedPayload = serializeBoundedJsonOrString(payload, CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS);
+    if (normalizedPayload === null) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `payload must be a non-empty JSON value or string serialized to at most ${CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS} characters`,
+      );
+    }
+    const normalizedLabel = label === undefined
+      ? null
+      : readNonEmptyBoundedString(label, CONTENT_ADMIN_VOICE_LABEL_MAX_CHARS);
+    if (label !== undefined && !normalizedLabel) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `label must be a non-empty string without control characters and at most ${CONTENT_ADMIN_VOICE_LABEL_MAX_CHARS} characters`,
+      );
     }
     try {
-      const { upsertKnowledge } = require('../../state/content-references');
-      const normalizedPayload = typeof payload === 'string' ? payload.trim() : JSON.stringify(payload);
-      if (!normalizedPayload) return sendError(res, 'BAD_REQUEST', 'payload must be non-empty');
-      upsertKnowledge(category, normalizedPayload, label ? [String(label)] : [], scope.userId, scope.tenantId);
+      // The portal supports tenant-defined voice categories; PatternCategory
+      // remains the narrower built-in learner taxonomy at the state boundary.
+      upsertKnowledge(
+        normalizedCategory as PatternCategory,
+        normalizedPayload,
+        normalizedLabel ? [normalizedLabel] : [],
+        scope.userId,
+        scope.tenantId,
+      );
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, { upserted: true, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: upsert voice DNA failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: upsert voice DNA failed');
       sendInternalError(res, 'Failed to upsert voice DNA');
     }
   });
@@ -915,17 +1212,38 @@ export function contentAdminWriteRoutes(): Router {
   router.patch('/voice-dna/:id', (req: Request, res: Response) => {
     const scope = resolvePortalContentScope(req, res, true);
     if (!scope) return;
-    const id = parseInt(String(req.params.id), 10);
-    if (isNaN(id)) return sendError(res, 'BAD_REQUEST', 'Invalid voice DNA id');
-    const { payload, category } = req.body;
-    if (!payload && !category) return sendError(res, 'BAD_REQUEST', 'payload or category required');
+    const id = parsePositiveInt(req.params.id);
+    if (id === undefined) return sendError(res, 'BAD_REQUEST', 'Invalid voice DNA id');
+    const hasPayload = Object.prototype.hasOwnProperty.call(req.body, 'payload');
+    const hasCategory = Object.prototype.hasOwnProperty.call(req.body, 'category');
+    if (!hasPayload && !hasCategory) return sendError(res, 'BAD_REQUEST', 'payload or category required');
+    const normalizedPayload = hasPayload
+      ? serializeBoundedJsonOrString(req.body.payload, CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS)
+      : null;
+    if (hasPayload && normalizedPayload === null) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `payload must be a non-empty JSON value or string serialized to at most ${CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS} characters`,
+      );
+    }
+    const normalizedCategory = hasCategory
+      ? readNonEmptyBoundedString(req.body.category, CONTENT_ADMIN_VOICE_CATEGORY_MAX_CHARS)
+      : null;
+    if (hasCategory && !normalizedCategory) {
+      return sendError(
+        res,
+        'BAD_REQUEST',
+        `category must be a non-empty string without control characters and at most ${CONTENT_ADMIN_VOICE_CATEGORY_MAX_CHARS} characters`,
+      );
+    }
     try {
       const db = getDb();
       ensureContentTenantScopeColumns(db);
       const sets: string[] = ["updated_at = datetime('now')"];
       const params: unknown[] = [];
-      if (payload) { sets.push('synthesized_text = ?'); params.push(typeof payload === 'string' ? payload : JSON.stringify(payload)); }
-      if (category) { sets.push('category = ?'); params.push(String(category)); }
+      if (hasPayload) { sets.push('synthesized_text = ?'); params.push(normalizedPayload); }
+      if (hasCategory) { sets.push('category = ?'); params.push(normalizedCategory); }
       params.push(id, ...contentScopeParams(scope.userId, scope.tenantId));
       const info = db.prepare(`
         UPDATE content_knowledge
@@ -934,9 +1252,10 @@ export function contentAdminWriteRoutes(): Router {
            AND ${contentScopePredicate()}
       `).run(...params);
       if (info.changes === 0) return sendError(res, 'NOT_FOUND', 'Voice DNA entry not found in requested scope', 404);
+      invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, { updated: true, scope });
     } catch (err: any) {
-      logger.error({ err }, 'Portal: update voice DNA failed');
+      logger.error(safeContentAdminErrorFields(err), 'Portal: update voice DNA failed');
       sendInternalError(res, 'Failed to update voice DNA');
     }
   });

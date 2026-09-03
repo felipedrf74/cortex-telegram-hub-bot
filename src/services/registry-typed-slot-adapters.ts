@@ -32,6 +32,9 @@ import {
   extractTrainingPlanSlots,
 } from './skills/training/helpers';
 import {
+  extractInlineContentRewrite,
+} from './skills/content/rewrite';
+import {
   parseContentPipelineStageTransition,
 } from './skills/content/pipeline-stage';
 import {
@@ -381,9 +384,21 @@ export const contentPublicationRequestSlotExtractor: SlotExtractor = {
   },
 };
 
+export const contentRewriteSlotExtractor: SlotExtractor = {
+  name: 'content_rewrite',
+  label: 'extracts inline source copy and rewrite objective from one-turn rewrite requests',
+  extract(text) {
+    const rewrite = extractInlineContentRewrite(text);
+    const slots: Record<string, unknown> = {};
+    if (rewrite.sourceText) slots.sourceText = rewrite.sourceText;
+    if (rewrite.objective) slots.objective = rewrite.objective;
+    return { slots, confidence: rewrite.sourceText && rewrite.objective ? 0.9 : 0.55 };
+  },
+};
+
 export const contentPipelineStageSlotExtractor: SlotExtractor = {
   name: 'content_pipeline_stage_transition',
-  label: 'extracts target stage and content title from content pipeline stage phrasings',
+  label: 'extracts a scripted target and content title for saved-script verification',
   extract(text) {
     const slots = parseContentPipelineStageTransition(text);
     const result: Record<string, unknown> = {};

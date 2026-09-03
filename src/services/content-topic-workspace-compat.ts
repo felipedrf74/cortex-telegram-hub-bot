@@ -992,7 +992,11 @@ function compatibilityReceiptIntegrityError(): ContentWorkspaceError {
 }
 
 function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
-  if (!scope || !Number.isInteger(scope.tenantId) || scope.tenantId <= 0 || !Number.isInteger(scope.userId) || scope.userId <= 0) {
+  if (!scope
+    || !Number.isSafeInteger(scope.tenantId)
+    || scope.tenantId <= 0
+    || !Number.isSafeInteger(scope.userId)
+    || scope.userId <= 0) {
     throw new ContentWorkspaceError('CONTENT_SCOPE_REQUIRED', 'A valid tenant and user scope is required.', 401);
   }
   if (scope.tenantId !== scope.userId) {
@@ -1013,7 +1017,7 @@ function normalizeOptionalIdempotencyKey(value?: string | null): string | null {
     throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', 'idempotencyKey must be a string.', 400, { field: 'idempotencyKey' });
   }
   const normalized = value.trim();
-  if (normalized.length === 0 || normalized.length > 128 || /[\u0000-\u001F\u007F]/u.test(normalized)) {
+  if (normalized.length === 0 || normalized.length > 128 || /[\u0000-\u001F\u007F-\u009F]/u.test(normalized)) {
     throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', 'idempotencyKey must contain 1 to 128 visible characters.', 400, {
       field: 'idempotencyKey',
     });
@@ -1041,9 +1045,9 @@ function stringOrNull(value: unknown): string | null {
 function publicationConfirmationRequired(): ContentWorkspaceError {
   return new ContentWorkspaceError(
     'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED',
-    'Publication cannot be inferred from a legacy topic status. Confirm the external publication through the dedicated tracking flow.',
+    'Publication cannot be inferred from a legacy topic status, and external publication tracking is not supported.',
     409,
-    { publicationExecution: 'not_performed', recovery: 'confirm_external_publication' },
+    { publicationExecution: 'not_performed', recovery: 'publication_tracking_not_supported' },
   );
 }
 

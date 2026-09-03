@@ -6,8 +6,8 @@ import { asyncHandler, sendAiBudgetError, sendError, sendSuccess } from '../resp
 import { getDb } from '../../services/database';
 import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
-  contentScopeParams,
-  contentScopePredicate,
+  contentPrivateScopeParams,
+  contentPrivateScopePredicate,
   ensureContentTenantScopeColumns,
 } from '../../services/content-tenant-scope';
 import {
@@ -35,6 +35,8 @@ import {
   isSkillInferenceAccountDeletionError,
   runWithSkillInferenceAccountAdmission,
 } from '../../services/skill-inference-service';
+import { isContentGenerationOutputError } from '../../services/content-generation-output-error';
+import { bindContentRequestCancellation } from './content-request-cancellation';
 
 type ContentTopicGeneratorFormat = 'reel' | 'youtube';
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
@@ -58,9 +60,20 @@ const VALID_VARIANT_KINDS = new Set([
   'section',
   'repurpose',
 ]);
+const CONTENT_TOPIC_SOURCE_JOB_MAX_CHARS = 120;
 
 function isTopicGeneratorFormat(format: unknown): format is ContentTopicGeneratorFormat {
   return typeof format === 'string' && VALID_TOPIC_GENERATOR_FORMATS.has(format as ContentTopicGeneratorFormat);
+}
+
+function normalizeTopicSourceJob(value: unknown): string | null {
+  if (value === undefined || value === null) return 'manual';
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9._:-]{0,119}$/.test(normalized)
+    && normalized.length <= CONTENT_TOPIC_SOURCE_JOB_MAX_CHARS
+    ? normalized
+    : null;
 }
 
 export function registerContentLearningRoutes(
@@ -85,18 +98,32 @@ export function registerContentLearningRoutes(
   router.post('/topics/generate', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
-    const { format = 'reel', sourceJob = 'manual' } = req.body;
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      sendError(res, 'VALIDATION', 'request body must be a JSON object', 400);
+      return;
+    }
+    const requestBody = req.body as Record<string, unknown>;
+    const { format = 'reel' } = requestBody;
+    const sourceJob = normalizeTopicSourceJob(requestBody.sourceJob);
 
     if (!isTopicGeneratorFormat(format)) {
       sendError(res, 'VALIDATION', invalidTopicGeneratorFormatMessage(requestLanguage), 400);
       return;
     }
+    if (!sourceJob) {
+      sendError(res, 'VALIDATION', 'sourceJob must be a safe identifier of at most 120 characters', 400);
+      return;
+    }
 
     const startMs = Date.now();
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_topic_generation');
     try {
-      await runWithSkillInferenceAccountAdmission({ userId }, async (abortSignal) => {
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
         const { generateAndStoreTopicCandidates } = await import('../../services/content-workflow');
-        const result = await generateAndStoreTopicCandidates(
+        return generateAndStoreTopicCandidates(
           userId,
           format,
           sourceJob,
@@ -104,11 +131,17 @@ export function registerContentLearningRoutes(
           5,
           { requestSource: 'interactive', abortSignal },
         );
-        invalidateContentDerivedCaches(userId);
-        sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
       });
+      if (requestCancellation.signal.aborted) return;
+      invalidateContentDerivedCaches(userId);
+      sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
     } catch (err) {
+      if (requestCancellation.signal.aborted) return;
       if (sendAiBudgetError(res, err)) return;
+      if (isContentGenerationOutputError(err)) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
       if (isSkillInferenceAccountDeletionError(err)) {
         sendError(
           res,
@@ -119,6 +152,8 @@ export function registerContentLearningRoutes(
         return;
       }
       throw err;
+    } finally {
+      requestCancellation.cleanup();
     }
   }));
 
@@ -132,39 +167,39 @@ export function registerContentLearningRoutes(
   router.post('/topics/:feedbackId/feedback', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const { feedbackId } = req.params;
-    const { sentiment } = req.body;
+    const { sentiment } = req.body ?? {};
 
     if (!sentiment || !VALID_FEEDBACK_SENTIMENTS.includes(sentiment)) {
       sendError(res, 'VALIDATION', `sentiment must be one of: ${VALID_FEEDBACK_SENTIMENTS.join(', ')}`, 400);
       return;
     }
 
-    const id = parseInt(feedbackId, 10);
+    const id = parsePositiveSafeInteger(feedbackId);
+    if (id == null) {
+      sendError(res, 'VALIDATION', 'feedbackId must be a positive integer', 400);
+      return;
+    }
 
     const db = getDb();
     ensureContentTenantScopeColumns(db);
     const topicRow = db.prepare(
-      `SELECT id, topic, user_id, tenant_id, owner_user_id, visibility_scope, scope_status
+      `SELECT id, topic
          FROM content_topic_feedback
-        WHERE id = ?`
-    ).get(id) as { id: number; topic: string; user_id: number; tenant_id?: number; owner_user_id?: number; visibility_scope?: string; scope_status?: string } | undefined;
+        WHERE id = ?
+          AND ${contentPrivateScopePredicate()}`
+    ).get(id, ...contentPrivateScopeParams(userId, tenantId)) as { id: number; topic: string } | undefined;
 
     if (!topicRow) {
       sendError(res, 'NOT_FOUND', 'Topic not found', 404);
       return;
     }
-    if (
-      topicRow.user_id <= 0
-      || topicRow.user_id !== userId
-      || topicRow.scope_status === 'quarantined'
-      || (topicRow.tenant_id != null && topicRow.tenant_id !== tenantId)
-    ) {
-      sendError(res, 'FORBIDDEN', 'Not your topic', 403);
-      return;
-    }
 
     const { updateFeedback } = await import('../../services/content-workflow');
-    updateFeedback(id, sentiment, userId, tenantId);
+    const updated = updateFeedback(id, sentiment, userId, tenantId);
+    if (!updated) {
+      sendError(res, 'NOT_FOUND', 'Topic not found', 404);
+      return;
+    }
     invalidateContentDerivedCaches(userId);
     sendSuccess(res, { feedbackId: id, sentiment, title: topicRow.topic });
   }));
@@ -283,10 +318,10 @@ export function registerContentLearningRoutes(
     const rows = db.prepare(`
       SELECT id, topic, niche, format, hook_idea, why_now, angle_tag, source_job, created_at
       FROM content_topic_feedback
-      WHERE sentiment = 'pending' AND ${contentScopePredicate()}
+      WHERE sentiment = 'pending' AND ${contentPrivateScopePredicate()}
       ORDER BY created_at DESC
       LIMIT 50
-    `).all(...contentScopeParams(userId, tenantId)) as any[];
+    `).all(...contentPrivateScopeParams(userId, tenantId)) as any[];
 
     sendSuccess(res, buildPendingTopicsResponse(rows));
   }));
@@ -301,21 +336,31 @@ export function registerContentLearningRoutes(
   router.post('/weekly-package', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const startMs = Date.now();
+    const requestCancellation = bindContentRequestCancellation(req, res, 'content_weekly_package');
 
     try {
-      await runWithSkillInferenceAccountAdmission({ userId }, async (abortSignal) => {
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId,
+        abortSignal: requestCancellation.signal,
+      }, async (abortSignal) => {
         const { generateWeeklyPackage } = await import('../../services/content-workflow');
-        const result = await generateWeeklyPackage(
+        return generateWeeklyPackage(
           userId,
           tenantId,
           {},
           { requestSource: 'interactive', abortSignal },
         );
-        invalidateContentDerivedCaches(userId);
-        sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
       });
+      if (requestCancellation.signal.aborted) return;
+      invalidateContentDerivedCaches(userId);
+      sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
     } catch (err) {
+      if (requestCancellation.signal.aborted) return;
       if (sendAiBudgetError(res, err)) return;
+      if (isContentGenerationOutputError(err)) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
       if (isSkillInferenceAccountDeletionError(err)) {
         sendError(
           res,
@@ -326,6 +371,8 @@ export function registerContentLearningRoutes(
         return;
       }
       throw err;
+    } finally {
+      requestCancellation.cleanup();
     }
   }));
 
@@ -345,10 +392,10 @@ export function registerContentLearningRoutes(
       FROM content_topic_feedback
       WHERE sentiment IN ('approved', 'rejected')
         AND created_at > datetime('now', '-60 days')
-        AND ${contentScopePredicate()}
+        AND ${contentPrivateScopePredicate()}
       ORDER BY created_at DESC
       LIMIT 100
-    `).all(...contentScopeParams(userId, tenantId)) as { topic: string; niche: string; sentiment: string; created_at: string }[];
+    `).all(...contentPrivateScopeParams(userId, tenantId)) as { topic: string; niche: string; sentiment: string; created_at: string }[];
 
     sendSuccess(res, buildTasteProfileResponse(rows));
   }));
@@ -361,6 +408,23 @@ export function registerContentLearningRoutes(
    */
   router.post('/performance', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!Number.isSafeInteger(tenantId) || Number(tenantId) <= 0) {
+      sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
+      return;
+    }
+    if (Number(tenantId) !== userId) {
+      sendError(res, 'CONTENT_TENANT_SCOPE_MISMATCH', 'The active tenant does not match the authenticated session.', 403);
+      return;
+    }
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      sendError(
+        res,
+        'CONTENT_PERFORMANCE_VALIDATION_FAILED',
+        'A performance outcome object is required.',
+        400,
+      );
+      return;
+    }
     const {
       pipelineId,
       itemId,
@@ -384,14 +448,6 @@ export function registerContentLearningRoutes(
       analysis,
     } = req.body;
 
-    if (!Number.isInteger(tenantId) || Number(tenantId) <= 0) {
-      sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
-      return;
-    }
-    if (Number(tenantId) !== userId) {
-      sendError(res, 'CONTENT_TENANT_SCOPE_MISMATCH', 'The active tenant does not match the authenticated session.', 403);
-      return;
-    }
     if (pipelineId !== undefined && pipelineId !== null) {
       sendError(
         res,
@@ -471,7 +527,11 @@ export function registerContentLearningRoutes(
    */
   router.get('/performance', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const days = parseInt(String(req.query.days || '30'), 10);
+    const days = parseBoundedPositiveQuery(req.query.days, 30, 366);
+    if (days == null) {
+      sendError(res, 'VALIDATION', 'days must be an integer from 1 to 366', 400);
+      return;
+    }
 
     const { getPerformanceSummary } = await import('../../services/content-learning-store');
     const summary = getPerformanceSummary(userId, days, tenantId);
@@ -504,10 +564,10 @@ export function registerContentLearningRoutes(
    */
   router.get('/artifact-chain/:pipelineId', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
-    const contentIdentifier = parseInt(req.params.pipelineId, 10);
+    const contentIdentifier = parsePositiveSafeInteger(req.params.pipelineId);
 
-    if (Number.isNaN(contentIdentifier)) {
-      sendError(res, 'BAD_REQUEST', 'contentIdentifier must be a number', 400);
+    if (contentIdentifier == null) {
+      sendError(res, 'BAD_REQUEST', 'contentIdentifier must be a positive integer', 400);
       return;
     }
 
@@ -531,8 +591,12 @@ export function registerContentLearningRoutes(
    */
   router.get('/scripts/recent', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const days = parseInt(String(req.query.days || '30'), 10);
-    const limit = parseInt(String(req.query.limit || '10'), 10);
+    const days = parseBoundedPositiveQuery(req.query.days, 30, 366);
+    const limit = parseBoundedPositiveQuery(req.query.limit, 10, 100);
+    if (days == null || limit == null) {
+      sendError(res, 'VALIDATION', 'days must be 1-366 and limit must be 1-100', 400);
+      return;
+    }
 
     const { getRecentScripts } = await import('../../services/content-learning-store');
     const { tenantId } = req as unknown as AuthenticatedRequest;
@@ -542,10 +606,23 @@ export function registerContentLearningRoutes(
   }));
 }
 
+function parsePositiveSafeInteger(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function parseBoundedPositiveQuery(value: unknown, fallback: number, maximum: number): number | null {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (Array.isArray(value) || typeof value !== 'string') return null;
+  const parsed = parsePositiveSafeInteger(value);
+  return parsed != null && parsed <= maximum ? parsed : null;
+}
+
 function cleanFeedbackString(value: unknown, maxChars: number): string | null {
   if (typeof value !== 'string') return null;
   const cleaned = value
-    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxChars);
@@ -555,7 +632,7 @@ function cleanFeedbackString(value: unknown, maxChars: number): string | null {
 function cleanScriptArtifactText(value: unknown, maxChars: number): string | null {
   if (typeof value !== 'string') return null;
   const cleaned = value
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, ' ')
     .trim()
     .slice(0, maxChars);
   return cleaned || null;

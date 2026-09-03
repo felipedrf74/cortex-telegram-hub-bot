@@ -12,6 +12,7 @@
 
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 const YT_DATA_BASE = 'https://www.googleapis.com/youtube/v3';
 const YT_ANALYTICS_BASE = 'https://youtubeanalytics.googleapis.com/v2/reports';
@@ -60,7 +61,7 @@ export async function getVideoStats(videoId: string): Promise<VideoStats | null>
       signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) {
-      logger.warn({ status: resp.status, videoId }, 'YouTube Data API failed');
+      logger.warn({ operation: 'youtube_video_stats', status: resp.status }, 'YouTube Data API failed');
       return null;
     }
 
@@ -87,7 +88,7 @@ export async function getVideoStats(videoId: string): Promise<VideoStats | null>
       subscribersGained: null,
     };
   } catch (err) {
-    logger.warn({ err, videoId }, 'Failed to fetch video stats');
+    logger.warn({ operation: 'youtube_video_stats', ...safeContentLogErrorFields(err) }, 'Failed to fetch video stats');
     return null;
   }
 }
@@ -163,7 +164,7 @@ export async function getRecentVideoStats(
       };
     });
   } catch (err) {
-    logger.warn({ err, channelId }, 'Failed to fetch recent video stats');
+    logger.warn({ operation: 'youtube_recent_video_stats', ...safeContentLogErrorFields(err) }, 'Failed to fetch recent video stats');
     return [];
   }
 }
@@ -213,7 +214,7 @@ export async function checkKeywordRanking(
 
     return { position, topCompetitor };
   } catch (err) {
-    logger.warn({ err, keyword }, 'Failed to check keyword ranking');
+    logger.warn({ operation: 'youtube_keyword_ranking', ...safeContentLogErrorFields(err) }, 'Failed to check keyword ranking');
     return { position: null, topCompetitor: null };
   }
 }

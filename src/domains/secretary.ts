@@ -113,6 +113,11 @@ function unavailableCalendarFetchResult(): UnifiedCalendarFetchResult {
   };
 }
 
+function safeSecretaryFailureType(error: unknown): string {
+  const candidate = error instanceof Error ? error.name : typeof error;
+  return candidate.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80) || 'UnknownError';
+}
+
 const DOMAIN: DomainName = 'secretary';
 
 // Short-lived cache for state context — avoids redundant API calls on rapid messages.
@@ -656,7 +661,6 @@ function renderSharedDecisionContracts(contracts: SharedDecisionContracts): stri
       contract.preferredWindows.length > 0 ? `preferredWindows=${contract.preferredWindows.join(' | ')}` : null,
       contract.fallbackIfDeferred.length > 0 ? `fallbackIfDeferred=${contract.fallbackIfDeferred.join(' | ')}` : null,
       contract.budgetMode ? `budgetMode=${contract.budgetMode}` : null,
-      contract.publishDeadline ? `publishDeadline=${contract.publishDeadline}` : null,
       contract.notes.length > 0 ? `notes=${contract.notes.join(' | ')}` : null,
     ].filter(Boolean).join('; ');
     if (details.length > 0) {
@@ -902,7 +906,10 @@ async function handleSecretaryAdmitted(
         userId,
         tenantId: scopedTenantId,
       }).catch((err) => {
-        logger.warn({ err, userId, tenantId: scopedTenantId }, 'Secretary structured context snapshot failed');
+        logger.warn(
+          { failureType: safeSecretaryFailureType(err), userId, tenantId: scopedTenantId },
+          'Secretary structured context snapshot failed',
+        );
         return null;
       })
       : Promise.resolve(null),
@@ -1511,7 +1518,7 @@ async function runSecretaryStructuredReasoning(input: {
     rethrowSecretaryAccountModelWorkCancellation(err, input.abortSignal);
     logger.warn({
       event: 'secretary.candidate_schema_failed',
-      failureType: err instanceof Error ? err.name : typeof err,
+      failureType: safeSecretaryFailureType(err),
       userId: input.userId,
       tenantId: input.tenantId,
       snapshotId: input.snapshot.snapshotId,
@@ -1563,7 +1570,7 @@ async function runSecretaryStructuredReasoning(input: {
     rethrowSecretaryAccountModelWorkCancellation(err, input.abortSignal);
     logger.warn({
       event: 'secretary.candidate_schema_failed',
-      failureType: err instanceof Error ? err.name : typeof err,
+      failureType: safeSecretaryFailureType(err),
       userId: input.userId,
       tenantId: input.tenantId,
       snapshotId: input.snapshot.snapshotId,

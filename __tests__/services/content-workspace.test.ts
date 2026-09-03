@@ -73,6 +73,28 @@ describe('content workspace canonical domain', () => {
     }, db)).toThrowError(expect.objectContaining<Partial<ContentWorkspaceError>>({ code: 'CONTENT_IDEMPOTENCY_KEY_REUSED' }));
   });
 
+  it('rejects unsafe scope identifiers and control-bearing workspace replay keys', () => {
+    expect(() => createContentWorkspaceItem({
+      scope: { tenantId: Number.MAX_SAFE_INTEGER + 1, userId: OWNER.userId },
+      itemType: 'content_item',
+      title: 'Unsafe scope',
+      idempotencyKey: 'unsafe-scope-001',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentWorkspaceError>>({
+      code: 'CONTENT_SCOPE_REQUIRED',
+      status: 401,
+    }));
+
+    expect(() => createContentWorkspaceItem({
+      scope: OWNER,
+      itemType: 'content_item',
+      title: 'Control-bearing replay key',
+      idempotencyKey: 'workspace-key\nsecond-line',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentWorkspaceError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+  });
+
   it('keeps every read and relationship inside the authenticated tenant and owner scope', () => {
     const item = createItem(db, 'Scoped idea', 'scoped-item-0001').value;
     expect(getContentWorkspaceItem(OTHER_TENANT, item.id, db)).toBeNull();
@@ -413,6 +435,26 @@ describe('content workspace canonical domain', () => {
       productionState: 'approved',
       artifactPhase: 'final',
       nextAction: { action: 'schedule_work', label: 'Reserve work time' },
+    });
+  });
+
+  it('labels imported scheduled and published states as internal and unverified', () => {
+    const scheduled = createItem(db, 'Imported scheduled item', 'legacy-scheduled-item-001').value;
+    const published = createItem(db, 'Imported published item', 'legacy-published-item-001').value;
+    db.prepare('UPDATE content_domain_objects SET production_state = ? WHERE id = ?')
+      .run('scheduled', scheduled.id);
+    db.prepare('UPDATE content_domain_objects SET production_state = ? WHERE id = ?')
+      .run('published', published.id);
+
+    expect(getContentWorkspaceItem(OWNER, scheduled.id, db)?.nextAction).toEqual({
+      action: 'prepare_publish',
+      label: 'Review internal scheduled-state work',
+      reason: 'This legacy internal state is not proof of a publication schedule or external post.',
+    });
+    expect(getContentWorkspaceItem(OWNER, published.id, db)?.nextAction).toEqual({
+      action: 'repurpose_content',
+      label: 'Review internally completed work',
+      reason: 'This legacy internal state is not proof that the work was published externally.',
     });
   });
 

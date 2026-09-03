@@ -638,6 +638,12 @@ type OneShotOptions = {
   thinkingBudget?: number;
   /** Optional caller-specific retry cap; bounded by the global safety cap. */
   maxRetries?: number;
+  /**
+   * Default true for legacy callers. Set false when a dispatched generation
+   * has no provider-level replay key: configuration fallback remains allowed,
+   * but an attempted provider failure is terminal rather than duplicated.
+   */
+  allowFallbackAfterProviderFailure?: boolean;
   /** Caller cancellation prevents retries and every later provider hop. */
   abortSignal?: AbortSignal;
   /** Explicit classification and per-request authority for raw private data. */
@@ -1343,6 +1349,7 @@ export async function completeOneShotWithFallback(
       throwIfOneShotCancelled(options?.abortSignal, err);
       rethrowUsagePersistenceFailure(err);
       rethrowProviderSafetyBlock(err);
+      if (options?.allowFallbackAfterProviderFailure === false) throw err;
       const { status, code } = extractGeminiErrorInfo(err);
       const attempts = (err as { geminiOneShotAttempts?: number })?.geminiOneShotAttempts ?? 1;
       const fallbackModel = resolveGeminiOneShotFallbackModel(primaryModel);
@@ -1411,6 +1418,7 @@ export async function completeOneShotWithFallback(
   } catch (err) {
     throwIfOneShotCancelled(options?.abortSignal, err);
     rethrowUsagePersistenceFailure(err);
+    if (options?.allowFallbackAfterProviderFailure === false) throw err;
     logger.warn({
       category,
       code: safeProviderFailureCode((err as { code?: string })?.code),

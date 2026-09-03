@@ -1,4 +1,4 @@
-from .research import SearchResult, ContentBrief, SourceReference, TrendingTopic
+from .research import SearchResult, ContentBrief, ResearchClaim, SourceReference, TrendingTopic
 from .scoring import ScoreBreakdown, ScoredResult
 from .requests import (
     DeepSearchRequest, DeepSearchResponse, SourcesResponse, HotNewsRequest, HotNewsResponse,
@@ -18,7 +18,7 @@ from .requests import (
 )
 
 __all__ = [
-    "SearchResult", "ContentBrief", "SourceReference", "TrendingTopic",
+    "SearchResult", "ContentBrief", "ResearchClaim", "SourceReference", "TrendingTopic",
     "ScoreBreakdown", "ScoredResult",
     "DeepSearchRequest", "DeepSearchResponse", "SourcesResponse", "HotNewsRequest", "HotNewsResponse",
     "TrendingResponse", "ReactionResponse",

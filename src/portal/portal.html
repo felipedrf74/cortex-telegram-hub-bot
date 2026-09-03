@@ -2031,7 +2031,7 @@ table.legacy th {
       <div class="section-header">
         <div>
           <h1 class="section-title">Content Creation</h1>
-          <div class="section-subtitle">Commands, books, YouTube research, agent mesh, triggers, voice DNA, pipeline</div>
+          <div class="section-subtitle">Mixed operator overview (owner-bootstrap workspace + platform registries); scoped panels and actions follow the selector below</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-ghost btn-sm" id="content-refresh-btn">
@@ -2054,7 +2054,7 @@ table.legacy th {
         <div class="card-header">
           <div>
             <div class="card-title">🎯 Tenant Scope</div>
-            <span class="card-subtitle" id="content-scope-subtitle">Set the user / tenant context for V1 Content admin actions. Leave both empty to operate as platform/operator (legacy behavior).</span>
+            <span class="card-subtitle" id="content-scope-subtitle">Set the user / tenant context for scoped V1 Content panels and actions. The legacy mixed overview remains owner-bootstrap/platform scoped and is labeled separately.</span>
           </div>
         </div>
         <div style="padding:var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center">
@@ -2217,7 +2217,7 @@ table.legacy th {
           <div class="kpi-card">
             <div class="kpi-label">Published 30d</div>
             <div class="kpi-value" id="content-perf-published-30d">—</div>
-            <div class="kpi-sub">live cadence</div>
+            <div class="kpi-sub" id="content-perf-published-30d-sub">not tracked</div>
           </div>
           <div class="kpi-card">
             <div class="kpi-label">Scripts 30d</div>
@@ -2887,8 +2887,10 @@ table.legacy th {
   let CONTENT_SCOPE = loadStoredScope();
 
   function isContentScopedRoute(url) {
-    return typeof url === 'string'
-      && url.includes('/api/v1/admin/content');
+    if (typeof url !== 'string') return false;
+    return url === '/api/v1/admin/content'
+      || url.startsWith('/api/v1/admin/content/')
+      || url.startsWith('/api/v1/admin/content?');
   }
   function isNotificationScopedRoute(url) {
     return typeof url === 'string'
@@ -3660,10 +3662,11 @@ table.legacy th {
       return;
     }
     el.innerHTML = jobs.map(j => {
-      const result = j.lastResult || 'never';
+      const paused = j.lifecycle === 'paused';
+      const result = paused ? 'paused' : (j.lastResult || 'never');
       const cls = result === 'success' ? 'success' : result === 'failed' ? 'error' : result === 'running' ? 'info' : 'neutral';
       const dur = j.lastDurationMs != null ? Math.round(j.lastDurationMs / 1000) + 's' : '—';
-      const last = j.lastRunAt ? relativeTime(j.lastRunAt) : 'Never';
+      const last = paused ? 'Paused' : (j.lastRunAt ? relativeTime(j.lastRunAt) : 'Never');
       return '<div class="job-row">' +
         '<div class="job-name"><span class="domain-tag domain-' + esc(j.domain || 'system') + '">' + esc(j.domain || 'sys') + '</span>' + esc(j.label || j.name) + '</div>' +
         '<div class="job-cron">' + esc(j.cronExpression || '—') + '</div>' +
@@ -5752,8 +5755,9 @@ table.legacy th {
 
   async function loadContentDashboard() {
     // 2026-05-04 — Refresh the scope picker UI from persisted state
-    // before any data load so the operator can see the active scope
-    // and the dashboard data they are about to fetch matches it.
+    // before any data load so the operator can see the active scope for the
+    // tenant-scoped panels/actions. The legacy mixed overview is intentionally
+    // owner-bootstrap/platform scoped and receives no x-nexus scope headers.
     refreshContentScopeUI();
     // CONTENT-UI-O3/O4 panels are scoped, first-class surfaces. Keep them
     // independent from the legacy content-dashboard payload so a missing
@@ -5785,8 +5789,9 @@ table.legacy th {
     userInput.value = CONTENT_SCOPE.userId || '';
     tenantInput.value = CONTENT_SCOPE.tenantId || '';
     if (CONTENT_SCOPE.userId || CONTENT_SCOPE.tenantId) {
-      status.textContent = 'Scoped to user=' + (CONTENT_SCOPE.userId || '—')
-        + ' / tenant=' + (CONTENT_SCOPE.tenantId || '—');
+      status.textContent = 'Scoped panels/actions: user=' + (CONTENT_SCOPE.userId || '—')
+        + ' / tenant=' + (CONTENT_SCOPE.tenantId || '—')
+        + ' · mixed overview remains owner-bootstrap/platform';
       status.style.color = 'var(--accent)';
     } else {
       status.textContent = 'Operator/platform scope (no x-nexus-* headers)';
@@ -5868,7 +5873,18 @@ table.legacy th {
     const breakdown = Object.entries(perf.topics.byStatus || {})
       .map(([k, v]) => k + ' ' + v).join(' · ');
     setText('content-perf-topics-sub', breakdown || 'no topics yet');
-    setText('content-perf-published-30d', String(perf.topics.publishedLast30d));
+    const publicationUnavailable = perf.topics.publicationTracking
+      && perf.topics.publicationTracking.availability === 'unavailable';
+    setText(
+      'content-perf-published-30d',
+      publicationUnavailable || perf.topics.publishedLast30d == null
+        ? '—'
+        : String(perf.topics.publishedLast30d)
+    );
+    setText(
+      'content-perf-published-30d-sub',
+      publicationUnavailable ? 'publication not tracked' : 'reported cadence'
+    );
     setText('content-perf-scripts-30d', String(perf.scripts.last30d));
     setText('content-perf-scripts-sub', 'total ' + perf.scripts.total);
     const ra = perf.radarFeedback || { total: 0, byAction: { accept: 0, reject: 0 } };
@@ -5880,7 +5896,7 @@ table.legacy th {
     const hi = document.getElementById('content-perf-highlights');
     if (hi) hi.innerHTML = (perf.highlights || []).length
       ? perf.highlights.map(h => '<li>' + esc(h) + '</li>').join('')
-      : '<li class="empty">No highlights yet — keep publishing.</li>';
+      : '<li class="empty">No evidence-backed highlights yet.</li>';
 
     const wa = document.getElementById('content-perf-warnings');
     if (wa) wa.innerHTML = (perf.warnings || []).length
@@ -6025,10 +6041,12 @@ table.legacy th {
     const books = d.books || {};
     const yt = d.youtube || { totals: {} };
     const total = pipe.totalActive != null ? pipe.totalActive : 0;
-    const published = pipe.publishedThisWeek || 0;
     document.getElementById('content-kpi-pipeline').textContent = fmtNum(total);
     document.getElementById('content-kpi-pipeline-sub').textContent =
-      published + ' published this week';
+      pipe.publishedThisWeek == null
+        || (pipe.publicationTracking && pipe.publicationTracking.availability === 'unavailable')
+        ? 'Publication tracking unavailable'
+        : pipe.publishedThisWeek + ' published this week';
     document.getElementById('content-kpi-books').textContent = fmtNum(books.extracted || 0);
     document.getElementById('content-kpi-books-sub').textContent =
       'of ' + fmtNum(books.total || 0) + ' · ' + fmtNum(books.pending || 0) + ' pending';
@@ -6054,10 +6072,16 @@ table.legacy th {
     const metaEl = document.getElementById('content-pipeline-meta');
 
     const stageBoxes = CONTENT_PIPELINE_STAGES.map(s => {
-      const count = (p.stages && p.stages[s]) || 0;
+      const tracking = p.stageTracking && p.stageTracking[s];
+      const unavailable = s === 'published' && (
+        !p.stages
+        || p.stages[s] == null
+        || (tracking && tracking.tracking === 'not_modeled')
+      );
+      const count = unavailable ? '—' : ((p.stages && p.stages[s]) || 0);
       return '<div class="kpi-card" style="padding:var(--space-3)">' +
         '<div class="kpi-label">' + esc(CONTENT_PIPELINE_LABELS[s]) + '</div>' +
-        '<div class="kpi-value" style="font-size:24px">' + fmtNum(count) + '</div>' +
+        '<div class="kpi-value" style="font-size:24px">' + (unavailable ? count : fmtNum(count)) + '</div>' +
         '</div>';
     }).join('');
     stagesEl.innerHTML = stageBoxes;
@@ -6071,6 +6095,8 @@ table.legacy th {
     }
     if (p.publishedThisWeek != null) {
       metaParts.push(p.publishedThisWeek + ' published this week');
+    } else if (p.publicationTracking && p.publicationTracking.availability === 'unavailable') {
+      metaParts.push('Publication tracking unavailable');
     }
     metaEl.textContent = metaParts.join(' · ') || '—';
 
@@ -6152,11 +6178,14 @@ table.legacy th {
     const nodeSvg = nodes.map(n => {
       const p = CONTENT_AGENT_POSITIONS[n.id] || { x: 0, y: 0 };
       const statusColor =
+        n.lifecycle === 'paused' ? 'var(--text-tertiary)' :
         n.lastStatus === 'success' ? 'var(--domain-secretary)' :
         n.lastStatus === 'failed' ? '#E25C5C' :
         n.lastStatus === 'never' ? 'var(--text-tertiary)' :
         'var(--text-secondary)';
-      const runsLabel = n.totalRuns > 0
+      const runsLabel = n.lifecycle === 'paused'
+        ? 'paused · no signals emitted'
+        : n.totalRuns > 0
         ? (n.totalRuns + ' runs · ' + (n.signalsProduced || 0) + ' signals')
         : 'never run';
       return (
@@ -6165,7 +6194,7 @@ table.legacy th {
         '<circle cx="12" cy="12" r="4" fill="' + statusColor + '"/>' +
         '<text x="22" y="16" fill="var(--text-primary)" font-size="12" font-weight="600">' + esc(n.label) + '</text>' +
         '<text x="12" y="34" fill="var(--text-secondary)" font-size="10">' + esc(runsLabel) + '</text>' +
-        '<text x="12" y="48" fill="var(--text-tertiary)" font-size="9">' + esc(n.cron ? '⏰ ' + n.cron : 'on demand') + '</text>' +
+        '<text x="12" y="48" fill="var(--text-tertiary)" font-size="9">' + esc(n.lifecycle === 'paused' ? 'tenant scope required' : (n.cron ? '⏰ ' + n.cron : 'on demand')) + '</text>' +
         '</g>'
       );
     }).join('');
@@ -6189,10 +6218,10 @@ table.legacy th {
       return;
     }
     tbody.innerHTML = triggers.map(t => {
-      const statusBadge = '<span class="badge badge-' + esc(triggerStatusClass(t.status)) + '">' + esc(t.lastResult || 'never') + '</span>';
+      const statusBadge = '<span class="badge badge-' + esc(triggerStatusClass(t.status)) + '">' + esc(t.lifecycle === 'paused' ? 'paused' : (t.lastResult || 'never')) + '</span>';
       return '<tr>' +
         '<td><div>' + esc(t.label) + '</div><div class="text-muted mono" style="font-size:10px">' + esc(t.name) + '</div></td>' +
-        '<td class="mono">' + esc(t.cronHuman || t.cronExpression) + '</td>' +
+        '<td class="mono">' + esc(t.lifecycle === 'paused' ? 'Paused' : (t.cronHuman || t.cronExpression)) + '</td>' +
         '<td class="text-muted">' + (t.lastRunAt ? shortDateTime(t.lastRunAt) + ' · ' + relativeTime(t.lastRunAt) : '—') + '</td>' +
         '<td class="text-muted mono">' + (t.lastDurationMs != null ? t.lastDurationMs + 'ms' : '—') + '</td>' +
         '<td class="text-muted">' + (t.nextFireAt ? shortDateTime(t.nextFireAt) : '—') + '</td>' +
@@ -6245,6 +6274,14 @@ table.legacy th {
   function renderContentReactionRadar(rr) {
     const el = document.getElementById('content-radar-list');
     const meta = document.getElementById('content-radar-meta');
+    const pillarToggle = document.getElementById('pillar-editor-toggle');
+    if (rr.lastStatus === 'paused') {
+      meta.textContent = 'Paused · tenant-user scope rebuild required';
+      if (pillarToggle) pillarToggle.disabled = true;
+      el.innerHTML = '<div class="empty">Historical Reaction Radar signals are hidden while the agent is paused.</div>';
+      return;
+    }
+    if (pillarToggle) pillarToggle.disabled = false;
     meta.textContent = (rr.activeSignals || 0) + ' active · last ' + (rr.lastRunAt ? relativeTime(rr.lastRunAt) : 'never');
     const rows = rr.recentSignals || [];
     if (rows.length === 0) {
@@ -6613,10 +6650,7 @@ table.legacy th {
     { name: 'test-invoice-storage', label: '🧾 Test invoice storage', icon: '🧾' },
     { name: 'test-graph', label: '📡 Test Graph', icon: '📡' },
     { name: 'resynthesize-knowledge', label: '🧠 Re-synth knowledge', icon: '🧠' },
-    { name: 'run-performance-agent', label: '⚙️ Run performance agent', icon: '⚙️' },
     { name: 'run-voice-evolution', label: '🎙️ Run voice evolution', icon: '🎙️' },
-    { name: 'run-reaction-radar', label: '📡 Run reaction radar', icon: '📡' },
-    { name: 'run-seo-agent', label: '🔍 Run SEO agent', icon: '🔍' },
     { name: 'run-pipeline-agent', label: '🚀 Run pipeline agent', icon: '🚀' },
   ];
   function loadQuickActions() {

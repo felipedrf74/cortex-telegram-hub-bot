@@ -292,7 +292,10 @@ vi.mock('../../src/services/training-agenda-reconciliation', () => ({
 }));
 
 vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  previewSecretarySchedulingIntent: vi.fn(),
   submitSecretarySchedulingIntent: vi.fn(),
+  getSecretaryAgendaItemById: vi.fn(),
+  cancelSecretaryAgendaItem: vi.fn(),
 }));
 
 import { trainingRoutes } from '../../src/api/routes/training';

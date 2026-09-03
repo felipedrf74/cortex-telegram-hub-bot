@@ -147,7 +147,7 @@ describe('canonical Content pipeline compatibility routes', () => {
 
   afterEach(() => testDb?.close());
 
-  it('projects canonical phases truthfully and marks unmodeled legacy stages', async () => {
+  it('projects canonical work phases without treating legacy state as publication evidence', async () => {
     seedWorkspaceItem({ title: 'Inbox idea' });
     seedWorkspaceItem({ title: 'Brief in progress', artifactType: 'brief' });
     seedWorkspaceItem({ title: 'Script ready', artifactType: 'script' });
@@ -161,19 +161,24 @@ describe('canonical Content pipeline compatibility routes', () => {
       'Brief in progress',
     ]));
     expect(response.body.data.stages.scripted.map((item: any) => item.title)).toEqual(['Script ready']);
-    expect(response.body.data.stages.published.map((item: any) => item.title)).toEqual(['Published script']);
+    expect(response.body.data.stages.published).toEqual([]);
     expect(response.body.data.stages.filmed).toEqual([]);
     expect(response.body.data.stages.editing).toEqual([]);
     expect(response.body.data.compatibility.stages).toMatchObject({
       filmed: { tracking: 'not_tracked', reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED' },
       editing: { tracking: 'not_tracked', reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED' },
+      published: { tracking: 'not_tracked', reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED' },
     });
     expect(response.body.data.stages.ideas[0]).toMatchObject({
       nextAction: { action: expect.any(String), label: expect.any(String), reason: expect.any(String) },
       workspace: { productionState: expect.any(String), artifactPhase: expect.any(String), workflowVersion: expect.any(Number) },
     });
-    expect(response.body.data.stats.publishedThisMonth).toBe(1);
-    expect(response.body.data.stats.publishedThisMonthStatus.source).toBe('content_workflow_events');
+    expect(response.body.data.stats.publishedThisMonth).toBeNull();
+    expect(response.body.data.stats.publishedThisMonthStatus).toMatchObject({
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    });
   });
 
   it('isolates both tenant and canonical owner in pipeline, ideas, and home projections', async () => {

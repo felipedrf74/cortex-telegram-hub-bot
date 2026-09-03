@@ -411,7 +411,7 @@ describe('durable Content script jobs', () => {
       userId: 84,
       idempotencyKey: 'cloud-primary-public-closed',
       request: { topic: 'Public must remain closed', format: 'YouTube', maxDurationMinutes: 8 },
-    }, db)).toThrow(expect.objectContaining({ code: 'LOCAL_INFERENCE_NOT_ADMITTING' }));
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_SCRIPT_RUNTIME_NOT_ADMITTING' }));
     db.close();
   });
 
@@ -519,6 +519,353 @@ describe('durable Content script jobs', () => {
     });
     expect(created.job.modelDigest).toBe(ACTIVE_MODEL_DIGEST);
     expect(getContentScriptJob(7, 7, created.job.jobId, db)).toBeNull();
+    db.close();
+  });
+
+  it('rejects oversized idempotency keys instead of truncating them into another operation', async () => {
+    const db = database();
+    const { createContentScriptJob } = await import('../../src/services/content-script-jobs');
+
+    expect(() => createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'x'.repeat(201),
+      request: { topic: 'Bounded operation key', format: 'YouTube', maxDurationMinutes: 8 },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('rejects an oversized niche instead of silently truncating the job request', async () => {
+    const db = database();
+    const { createContentScriptJob } = await import('../../src/services/content-script-jobs');
+
+    expect(() => createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'oversized-niche-operation',
+      request: {
+        topic: 'Bounded job request',
+        niche: 'n'.repeat(161),
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('rejects the sync-only style alias instead of consuming it in async normalization', async () => {
+    const db = database();
+    const { createContentScriptJob } = await import('../../src/services/content-script-jobs');
+
+    expect(() => createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'unsupported-async-style-alias',
+      request: {
+        topic: 'Strict async style contract',
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+        style: 'outline',
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: { field: 'style' },
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['topic', { topic: 'Unsafe\u0000topic' }],
+    ['niche', { topic: 'Safe topic', niche: 'unsafe\u0085niche' }],
+    ['source metadata', {
+      topic: 'Safe topic',
+      sources: [{ title: 'Unsafe\u0000source', relevance_note: 'Context' }],
+    }],
+  ] as const)('rejects unsupported controls in async job %s before insert', async (_label, request) => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'control-character-job',
+      request: { ...request, format: 'YouTube', maxDurationMinutes: 8 },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: expect.objectContaining({ reason: 'unsupported_control_characters' }),
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['too many entries', Array.from({ length: 21 }, (_, index) => ({ title: `Source ${index}` }))],
+    ['oversized title', [{ title: 't'.repeat(501), relevance_note: 'Context' }]],
+    ['oversized URL', [{ title: 'Source', url: `https://example.test/${'u'.repeat(1_981)}` }]],
+    ['oversized source type', [{ title: 'Source', source_type: 's'.repeat(121) }]],
+    ['oversized relevance', [{ title: 'Source', relevance_note: 'r'.repeat(1_501) }]],
+  ] as const)('rejects %s in async pinned sources without truncation or insert', async (_label, sources) => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'bounded-pinned-sources-job',
+      request: {
+        topic: 'A source-bound creator workflow',
+        sources,
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: expect.objectContaining({ truncated: false }),
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('rejects ambiguous pinned-source aliases before hashing the async request', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'ambiguous-pinned-source-aliases',
+      request: {
+        topic: 'A source-bound creator workflow',
+        sources: [{ title: 'Source A' }],
+        sourceContext: [{ title: 'Source B' }],
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: expect.objectContaining({ reason: 'source_alias_conflict' }),
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('rejects empty pinned-source objects instead of filtering them out of the request hash', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'empty-pinned-source-entry',
+      request: {
+        topic: 'A source-bound creator workflow',
+        sources: [{}],
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: expect.objectContaining({ reason: 'empty_source' }),
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['null title', { title: null, relevance_note: 'Context' }, 'sources[0].title'],
+    ['null URL', { title: 'Source', url: null }, 'sources[0].url'],
+    ['null snake source type', { title: 'Source', source_type: null }, 'sources[0].source_type'],
+    ['null camel source type', { title: 'Source', sourceType: null }, 'sources[0].sourceType'],
+    ['null snake relevance', { title: 'Source', relevance_note: null }, 'sources[0].relevance_note'],
+    ['null camel relevance', { title: 'Source', relevanceNote: null }, 'sources[0].relevanceNote'],
+    ['numeric title', { title: 42, relevance_note: 'Context' }, 'sources[0].title'],
+  ])('rejects an explicit %s pinned-source field before hashing or insert', async (_label, source, field) => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'typed-pinned-source-field',
+      request: {
+        topic: 'A source-bound creator workflow',
+        sources: [source],
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: expect.objectContaining({ field }),
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['malformed URL', 'https://'],
+    ['credential-bearing URL', 'https://user:secret@example.com/source'],
+    ['unsupported scheme', 'file:///tmp/source'],
+  ])('rejects a %s in pinned source metadata before hashing or insert', async (_label, url) => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'invalid-pinned-source-url',
+      request: {
+        topic: 'A source-bound creator workflow',
+        sources: [{ title: 'Source', url }],
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+      details: expect.objectContaining({ reason: 'invalid_url' }),
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['object', { audience: 'creators' }],
+    ['null', null],
+  ])('rejects an explicit %s niche instead of silently defaulting the job request', async (_label, niche) => {
+    const db = database();
+    const { createContentScriptJob } = await import('../../src/services/content-script-jobs');
+
+    expect(() => createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'non-string-niche-operation',
+      request: {
+        topic: 'Typed job request',
+        niche,
+        format: 'YouTube',
+        maxDurationMinutes: 8,
+      },
+    }, db)).toThrow(expect.objectContaining({
+      code: 'VALIDATION',
+      status: 400,
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it.each([
+    ['topic', { topic: 'How to hack private creator accounts', niche: 'general' }, 'CONTENT_UNSUPPORTED_TOPIC'],
+    ['niche', { topic: 'A safe creator workflow', niche: 'medical dosage advice' }, 'CONTENT_HIGH_RISK_REVIEW_REQUIRED'],
+    ['combined topic and niche', { topic: 'insider', niche: 'trading playbook' }, 'CONTENT_UNSUPPORTED_TOPIC'],
+  ] as const)('rejects unsafe async script-job %s fields before snapshot or insert', async (
+    field,
+    request,
+    code,
+  ) => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+
+    expect(() => service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: `unsafe-${field}-job`,
+      request: { ...request, format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db)).toThrow(expect.objectContaining({ code, status: 422 }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_script_jobs').get()).toEqual({ count: 0 });
+    expect(inferenceMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it.each([false, true])('fails a legacy queued high-risk job before inference (outline=%s)', async (
+    withOutline,
+  ) => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const encryption = await import('../../src/services/content-script-job-encryption');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: `legacy-high-risk-${withOutline}`,
+      request: { topic: 'Safe legacy topic', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    const stored = db.prepare('SELECT request_json FROM content_script_jobs WHERE job_id = ?')
+      .get(created.job.jobId) as { request_json: string };
+    const legacyRequest = encryption.decryptContentScriptJobJson<Record<string, unknown>>(
+      stored.request_json,
+      42,
+    );
+    legacyRequest.topic = 'Should I take ibuprofen for migraines?';
+    db.prepare('UPDATE content_script_jobs SET request_json = ? WHERE job_id = ?')
+      .run(encryption.encryptContentScriptJobJson(legacyRequest, 42), created.job.jobId);
+    if (withOutline) {
+      db.prepare(`INSERT INTO content_script_job_checkpoints (
+        job_id, section_index, section_key, state, word_budget, output_json, validation_json, route
+      ) VALUES (?, 0, 'outline', 'validated', 1120, ?, '{"valid":true,"sectionCount":6}', 'local')`)
+        .run(
+          created.job.jobId,
+          encryption.encryptContentScriptJobJson(outlineLocalResult(6).parsed, 42),
+        );
+    }
+    inferenceMock.mockClear();
+
+    await expect(service.runContentScriptJob(created.job.jobId, db)).rejects.toMatchObject({
+      code: 'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
+    });
+    expect(inferenceMock).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT status, last_error_code FROM content_script_jobs WHERE job_id = ?`)
+      .get(created.job.jobId)).toEqual({
+      status: 'failed',
+      last_error_code: 'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
+    });
+    db.close();
+  });
+
+  it('refuses retry of a legacy unsafe job without requeueing or inference', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const encryption = await import('../../src/services/content-script-job-encryption');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'legacy-unsafe-retry',
+      request: { topic: 'Safe retry seed', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    const stored = db.prepare('SELECT request_json FROM content_script_jobs WHERE job_id = ?')
+      .get(created.job.jobId) as { request_json: string };
+    const legacyRequest = encryption.decryptContentScriptJobJson<Record<string, unknown>>(
+      stored.request_json,
+      42,
+    );
+    legacyRequest.niche = 'medical dosage advice';
+    db.prepare(`UPDATE content_script_jobs
+      SET request_json = ?, status = 'failed', stage = 'failed', last_error_code = 'legacy_failure'
+      WHERE job_id = ?`)
+      .run(encryption.encryptContentScriptJobJson(legacyRequest, 42), created.job.jobId);
+    inferenceMock.mockClear();
+
+    expect(() => service.retryContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      jobId: created.job.jobId,
+    }, db)).toThrow(expect.objectContaining({ code: 'CONTENT_HIGH_RISK_REVIEW_REQUIRED' }));
+    expect(inferenceMock).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT status FROM content_script_jobs WHERE job_id = ?')
+      .get(created.job.jobId)).toEqual({ status: 'failed' });
     db.close();
   });
 
@@ -1485,6 +1832,27 @@ describe('durable Content script jobs', () => {
       FROM content_script_jobs WHERE job_id = ?`).get(created.job.jobId)).toEqual({
       infrastructure_requeue_count: 1,
       attempt_count: 0,
+    });
+    db.close();
+  });
+
+  it('does not persist arbitrary provider-derived text as a public job error code', async () => {
+    const db = database();
+    const service = await import('../../src/services/content-script-jobs');
+    const created = service.createContentScriptJob({
+      tenantId: 42,
+      userId: 42,
+      idempotencyKey: 'private-provider-error-code',
+      request: { topic: 'Private failure', format: 'YouTube', maxDurationMinutes: 8, language: 'en' },
+    }, db);
+    inferenceMock.mockRejectedValueOnce(Object.assign(new Error('private provider response'), {
+      code: 'customer draft copied into provider error code',
+    }));
+
+    await expect(service.runContentScriptJob(created.job.jobId, db)).rejects.toBeInstanceOf(Error);
+    expect(service.getContentScriptJob(42, 42, created.job.jobId, db)).toMatchObject({
+      status: 'failed',
+      errorCode: 'CONTENT_SCRIPT_JOB_FAILED',
     });
     db.close();
   });

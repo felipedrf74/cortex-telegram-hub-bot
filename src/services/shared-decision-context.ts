@@ -2,6 +2,7 @@
 
 import type { DomainName } from '../domains/types';
 import {
+  canConsumeConfirmedContentWorkSchedule,
   readContentMeshContext,
   readCookingMeshContext,
   readFinanceMeshContext,
@@ -142,7 +143,6 @@ export interface PeerDecisionContract {
   preferredWindows: string[];
   fallbackIfDeferred: string[];
   budgetMode?: string | null;
-  publishDeadline?: string | null;
   notes: string[];
 }
 
@@ -455,7 +455,7 @@ function buildSkillOwnershipLines(
     '- Training owns workout content, recovery logic, and training-plan shape.',
     '- Cooking owns meals, groceries, meal prep, and fueling content.',
     '- Finance owns budget, bill, subscription, tax, and purchase constraints.',
-    '- Content owns content workload, references, publishing cadence, and execution state.',
+    '- Content owns content workload, references, production cadence, and publish-preparation state; external publication tracking is not supported.',
   ];
   if (domain !== 'content' || !allowedContentPeers) {
     return [...ownership, `- This context is advisory for ${target}; downstream writes still belong to the owning skill.`];
@@ -700,25 +700,19 @@ function summarizeFinanceForSecretary(finance: FinanceMeshContext | null): strin
 
 function summarizeContentForSecretary(content: ContentMeshContext | null): string {
   if (!content) return '';
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const filming = extractFilmingRecommendation(content);
   const nextExecution = extractNextContentExecution(content);
-  if (!commitment && !filming && !isActionableContentExecution(nextExecution)) return '';
 
-  const facts: string[] = [];
-  if (commitment) facts.push(`${commitment.upcomingTopicCount} topic(s) are queued`);
-  if (commitment?.nextDate) {
-    facts.push(
-      commitment.nextTopicTitle
-        ? `next publish target is "${commitment.nextTopicTitle}" on ${commitment.nextDate}`
-        : `next publish target lands on ${commitment.nextDate}`,
-    );
-  }
-  if (filming) facts.push(`best filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
+  const facts: string[] = [formatContentPlanStatusFact(content)];
+  facts.push(...confirmedBlocks.slice(0, 3).map(formatConfirmedContentWorkBlockFact));
+  facts.push(...deadlines.slice(0, 3).map(formatContentDeadlineFact));
+  if (filming) facts.push(`proposed filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}; Secretary has not reserved it`);
   if (nextExecution && isActionableContentExecution(nextExecution)) {
     facts.push(formatNextContentExecutionFact(nextExecution));
   }
-  return formatSection('Content', facts, 'Treat filming and publishing as real calendar commitments when the user asks to execute them.');
+  return formatSection('Content', facts, 'Only current Secretary-confirmed private work blocks carry scheduling authority; deadlines and recommendations remain advisory.');
 }
 
 function summarizeCookingForTraining(cooking: CookingMeshContext | null): string {
@@ -800,18 +794,19 @@ function summarizeFinanceForTraining(finance: FinanceMeshContext | null): string
 
 function summarizeContentForTraining(content: ContentMeshContext | null): string {
   if (!content) return '';
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const filming = extractFilmingRecommendation(content);
   const nextExecution = extractNextContentExecution(content);
-  if (!commitment && !filming && !nextExecution) return '';
 
-  const facts: string[] = [];
-  if (commitment) facts.push(`${commitment.upcomingTopicCount} topic(s) are queued`);
-  if (filming) facts.push(`filming is currently best on ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
+  const facts: string[] = [formatContentPlanStatusFact(content)];
+  facts.push(...confirmedBlocks.slice(0, 3).map(formatConfirmedContentWorkBlockFact));
+  facts.push(...deadlines.slice(0, 3).map(formatContentDeadlineFact));
+  if (filming) facts.push(`filming proposal points to ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
   if (nextExecution && isActionableContentExecution(nextExecution)) {
     facts.push(formatNextContentExecutionFact(nextExecution));
   }
-  return formatSection('Content', facts, 'Account for creator workload before locking a hard week.');
+  return formatSection('Content', facts, 'Account for confirmed creator work separately from advisory targets and proposals.');
 }
 
 function summarizeTrainingForCooking(training: TrainingMeshContext | null): string {
@@ -863,24 +858,19 @@ function summarizeFinanceForCooking(finance: FinanceMeshContext | null): string 
 
 function summarizeContentForCooking(content: ContentMeshContext | null): string {
   if (!content) return '';
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const filming = extractFilmingRecommendation(content);
   const nextExecution = extractNextContentExecution(content);
-  if (!commitment && !filming && !isActionableContentExecution(nextExecution)) return '';
 
-  const facts: string[] = [];
-  if (commitment) {
-    facts.push(
-      commitment.nextDate && commitment.nextTopicTitle
-        ? `next publish target is "${commitment.nextTopicTitle}" on ${commitment.nextDate}`
-        : `${commitment.upcomingTopicCount} topic(s) are queued`,
-    );
-  }
-  if (filming) facts.push(`best filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
+  const facts: string[] = [formatContentPlanStatusFact(content)];
+  facts.push(...confirmedBlocks.slice(0, 3).map(formatConfirmedContentWorkBlockFact));
+  facts.push(...deadlines.slice(0, 3).map(formatContentDeadlineFact));
+  if (filming) facts.push(`filming proposal points to ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
   if (nextExecution && isActionableContentExecution(nextExecution)) {
     facts.push(formatNextContentExecutionFact(nextExecution));
   }
-  return formatSection('Content', facts, 'Treat filming and shipping days as meal-support days, not as invisible obligations.');
+  return formatSection('Content', facts, 'Support confirmed private work blocks; do not treat deadlines or proposals as reserved work or publication.');
 }
 
 function summarizeTrainingForContent(
@@ -1021,16 +1011,18 @@ function summarizeCookingForFinance(cooking: CookingMeshContext | null): string 
 
 function summarizeContentForFinance(content: ContentMeshContext | null): string {
   if (!content) return '';
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const nextExecution = extractNextContentExecution(content);
-  if (!commitment && !isActionableContentExecution(nextExecution)) return '';
   const facts = compact([
-    commitment ? `${commitment.upcomingTopicCount} topic(s) are queued` : null,
+    formatContentPlanStatusFact(content),
+    ...confirmedBlocks.slice(0, 3).map(formatConfirmedContentWorkBlockFact),
+    ...deadlines.slice(0, 3).map(formatContentDeadlineFact),
     nextExecution && isActionableContentExecution(nextExecution)
       ? formatNextContentExecutionFact(nextExecution)
       : null,
   ]);
-  return formatSection('Content', facts, 'Factor creator obligations into subscription or production-cost decisions.');
+  return formatSection('Content', facts, 'Factor confirmed private work into cost guidance while keeping deadlines and next moves advisory.');
 }
 
 function buildTrainingContractForSecretary(training: TrainingMeshContext | null): PeerDecisionContract | null {
@@ -1041,11 +1033,9 @@ function buildTrainingContractForSecretary(training: TrainingMeshContext | null)
   const hardDays = extractHardDayCount(training);
   const completion = extractSafeTrainingCompletionSummary(training);
   // Surface the Content-deprioritization implication to Secretary
-  // explicitly. When recovery is strained or critical, filming /
-  // capture work is the natural first-candidate for deferral. Without
-  // this, Secretary sees "recovery is strained" but no hint that
-  // content blocks could reclaim time; the weekly planner therefore
-  // keeps filming slots as immutable when they shouldn't be.
+  // explicitly. When recovery is strained or critical, unconfirmed filming /
+  // capture proposals are the natural first candidate for deferral. Confirmed
+  // private Content blocks still require Secretary to reflow or cancel them.
   const recoveryCompromised = recovery?.state === 'strained' || recovery?.state === 'critical';
   return createContract({
     nonNegotiables: compact([
@@ -1066,7 +1056,7 @@ function buildTrainingContractForSecretary(training: TrainingMeshContext | null)
         ? `If the calendar compresses, protect the ${hardDays} hard training day(s) first and downgrade optional work.`
         : null,
       recoveryCompromised
-        ? 'Filming and content-capture blocks are the first-candidate for deferral while recovery stabilizes.'
+        ? 'Unconfirmed filming and content-capture proposals are the first candidates for deferral while recovery stabilizes.'
         : null,
     ]),
     notes: compact([
@@ -1171,72 +1161,43 @@ function buildFinanceContractForSecretary(finance: FinanceMeshContext | null): P
 
 function buildContentContractForSecretary(content: ContentMeshContext | null): PeerDecisionContract | null {
   if (!content) return null;
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const filming = extractFilmingRecommendation(content);
   const nextExecution = extractNextContentExecution(content);
-  // Surface the pre-publish filming window as an immovable block to
-  // Secretary. The publishing_commitment signal carries nextDate but
-  // on its own nothing translates it into a blocked filming window,
-  // so the weekly planner treats filming as flexible even when
-  // publishing is only 3 days out. Rule: filming should land 3–5
-  // calendar days before publish to leave edit + render time. When a
-  // nextDate exists, surface that window as a non-negotiable so
-  // Secretary's calendar stops booking meetings into it.
-  const filmingWindow = commitment?.nextDate
-    ? computePreferredFilmingWindow(commitment.nextDate)
-    : null;
   return createContract({
-    nonNegotiables: compact([
-      commitment?.nextDate
-        ? `Publishing commitment lands on ${commitment.nextDate}${commitment.nextTopicTitle ? ` for "${commitment.nextTopicTitle}"` : ''}.`
-        : null,
-      filmingWindow
-        ? `Protect ${filmingWindow.start}\u2013${filmingWindow.end} as the filming/edit window for that publish date.`
-        : null,
-    ]),
+    nonNegotiables: confirmedBlocks.map((block) => (
+      `Keep the current Secretary-confirmed private ${formatContentWorkKind(block.workKind)} block for "${block.title}" from ${block.startsAt} to ${block.endsAt} unless Secretary reflows or cancels it.`
+    )),
     preferredWindows: compact([
-      filming ? `Best filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}.` : null,
-      nextExecution?.scheduledDate && isActionableContentExecution(nextExecution)
-        ? `Keep the next content move visible by ${nextExecution.scheduledDate}.`
+      ...deadlines.map((deadline) => (
+        `Treat ${deadline.date} as an advisory target for "${deadline.title}", not as publication evidence or a calendar reservation.`
+      )),
+      filming
+        ? `Review the proposed filming window on ${filming.date}${filming.window ? ` ${filming.window}` : ''}; it remains unreserved until Secretary confirms it.`
+        : null,
+      nextExecution?.scheduledDate
+        && nextExecution.dateSemantics === 'recommended_work_date'
+        && isActionableContentExecution(nextExecution)
+        ? `Keep the proposed next Content move visible around its recommended work date ${nextExecution.scheduledDate}; it is not reserved.`
         : null,
     ]),
     fallbackIfDeferred: compact([
-      commitment?.upcomingTopicCount && commitment.upcomingTopicCount > 0
-        ? 'If the day compresses, reschedule lower-value admin before moving filming or publishing work.'
+      confirmedBlocks.length > 0
+        ? 'If a confirmed Content block conflicts with the day, ask Secretary to reflow it; do not silently move or cancel it.'
         : null,
-      !commitment && nextExecution && isActionableContentExecution(nextExecution)
-        ? 'If the day compresses, defer lower-value admin before letting the next content move disappear into backlog.'
+      (filming || (nextExecution && isActionableContentExecution(nextExecution)))
+        ? 'If the day compresses, move the proposal before displacing existing confirmed obligations.'
         : null,
     ]),
-    publishDeadline: commitment?.nextDate ?? null,
     notes: compact([
-      commitment ? `${commitment.upcomingTopicCount} topic(s) remain queued.` : null,
+      formatContentPlanStatusFact(content),
+      deadlines.length > 0 ? `${deadlines.length} Content deadline(s) remain target dates only.` : null,
       nextExecution && isActionableContentExecution(nextExecution)
         ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
         : null,
     ]),
   });
-}
-
-/**
- * Compute the 3-to-5-day-before-publish filming window from a publish
- * date in YYYY-MM-DD form. Returns ISO dates for the start and end of
- * the window, or null if the publish date can't be parsed.
- *
- * Rationale: 3 days minimum gives edit + render + thumbnail time; 5
- * days max keeps filming tight enough that context and hook relevance
- * stay fresh. Beyond 5 days, filming slot is no longer "required" for
- * this publish cycle.
- */
-function computePreferredFilmingWindow(publishDate: string): { start: string; end: string } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(publishDate);
-  if (!match) return null;
-  const utcPublish = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-  if (!Number.isFinite(utcPublish)) return null;
-  const dayMs = 24 * 60 * 60 * 1000;
-  const start = new Date(utcPublish - 5 * dayMs).toISOString().slice(0, 10);
-  const end = new Date(utcPublish - 3 * dayMs).toISOString().slice(0, 10);
-  return { start, end };
 }
 
 function buildSecretaryContractForTraining(secretary: SecretaryMeshContext | null): PeerDecisionContract | null {
@@ -1347,25 +1308,27 @@ function buildFinanceContractForTraining(finance: FinanceMeshContext | null): Pe
 
 function buildContentContractForTraining(content: ContentMeshContext | null): PeerDecisionContract | null {
   if (!content) return null;
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const filming = extractFilmingRecommendation(content);
   const nextExecution = extractNextContentExecution(content);
   return createContract({
-    nonNegotiables: compact([
-      commitment?.nextDate ? `Publishing commitment is due on ${commitment.nextDate}.` : null,
-    ]),
+    nonNegotiables: confirmedBlocks.map((block) => (
+      `A current Secretary-confirmed private Content work block runs from ${block.startsAt} to ${block.endsAt}; preserve it or ask Secretary to reflow it.`
+    )),
     preferredWindows: compact([
-      filming ? `Filming window currently points to ${filming.date}${filming.window ? ` ${filming.window}` : ''}.` : null,
+      ...deadlines.map((deadline) => `Content target for "${deadline.title}" is ${deadline.date}; it is advisory, not publication.`),
+      filming ? `Filming proposal points to ${filming.date}${filming.window ? ` ${filming.window}` : ''}; no private block is confirmed by this recommendation.` : null,
       nextExecution && isActionableContentExecution(nextExecution) ? formatNextContentExecutionFact(nextExecution) + '.' : null,
     ]),
     fallbackIfDeferred: compact([
-      filming ? 'Place production after protected training and fueling commitments instead of before them.' : null,
+      filming ? 'Move the filming proposal before moving protected training, fueling, or Secretary-confirmed Content blocks.' : null,
       nextExecution && isActionableContentExecution(nextExecution)
-        ? 'Avoid stacking hard doubles on the same day as the next content execution unless Secretary confirms spare capacity.'
+        ? 'Avoid stacking hard doubles on a proposed Content work day unless Secretary confirms a private block and spare capacity.'
         : null,
     ]),
-    publishDeadline: commitment?.nextDate ?? null,
     notes: compact([
+      formatContentPlanStatusFact(content),
       nextExecution && isActionableContentExecution(nextExecution)
         ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
         : null,
@@ -1458,21 +1421,24 @@ function buildFinanceContractForCooking(finance: FinanceMeshContext | null): Pee
 
 function buildContentContractForCooking(content: ContentMeshContext | null): PeerDecisionContract | null {
   if (!content) return null;
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const nextExecution = extractNextContentExecution(content);
   return createContract({
-    nonNegotiables: compact([
-      commitment?.nextDate ? `Creator deliverable is due on ${commitment.nextDate}.` : null,
-    ]),
-    preferredWindows: [],
+    nonNegotiables: confirmedBlocks.map((block) => (
+      `A current Secretary-confirmed private Content work block runs from ${block.startsAt} to ${block.endsAt}; keep meal support compatible with it.`
+    )),
+    preferredWindows: deadlines.map((deadline) => (
+      `Content target for "${deadline.title}" is ${deadline.date}; it is advisory and does not reserve work or publication time.`
+    )),
     fallbackIfDeferred: compact([
-      commitment ? 'Prioritize meals that support filming and shipping days when content is active.' : null,
-      !commitment && nextExecution && isActionableContentExecution(nextExecution)
-        ? 'Keep meals lower-friction on content execution days so production work does not compete with food prep.'
+      confirmedBlocks.length > 0 ? 'Keep meals lower-friction around confirmed private Content work blocks.' : null,
+      confirmedBlocks.length === 0 && nextExecution && isActionableContentExecution(nextExecution)
+        ? 'Treat the next Content move as a proposal when sizing food prep; no private work block is confirmed.'
         : null,
     ]),
-    publishDeadline: commitment?.nextDate ?? null,
     notes: compact([
+      formatContentPlanStatusFact(content),
       nextExecution && isActionableContentExecution(nextExecution)
         ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
         : null,
@@ -1613,21 +1579,24 @@ function buildCookingContractForFinance(cooking: CookingMeshContext | null): Pee
 
 function buildContentContractForFinance(content: ContentMeshContext | null): PeerDecisionContract | null {
   if (!content) return null;
-  const commitment = extractPublishingCommitment(content);
+  const deadlines = extractContentDeadlines(content);
+  const confirmedBlocks = extractConfirmedContentWorkBlocks(content);
   const nextExecution = extractNextContentExecution(content);
   return createContract({
-    nonNegotiables: compact([
-      commitment?.nextDate ? `Creator commitment still lands on ${commitment.nextDate}.` : null,
-    ]),
-    preferredWindows: [],
+    nonNegotiables: confirmedBlocks.map((block) => (
+      `A current Secretary-confirmed private Content work block runs from ${block.startsAt} to ${block.endsAt}; preserve it in cost guidance unless Secretary reflows it.`
+    )),
+    preferredWindows: deadlines.map((deadline) => (
+      `Content target for "${deadline.title}" is ${deadline.date}; treat it as advisory rather than a delivery or publication commitment.`
+    )),
     fallbackIfDeferred: compact([
-      commitment ? 'Subscription or production-cost advice should respect active creator commitments.' : null,
-      !commitment && nextExecution && isActionableContentExecution(nextExecution)
-        ? 'Cost guidance should preserve the next content move instead of assuming creator work is optional this week.'
+      confirmedBlocks.length > 0 ? 'Cost guidance should respect confirmed private Content work without assuming publication.' : null,
+      confirmedBlocks.length === 0 && nextExecution && isActionableContentExecution(nextExecution)
+        ? 'Treat the next Content move as a proposal; do not infer reserved time or a delivery obligation.'
         : null,
     ]),
-    publishDeadline: commitment?.nextDate ?? null,
     notes: compact([
+      formatContentPlanStatusFact(content),
       nextExecution && isActionableContentExecution(nextExecution)
         ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
         : null,
@@ -1977,20 +1946,80 @@ function extractRenewal(finance: FinanceMeshContext): { plan: string; currentPer
   return { plan, currentPeriodEnd };
 }
 
-function extractPublishingCommitment(content: ContentMeshContext): {
-  upcomingTopicCount: number;
-  nextDate: string | null;
-  nextTopicTitle: string | null;
-} | null {
-  const signal = content.derivedSignals.find((entry) => entry.signalType === 'publishing_commitment');
-  const upcomingTopicCount = signal?.payload.upcomingTopicCount;
-  return typeof upcomingTopicCount === 'number'
-    ? {
-        upcomingTopicCount,
-        nextDate: typeof signal?.payload.nextDate === 'string' ? signal.payload.nextDate : null,
-        nextTopicTitle: typeof signal?.payload.nextTopicTitle === 'string' ? signal.payload.nextTopicTitle : null,
+function extractContentDeadlines(content: ContentMeshContext): ContentMeshContext['deadlines'] {
+  return Array.isArray(content.deadlines)
+    ? content.deadlines.filter((deadline) => deadline.semantics === 'target_date_not_publication')
+    : [];
+}
+
+function extractConfirmedContentWorkBlocks(
+  content: ContentMeshContext,
+): ContentMeshContext['workSchedule']['confirmedBlocks'] {
+  if (!canConsumeConfirmedContentWorkSchedule(content.workSchedule)) return [];
+  const blocks = content.workSchedule?.confirmedBlocks;
+  return Array.isArray(blocks)
+    ? blocks.filter((block) => (
+      block.authority === 'secretary'
+      && block.authorityStatus === 'current'
+      && block.semantics === 'private_work_session'
+      && (
+        block.state === 'scheduled'
+        || block.state === 'provider_synced'
+        || block.state === 'sync_failed'
+      )
+    ))
+    : [];
+}
+
+function formatContentPlanStatusFact(content: ContentMeshContext): string {
+  const workSchedule = content.workSchedule;
+  if (!workSchedule) {
+    return 'Content schedule authority and plan status are unavailable';
+  }
+  switch (workSchedule.planStatus) {
+    case 'confirmed':
+      {
+        const confirmedBlockCount = extractConfirmedContentWorkBlocks(content).length;
+        return confirmedBlockCount > 0
+          ? `Content plan status is confirmed under current Secretary authority with ${confirmedBlockCount} private work block(s)`
+          : 'Content plan status needs review: a confirmed state was reported without a current Secretary-confirmed private work block';
       }
-    : null;
+    case 'proposed':
+      return 'Content plan status is proposed; Secretary has not confirmed a private work block';
+    case 'unplanned':
+      return 'Content plan status is unplanned; current Secretary authority reports zero confirmed private work blocks';
+    case 'partial':
+      return `Content plan status is partial because Secretary authority is partially unavailable (${workSchedule.attentionCount} block(s) need attention)`;
+    case 'unavailable':
+    default:
+      return 'Content plan status is unavailable because Secretary scheduling authority could not be read';
+  }
+}
+
+function formatContentDeadlineFact(deadline: ContentMeshContext['deadlines'][number]): string {
+  return `"${deadline.title}" has an advisory target date on ${deadline.date}, not a publication event or calendar reservation`;
+}
+
+function formatConfirmedContentWorkBlockFact(
+  block: ContentMeshContext['workSchedule']['confirmedBlocks'][number],
+): string {
+  const providerAttention = block.state === 'sync_failed'
+    ? '; the private block remains confirmed while provider sync needs attention'
+    : '';
+  return `Secretary confirms a private ${formatContentWorkKind(block.workKind)} block for "${block.title}" from ${block.startsAt} to ${block.endsAt}${providerAttention}; it does not publish content`;
+}
+
+function formatContentWorkKind(
+  workKind: ContentMeshContext['workSchedule']['confirmedBlocks'][number]['workKind'],
+): string {
+  switch (workKind) {
+    case 'record': return 'filming';
+    case 'edit': return 'editing';
+    case 'write': return 'writing';
+    case 'revise': return 'revision';
+    case 'publish_prep': return 'publication-preparation';
+    default: return workKind.replace(/_/g, ' ');
+  }
 }
 
 function extractFilmingRecommendation(content: ContentMeshContext): { date: string; window: string | null } | null {
@@ -2007,6 +2036,8 @@ function extractNextContentExecution(content: ContentMeshContext): {
   title: string;
   summary: string;
   scheduledDate: string | null;
+  dateSemantics: 'private_deadline' | 'recommended_work_date' | 'none';
+  calendarConfirmed: boolean;
   confidence: string;
 } | null {
   const nextExecution = content.nextExecution;
@@ -2019,6 +2050,8 @@ function extractNextContentExecution(content: ContentMeshContext): {
     title: nextExecution.title,
     summary: nextExecution.summary,
     scheduledDate: nextExecution.scheduledDate ?? null,
+    dateSemantics: nextExecution.dateSemantics ?? 'none',
+    calendarConfirmed: nextExecution.calendarConfirmed === true,
     confidence: nextExecution.confidence,
   };
 }
@@ -2033,26 +2066,31 @@ function isActionableContentExecution(
 function formatNextContentExecutionFact(
   execution: NonNullable<ReturnType<typeof extractNextContentExecution>>,
 ): string {
+  const dateContext = formatNextContentExecutionDateContext(execution);
   switch (execution.mode) {
     case 'publish_ready':
-      return execution.scheduledDate
-        ? `next content move is to ship "${execution.title}" by ${execution.scheduledDate}`
-        : `next content move is to ship "${execution.title}"`;
+      return `a publication candidate for "${execution.title}" is ready for review${dateContext}`;
     case 'script_ready':
-      return execution.scheduledDate
-        ? `next content move is to execute the ready script "${execution.title}" by ${execution.scheduledDate}`
-        : `next content move is to execute the ready script "${execution.title}"`;
+      return `proposed next Content move is to work from the ready script "${execution.title}"${dateContext}`;
     case 'reaction_window':
-      return `next content move is a reaction window for "${execution.title}"`;
+      return `proposed next Content move is a reaction window for "${execution.title}"${dateContext}`;
     case 'film_window':
-      return execution.scheduledDate
-        ? `next content move is to capture "${execution.title}" on ${execution.scheduledDate}`
-        : `next content move is to capture "${execution.title}"`;
+      return `proposed next Content move is to capture "${execution.title}"${dateContext}`;
     default:
-      return execution.scheduledDate
-        ? `next content move is "${execution.title}" by ${execution.scheduledDate}`
-        : `next content move is "${execution.title}"`;
+      return `proposed next Content move is "${execution.title}"${dateContext}`;
   }
+}
+
+function formatNextContentExecutionDateContext(
+  execution: NonNullable<ReturnType<typeof extractNextContentExecution>>,
+): string {
+  if (!execution.scheduledDate || execution.dateSemantics === 'none') {
+    return '; this hint does not confirm calendar time';
+  }
+  if (execution.dateSemantics === 'private_deadline') {
+    return `; its private advisory deadline is ${execution.scheduledDate}, not a reservation or publication event`;
+  }
+  return `; its recommended work date is ${execution.scheduledDate}, but Secretary has not confirmed a private block`;
 }
 
 function compact(values: Array<string | null | undefined>): string[] {
@@ -2144,8 +2182,7 @@ function hasContractContent(contract: PeerDecisionContract | null | undefined): 
     || contract.preferredWindows.length > 0
     || contract.fallbackIfDeferred.length > 0
     || contract.notes.length > 0
-    || Boolean(contract.budgetMode)
-    || Boolean(contract.publishDeadline);
+    || Boolean(contract.budgetMode);
 }
 
 function formatSection(label: string, facts: string[], tail: string): string {

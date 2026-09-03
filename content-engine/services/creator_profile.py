@@ -1,11 +1,16 @@
 """
-Creator profile loader — injected into all creative AI prompts.
+Legacy creator-profile compatibility loader.
 
 CENTRALIZATION (April 2026):
   The canonical source is `prompts/creator-config.md` in the repository root.
   This module reads that file at startup instead of maintaining a duplicate.
   If the file is not found (e.g. during isolated testing), it falls back to
   a NEUTRAL profile with NO hardcoded identity.
+
+  Current creative endpoints receive authenticated request-scoped creator
+  context directly and do not use this module as their identity authority.
+  Keep this loader neutral for dormant/legacy callers; do not reintroduce it
+  as a global fallback for request-time generation.
 
   DO NOT add specific creator identity, founder name, owner persona,
   worldview, or audience profile here. Real creator identity is loaded
@@ -17,6 +22,8 @@ CENTRALIZATION (April 2026):
 
 import os
 import logging
+
+from services.log_safety import safe_error_type
 
 logger = logging.getLogger("content-engine.profile")
 
@@ -44,13 +51,16 @@ def _load_config() -> str:
     try:
         with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
             content = f.read().strip()
-        logger.info("Loaded creator config from %s (%d chars)", _CONFIG_PATH, len(content))
+        logger.info("Loaded neutral legacy creator config (%d chars)", len(content))
         return content
     except FileNotFoundError:
-        logger.warning("Creator config not found at %s — using neutral fallback", _CONFIG_PATH)
+        logger.warning("Legacy creator config not found — using neutral fallback")
         return _FALLBACK_PROFILE
-    except Exception as e:
-        logger.error("Failed to load creator config: %s — using neutral fallback", e)
+    except Exception as exc:
+        logger.error(
+            "Failed to load creator config (error_type=%s) — using neutral fallback",
+            safe_error_type(exc),
+        )
         return _FALLBACK_PROFILE
 
 

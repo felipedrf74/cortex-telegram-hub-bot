@@ -751,6 +751,28 @@ describe('GeminiProvider', () => {
       expect(mockGenerateContent.mock.calls[1][0].model).toBe('gemini-2.0-flash');
     });
 
+    it('keeps a Content dispatch to one provider attempt with no post-failure switch', async () => {
+      const ambiguousFailure = error503();
+      mockGenerateContent.mockRejectedValueOnce(ambiguousFailure);
+      const anthropicFallback = vi.fn(async () => 'anthropic text');
+
+      await expect(completeOneShotWithFallback(
+        'System prompt',
+        'User prompt',
+        'content_agent_strategy',
+        anthropicFallback,
+        {
+          maxTokens: 32,
+          maxRetries: 0,
+          allowFallbackAfterProviderFailure: false,
+        },
+      )).rejects.toBe(ambiguousFailure);
+
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+      expect(mockGenerateContent.mock.calls[0][0].model).toBe('gemini-2.0-pro');
+      expect(anthropicFallback).not.toHaveBeenCalled();
+    });
+
     it('vision primary retries transient 503s before hopping to OpenAI', async () => {
       mockGenerateContent
         .mockRejectedValueOnce(error503())

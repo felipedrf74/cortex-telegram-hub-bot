@@ -2,6 +2,7 @@
 
 import { getDb } from '../services/database';
 import { ensureContentTenantScopeColumns, resolveContentTenantId } from '../services/content-tenant-scope';
+import { safeContentLogErrorFields } from '../services/content-log-safety';
 import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -154,6 +155,8 @@ export interface CanonicalLifecycleSummary {
   generatedAt: string;
   tenantId: number;
   ownerUserId: number;
+  availability: 'available' | 'partial' | 'unavailable';
+  unavailableSections: Array<'workspace' | 'radar_feedback'>;
   buckets: CanonicalLifecycleBucket[];
   total: number;
   hasData: boolean;
@@ -173,6 +176,8 @@ export function summarizeCanonicalLifecycle(
   if (!Number.isFinite(userId) || userId <= 0) {
     return {
       generatedAt, tenantId: 0, ownerUserId: 0,
+      availability: 'unavailable',
+      unavailableSections: ['workspace', 'radar_feedback'],
       buckets: emptyBuckets(counters),
       total: 0, hasData: false,
     };
@@ -180,6 +185,7 @@ export function summarizeCanonicalLifecycle(
   ensureContentTenantScopeColumns();
   const db = getDb();
   const resolvedTenantId = resolveContentTenantId(userId, tenantId);
+  const unavailableSections: CanonicalLifecycleSummary['unavailableSections'] = [];
 
   // ─── Canonical workspace inventory ─────────────────────────────
   try {
@@ -202,7 +208,8 @@ export function summarizeCanonicalLifecycle(
       counters[stage] += Number(r.c) || 0;
     }
   } catch (err) {
-    logger.warn({ err, userId, tenantId: resolvedTenantId },
+    unavailableSections.push('workspace');
+    logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId: resolvedTenantId },
       'content-lifecycle.summarize workspace failed');
   }
 
@@ -250,7 +257,8 @@ export function summarizeCanonicalLifecycle(
     `).get(resolvedTenantId, userId) as { c: number };
     counters.accepted += Number(accepted?.c ?? 0);
   } catch (err) {
-    logger.warn({ err, userId, tenantId: resolvedTenantId },
+    unavailableSections.push('radar_feedback');
+    logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId: resolvedTenantId },
       'content-lifecycle.summarize radar feedback failed');
   }
 
@@ -265,6 +273,12 @@ export function summarizeCanonicalLifecycle(
     generatedAt,
     tenantId: resolvedTenantId,
     ownerUserId: userId,
+    availability: unavailableSections.length === 0
+      ? 'available'
+      : unavailableSections.length === 2
+        ? 'unavailable'
+        : 'partial',
+    unavailableSections,
     buckets,
     total,
     hasData: total > 0,

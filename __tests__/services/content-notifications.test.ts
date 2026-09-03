@@ -154,6 +154,7 @@ describe('content-notifications: state transitions', () => {
     const notifications = getNotifications(1, { status: 'read' });
     expect(notifications).toHaveLength(1);
     expect(notifications[0].status).toBe('read');
+    expect(markRead(id, 1)).toBe(false);
   });
 
   it('markRead returns false for wrong userId', () => {
@@ -191,6 +192,8 @@ describe('content-notifications: state transitions', () => {
     const notifications = getNotifications(1, { status: 'resolved' });
     expect(notifications).toHaveLength(1);
     expect(notifications[0].resolvedAt).not.toBeNull();
+    expect(resolveNotification(id, 1)).toBe(false);
+    expect(markRead(id, 1)).toBe(false);
   });
 
   it('state transitions fail closed on invalid tenant scope', () => {

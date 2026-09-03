@@ -79,36 +79,40 @@ const targets: EvalTarget[] = [
   {
     id: 'content',
     promptFile: 'content',
-    description: 'Content creation partner — YouTube/Instagram, PT-BR',
+    description: 'Content creation partner — profile-bound identity, language, and channel guidance',
     model: 'claude-haiku-4-5-20251001',
     scorerModel: 'claude-haiku-4-5-20251001',
     maxTokens: 1024,
     criteria: [
-      { id: 'pt_br', question: 'Is the entire response written in PT-BR (Brazilian Portuguese), not European Portuguese or English?', weight: 2 },
-      { id: 'hook_first', question: 'Does the content start with a strong hook in the first line (attention-grabbing opening for the first 3 seconds)?', weight: 1.5 },
-      { id: 'worldview', question: 'Does the content reflect the creator\'s worldview (conservative, libertarian, faith-based, anti-state) without contradicting it?', weight: 2 },
+      { id: 'profile_language', question: 'Does every user-facing field follow the authenticated creator language in Current State, without substituting another locale or language variant?', weight: 2 },
+      { id: 'hook_first', question: 'Does the content start with a topic-specific opening suited to the requested format and saved voice, without forcing controversy or clickbait?', weight: 1.5 },
+      { id: 'identity_fidelity', question: 'Does the response stay within the supplied creator pillars, audience, voice rules, and factual context without inventing a worldview, biography, personal experience, or founder persona?', weight: 2 },
       { id: 'html_only', question: 'Is the response free of markdown syntax (* ** ``` #) and uses only HTML tags for formatting?', weight: 1 },
     ],
     testInputs: [
       {
         id: 'cnt_reel_idea',
-        userMessage: 'Cria um roteiro de Reel sobre disciplina nos treinos',
-        description: 'Reel script about training discipline — should be PT-BR with strong hook',
+        userMessage: 'Create a Reel script about growing herbs on a small balcony.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[urban gardening]; audience=apartment beginners; voice_rules=[warm, practical, evidence-aware]; no personal biography or worldview is provided.',
+        description: 'English gardening Reel — should honor the supplied profile without invented experience',
       },
       {
         id: 'cnt_yt_outline',
-        userMessage: 'Outline para vídeo YouTube sobre liberdade econômica vs estado regulador',
-        description: 'YouTube outline about economic freedom — should reflect libertarian worldview',
+        userMessage: 'Cria um outline para um vídeo de YouTube sobre como fotografar melhor com luz natural.',
+        stateContext: 'Authenticated creator profile: language=pt-PT; pillars=[fotografia]; audience=fotógrafos iniciantes; voice_rules=[claro, calmo, sem exageros]; no personal biography or worldview is provided.',
+        description: 'European Portuguese photography outline — should preserve locale and saved voice',
       },
       {
         id: 'cnt_carousel',
-        userMessage: 'Cria um carrossel de 5 slides sobre por que a maioria desiste dos objetivos',
-        description: 'Instagram carousel about quitting goals — should be motivational and PT-BR',
+        userMessage: 'Crie um carrossel de 5 slides sobre cuidados básicos com cerâmica artesanal.',
+        stateContext: 'Authenticated creator profile: language=pt-BR; pillars=[cerâmica artesanal]; audience=pessoas começando no hobby; voice_rules=[acolhedor, específico, sem sensacionalismo]; no personal biography or worldview is provided.',
+        description: 'Brazilian Portuguese craft carousel — should stay specific and profile-bound',
       },
       {
         id: 'cnt_stories',
-        userMessage: 'Sequência de stories sobre a minha rotina matinal de 5am',
-        description: 'Stories sequence about morning routine — should be authentic and engaging',
+        userMessage: 'Create a sequence of stories explaining one useful weekly planning ritual.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[team productivity]; audience=small creative teams; voice_rules=[concise, candid, non-prescriptive]; no personal routine or biography is provided.',
+        description: 'Productivity stories — should avoid fabricating a first-person routine',
       },
     ],
   },
@@ -177,7 +181,8 @@ const targets: EvalTarget[] = [
     scorerModel: 'claude-haiku-4-5-20251001',
     maxTokens: 2048,
     criteria: [
-      { id: 'complete_fields', question: 'Does each topic match the live topic-generation contract with non-empty title, niche, whyNow, hookIdea, angle_tag, and time_sensitivity plus a present string pillar_emoji field (empty is valid when unset)?', weight: 2 },
+      { id: 'complete_fields', question: 'Does each topic match the live topic-generation contract with non-empty title, niche, whyNow, hookIdea, angle_tag, and time_sensitivity, plus pillar_emoji set to an empty string until an explicit typed emoji mapping exists?', weight: 2 },
+      { id: 'authorized_identity', question: 'Does every niche exactly match an allowed pillar or niche in Current State, with no invented creator interests, worldview, demographic, or personal history?', weight: 2 },
       { id: 'angle_diversity', question: 'Are the topics diverse in angle and content pillar (not all the same theme)?', weight: 1.5 },
       { id: 'timely_whynow', question: 'Is the whyNow field specific and timely (references current events, trends, or seasons) rather than generic?', weight: 1.5 },
       { id: 'specific_hook', question: 'Is the hookIdea specific and actionable (a concrete opening line or visual), not vague?', weight: 1 },
@@ -185,18 +190,21 @@ const targets: EvalTarget[] = [
     testInputs: [
       {
         id: 'tg_reels',
-        userMessage: 'Generate 5 reel topic candidates for this week',
-        description: 'Reel topics — should produce 5 diverse, complete topic objects',
+        userMessage: 'Generate 5 Reel topic candidates for this week.',
+        stateContext: 'Authenticated creator profile: language=en-US; allowedPillarsOrNiches=[urban gardening, home composting]; audience=apartment beginners; no worldview or biography is provided.',
+        description: 'Gardening Reels — should produce 5 complete candidates using only authorized categories',
       },
       {
         id: 'tg_youtube',
-        userMessage: 'Generate 3 YouTube video topic candidates about economics and freedom',
-        description: 'YouTube topics about economics — should reflect libertarian worldview',
+        userMessage: 'Generate 3 YouTube video topic candidates for the saved creator profile.',
+        stateContext: 'Authenticated creator profile: language=en-US; allowedPillarsOrNiches=[product education, customer research]; audience=early-stage product teams; no worldview or biography is provided.',
+        description: 'Product education topics — should use only the supplied profile',
       },
       {
         id: 'tg_trending',
-        userMessage: 'Generate topics reacting to trending news this week',
-        description: 'Trending reaction topics — whyNow should reference actual current events',
+        userMessage: 'Generate topics reacting to relevant news this week.',
+        stateContext: 'Authenticated creator profile: language=en-US; allowedPillarsOrNiches=[independent cinema]; audience=film students; voice_rules=[curious, evidence-aware, non-inflammatory]; no worldview or biography is provided.',
+        description: 'Film reaction topics — whyNow should be current without forced controversy',
       },
     ],
   },
@@ -217,7 +225,7 @@ const targets: EvalTarget[] = [
     testInputs: [
       {
         id: 'cl_analyze',
-        userMessage: `Analyze these videos:\n1. "COMO EU MUDEI MINHA VIDA EM 6 MESES" - 245K views, 12K likes, 890 comments, 15:32\n2. "5 MENTIRAS que te contaram sobre DINHEIRO" - 180K views, 9K likes, 650 comments, 12:45\n3. "Reagi ao PIOR conselho financeiro da internet" - 320K views, 18K likes, 1.2K comments, 18:20\n4. "Minha rotina das 5AM (a verdade)" - 150K views, 8K likes, 420 comments, 10:15\n5. "Por que saí do Brasil e NÃO voltaria" - 500K views, 25K likes, 3K comments, 22:10`,
+        userMessage: `Analyze these videos:\n1. "Build a Window Herb Garden in One Afternoon" - 245K views, 12K likes, 890 comments, 15:32\n2. "Five Composting Mistakes in Small Apartments" - 180K views, 9K likes, 650 comments, 12:45\n3. "Testing Three Low-Cost Grow Lights" - 320K views, 18K likes, 1.2K comments, 18:20\n4. "A Month of Balcony Tomatoes: What Worked" - 150K views, 8K likes, 420 comments, 10:15\n5. "The Soil Mix Experiment: Results After 90 Days" - 500K views, 25K likes, 3K comments, 22:10`,
         description: 'Channel analysis — should extract specific patterns across all 9 categories',
       },
     ],
@@ -247,7 +255,7 @@ const targets: EvalTarget[] = [
       },
       {
         id: 'hook_strength',
-        question: 'Does the opening hook (first 3 seconds) use a pattern interrupt, bold claim, or curiosity gap that would stop someone scrolling? Is it specific (not generic like "Hoje vamos falar sobre...")?',
+        question: 'Does the opening use a topic-specific, creator-authorized attention device that fits the saved voice, without requiring a bold claim, controversy, or fabricated experience?',
         weight: 2.5,
       },
       {
@@ -257,12 +265,12 @@ const targets: EvalTarget[] = [
       },
       {
         id: 'source_grounding',
-        question: 'Are factual claims tagged with [VERIFIED: source] or [NEEDS VERIFICATION]? Is there a FONTES VERIFICADAS section? Are FACTS separated from TAKES?',
+        question: 'Are factual claims bound to exact supplied source identifiers or marked unverified, with facts separated from creator-authorized interpretation and no invented citations?',
         weight: 2,
       },
       {
         id: 'format_compliance',
-        question: 'Does the script include [SFX:name], [EDIT:technique], [SHOW ON SCREEN: ...], and [PAUSE] markers at appropriate density? Does it follow HOOK / BODY / CTA structure?',
+        question: 'Does the script follow the requested format and use production markers only where the saved format and voice call for them, without forcing SFX, editing gimmicks, or a CTA?',
         weight: 2,
       },
       {
@@ -279,28 +287,33 @@ const targets: EvalTarget[] = [
     testInputs: [
       {
         id: 'sq_tech_build',
-        userMessage: 'Write a script about building an AI bot that manages your entire life',
-        description: 'Tech/build script — should be hands-on, authentic, show real code/demo moments',
+        userMessage: 'Write a script explaining how to build a reliable indoor seed-starting setup.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[urban gardening]; audience=apartment beginners; voice_rules=[practical, evidence-aware, no hype]; personal experience is not provided.',
+        description: 'Practical explainer — should be useful without inventing first-person experience',
       },
       {
         id: 'sq_reaction',
-        userMessage: 'Write a reaction script to a viral clip of a politician saying taxes are good',
-        description: 'Reaction script — should reflect libertarian worldview, have bold take, use SFX markers',
+        userMessage: 'Write a reaction script to a viral clip claiming houseplants remove every indoor pollutant.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[indoor plants]; audience=curious renters; voice_rules=[measured, source-led, friendly]; supplied stance=correct unsupported claims without attacking the speaker.',
+        description: 'Evidence-led reaction — should honor the supplied stance without forced provocation',
       },
       {
         id: 'sq_reel_training',
-        userMessage: 'Write a 30-second Reel script about waking up at 5am to train',
-        description: 'Short-form training script — should be punchy, personal, high energy in 30s',
+        userMessage: 'Write a 30-second Reel script about choosing paper for watercolor layering.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[watercolor]; audience=beginner artists; voice_rules=[gentle, visual, specific]; personal experience is not provided.',
+        description: 'Short-form art script — should fit 30 seconds without fabricated biography',
       },
       {
         id: 'sq_economics',
-        userMessage: 'Write a YouTube script about why inflation is theft, using Austrian Economics framework',
-        description: 'Economics script — MUST separate facts from takes, cite sources, reflect worldview',
+        userMessage: 'Write a YouTube script explaining why grocery supply chains create seasonal price changes.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[consumer education]; audience=general adults; voice_rules=[neutral, source-led, plain language]; no political or economic worldview is provided.',
+        description: 'Consumer explainer — must separate sourced facts from interpretation',
       },
       {
         id: 'sq_evergreen',
-        userMessage: 'Write a script about 5 habits that changed my life as an entrepreneur',
-        description: 'Evergreen listicle — should feel personal (not generic), match the authenticated creator\'s saved brand voice',
+        userMessage: 'Write a script about five ways small teams can document recurring decisions.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[team operations]; audience=small creative teams; voice_rules=[concise, candid, non-prescriptive]; personal biography is not provided.',
+        description: 'Evergreen team-operations list — should match saved voice without personal claims',
       },
     ],
   },
@@ -308,12 +321,12 @@ const targets: EvalTarget[] = [
   // ── 8. Hook Quality ─────────────────────────────────────────────
   //
   // Focused evaluation of hook generation quality. Tests whether
-  // generated hooks are strong enough to stop scrolling in the
-  // first 3 seconds across different content pillars.
+  // generated openings are specific, supportable, and worth testing across
+  // different content pillars without assuming a universal timing window.
   {
     id: 'hook_quality',
     promptFile: 'content',
-    description: 'Hook generation quality — specificity, pattern interrupts, scroll-stopping power',
+    description: 'Opening-variant quality — specificity, evidence fit, and a reviewable attention hypothesis',
     model: 'claude-haiku-4-5-20251001',
     scorerModel: 'claude-haiku-4-5-20251001',
     maxTokens: 512,
@@ -325,12 +338,12 @@ const targets: EvalTarget[] = [
       },
       {
         id: 'scroll_stop',
-        question: 'Would this hook make someone stop scrolling on Instagram/YouTube in the first 3 seconds? Does it create urgency, curiosity, or controversy?',
+        question: 'Is this a topic-specific opening hypothesis worth testing, while avoiding unsupported urgency, controversy, clickbait, or guaranteed attention claims?',
         weight: 3,
       },
       {
-        id: 'pt_br_natural',
-        question: 'Does the hook sound like natural PT-BR speech (not translated English, not formal Portuguese)?',
+        id: 'profile_language',
+        question: 'Does the hook use the exact language and locale supplied in Current State, with natural phrasing for that locale?',
         weight: 2,
       },
       {
@@ -342,18 +355,21 @@ const targets: EvalTarget[] = [
     testInputs: [
       {
         id: 'hq_tech',
-        userMessage: 'Generate 5 hooks for a video about building an AI personal assistant',
-        description: 'Tech hooks — should reference building/coding, not just hype',
+        userMessage: 'Generate 5 hooks for a video about restoring a wooden chair.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[furniture restoration]; voice_rules=[patient, concrete, no hype]; personal experience is not provided.',
+        description: 'Restoration hooks — should be concrete and profile-bound',
       },
       {
-        id: 'hq_politics',
-        userMessage: 'Generate 5 hooks for a video about why minimum wage hurts the poor',
-        description: 'Politics hooks — should be bold, libertarian framing, not neutral',
+        id: 'hq_science',
+        userMessage: 'Generate 5 hooks for a video comparing two common home air-quality sensors.',
+        stateContext: 'Authenticated creator profile: language=en-US; pillars=[home science]; voice_rules=[measured, evidence-aware, avoid absolute claims]; no worldview is provided.',
+        description: 'Science hooks — should create curiosity without overstating evidence',
       },
       {
-        id: 'hq_training',
-        userMessage: 'Generate 5 hooks for a Reel about training at 5am in winter',
-        description: 'Training hooks — should be personal, visceral, not motivational-poster energy',
+        id: 'hq_craft',
+        userMessage: 'Gera 5 ganchos para um Reel sobre como evitar bolhas no esmalte de cerâmica.',
+        stateContext: 'Authenticated creator profile: language=pt-PT; pillars=[cerâmica]; voice_rules=[claro, acolhedor, específico]; personal experience is not provided.',
+        description: 'European Portuguese craft hooks — should preserve locale and avoid generic hype',
       },
     ],
   },

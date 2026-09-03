@@ -35,6 +35,7 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback: vi.fn(),
   completeOneShotWithSearch: vi.fn(),
+  isGeminiProviderConfigured: vi.fn(() => true),
 }));
 
 vi.mock('../../src/portal/anthropic-hook', () => ({

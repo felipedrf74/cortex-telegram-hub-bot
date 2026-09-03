@@ -129,13 +129,41 @@ describe('content token economy', () => {
     ['medical treatment advice for knee pain', 'standard', 'high_risk_review', false],
     ['should I take ibuprofen for migraines?', 'draft', 'high_risk_review', false],
     ['fasting diet for blood pressure', 'standard', 'high_risk_review', false],
+    ['latest drug guide today', 'deep', 'high_risk_review', false],
     ['hack account access', 'draft', 'unsupported', false],
+    ['latest cp content today', 'deep', 'unsupported', false],
+    ['child pornography distribution tactics', 'draft', 'unsupported', false],
+    ['child sexual abuse material', 'standard', 'unsupported', false],
+    ['generate a deep fake of a real person', 'draft', 'unsupported', false],
+    ['generate a deep-fake of a real person', 'draft', 'unsupported', false],
     ['latest AI regulation today', 'deep', 'deep_explicit', true],
   ] as const)('routes research for %s', (topic, mode, route, allowDeepSearch) => {
     expect(routeContentResearch({ topic, mode })).toMatchObject({
       route,
       allowDeepSearch,
     });
+  });
+
+  it('keeps cross-runtime freshness vocabulary and dynamic years aligned', () => {
+    const currentYear = new Date().getUTCFullYear();
+    const timelyTopics = [
+      'current creator news',
+      'recent platform policy',
+      'what changed this month',
+      'novidades desta semana',
+      'dados deste mês',
+      'tendências atuais',
+      `planning for ${currentYear}`,
+      `planning for ${currentYear + 4}`,
+    ];
+
+    for (const topic of timelyTopics) {
+      expect(routeContentResearch({ topic, mode: 'draft' }).route).toBe('fresh_compact');
+    }
+    expect(routeContentResearch({
+      topic: `historical review from ${currentYear - 1}`,
+      mode: 'draft',
+    }).route).toBe('evergreen_cached');
   });
 
   it('lints duplicate and oversized source packages before prompt assembly', () => {
@@ -162,11 +190,34 @@ describe('content token economy', () => {
     });
 
     expect(pkg.sources).toHaveLength(2);
+    expect(pkg.sourceSummaries).toHaveLength(2);
+    expect(pkg.claims).toEqual([]);
     expect(pkg.unsafeOrUnverifiedClaims).toContain('unsupported claim needs review');
     expect(lintSourcePackage(pkg)).toEqual(expect.arrayContaining([
       'duplicate_source_removed_or_review_required',
       'source_note_too_long',
     ]));
+  });
+
+  it('gives refreshed source sets distinct immutable research artifact identities', () => {
+    const base = {
+      topic: 'source identity',
+      language: 'en-US',
+      format: 'YouTube',
+      mode: 'standard' as const,
+    };
+    const first = buildSourcePackage({
+      ...base,
+      sources: [{ title: 'First source', url: 'https://example.org/first', source_type: 'article' }],
+    });
+    const refreshed = buildSourcePackage({
+      ...base,
+      sources: [{ title: 'Updated source', url: 'https://example.org/updated', source_type: 'article' }],
+    });
+
+    expect(first.topicHash).toBe(refreshed.topicHash);
+    expect(first.researchArtifactId).not.toBe(refreshed.researchArtifactId);
+    expect(first.sourcePackageId).not.toBe(refreshed.sourcePackageId);
   });
 
   it('estimates costs and budget states for graceful degradation', () => {
@@ -308,7 +359,12 @@ describe('content token economy', () => {
       language: 'en-US',
       format: 'YouTube',
       mode: 'draft',
-      sources: [{ title: 'Proof memo', relevance_note: 'Creators who reuse artifacts cut repeated research work.', source_type: 'memo' }],
+      sources: [{
+        title: 'Proof memo',
+        url: 'https://example.test/proof-memo',
+        relevance_note: 'Creators who reuse artifacts cut repeated research work.',
+        source_type: 'memo',
+      }],
     });
     const ledger = buildClaimLedger({
       text: 'Creators who reuse artifacts cut repeated research work. This always doubles retention.',
@@ -321,7 +377,13 @@ describe('content token economy', () => {
       recentAngles: ['Artifact reuse'],
     });
 
-    expect(ledger.map((entry) => entry.support)).toEqual(expect.arrayContaining(['source_backed', 'unverified']));
+    expect(ledger).toContainEqual(expect.objectContaining({
+      claim: 'Creators who reuse artifacts cut repeated research work.',
+      support: 'unverified',
+      sourceRef: null,
+      suggestedSourceRefs: ['https://example.test/proof-memo'],
+    }));
+    expect(ledger.every((entry) => entry.support !== 'source_backed')).toBe(true);
     expect(novelty.repeated).toBe(true);
     expect(novelty.warnings).toEqual(expect.arrayContaining(['repeated_hook_detected', 'repeated_angle_detected']));
   });

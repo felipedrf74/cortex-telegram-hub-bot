@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { withDatabaseForTest } from '../../src/services/database';
 
 let testDb: Database.Database;
 
@@ -28,7 +29,11 @@ vi.mock('../../src/utils/logger', () => ({
 
 // intelligence-bus uses a lazy DB provider (setDbProvider) instead of
 // importing the database module, so we wire it explicitly in beforeEach.
-import { setDbProvider, readSignals as busReadSignals } from '../../src/services/intelligence-bus';
+import {
+  setDbProvider,
+  readSignals as busReadSignals,
+  writeSignal,
+} from '../../src/services/intelligence-bus';
 
 import {
   publishSessionLoad,
@@ -45,6 +50,17 @@ import {
   formatTrainingContextForPrompt,
   TRAINING_SOURCE,
 } from '../../src/services/training-signals';
+import {
+  createContentArtifact,
+  createContentWorkspaceItem,
+  getContentWorkspaceItem,
+  transitionContentWorkspaceItem,
+} from '../../src/services/content-workspace';
+import {
+  cancelContentSchedule,
+  confirmContentSchedulePreview,
+  createContentSchedulePreview,
+} from '../../src/services/content-workspace-scheduling';
 
 function resetTrainingOperationalEnvForTests(): void {
   delete process.env.TRAINING_ENGINE_ENABLED;
@@ -360,7 +376,10 @@ describe('otherSportRpeToday aggregation', () => {
 
 describe('formatTrainingContextForPrompt', () => {
   beforeEach(() => freshDb());
-  afterEach(() => testDb?.close());
+  afterEach(() => {
+    vi.useRealTimers();
+    testDb?.close();
+  });
 
   it('returns no-op message when nothing is active', () => {
     const ctx = readTrainingContext({ userId: 900, sport: 'running' });
@@ -377,6 +396,152 @@ describe('formatTrainingContextForPrompt', () => {
     expect(block).toContain('LOW SLEEP');
     expect(block).toContain('HIGH LEG LOAD');
     expect(block).toContain('</cross_skill_state>');
+  });
+
+  it('uses only a confirmed filming block for Content workload and ignores legacy publication signals', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-01T10:00:00.000Z'));
+    const created = createContentWorkspaceItem({
+      scope: { tenantId: 902, userId: 902 },
+      itemType: 'content_item',
+      title: 'Training-aware filming block',
+      idempotencyKey: 'training-content-item-001',
+    }, testDb).value;
+    createContentArtifact({
+      scope: { tenantId: 902, userId: 902 },
+      itemId: created.id,
+      expectedWorkflowVersion: created.workflowVersion,
+      artifactType: 'script',
+      initialContent: { format: 'markdown', text: '# Filming draft\nOwner-authored.' },
+      idempotencyKey: 'training-content-artifact-001',
+    }, testDb);
+    let item = getContentWorkspaceItem({ tenantId: 902, userId: 902 }, created.id, testDb)!;
+    item = transitionContentWorkspaceItem({
+      scope: { tenantId: 902, userId: 902 },
+      itemId: item.id,
+      targetState: 'review',
+      expectedWorkflowVersion: item.workflowVersion,
+      idempotencyKey: 'training-content-review-001',
+    }, testDb).value;
+    item = transitionContentWorkspaceItem({
+      scope: { tenantId: 902, userId: 902 },
+      itemId: item.id,
+      targetState: 'approved',
+      expectedWorkflowVersion: item.workflowVersion,
+      idempotencyKey: 'training-content-approve-001',
+    }, testDb).value;
+    const preview = withDatabaseForTest(testDb, () => createContentSchedulePreview({
+      scope: { tenantId: 902, userId: 902 },
+      itemId: item.id,
+      workKind: 'record',
+      durationMinutes: 120,
+      preferredWindows: [{
+        start: '2026-05-08T10:00:00.000Z',
+        end: '2026-05-08T12:00:00.000Z',
+      }],
+      idempotencyKey: 'training-content-preview-001',
+      now: '2026-05-01T10:00:00.000Z',
+    }, testDb));
+    withDatabaseForTest(testDb, () => confirmContentSchedulePreview({
+      scope: { tenantId: 902, userId: 902 },
+      previewKey: preview.value.previewKey,
+      idempotencyKey: 'training-content-confirm-001',
+      now: '2026-05-01T10:00:00.000Z',
+    }, testDb));
+    writeSignal({
+      source_agent: 'legacy.content',
+      signal_type: 'publishing_commitment',
+      payload: { nextDate: '2026-05-07' },
+      priority: 'urgent',
+      user_id: 902,
+      tenant_id: 902,
+    });
+    writeSignal({
+      source_agent: 'legacy.content',
+      signal_type: 'shoot_day_locked',
+      payload: {
+        itemId: 55,
+        date: '2026-05-06',
+        blockStart: '2026-05-06T10:00:00.000Z',
+        blockEnd: '2026-05-06T12:00:00.000Z',
+        planStatus: 'confirmed',
+        scheduleAuthority: 'secretary',
+        scheduleAuthorityStatus: 'current',
+        semantics: 'private_work_session',
+        workKind: 'filming',
+        sourceWorkKind: 'record',
+        sourceState: 'scheduled',
+        providerAttention: false,
+      },
+      priority: 'urgent',
+      user_id: 902,
+      tenant_id: 902,
+    });
+    writeSignal({
+      source_agent: 'mesh.editorial-coordinator',
+      signal_type: 'shoot_day_locked',
+      payload: {
+        date: '2026-05-07',
+        planStatus: 'confirmed',
+        scheduleAuthority: 'secretary',
+        scheduleAuthorityStatus: 'current',
+        semantics: 'private_work_session',
+        workKind: 'filming',
+      },
+      priority: 'urgent',
+      user_id: 902,
+      tenant_id: 902,
+    });
+    const currentFilmingSignalId = writeSignal({
+      source_agent: 'mesh.editorial-coordinator',
+      signal_type: 'shoot_day_locked',
+      payload: {
+        itemId: item.id,
+        date: '2026-05-08',
+        blockStart: '2026-05-08T10:00:00.000Z',
+        blockEnd: '2026-05-08T12:00:00.000Z',
+        planStatus: 'confirmed',
+        scheduleAuthority: 'secretary',
+        scheduleAuthorityStatus: 'current',
+        semantics: 'private_work_session',
+        workKind: 'filming',
+        sourceWorkKind: 'record',
+        sourceState: 'scheduled',
+        providerAttention: false,
+      },
+      priority: 'normal',
+      user_id: 902,
+      tenant_id: 902,
+    });
+
+    const ctx = withDatabaseForTest(testDb, () => readTrainingContext({
+      userId: 902,
+      tenantId: 902,
+      sport: 'running',
+    }));
+    const block = formatTrainingContextForPrompt(ctx, 'running');
+
+    expect(ctx.signals.map((signal) => signal.signal_type)).toEqual(['shoot_day_locked']);
+    expect(ctx.flags.confirmedContentWorkBlock).toBe(true);
+    expect(block).toContain('CONFIRMED PRIVATE CONTENT WORK on 2026-05-08');
+    expect(block).toContain('not publication evidence');
+    expect(block).not.toContain('CONTENT COMMITMENT');
+
+    withDatabaseForTest(testDb, () => cancelContentSchedule({
+      scope: { tenantId: 902, userId: 902 },
+      itemId: item.id,
+      idempotencyKey: 'training-content-cancel-001',
+      now: '2026-05-02T10:00:00.000Z',
+    }, testDb));
+    const afterCancellation = withDatabaseForTest(testDb, () => readTrainingContext({
+      userId: 902,
+      tenantId: 902,
+      sport: 'running',
+    }));
+    expect(testDb.prepare('SELECT status FROM agent_signals WHERE id = ?').get(currentFilmingSignalId))
+      .toEqual({ status: 'active' });
+    expect(afterCancellation.signals.map((signal) => signal.signal_type)).not.toContain('shoot_day_locked');
+    expect(afterCancellation.flags.confirmedContentWorkBlock).toBe(false);
   });
 });
 

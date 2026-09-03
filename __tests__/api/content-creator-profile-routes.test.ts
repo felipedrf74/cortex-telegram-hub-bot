@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Router, type Request, type Response } from 'express';
 
 const mocks = vi.hoisted(() => ({
+  ContentCreatorProfileUnavailableError: class ContentCreatorProfileUnavailableError extends Error {
+    readonly code = 'CONTENT_CREATOR_PROFILE_UNAVAILABLE';
+    readonly status = 503;
+    readonly details = { retryable: true };
+  },
   getContentCreatorProfile: vi.fn(),
   upsertContentCreatorProfile: vi.fn(),
   resetContentCreatorProfile: vi.fn(),
@@ -11,10 +16,14 @@ const mocks = vi.hoisted(() => ({
   listRadarFeedback: vi.fn(),
   radarFeedbackAggregateBySignal: vi.fn(),
   recordContentRadarWorkspaceAction: vi.fn(),
+  isPausedContentAgent: vi.fn(),
+  invalidateContentDerivedCaches: vi.fn(),
+  markSummaryStale: vi.fn(),
   summarizeCanonicalLifecycle: vi.fn(),
 }));
 
 vi.mock('../../src/state/content-creator-profile', () => ({
+  ContentCreatorProfileUnavailableError: mocks.ContentCreatorProfileUnavailableError,
   getContentCreatorProfile: (...args: unknown[]) => mocks.getContentCreatorProfile(...args),
   upsertContentCreatorProfile: (...args: unknown[]) => mocks.upsertContentCreatorProfile(...args),
   resetContentCreatorProfile: (...args: unknown[]) => mocks.resetContentCreatorProfile(...args),
@@ -36,6 +45,25 @@ vi.mock('../../src/state/content-lifecycle', () => ({
 
 vi.mock('../../src/services/content-radar-workspace-actions', () => ({
   recordContentRadarWorkspaceAction: (...args: unknown[]) => mocks.recordContentRadarWorkspaceAction(...args),
+}));
+
+vi.mock('../../src/services/content-agent-lifecycle', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-agent-lifecycle')>(
+    '../../src/services/content-agent-lifecycle',
+  )),
+  isPausedContentAgent: (...args: unknown[]) => mocks.isPausedContentAgent(...args),
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => mocks.invalidateContentDerivedCaches(...args),
+}));
+
+vi.mock('../../src/services/app-summary-read-models', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/app-summary-read-models')>(
+    '../../src/services/app-summary-read-models',
+  )),
+  markSummaryStale: (...args: unknown[]) => mocks.markSummaryStale(...args),
 }));
 
 import { registerContentCreatorProfileRoutes } from '../../src/api/routes/content-creator-profile-routes';
@@ -61,7 +89,7 @@ function mockReq(
   method: string,
   path: string,
   userId: number | undefined = 77,
-  body: Record<string, unknown> = {},
+  body: unknown = {},
 ): Request {
   const [pathname, queryString] = path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryString ?? ''));
@@ -96,7 +124,7 @@ function makeEnsureValidScope() {
 async function dispatch(
   method: string,
   path: string,
-  body: Record<string, unknown> = {},
+  body: unknown = {},
   userId: number | undefined = 77,
   ensureValidScope = makeEnsureValidScope(),
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
@@ -155,6 +183,7 @@ describe('content creator profile routes', () => {
       },
       mutation: { replayed: false },
     });
+    mocks.isPausedContentAgent.mockReturnValue(false);
     mocks.summarizeCanonicalLifecycle.mockReturnValue({
       stages: [{ key: 'briefing', count: 1 }],
       totals: { total: 1 },
@@ -177,6 +206,98 @@ describe('content creator profile routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.data.completeness).toBe(0.25);
     expect(mocks.upsertContentCreatorProfile).toHaveBeenCalledWith(88, 88, patch);
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(88);
+    expect(mocks.markSummaryStale).toHaveBeenCalledWith({
+      tenantId: 88,
+      userId: 88,
+      summaryType: 'content',
+    });
+  });
+
+  it('rejects an array body instead of reactivating a neutral creator profile', async () => {
+    const { response } = await dispatch('PUT', '/creator-profile', []);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('CONTENT_CREATOR_PROFILE_INVALID');
+    expect(mocks.upsertContentCreatorProfile).not.toHaveBeenCalled();
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['wrong array type', { pillars: 'not-an-array' }, 'pillars', 'invalid_type'],
+    ['wrong scalar type', { audience: [] }, 'audience', 'invalid_type'],
+    ['wrong platform type', { platforms: {} }, 'platforms', 'invalid_type'],
+    ['unknown field', { pillarz: ['typo'] }, 'pillarz', 'unknown_field'],
+    ['empty patch', {}, '$', 'empty_patch'],
+  ] as const)('rejects a %s without clearing saved profile fields', async (_label, body, field, reason) => {
+    const { response } = await dispatch('PUT', '/creator-profile', body);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_CREATOR_PROFILE_INVALID',
+      details: { field, reason },
+    });
+    expect(mocks.upsertContentCreatorProfile).not.toHaveBeenCalled();
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('returns explicit unavailability instead of a neutral profile on storage failure', async () => {
+    mocks.getContentCreatorProfile.mockImplementationOnce(() => {
+      throw new mocks.ContentCreatorProfileUnavailableError();
+    });
+
+    const { response } = await dispatch('GET', '/creator-profile');
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_CREATOR_PROFILE_UNAVAILABLE',
+      details: { retryable: true },
+    });
+  });
+
+  it('resets the creator profile and invalidates cached and persisted summaries', async () => {
+    const { response } = await dispatch('DELETE', '/creator-profile', {}, 89);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.profile).toMatchObject({
+      pillars: [],
+      audience: '',
+      updatedAt: null,
+    });
+    expect(mocks.resetContentCreatorProfile).toHaveBeenCalledWith(89, 89);
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(89);
+    expect(mocks.markSummaryStale).toHaveBeenCalledWith({
+      tenantId: 89,
+      userId: 89,
+      summaryType: 'content',
+    });
+  });
+
+  it('labels the lifecycle published bucket as internal state, not publication evidence', async () => {
+    const { response } = await dispatch('GET', '/lifecycle');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({
+      lifecycle: mocks.summarizeCanonicalLifecycle.mock.results[0]?.value,
+      bucketSemantics: { published: 'internal_production_state_only' },
+      publicationTracking: {
+        availability: 'unavailable',
+        reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+        publicationExecution: 'not_supported',
+      },
+    });
+  });
+
+  it('returns a stable error instead of empty radar feedback when its read fails', async () => {
+    mocks.listRadarFeedback.mockImplementationOnce(() => {
+      throw new Error('private database error');
+    });
+
+    const { response } = await dispatch('GET', '/radar/feedback');
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body.error.code).toBe('INTERNAL');
+    expect(JSON.stringify(response.body)).not.toContain('private database error');
   });
 
   it('records radar feedback with authenticated user and tenant scope', async () => {
@@ -197,6 +318,22 @@ describe('content creator profile routes', () => {
       signalTopic: 'AI workflow',
       signalSummary: 'Good fit',
     });
+  });
+
+  it('blocks radar feedback writes while Reaction Radar is paused', async () => {
+    mocks.isPausedContentAgent.mockReturnValue(true);
+
+    const { response } = await dispatch('POST', '/radar/feedback', {
+      signalId: 'legacy-signal',
+      action: 'save',
+    }, 99);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_AGENT_PAUSED',
+      details: { agentId: 'reaction_radar', lifecycle: 'paused' },
+    });
+    expect(mocks.recordRadarFeedback).not.toHaveBeenCalled();
   });
 
   it('rejects unknown radar feedback actions before writing state', async () => {
@@ -249,6 +386,26 @@ describe('content creator profile routes', () => {
       reason: 'Develop this now',
       brief,
     });
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(99);
+  });
+
+  it('blocks radar workspace mutations while Reaction Radar is paused', async () => {
+    mocks.isPausedContentAgent.mockReturnValue(true);
+
+    const { response } = await dispatch('POST', '/radar/workspace-actions', {
+      signalId: 'legacy-signal',
+      action: 'create_brief',
+      signalTopic: 'Legacy radar topic',
+    }, 99);
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_AGENT_PAUSED',
+      details: { agentId: 'reaction_radar', lifecycle: 'paused' },
+    });
+    expect(mocks.recordContentRadarWorkspaceAction).not.toHaveBeenCalled();
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
   });
 
   it('rejects non-materializing actions before any radar workspace mutation', async () => {

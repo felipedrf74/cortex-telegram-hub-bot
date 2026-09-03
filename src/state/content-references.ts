@@ -2,6 +2,8 @@
 
 import { getDb } from '../services/database';
 import {
+  contentPrivateScopeParams,
+  contentPrivateScopePredicate,
   contentScopeForInsert,
   contentScopeOrderExpr,
   contentScopeParams,
@@ -229,20 +231,40 @@ function insertChannel(
   // Normalize URL: strip trailing slashes, ensure consistent format
   const normalized = channelUrl.trim().replace(/\/+$/, '');
 
-  const existing = db.prepare(
-    `SELECT * FROM content_ref_channels
-      WHERE channel_url = ?
-        AND ${contentScopePredicate()}`,
-  ).get(normalized, ...contentScopeParams(userId, tenantId)) as ContentRefChannel | undefined;
+  const existing = userId > 0
+    ? db.prepare(
+      `SELECT * FROM content_ref_channels
+        WHERE channel_url = ?
+          AND ${contentPrivateScopePredicate()}`,
+    ).get(normalized, ...contentPrivateScopeParams(userId, tenantId)) as ContentRefChannel | undefined
+    : db.prepare(
+      `SELECT * FROM content_ref_channels
+        WHERE channel_url = ?
+          AND ${contentScopePredicate()}`,
+    ).get(normalized, ...contentScopeParams(userId, tenantId)) as ContentRefChannel | undefined;
 
   if (existing) {
     // Re-enable if it was previously removed/failed
     if (existing.status === 'failed') {
-      db.prepare(`
-        UPDATE content_ref_channels
-        SET status = 'pending', error_message = NULL, updated_at = datetime('now')
-        WHERE id = ?
-      `).run(existing.id);
+      if (userId > 0) {
+        db.prepare(`
+          UPDATE content_ref_channels
+             SET status = 'pending', error_message = NULL, updated_at = datetime('now')
+           WHERE id = ?
+             AND ${contentPrivateScopePredicate()}
+        `).run(existing.id, ...contentPrivateScopeParams(userId, tenantId));
+      } else {
+        db.prepare(`
+          UPDATE content_ref_channels
+             SET status = 'pending', error_message = NULL, updated_at = datetime('now')
+           WHERE id = ?
+        `).run(existing.id);
+      }
+    }
+    if (userId > 0) {
+      const scoped = getChannel(existing.id, { userId, tenantId });
+      if (!scoped) throw new Error('channel no longer in requested user scope');
+      return scoped;
     }
     return db.prepare('SELECT * FROM content_ref_channels WHERE id = ?')
       .get(existing.id) as ContentRefChannel;
@@ -284,8 +306,8 @@ export function getChannel(id: number, access: ContentReferencesAccess): Content
   return db.prepare(
     `SELECT * FROM content_ref_channels
       WHERE id = ?
-        AND ${contentScopePredicate()}`,
-  ).get(id, ...contentScopeParams(checked.userId, checked.tenantId)) as ContentRefChannel | undefined;
+        AND ${contentPrivateScopePredicate()}`,
+  ).get(id, ...contentPrivateScopeParams(checked.userId, checked.tenantId)) as ContentRefChannel | undefined;
 }
 
 export function getSystemChannels(adminContext: ContentReferencesAdminContext): ContentRefChannel[] {
@@ -305,11 +327,10 @@ export function getAllChannels(userId: number, tenantId?: number): ContentRefCha
   assertPositiveUserId(userId);
   const rows = db.prepare(
     `SELECT * FROM content_ref_channels
-      WHERE ${contentScopePredicate()}
-      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-               status ASC,
+      WHERE ${contentPrivateScopePredicate()}
+      ORDER BY status ASC,
                channel_name ASC`,
-  ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
+  ).all(...contentPrivateScopeParams(userId, tenantId)) as ContentRefChannel[];
   return dedupeScopedRows(rows, (row) => row.channel_url, userId);
 }
 
@@ -332,10 +353,9 @@ export function getActiveChannels(userId: number, tenantId?: number): ContentRef
   const rows = db.prepare(
     `SELECT * FROM content_ref_channels
       WHERE status = 'active'
-        AND ${contentScopePredicate()}
-      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-               channel_name ASC`,
-  ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
+        AND ${contentPrivateScopePredicate()}
+      ORDER BY channel_name ASC`,
+  ).all(...contentPrivateScopeParams(userId, tenantId)) as ContentRefChannel[];
   return dedupeScopedRows(rows, (row) => row.channel_url, userId);
 }
 
@@ -358,10 +378,9 @@ export function getPendingChannels(userId: number, tenantId?: number): ContentRe
   const rows = db.prepare(
     `SELECT * FROM content_ref_channels
       WHERE status = 'pending'
-        AND ${contentScopePredicate()}
-      ORDER BY ${contentScopeOrderExpr(undefined, userId)},
-               created_at ASC`,
-  ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
+        AND ${contentPrivateScopePredicate()}
+      ORDER BY created_at ASC`,
+  ).all(...contentPrivateScopeParams(userId, tenantId)) as ContentRefChannel[];
   return dedupeScopedRows(rows, (row) => row.channel_url, userId);
 }
 
@@ -373,6 +392,7 @@ export function updateChannelStatus(
     channel_id?: string;
     video_count_analyzed?: number;
     error_message?: string | null;
+    preserve_last_analyzed_at?: boolean;
   } | undefined,
   access: ContentReferencesAccess,
 ): void {
@@ -387,7 +407,7 @@ export function updateChannelStatus(
   const sets: string[] = ['status = ?', "updated_at = datetime('now')"];
   const params: unknown[] = [status];
 
-  if (status === 'active' || status === 'analyzing') {
+  if ((status === 'active' || status === 'analyzing') && !extra?.preserve_last_analyzed_at) {
     sets.push("last_analyzed_at = datetime('now')");
   }
   if (extra?.channel_name) {
@@ -408,7 +428,16 @@ export function updateChannelStatus(
   }
 
   params.push(id);
-  db.prepare(`UPDATE content_ref_channels SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  if (isAdminAccess(checked)) {
+    db.prepare(`UPDATE content_ref_channels SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    return;
+  }
+  db.prepare(`
+    UPDATE content_ref_channels
+       SET ${sets.join(', ')}
+     WHERE id = ?
+       AND ${contentPrivateScopePredicate()}
+  `).run(...params, ...contentPrivateScopeParams(checked.userId, checked.tenantId));
 }
 
 export function removeChannel(id: number, access: ContentReferencesAccess): boolean {
@@ -417,6 +446,18 @@ export function removeChannel(id: number, access: ContentReferencesAccess): bool
   const checked = assertAccess(access, 'channel delete');
   const channel = getChannel(id, checked);
   if (!channel) return false;
+  if (!isAdminAccess(checked)) {
+    const result = db.prepare(`
+      DELETE FROM content_ref_channels
+       WHERE id = ?
+         AND ${contentPrivateScopePredicate()}
+    `).run(id, ...contentPrivateScopeParams(checked.userId, checked.tenantId));
+    if (result.changes === 0) return false;
+    // Foreign keys normally cascade; keep the explicit cleanup for runtimes
+    // where SQLite foreign-key enforcement is disabled.
+    db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(id);
+    return true;
+  }
   // Delete patterns first (cascade), then channel
   db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(id);
   const result = db.prepare('DELETE FROM content_ref_channels WHERE id = ?').run(id);

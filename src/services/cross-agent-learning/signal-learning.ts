@@ -3,12 +3,18 @@
 /** Deterministic peer-signal aggregation and governed learning writers. */
 
 import {
+  CONTENT_LEARNING_DIGEST_INPUT_POLICY_VERSION,
+  CONTENT_LEARNING_DIGEST_PRODUCER_VERSION,
   markConsumed,
   readSignals,
   writeGovernedSignal,
   type AgentSignal,
   type SignalType,
 } from '../intelligence-bus';
+import {
+  filterActiveContentAgentSignals,
+  PAUSED_CONTENT_AGENT_IDS,
+} from '../content-agent-lifecycle';
 import { requireTenantIdParam } from '../tenant-scope';
 import { logger } from '../../utils/logger';
 import type {
@@ -21,8 +27,6 @@ import type {
   VoiceContext,
 } from './types';
 
-const CROSS_AGENT_LEARNING_SIGNAL_PRODUCER_VERSION = 'cross-agent-learning.v2';
-
 // ── Agent-specific signal consumption maps ─────────────────────────
 
 /** Which signal types each agent should consume from peers. */
@@ -30,7 +34,6 @@ const AGENT_PEER_SIGNALS: Record<string, SignalType[]> = {
   'performance-agent': ['voice_pattern', 'keyword_opportunity', 'content_formula'],
   'seo-agent': ['retention_pattern', 'hook_effectiveness', 'pillar_performance', 'content_formula'],
   'reaction-radar': ['voice_pattern', 'pillar_performance', 'hook_effectiveness', 'content_formula'],
-  'voice-evolution': ['pillar_performance', 'retention_pattern', 'content_formula'],
   'pipeline-agent': ['keyword_opportunity', 'hook_effectiveness', 'pillar_performance', 'content_formula'],
 };
 
@@ -47,7 +50,17 @@ export function buildAgentContext(agentName: string, userId?: number, tenantId?:
     return emptyContext();
   }
 
-  const signals = readSignals(agentName, peerTypes, 100, userId, undefined, tenantId);
+  const signals = filterActiveContentAgentSignals(
+    readSignals(
+      agentName,
+      peerTypes,
+      100,
+      userId,
+      undefined,
+      tenantId,
+      { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS },
+    ),
+  );
   let consumed = 0;
 
   const ctx: AgentContext = emptyContext();
@@ -153,16 +166,59 @@ export function formatContextForPrompt(ctx: AgentContext): string {
  * to a scheduled runtime job while scoped performance inputs remain paused.
  */
 export function produceLearningDigest(userId?: number, tenantId?: number): number {
-  const scopedTenantId = userId == null
+  const scopedUserId = userId == null
+    ? undefined
+    : requireTenantIdParam(userId, 'produceLearningDigest.userId');
+  const scopedTenantId = scopedUserId == null
     ? undefined
     : requireTenantIdParam(tenantId, 'produceLearningDigest');
-  const digestConsumer = userId == null
+  const digestConsumer = scopedUserId == null
     ? 'learning-digest'
-    : `learning-digest:t:${scopedTenantId}:u:${userId}`;
-  const voiceSignals = readSignals(digestConsumer, ['voice_pattern'], 10, userId, undefined, tenantId);
-  const pillarSignals = readSignals(digestConsumer, ['pillar_performance'], 5, userId, undefined, tenantId);
-  const hookSignals = readSignals(digestConsumer, ['hook_effectiveness'], 10, userId, undefined, tenantId);
-  const kwSignals = readSignals(digestConsumer, ['keyword_opportunity'], 10, userId, undefined, tenantId);
+    : `learning-digest:t:${scopedTenantId}:u:${scopedUserId}`;
+  const voiceSignals = filterActiveContentAgentSignals(
+    readSignals(
+      digestConsumer,
+      ['voice_pattern'],
+      10,
+      scopedUserId,
+      undefined,
+      scopedTenantId,
+      { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS },
+    ),
+  );
+  const pillarSignals = filterActiveContentAgentSignals(
+    readSignals(
+      digestConsumer,
+      ['pillar_performance'],
+      5,
+      scopedUserId,
+      undefined,
+      scopedTenantId,
+      { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS },
+    ),
+  );
+  const hookSignals = filterActiveContentAgentSignals(
+    readSignals(
+      digestConsumer,
+      ['hook_effectiveness'],
+      10,
+      scopedUserId,
+      undefined,
+      scopedTenantId,
+      { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS },
+    ),
+  );
+  const kwSignals = filterActiveContentAgentSignals(
+    readSignals(
+      digestConsumer,
+      ['keyword_opportunity'],
+      10,
+      scopedUserId,
+      undefined,
+      scopedTenantId,
+      { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS },
+    ),
+  );
 
   if (voiceSignals.length === 0 && pillarSignals.length === 0) {
     return -1; // nothing to digest
@@ -183,6 +239,13 @@ export function produceLearningDigest(userId?: number, tenantId?: number): numbe
     .filter(k => k.direction === 'up' || k.direction === 'new')
     .slice(0, 5);
 
+  const sourceSignals = [...voiceSignals, ...pillarSignals, ...hookSignals, ...kwSignals];
+  const sourceAgents = [...new Set(sourceSignals.map((signal) => (
+    signal.source_agent.trim().toLowerCase().replaceAll('-', '_')
+  )))].sort();
+  const sourceSignalIds = [...new Set(sourceSignals.map((signal) => signal.id))]
+    .sort((left, right) => left - right);
+
   const digest = {
     period: new Date().toISOString().slice(0, 10),
     topPillars,
@@ -190,26 +253,33 @@ export function produceLearningDigest(userId?: number, tenantId?: number): numbe
     risingKeywords,
     hookCount: hookSignals.length,
     summary: buildDigestSummary(topPillars, topVoice, risingKeywords),
+    inputEligibility: {
+      policyVersion: CONTENT_LEARNING_DIGEST_INPUT_POLICY_VERSION,
+      sourceAgents,
+      sourceSignalIds,
+    },
   };
 
-  // Mark all source signals as consumed by digest
-  for (const s of [...voiceSignals, ...pillarSignals, ...hookSignals, ...kwSignals]) {
-    markConsumed(s.id, digestConsumer);
-  }
-
-  return writeGovernedSignal({
+  const digestId = writeGovernedSignal({
     source_agent: 'learning-digest',
-    signal_type: userId == null ? 'learning_digest' : 'creator_learning_digest',
+    signal_type: scopedUserId == null ? 'learning_digest' : 'creator_learning_digest',
     tenant_id: scopedTenantId,
-    user_id: userId,
+    user_id: scopedUserId,
     payload: digest,
     priority: 'normal',
     provenance: {
-      producerVersion: CROSS_AGENT_LEARNING_SIGNAL_PRODUCER_VERSION,
+      producerVersion: CONTENT_LEARNING_DIGEST_PRODUCER_VERSION,
       source: 'runtime',
       observedAt: new Date().toISOString(),
     },
   });
+
+  // Consumption is a consequence of a durable digest. Never consume inputs
+  // before the governed write succeeds.
+  for (const s of sourceSignals) {
+    markConsumed(s.id, digestConsumer);
+  }
+  return digestId;
 }
 
 /**
@@ -242,7 +312,7 @@ export function writeContentFormula(
     source_agent: sourceAgent,
     signal_type: 'content_formula',
     provenance: {
-      producerVersion: CROSS_AGENT_LEARNING_SIGNAL_PRODUCER_VERSION,
+      producerVersion: CONTENT_LEARNING_DIGEST_PRODUCER_VERSION,
       source: 'runtime',
       observedAt: new Date().toISOString(),
     },

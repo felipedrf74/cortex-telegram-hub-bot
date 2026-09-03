@@ -66,8 +66,16 @@ interface DashboardHomeSource {
       scripted?: number;
       filmed?: number;
       editing?: number;
-      published?: number;
+      /** Historical internal workflow label only; never external publication evidence. */
+      published?: number | null;
     };
+    bucketSemantics?: { published?: 'internal_production_state_only' };
+    publicationTracking?: {
+      availability?: 'unavailable';
+      reasonCode?: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED';
+      publicationExecution?: 'not_supported';
+    };
+    publicationExecution?: 'not_supported';
     status?: DashboardSectionStatus;
     warningCodes?: string[];
   };

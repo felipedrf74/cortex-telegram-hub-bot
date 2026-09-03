@@ -188,11 +188,11 @@ async function collectCanonicalPlanningContext(
     const coordination = brief.coordination;
     const projection = {
       topPriority: coordination.topPriority ? safeLabel(coordination.topPriority, 160) : null,
-      executionOrder: coordination.executionOrder.slice(0, 5).map((value) => safeLabel(value, 160)),
+      executionOrder: coordination.executionOrder.slice(0, 3).map((value) => safeLabel(value, 160)),
       watchouts: coordination.watchouts.slice(0, 4).map((value) => safeLabel(value, 160)),
       handoffs: coordination.handoffs.slice(0, 4).map((value) => safeLabel(value, 160)),
       blockers: coordination.blockers.slice(0, 4).map((value) => safeLabel(value.title, 160)),
-      suggestedMoves: coordination.suggestedMoves.slice(0, 4).map((value) => safeLabel(value.title, 160)),
+      suggestedMoves: coordination.suggestedMoves.slice(0, 2).map((value) => safeLabel(value.title, 160)),
       protectedBlocks: coordination.protectedBlocks.slice(0, 4).map((value) => safeLabel(value.title, 160)),
       nextBestAction: coordination.nextBestAction?.title
         ? safeLabel(coordination.nextBestAction.title, 160)

@@ -65,7 +65,7 @@ describe('Cross-Agent Learning public contracts', () => {
       priority: 'normal',
     });
     writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'pillar_performance',
       payload: { rankings: 'not-an-array' },
       priority: 'normal',
@@ -82,7 +82,7 @@ describe('Cross-Agent Learning public contracts', () => {
 
   it('extracts every valid pillar ranking from one signal', () => {
     writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'pillar_performance',
       payload: {
         rankings: [
@@ -107,7 +107,7 @@ describe('Cross-Agent Learning public contracts', () => {
       { keyword: 'stable topic', direction: 'stable', volume_hint: 'medium' },
     ]) {
       writeSignal({
-        source_agent: 'seo-agent',
+        source_agent: 'content.keyword-researcher',
         signal_type: 'keyword_opportunity',
         payload,
         priority: 'normal',
@@ -119,7 +119,7 @@ describe('Cross-Agent Learning public contracts', () => {
       { formula: 'High confidence', pillar: 'AI', confidence: 0.9 },
     ]) {
       writeSignal({
-        source_agent: 'performance-agent',
+        source_agent: 'content.performance-reviewer',
         signal_type: 'content_formula',
         payload,
         priority: 'normal',
@@ -153,7 +153,7 @@ describe('Cross-Agent Learning public contracts', () => {
       priority: 'normal',
     });
     writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'pillar_performance',
       payload: {
         rankings: [{ pillar: 'AI', avg_views: 5_000, engagement_rate: 0.05, trend: 'stable' }],

@@ -203,7 +203,7 @@ describe('internal routes runtime hardening', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(getPerformanceSummary).toHaveBeenCalledWith(42, 7);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(42, 7, 42);
   });
 
   it('uses signed attribution tenant id for scoped performance summaries', async () => {
@@ -226,7 +226,31 @@ describe('internal routes runtime hardening', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(getPerformanceSummary).toHaveBeenCalledWith(77, 7);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(7, 7, 77);
+  });
+
+  it('rejects a performance-summary tenant that conflicts with signed attribution', async () => {
+    const { createInternalAttributionToken } = await import('../../src/services/internal-attribution');
+    const attributionToken = createInternalAttributionToken({
+      userId: 7,
+      tenantId: 77,
+      category: 'content_engine_report',
+    });
+    const { internalRoutes } = await import('../../src/api/routes/internal');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/internal', internalRoutes());
+
+    const res = await fetchJson(app, '/api/v1/internal/performance-summary?days=7&tenantId=88', {
+      headers: {
+        'x-internal-secret': 'test-internal-secret',
+        'x-internal-attribution-token': attributionToken!,
+      },
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(getPerformanceSummary).not.toHaveBeenCalled();
   });
 
   it('rejects scoped performance summaries without signed attribution', async () => {
@@ -294,7 +318,7 @@ describe('internal routes runtime hardening', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(getPerformanceSummary).toHaveBeenCalledWith(42, 7);
+    expect(getPerformanceSummary).toHaveBeenCalledWith(42, 7, 42);
   });
 
   it('strips spoofed ai-complete user and tenant attribution and bills as system usage', async () => {

@@ -12,6 +12,8 @@ export type ScriptProviderBoundary = <T>(providerCall: () => Promise<T>) => Prom
 export interface ScriptRuntimeOptions {
   operationId?: string;
   abortSignal?: AbortSignal;
+  /** Server-authored composite used for research; never accepted from clients. */
+  researchQuery?: string;
   /** Pin the authenticated route's admission decision across the Python hop. */
   localPrimaryAdmitted?: boolean;
 }
@@ -28,7 +30,7 @@ export function isContentLocalPrimaryAdmitted(userId: number | undefined): boole
 export function normalizeScriptLanguage(language?: string | null): string {
   return typeof language === 'string' && language.trim()
     ? normalizeContentOutputLanguage(language)
-    : 'pt-BR';
+    : 'en-US';
 }
 
 export function normalizeScriptRenderMode(renderMode?: string | null): ScriptRenderMode {

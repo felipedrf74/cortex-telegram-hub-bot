@@ -14,6 +14,7 @@ const mockResolveCanonicalUserId = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
 const mockInvalidateFinanceDerivedCaches = vi.fn();
 const mockInvalidateCookingDerivedCaches = vi.fn();
+const mockInvalidateContentDerivedCaches = vi.fn();
 const mockCaptureChatContentIdea = vi.fn();
 
 // ─── Mock all external services ──────────────────────────────────────
@@ -71,6 +72,7 @@ vi.mock('../../src/services/cache-coherence-registry', () => ({
   invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
   invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
   invalidateCookingDerivedCaches: (...args: unknown[]) => mockInvalidateCookingDerivedCaches(...args),
+  invalidateContentDerivedCaches: (...args: unknown[]) => mockInvalidateContentDerivedCaches(...args),
 }));
 
 vi.mock('../../src/services/outlook-mail', () => ({
@@ -242,6 +244,7 @@ beforeEach(() => {
   mockInvalidateCalendarCaches.mockReset();
   mockInvalidateFinanceDerivedCaches.mockReset();
   mockInvalidateCookingDerivedCaches.mockReset();
+  mockInvalidateContentDerivedCaches.mockReset();
   mockCaptureChatContentIdea.mockReset();
   vi.mocked(setReminder).mockReset();
   vi.unstubAllEnvs();
@@ -1413,6 +1416,8 @@ describe('executeToolCall — Notes', () => {
       title: undefined,
       consentReceipt,
     });
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
     expect(saveNote).not.toHaveBeenCalledWith(
       AUTH_USER_ID,
       expect.objectContaining({ domain: 'content_idea' }),

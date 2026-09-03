@@ -17,6 +17,10 @@ export interface ContentAgencyRule {
   id: string;
   category: ContentAgencyRuleCategory;
   sourceAnchors: string[];
+  evidenceStatus: 'candidate_requires_freshness_check';
+  sourceAccessedAt: string | null;
+  guidanceSemantics: 'working_hypothesis';
+  timeSensitivity: 'time_sensitive' | 'durable';
   principle: string;
   productBehavior: string;
   qualityGateImpact: string;
@@ -38,7 +42,10 @@ export const CONTENT_AGENCY_RULE_CATEGORIES: ContentAgencyRuleCategory[] = [
   'agent_eval_architecture',
 ];
 
-export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
+const CONTENT_AGENCY_RULE_DEFINITIONS: Array<Omit<
+  ContentAgencyRule,
+  'evidenceStatus' | 'sourceAccessedAt' | 'guidanceSemantics' | 'timeSensitivity'
+>> = [
   {
     id: 'youtube-viewer-matching-retention-loop',
     category: 'youtube_discovery_analytics',
@@ -51,10 +58,10 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
       'YouTube Data API and Analytics API metrics',
     ],
     principle: 'YouTube discovery is a viewer-matching and performance-feedback system, not a universal algorithm hack.',
-    productBehavior: 'YouTube outputs diagnose audience expectation, title/thumbnail fit, intro retention, dips, spikes, top moments, traffic source, and returning/new viewer fit.',
+    productBehavior: 'YouTube outputs frame audience expectation, title/thumbnail fit, opening retention, dips, spikes, top moments, traffic source, and returning/new viewer fit as hypotheses to validate against current first-party analytics.',
     qualityGateImpact: 'Rejects generic algorithm advice and requires measurable packaging, retention, and engagement hypotheses.',
     blockedFailureModes: ['generic_algorithm_hack', 'unsupported_ranking_claim', 'fake_analytics', 'missing_retention_diagnosis'],
-    exampleUserFacingEffect: 'Nexus says whether the problem is packaging, the first 30 seconds, payoff timing, or audience fit.',
+    exampleUserFacingEffect: 'The package proposes packaging, opening-retention, payoff-timing, or audience-fit hypotheses and asks for current analytics before treating one as causal.',
   },
   {
     id: 'tiktok-first-structure-stimulation-sound',
@@ -67,11 +74,11 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
       'TikTok split testing and measurement docs',
       'TikTok Research API',
     ],
-    principle: 'TikTok creative must feel native to the feed: trend-aware, structured, visually stimulating, sound-aware, and fast to reward attention.',
-    productBehavior: 'TikTok outputs include first-frame action, sound direction, caption rhythm, pattern interrupts, native proof, and a testable creative variable.',
+    principle: 'TikTok-native structure, visuals, sound, and reward timing are candidate creative variables whose current relevance must be checked rather than permanent ranking rules.',
+    productBehavior: 'TikTok outputs propose configurable first-frame, sound, caption-rhythm, pattern-interrupt, and proof tests, labelled as hypotheses until current platform or measured creator evidence supports them.',
     qualityGateImpact: 'Blocks repurposed long-form scripts that lack TikTok-native pacing, structure, or sensory hooks.',
     blockedFailureModes: ['platform_mismatch', 'slow_open', 'missing_sound_direction', 'weak_split_test_hypothesis'],
-    exampleUserFacingEffect: 'Nexus gives one clear TikTok test, such as hook mechanism A vs proof-first hook B.',
+    exampleUserFacingEffect: 'The package gives one clear TikTok test, such as hook mechanism A vs proof-first hook B.',
   },
   {
     id: 'instagram-surface-specific-ranking',
@@ -85,8 +92,8 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
       'Meta Transparency Center Feed and Explore ranking',
       'Meta A/B testing',
     ],
-    principle: 'Instagram is not one algorithm: Feed, Explore, Search, Reels, and recommendations reward different user intents and signals.',
-    productBehavior: 'Instagram outputs name the target surface and optimize for saves, shares, sends, comments, search language, or follow conversion as appropriate.',
+    principle: 'Treat Feed, Explore, Search, Reels, and recommendations as distinct surfaces, while rechecking their current signals before making ranking claims.',
+    productBehavior: 'Instagram outputs name the target surface and propose saves, shares, sends, comments, search language, or follow conversion as test metrics rather than guaranteed ranking levers.',
     qualityGateImpact: 'Rejects one-size-fits-all Instagram advice and requires surface-specific success metrics.',
     blockedFailureModes: ['single_algorithm_claim', 'wrong_surface_metric', 'vague_instagram_strategy'],
     exampleUserFacingEffect: 'A carousel gets save/share logic, while a Reel gets first-frame and replay logic.',
@@ -107,7 +114,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'SEO/blog/newsletter outputs include search intent, useful answer depth, evidence, originality, and trend context without keyword stuffing.',
     qualityGateImpact: 'Flags thin SEO output, unsupported expertise claims, and content that lacks a human-useful payoff.',
     blockedFailureModes: ['thin_seo_content', 'keyword_stuffing', 'unsupported_expertise_claim', 'search_intent_missing'],
-    exampleUserFacingEffect: 'Nexus explains the search intent and what proof or example will make the piece genuinely useful.',
+    exampleUserFacingEffect: 'The package explains the search intent and what proof or example will make the piece genuinely useful.',
   },
   {
     id: 'arousal-story-retention',
@@ -124,7 +131,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'Outputs label the emotional driver, stakes, story arc, pacing choice, and retention device instead of only producing captions.',
     qualityGateImpact: 'Scores hooks and scripts for tension, arousal, payoff timing, narrative clarity, and memory value.',
     blockedFailureModes: ['flat_emotional_arc', 'no_story_stakes', 'low_retention_structure', 'meaningless_hook'],
-    exampleUserFacingEffect: 'Nexus says why a hook creates curiosity, status, fear, awe, relief, or useful urgency.',
+    exampleUserFacingEffect: 'The package explains why a hook may create curiosity, status, fear, awe, relief, or useful urgency.',
   },
   {
     id: 'brand-positioning-distinctive-assets',
@@ -144,7 +151,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'Agency packages include positioning, strategic enemy, proof library, distinctive assets, content pillars, and a long/short balance.',
     qualityGateImpact: 'Warns when content is entertaining but does not build brand memory, POV, or trust.',
     blockedFailureModes: ['weak_positioning', 'generic_brand_voice', 'no_proof_library', 'activation_without_brand'],
-    exampleUserFacingEffect: 'Nexus explains the creator POV and what the audience should remember after the piece.',
+    exampleUserFacingEffect: 'The package explains the creator POV and what the audience should remember after the piece.',
   },
   {
     id: 'script-hook-payoff-structure',
@@ -161,7 +168,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'Script variants include cold open, promise, context, stakes, proof, turns, payoff, CTA, and retention devices.',
     qualityGateImpact: 'Blocks scripts with no payoff, no proof, no audience transformation, or weak CTA.',
     blockedFailureModes: ['weak_hook', 'missing_payoff', 'proof_gap', 'unclear_cta'],
-    exampleUserFacingEffect: 'Nexus highlights the first three seconds and the exact viewer reward for staying.',
+    exampleUserFacingEffect: 'The package identifies an opening hypothesis and the viewer reward, without asserting a universal fixed-duration hook window.',
   },
   {
     id: 'mobile-first-editing-direction',
@@ -179,7 +186,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'Outputs include first-frame visual, shot list, B-roll, caption treatment, sound/music notes, edit rhythm, and production complexity.',
     qualityGateImpact: 'Warns when advice is strategically good but impossible or unclear to film/edit.',
     blockedFailureModes: ['no_first_frame', 'no_shot_list', 'production_infeasible', 'editing_notes_missing'],
-    exampleUserFacingEffect: 'Nexus tells the creator exactly what to film first and what text appears on screen.',
+    exampleUserFacingEffect: 'The package tells the creator what to film first and what text appears on screen.',
   },
   {
     id: 'creator-agency-commercial-loop',
@@ -196,7 +203,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'Packages separate organic idea, paid/UGC adaptation, partnership disclosure needs, funnel stage, and measurement plan.',
     qualityGateImpact: 'Flags creative that might get attention but does not serve campaign goals, trust, or conversion.',
     blockedFailureModes: ['campaign_goal_missing', 'paid_organic_confusion', 'trust_risk', 'no_measurement_plan'],
-    exampleUserFacingEffect: 'Nexus says whether the idea is for reach, trust, saves, leads, or conversion.',
+    exampleUserFacingEffect: 'The package says whether the idea is for reach, trust, saves, leads, or conversion.',
   },
   {
     id: 'disclosure-copyright-claim-safety',
@@ -218,7 +225,7 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
       'copying_competitor_creative_blocked',
       'unsupported_or_overconfident_claim_blocked',
     ],
-    exampleUserFacingEffect: 'Nexus says “approval blocked until #ad disclosure is added” instead of quietly producing risky copy.',
+    exampleUserFacingEffect: 'The package says “approval blocked until #ad disclosure is added” instead of quietly producing risky copy.',
   },
   {
     id: 'agent-handoffs-evals-guardrails',
@@ -235,9 +242,32 @@ export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = [
     productBehavior: 'The orchestrator stores specialist sections, source trace, quality gate results, critical-user review, and next actions.',
     qualityGateImpact: 'Requires structured handoff data and output-quality evaluation instead of opaque model prose.',
     blockedFailureModes: ['opaque_agent_output', 'missing_source_trace', 'no_quality_gate', 'no_critical_user_review'],
-    exampleUserFacingEffect: 'Nexus shows what each specialist checked and what still needs the user’s judgment.',
+    exampleUserFacingEffect: 'The package shows what each specialist checked and what still needs the user’s judgment.',
   },
 ];
+
+const TIME_SENSITIVE_RULE_CATEGORIES = new Set<ContentAgencyRuleCategory>([
+  'youtube_discovery_analytics',
+  'tiktok_native_creative',
+  'instagram_meta_ranking',
+  'google_search_helpful_content',
+  'creator_economy_agency',
+  'compliance_policy',
+  'agent_eval_architecture',
+]);
+
+/**
+ * The registry names candidate sources, but it does not contain a verified
+ * access/publication date. Public callers therefore receive hypothesis-only
+ * guidance until a freshness-aware research path supplies dated evidence.
+ */
+export const CONTENT_AGENCY_RULES: ContentAgencyRule[] = CONTENT_AGENCY_RULE_DEFINITIONS.map((rule) => ({
+  ...rule,
+  evidenceStatus: 'candidate_requires_freshness_check',
+  sourceAccessedAt: null,
+  guidanceSemantics: 'working_hypothesis',
+  timeSensitivity: TIME_SENSITIVE_RULE_CATEGORIES.has(rule.category) ? 'time_sensitive' : 'durable',
+}));
 
 export const CONTENT_AGENCY_RUNTIME_QUALITY_RULES: Record<string, ContentAgencyRuleCategory[]> = {
   audienceSpecificity: ['brand_positioning', 'agent_eval_architecture'],

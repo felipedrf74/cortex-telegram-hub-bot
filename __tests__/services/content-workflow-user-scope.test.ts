@@ -6,6 +6,7 @@ const {
   completeOneShotWithFallback,
   completeOneShotWithSearch,
   completeOneShotWithWebSearch,
+  isGeminiProviderConfigured,
   isOpenAIConfigured,
   isPaidAiCostControlsEnforcementEnabled,
   readSignals,
@@ -14,10 +15,14 @@ const {
   getUserLanguage,
   trackedCreate,
   isDuplicateIdeaInBatch,
+  invalidateContentDerivedCaches,
+  getContentCreatorProfile,
+  getActiveContentPillars,
 } = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   completeOneShotWithSearch: vi.fn(),
   completeOneShotWithWebSearch: vi.fn(),
+  isGeminiProviderConfigured: vi.fn(() => true),
   isOpenAIConfigured: vi.fn(() => false),
   isPaidAiCostControlsEnforcementEnabled: vi.fn(() => false),
   readSignals: vi.fn(() => []),
@@ -26,6 +31,9 @@ const {
   getUserLanguage: vi.fn(() => 'en-US'),
   trackedCreate: vi.fn(),
   isDuplicateIdeaInBatch: vi.fn(),
+  invalidateContentDerivedCaches: vi.fn(),
+  getContentCreatorProfile: vi.fn(),
+  getActiveContentPillars: vi.fn(() => []),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -57,6 +65,7 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithFallback,
   completeOneShotWithSearch,
+  isGeminiProviderConfigured,
 }));
 
 vi.mock('../../src/services/openai-provider', () => ({
@@ -78,13 +87,15 @@ vi.mock('../../src/portal/anthropic-hook', () => ({
 
 vi.mock('../../src/utils/prompt-loader', () => ({
   loadPromptWithConfig: vi.fn((_name: string, values: Record<string, string>) => [
+    values.TRENDING_INSTRUCTION || '',
     values.OUTPUT_LANGUAGE_CONTRACT || '',
     values.KNOWLEDGE_BLOCK || '',
     values.TASTE_PROFILE || '',
   ].join('\n')),
 }));
 
-vi.mock('../../src/services/content-dedup', () => ({
+vi.mock('../../src/services/content-dedup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/content-dedup')>()),
   buildAngleDiversityBlock: () => '',
   isDuplicateIdea: vi.fn(async () => ({ isDuplicate: false, confidence: 0, similarTo: null })),
   isDuplicateIdeaInBatch,
@@ -102,8 +113,27 @@ vi.mock('../../src/services/user-service', () => ({
   getUserLanguage,
 }));
 
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches,
+}));
 
-function seedGroundedReference(userId: number): void {
+vi.mock('../../src/state/content-creator-profile', async () => ({
+  ...(await vi.importActual<typeof import('../../src/state/content-creator-profile')>(
+    '../../src/state/content-creator-profile',
+  )),
+  getContentCreatorProfile,
+}));
+
+vi.mock('../../src/services/content-intelligence', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-intelligence')>(
+    '../../src/services/content-intelligence',
+  )),
+  getActiveContentPillars,
+}));
+
+
+function seedGroundedReference(userId: number, tenantId: number = userId): void {
   testDb.prepare(`
     INSERT INTO content_reference_links (
       user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
@@ -113,7 +143,7 @@ function seedGroundedReference(userId: number): void {
     VALUES (?, ?, ?, 'user_private', 'active', 'active', ?, ?, 'link', 'ready', 0.9, 0.9, 'curated', 'ok', 'fresh', ?, ?, '{}')
   `).run(
     userId,
-    userId,
+    tenantId,
     userId,
     `https://example.com/source-${userId}`,
     'Trusted source',
@@ -163,22 +193,52 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     completeOneShotWithFallback.mockReset();
     completeOneShotWithSearch.mockReset();
     completeOneShotWithWebSearch.mockReset();
+    isGeminiProviderConfigured.mockReset();
     isOpenAIConfigured.mockReset();
     isPaidAiCostControlsEnforcementEnabled.mockReset();
     readSignals.mockReset();
     getScript.mockReset();
     saveGeneratedScriptToWorkspace.mockReset();
+    saveGeneratedScriptToWorkspace.mockReturnValue({ replayed: false });
+    invalidateContentDerivedCaches.mockReset();
+    getContentCreatorProfile.mockReset();
+    getContentCreatorProfile.mockReturnValue({
+      pillars: ['product'],
+      niches: [],
+      audience: 'Creators building reliable workflows',
+      platforms: [],
+      voiceRules: [],
+      preferredFormats: [],
+      dislikedTopics: [],
+      bannedTopics: [],
+      trustedSources: [],
+      dislikedSources: [],
+      contentGoals: [],
+      languagePreference: 'en-US',
+      voiceExamples: [],
+    });
+    getActiveContentPillars.mockReset();
+    getActiveContentPillars.mockReturnValue([]);
     vi.spyOn(contentWorkspaceCapture, 'saveGeneratedScriptToWorkspace')
       .mockImplementation(saveGeneratedScriptToWorkspace);
     getUserLanguage.mockReset();
     trackedCreate.mockReset();
     isDuplicateIdeaInBatch.mockReset();
     completeOneShotWithFallback.mockResolvedValue({
-      text: '[]',
+      text: JSON.stringify([{
+        title: 'A useful creator workflow',
+        niche: 'product',
+        whyNow: 'Teams need a reliable process this week.',
+        hookIdea: 'Start with the smallest repeatable step.',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
       provider: 'gemini',
     });
     completeOneShotWithSearch.mockResolvedValue({ text: '[]', sources: [] });
     completeOneShotWithWebSearch.mockResolvedValue({ text: '[]', sources: [] });
+    isGeminiProviderConfigured.mockReturnValue(true);
     isOpenAIConfigured.mockReturnValue(false);
     isPaidAiCostControlsEnforcementEnabled.mockReturnValue(false);
     readSignals.mockReturnValue([]);
@@ -219,6 +279,72 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(systemPrompt).not.toContain('System voice');
   });
 
+  it('keeps evergreen topic guidance inside authorized saved creator context', async () => {
+    await generateTopicCandidates('reel', 1, false, 42, 42);
+
+    const [systemPrompt] = completeOneShotWithFallback.mock.calls[0];
+    expect(systemPrompt).toContain("Use only the authenticated creator's authorized saved pillars");
+    expect(systemPrompt).toContain('use an uncategorized niche instead of inferring interests');
+    expect(systemPrompt).not.toContain('Personal growth frameworks');
+    expect(systemPrompt).not.toContain('fitness principles');
+    expect(systemPrompt).not.toContain('life lessons');
+  });
+
+  it('rejects a provider niche that is outside the scoped creator profile', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'A workout plan the creator never requested',
+        niche: 'fitness',
+        whyNow: 'The provider inferred a niche from another creator.',
+        hookIdea: 'Start training today.',
+        angle_tag: 'how-to',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    await expect(generateTopicCandidates('reel', 1, false, 42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_contract_invalid' },
+    });
+  });
+
+  it('accepts only uncategorized output when the scoped creator has no saved pillar or niche', async () => {
+    getContentCreatorProfile.mockReturnValue({
+      pillars: [],
+      niches: [],
+      audience: '',
+      platforms: [],
+      voiceRules: [],
+      preferredFormats: [],
+      dislikedTopics: [],
+      bannedTopics: [],
+      trustedSources: [],
+      dislikedSources: [],
+      contentGoals: [],
+      languagePreference: 'en-US',
+      voiceExamples: [],
+    });
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'A setup-safe content workflow',
+        niche: 'uncategorized',
+        whyNow: 'The creator can validate this broad direction before configuring pillars.',
+        hookIdea: 'Start broad, then save what fits.',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
+
+    expect(result[0]?.niche).toBe('uncategorized');
+    expect(String(completeOneShotWithFallback.mock.calls[0]?.[0])).toContain('allowedPillarsOrNiches');
+  });
+
   it('maps a retired Spanish topic preference to English and rejects Spanish provider output', async () => {
     getUserLanguage.mockReturnValue('es-ES');
     completeOneShotWithFallback.mockResolvedValue({
@@ -234,12 +360,38 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }]),
     });
 
-    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
+    const result = generateTopicCandidates('reel', 1, false, 42, 42);
 
     expect(String(completeOneShotWithFallback.mock.calls[0][0])).toContain(
       'Generate all user-facing topic fields only in English.',
     );
-    expect(result).toEqual([]);
+    await expect(result).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_output_language_invalid', provider: 'gemini' },
+    });
+  });
+
+  it('rejects a wrong-locale reaction angle even when the core topic fields are English', async () => {
+    getUserLanguage.mockReturnValue('en-US');
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Build one reliable creator workflow',
+        niche: 'product',
+        whyNow: 'Teams need a clear and dependable process this week.',
+        hookIdea: 'Start with one concrete review.',
+        angle_tag: 'reaction',
+        pillar_emoji: '',
+        time_sensitivity: 'react-today',
+        reaction_url: 'https://example.com/source',
+        reaction_angles: ['Aquí empieza una comparación clara para todos.'],
+      }]),
+    });
+
+    await expect(generateTopicCandidates('reel', 1, false, 42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_output_language_invalid', provider: 'gemini' },
+    });
   });
 
   it('rejects short Iberian provider output under the English topic contract', async () => {
@@ -257,18 +409,34 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }]),
     });
 
-    const result = await generateTopicCandidates('reel', 1, false, 42, 42);
-
-    expect(result).toEqual([]);
+    await expect(generateTopicCandidates('reel', 1, false, 42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_output_language_invalid', provider: 'gemini' },
+    });
   });
 
-  it('rejects a Spanish provider-generated niche even when the other topic fields are English', async () => {
+  it('preserves an exact authorized niche label even when its language differs from generated prose', async () => {
     getUserLanguage.mockReturnValue('en-US');
+    getContentCreatorProfile.mockReturnValue({
+      pillars: ['Cómo organizar tus tareas'],
+      niches: [],
+      audience: 'Teams building reliable workflows',
+      platforms: [],
+      voiceRules: [],
+      preferredFormats: [],
+      dislikedTopics: [],
+      bannedTopics: [],
+      trustedSources: [],
+      dislikedSources: [],
+      contentGoals: [],
+      languagePreference: 'en-US',
+      voiceExamples: [],
+    });
     completeOneShotWithFallback.mockResolvedValue({
       provider: 'gemini',
       text: JSON.stringify([{
         title: 'Build one reliable creator workflow',
-        niche: 'Cómo organizar tus tareas',
+        niche: 'cómo organizar tus tareas',
         whyNow: 'Teams need a clear and dependable process this week.',
         hookIdea: 'Start with one concrete review.',
         angle_tag: 'how-to',
@@ -277,7 +445,12 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }]),
     });
 
-    expect(await generateTopicCandidates('reel', 1, false, 42, 42)).toEqual([]);
+    await expect(generateTopicCandidates('reel', 1, false, 42, 42)).resolves.toEqual([
+      expect.objectContaining({
+        title: 'Build one reliable creator workflow',
+        niche: 'Cómo organizar tus tareas',
+      }),
+    ]);
   });
 
   it('rejects a noncanonical angle tag before ordinary topic persistence', async () => {
@@ -294,7 +467,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }]),
     });
 
-    const result = await generateAndStoreTopicCandidates(
+    const result = generateAndStoreTopicCandidates(
       42,
       'reel',
       'tuesday_reels',
@@ -302,7 +475,10 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       1,
     );
 
-    expect(result.candidates).toEqual([]);
+    await expect(result).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_contract_invalid', provider: 'gemini' },
+    });
     expect(testDb.prepare(`
       SELECT COUNT(*) AS count
         FROM content_topic_feedback
@@ -310,12 +486,192 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     `).get()).toEqual({ count: 0 });
   });
 
+  it('rejects malformed routed-provider output with safe provider provenance', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'openai',
+      text: 'Here are some ideas, but no structured payload.',
+    });
+
+    await expect(generateTopicCandidates('reel', 1, false, 42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      status: 502,
+      details: {
+        reason: 'topic_json_array_missing',
+        provider: 'openai',
+        grounded: false,
+        format: 'reel',
+      },
+    });
+  });
+
+  it('rejects ordinary topic underfill before persistence', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Only one candidate',
+        niche: 'product',
+        whyNow: 'A complete daily inventory was requested.',
+        hookIdea: 'Open with the missing inventory risk.',
+        angle_tag: 'framework',
+        pillar_emoji: '',
+        time_sensitivity: 'evergreen',
+      }]),
+    });
+
+    await expect(generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      2,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      status: 502,
+      details: {
+        reason: 'topic_contract_invalid',
+        expectedCount: 2,
+        actualCount: 1,
+      },
+    });
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects ordinary topic overproduction instead of silently truncating inventory', async () => {
+    const candidate = (index: number) => ({
+      title: `Candidate ${index}`,
+      niche: 'product',
+      whyNow: 'A complete daily inventory was requested.',
+      hookIdea: `Open with inventory risk ${index}.`,
+      angle_tag: 'framework',
+      pillar_emoji: '',
+      time_sensitivity: 'evergreen',
+    });
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([candidate(1), candidate(2), candidate(3)]),
+    });
+
+    await expect(generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      2,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      status: 502,
+      details: {
+        reason: 'topic_contract_invalid',
+        expectedCount: 2,
+        actualCount: 3,
+      },
+    });
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects ordinary topic underfill caused by deterministic duplicate filtering', async () => {
+    const duplicate = (title: string, hookIdea: string) => ({
+      title,
+      niche: 'product',
+      whyNow: 'A complete daily inventory was requested.',
+      hookIdea,
+      angle_tag: 'framework',
+      pillar_emoji: '',
+      time_sensitivity: 'evergreen',
+    });
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([
+        duplicate('Repeated candidate', 'First hook'),
+        duplicate('Repeated candidate', 'Second hook'),
+      ]),
+    });
+
+    await expect(generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      2,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      status: 502,
+      details: {
+        reason: 'topic_duplicate_filter_underfill',
+        expectedCount: 2,
+        actualCount: 1,
+      },
+    });
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects an unsafe provider-authored reaction URL before topic persistence', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'gemini',
+      text: JSON.stringify([{
+        title: 'Unsafe reaction source',
+        niche: 'product',
+        whyNow: 'The provider returned a local-network URL.',
+        hookIdea: 'Do not fetch this source.',
+        angle_tag: 'reaction',
+        pillar_emoji: '',
+        time_sensitivity: 'react-today',
+        reaction_url: 'http://127.0.0.1:8080/private',
+        reaction_angles: ['Review the source.'],
+      }]),
+    });
+
+    await expect(generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      1,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_contract_invalid' },
+    });
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects invalid topic JSON instead of normalizing it into an empty success', async () => {
+    completeOneShotWithFallback.mockResolvedValue({
+      provider: 'anthropic',
+      text: '[{"title": invalid}]',
+    });
+
+    await expect(generateTopicCandidates('youtube', 1, false, 42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: {
+        reason: 'topic_json_invalid',
+        provider: 'anthropic',
+        grounded: false,
+      },
+    });
+  });
+
   it('reads workflow discovery and book signals with explicit user scope', async () => {
     seedDiscoveryIdea({ title: 'Scoped canonical discovery idea' });
     seedDiscoveryIdea({ userId: 77, tenantId: 77, title: 'Other tenant private discovery idea' });
-    await generateTopicCandidates('youtube', 2, true, 42, 42);
+    await generateTopicCandidates('youtube', 1, true, 42, 42);
 
-    expect(readSignals).toHaveBeenCalledWith('content-workflow', ['book_knowledge'], 20, 42);
+    expect(readSignals).toHaveBeenCalledWith(
+      'content-workflow',
+      ['book_knowledge'],
+      20,
+      42,
+      undefined,
+      42,
+      { excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'] },
+    );
     const prompt = String(completeOneShotWithFallback.mock.calls[0][1]);
     expect(prompt).toContain('Scoped canonical discovery idea');
     expect(prompt).not.toContain('Other tenant private discovery idea');
@@ -325,7 +681,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     seedDiscoveryIdea({ title: 'Fresh discovery idea' });
     readSignals.mockImplementation((_consumer: string, signalTypes: string[]) => (
       signalTypes.includes('trending_spike')
-        ? [{ payload: { title: 'Fresh radar topic', reason: 'Spiking today' } }]
+        ? [{ source_agent: 'content_discovery', payload: { title: 'Fresh radar topic', reason: 'Spiking today' } }]
         : []
     ));
     completeOneShotWithFallback.mockResolvedValue({
@@ -351,6 +707,8 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(String(completeOneShotWithFallback.mock.calls[0][1]).length).toBeLessThanOrEqual(6500);
     expect(completeOneShotWithFallback.mock.calls[0][4]).toMatchObject({
       model: 'gemini-2.5-flash',
+      maxRetries: 0,
+      allowFallbackAfterProviderFailure: false,
     });
     expect(shouldAttachTrendingWebSearch(true, true)).toBe(false);
     expect(shouldAttachTrendingWebSearch(true, false)).toBe(true);
@@ -381,12 +739,27 @@ describe('content-workflow: user-scoped knowledge injection', () => {
         angle_tag: 'framework',
         pillar_emoji: '',
         time_sensitivity: 'evergreen',
+        reaction_url: 'https://example.com/source-video?clip=1#timestamp',
+        reaction_angles: ['Compare the claim with the available evidence.'],
       }]),
     });
 
     const result = await generateAndStoreTopicCandidates(42, 'reel', 'tuesday_reels', 42, 1);
 
     expect(result.candidates).toHaveLength(1);
+    expect(result.generation).toEqual({ provider: 'gemini', grounded: false });
+    expect(result.candidates[0]).toEqual(expect.objectContaining({
+      pillarEmoji: '',
+      timeSensitivity: 'evergreen',
+      reactionUrl: 'https://example.com/source-video?clip=1',
+      reactionAngles: ['Compare the claim with the available evidence.'],
+    }));
+    expect(getTopicById(result.candidates[0]!.feedbackId, 42, 42)).toEqual(expect.objectContaining({
+      pillarEmoji: '',
+      timeSensitivity: 'evergreen',
+      reactionUrl: 'https://example.com/source-video?clip=1',
+      reactionAngles: ['Compare the claim with the available evidence.'],
+    }));
     expect((testDb.prepare(
       "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
     ).get() as { count: number }).count).toBe(1);
@@ -471,13 +844,42 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     seedDiscoveryIdea({ title: 'Unconsumed discovery source' });
     completeOneShotWithFallback.mockResolvedValue({ provider: 'gemini', text: '[]' });
 
-    const result = await generateAndStoreTopicCandidates(42, 'reel', 'tuesday_reels', 42, 1);
-
-    expect(result.candidates).toEqual([]);
+    await expect(
+      generateAndStoreTopicCandidates(42, 'reel', 'tuesday_reels', 42, 1),
+    ).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'topic_contract_invalid', provider: 'gemini' },
+    });
     expect(testDb.prepare(`
       SELECT COUNT(*) AS count FROM content_mutation_receipts
        WHERE operation = 'consume_discovery_idea_for_topic_inventory'
     `).get()).toEqual({ count: 0 });
+  });
+
+  it('rejects invalid requested batch counts without clamping or starting provider work', async () => {
+    await expect(generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      Number.NaN,
+    )).rejects.toMatchObject({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+      details: { field: 'count', minimum: 0, maximum: 10 },
+    });
+    await expect(generateWeeklyPackage(
+      42,
+      42,
+      { youtube: 6, reels: 0 },
+    )).rejects.toMatchObject({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+      details: { field: 'youtube', minimum: 0, maximum: 5 },
+    });
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_topic_feedback').get())
+      .toEqual({ count: 0 });
   });
 
   it('rolls back candidate inserts and keeps canonical Discovery unconsumed when persistence fails', async () => {
@@ -559,6 +961,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(result.map((item) => item.title)).toEqual(['Bounded grounded topic']);
     expect(completeOneShotWithWebSearch).toHaveBeenCalledTimes(1);
     expect(completeOneShotWithWebSearch.mock.calls[0][2]).toContain('openai_web_search');
+    expect(completeOneShotWithWebSearch.mock.calls[0][3]).toMatchObject({ maxRetries: 0 });
     expect(completeOneShotWithSearch).not.toHaveBeenCalled();
     expect(trackedCreate).not.toHaveBeenCalled();
   });
@@ -607,6 +1010,106 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(completeOneShotWithFallback).not.toHaveBeenCalled();
   });
 
+  it('does not repeat an ambiguous enforced OpenAI search on Gemini or Anthropic', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    isOpenAIConfigured.mockReturnValue(true);
+    const ambiguousFailure = Object.assign(new Error('connection reset after dispatch'), {
+      status: 503,
+      retryable: true,
+    });
+    completeOneShotWithWebSearch.mockRejectedValue(ambiguousFailure);
+
+    await expect(generateTopicCandidates('reel', 1, true, 42, 42)).rejects.toBe(ambiguousFailure);
+    expect(completeOneShotWithWebSearch).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('does not repeat an ambiguous enforced Gemini search on Anthropic', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    isOpenAIConfigured.mockReturnValue(false);
+    isGeminiProviderConfigured.mockReturnValue(true);
+    const ambiguousFailure = Object.assign(new Error('connection reset after dispatch'), {
+      status: 503,
+      retryable: true,
+    });
+    completeOneShotWithSearch.mockRejectedValue(ambiguousFailure);
+
+    await expect(generateTopicCandidates('reel', 1, true, 42, 42)).rejects.toBe(ambiguousFailure);
+    expect(completeOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithWebSearch).not.toHaveBeenCalled();
+    expect(trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('does not start another paid provider after interactive search is cancelled', async () => {
+    isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
+    isOpenAIConfigured.mockReturnValue(true);
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    completeOneShotWithWebSearch.mockImplementation(async () => {
+      controller.abort(cancellation);
+      throw cancellation;
+    });
+
+    await expect(generateTopicCandidates(
+      'reel',
+      1,
+      true,
+      42,
+      42,
+      { requestSource: 'interactive', abortSignal: controller.signal },
+    )).rejects.toBe(cancellation);
+
+    expect(completeOneShotWithWebSearch).toHaveBeenCalledTimes(1);
+    expect(completeOneShotWithWebSearch.mock.calls[0][3]).toMatchObject({
+      abortSignal: controller.signal,
+    });
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(trackedCreate).not.toHaveBeenCalled();
+  });
+
+  it('does not parse or persist an ordinary topic result after provider-return cancellation', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected after topic provider response'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    completeOneShotWithFallback.mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return {
+        provider: 'gemini',
+        text: JSON.stringify([{
+          title: 'Cancelled candidate',
+          niche: 'product',
+          whyNow: 'This result must not be accepted.',
+          hookIdea: 'Do not persist this.',
+          angle_tag: 'framework',
+          pillar_emoji: '',
+          time_sensitivity: 'evergreen',
+        }]),
+      };
+    });
+
+    await expect(generateAndStoreTopicCandidates(
+      42,
+      'reel',
+      'tuesday_reels',
+      42,
+      1,
+      { requestSource: 'interactive', abortSignal: controller.signal },
+    )).rejects.toBe(cancellation);
+
+    expect(isDuplicateIdeaInBatch).not.toHaveBeenCalled();
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'tuesday_reels'",
+    ).get()).toEqual({ count: 0 });
+  });
+
   it('uses an explicitly evergreen provider prompt when paid grounding cannot fit automation', async () => {
     isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
     completeOneShotWithFallback.mockResolvedValue({
@@ -638,7 +1141,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(completeOneShotWithFallback.mock.calls[0][1]).toContain('Do not claim that a topic is currently trending');
   });
 
-  it('rejects an ungrounded Gemini search response and requires grounded Anthropic fallback', async () => {
+  it('rejects an ungrounded Gemini search response without a post-dispatch provider switch', async () => {
     isPaidAiCostControlsEnforcementEnabled.mockReturnValue(true);
     process.env.ANTHROPIC_ENABLED = 'true';
     completeOneShotWithSearch.mockResolvedValue({
@@ -662,12 +1165,11 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }],
     });
 
-    const result = await generateTopicCandidates('reel', 1, true, 42, 42);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].title).toBe('Grounded fallback topic');
+    await expect(generateTopicCandidates('reel', 1, true, 42, 42)).rejects.toThrow(
+      'Gemini topic generation returned without grounding sources',
+    );
     expect(completeOneShotWithSearch).toHaveBeenCalledTimes(1);
-    expect(trackedCreate).toHaveBeenCalledTimes(1);
+    expect(trackedCreate).not.toHaveBeenCalled();
   });
 
   it('generates only the missing portion of seven-day pending inventory', () => {
@@ -713,11 +1215,14 @@ describe('content-workflow: user-scoped knowledge injection', () => {
 
     expect(result.youtube).toHaveLength(2);
     expect(result.reels).toHaveLength(4);
+    expect(result.generation).toEqual({ provider: 'gemini', grounded: false });
     expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(completeOneShotWithFallback.mock.calls[0][2]).toBe('content_workflow_weekly');
     expect(completeOneShotWithFallback.mock.calls[0][4]).toMatchObject({
       model: 'gemini-2.5-flash',
       maxTokens: 1832,
+      maxRetries: 0,
+      allowFallbackAfterProviderFailure: false,
     });
     const rows = testDb.prepare(`
       SELECT format, COUNT(*) AS count
@@ -730,6 +1235,44 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       { format: 'reel', count: 4 },
       { format: 'youtube', count: 2 },
     ]);
+  });
+
+  it('does not parse or persist a Friday package after provider-return cancellation', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected after weekly provider response'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    completeOneShotWithFallback.mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return {
+        provider: 'gemini',
+        text: JSON.stringify({
+          youtube: [{
+            title: 'Cancelled weekly candidate',
+            niche: 'product',
+            whyNow: 'This result must not be accepted.',
+            hookIdea: 'Do not persist this.',
+            angle_tag: 'framework',
+            pillar_emoji: '',
+            time_sensitivity: 'evergreen',
+          }],
+          reels: [],
+        }),
+      };
+    });
+
+    await expect(generateWeeklyPackage(
+      42,
+      42,
+      { youtube: 1, reels: 0 },
+      { requestSource: 'interactive', abortSignal: controller.signal },
+    )).rejects.toBe(cancellation);
+
+    expect(isDuplicateIdeaInBatch).not.toHaveBeenCalled();
+    expect(testDb.prepare(
+      "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
+    ).get()).toEqual({ count: 0 });
   });
 
   it('fails the Friday package atomically when a retired Spanish preference produces Spanish output', async () => {
@@ -750,12 +1293,15 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }),
     });
 
-    const result = await generateWeeklyPackage(42, 42, { youtube: 1, reels: 0 });
+    const result = generateWeeklyPackage(42, 42, { youtube: 1, reels: 0 });
 
     expect(String(completeOneShotWithFallback.mock.calls[0][0])).toContain(
       'Generate all user-facing topic fields only in English.',
     );
-    expect(result).toEqual({ youtube: [], reels: [] });
+    await expect(result).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'weekly_output_language_invalid', provider: 'gemini' },
+    });
     expect((testDb.prepare(
       "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
     ).get() as { count: number }).count).toBe(0);
@@ -779,9 +1325,10 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }),
     });
 
-    const result = await generateWeeklyPackage(42, 42);
-
-    expect(result).toEqual({ youtube: [], reels: [] });
+    await expect(generateWeeklyPackage(42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'weekly_contract_invalid', provider: 'gemini' },
+    });
     expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
     const stored = (testDb.prepare(
       "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
@@ -815,9 +1362,10 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       }),
     });
 
-    const result = await generateWeeklyPackage(42, 42);
-
-    expect(result).toEqual({ youtube: [], reels: [] });
+    await expect(generateWeeklyPackage(42, 42)).rejects.toMatchObject({
+      code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+      details: { reason: 'weekly_duplicate_filter_underfill', provider: 'gemini' },
+    });
     expect(isDuplicateIdeaInBatch).toHaveBeenCalled();
     const stored = (testDb.prepare(
       "SELECT COUNT(*) AS count FROM content_topic_feedback WHERE user_id = 42 AND source_job = 'friday_weekly'",
@@ -828,8 +1376,9 @@ describe('content-workflow: user-scoped knowledge injection', () => {
   it('scopes topic feedback mutations and reads when userId is provided', () => {
     const insert = testDb.prepare(`
       INSERT INTO content_topic_feedback
-        (topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id,
+         tenant_id, owner_user_id, visibility_scope, scope_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const ownedId = Number(insert.run(
       'Owned topic',
@@ -840,6 +1389,10 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       'Open with tension',
       'Useful this week',
       42,
+      42,
+      42,
+      'user_private',
+      'active',
     ).lastInsertRowid);
     const otherId = Number(insert.run(
       'Other topic',
@@ -850,11 +1403,63 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       'Open with tension',
       'Useful this week',
       77,
+      77,
+      77,
+      'user_private',
+      'active',
+    ).lastInsertRowid);
+    const sharedId = Number(insert.run(
+      'Shared topic',
+      'ai-tech',
+      'reel',
+      'pending',
+      'manual',
+      'Open with tension',
+      'Useful this week',
+      42,
+      42,
+      42,
+      'tenant_shared',
+      'active',
+    ).lastInsertRowid);
+    const publicId = Number(insert.run(
+      'Public topic',
+      'ai-tech',
+      'reel',
+      'pending',
+      'manual',
+      'Open with tension',
+      'Useful this week',
+      42,
+      42,
+      42,
+      'public_published',
+      'active',
+    ).lastInsertRowid);
+    const quarantinedId = Number(insert.run(
+      'Quarantined topic',
+      'ai-tech',
+      'reel',
+      'pending',
+      'manual',
+      'Open with tension',
+      'Useful this week',
+      42,
+      42,
+      42,
+      'user_private',
+      'quarantined',
     ).lastInsertRowid);
 
-    updateFeedback(otherId, 'approved', 42, 42);
+    expect(updateFeedback(otherId, 'approved', 42, 42)).toBe(false);
     markScriptGenerated(otherId, 42, 42);
-    updateFeedback(ownedId, 'approved', 42, 42);
+    expect(updateFeedback(sharedId, 'approved', 42, 42)).toBe(false);
+    markScriptGenerated(sharedId, 42, 42);
+    expect(updateFeedback(publicId, 'approved', 42, 42)).toBe(false);
+    markScriptGenerated(publicId, 42, 42);
+    expect(updateFeedback(quarantinedId, 'approved', 42, 42)).toBe(false);
+    markScriptGenerated(quarantinedId, 42, 42);
+    expect(updateFeedback(ownedId, 'approved', 42, 42)).toBe(true);
     markScriptGenerated(ownedId, 42, 42);
 
     const owned = testDb.prepare('SELECT sentiment, script_generated FROM content_topic_feedback WHERE id = ?').get(ownedId) as any;
@@ -864,10 +1469,23 @@ describe('content-workflow: user-scoped knowledge injection', () => {
     expect(other).toEqual({ sentiment: 'pending', script_generated: 0 });
     expect(getTopicById(ownedId, 42, 42)?.title).toBe('Owned topic');
     expect(getTopicById(otherId, 42, 42)).toBeNull();
+    expect(getTopicById(sharedId, 42, 42)).toBeNull();
+    expect(getTopicById(publicId, 42, 42)).toBeNull();
+    expect(getTopicById(quarantinedId, 42, 42)).toBeNull();
+    expect(testDb.prepare(`
+      SELECT topic, sentiment, script_generated
+        FROM content_topic_feedback
+       WHERE id IN (?, ?, ?)
+       ORDER BY id ASC
+    `).all(sharedId, publicId, quarantinedId)).toEqual([
+      { topic: 'Shared topic', sentiment: 'pending', script_generated: 0 },
+      { topic: 'Public topic', sentiment: 'pending', script_generated: 0 },
+      { topic: 'Quarantined topic', sentiment: 'pending', script_generated: 0 },
+    ]);
   });
 
   it('forwards first-party topic context and packaging lineage through generateScript', async () => {
-    seedGroundedReference(42);
+    seedGroundedReference(42, 84);
     getUserLanguage.mockReturnValue('en-US');
     getScript.mockResolvedValue({
       topic: 'Build solo with vibe coding',
@@ -889,7 +1507,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       hookIdea: 'Ship the first ugly version fast',
       angleTag: 'build-in-public',
       feedbackId: 77,
-    }, 'youtube', 42);
+    }, 'youtube', 42, 84);
 
     expect(getScript).toHaveBeenCalledWith(
       'Build solo with vibe coding',
@@ -901,7 +1519,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       'en-US',
       'structured',
       42,
-      undefined,
+      480,
       {
         topicFeedbackId: 77,
         niche: 'product',
@@ -910,10 +1528,17 @@ describe('content-workflow: user-scoped knowledge injection', () => {
         angleTag: 'build-in-public',
       },
       'detailed',
+      false,
+      undefined,
+      undefined,
+      84,
+      expect.any(Function),
+      undefined,
+      { abortSignal: undefined },
     );
 
     expect(saveGeneratedScriptToWorkspace).toHaveBeenCalledWith(expect.objectContaining({
-      scope: { tenantId: 42, userId: 42 },
+      scope: { tenantId: 84, userId: 42 },
       topicFeedbackId: 77,
       topic: 'Build solo with vibe coding',
       hashtags: ['#saas', '#buildinpublic'],
@@ -921,6 +1546,87 @@ describe('content-workflow: user-scoped knowledge injection', () => {
       cta: 'Save this for your next sprint.',
       captureOrigin: 'script_generation',
     }));
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('does not persist a provider result after the workflow is cancelled', async () => {
+    seedGroundedReference(42, 84);
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('client disconnected after provider response'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    getScript.mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return {
+        topic: 'Cancelled provider result',
+        script: '[0:00] This result must not be stored',
+        hook: 'Do not persist after cancellation',
+        title_options: ['Cancelled result'],
+        sources_used: [{
+          title: 'Trusted source',
+          url: 'https://example.com/source-42',
+          source_type: 'web',
+          relevance_note: 'Relevant',
+        }],
+        estimated_duration: '8:00',
+        duration_ms: 100,
+        hashtags: [],
+        caption: '',
+        cta: '',
+      };
+    });
+
+    await expect(generateScript({
+      title: 'Cancelled provider result',
+      niche: 'product',
+      whyNow: 'Cancellation must stop persistence.',
+      hookIdea: 'Cancel after the provider returns.',
+    }, 'youtube', 42, 84, {
+      requestSource: 'interactive',
+      abortSignal: controller.signal,
+    })).rejects.toBe(cancellation);
+
+    expect(saveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+    expect(invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before engine or persistence work when canonical script scope is missing', async () => {
+    await expect(generateScript({
+      title: 'Unscoped workflow request',
+      niche: 'product',
+      whyNow: 'A caller omitted authenticated scope.',
+      hookIdea: 'Scope first.',
+    })).rejects.toMatchObject({
+      code: 'CONTENT_TENANT_SCOPE_REQUIRED',
+    });
+
+    expect(getScript).not.toHaveBeenCalled();
+    expect(saveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before topic generation, inventory reads, or weekly packaging when scope is missing', async () => {
+    await expect(generateTopicCandidates('reel', 1, false)).rejects.toMatchObject({
+      code: 'CONTENT_TENANT_SCOPE_REQUIRED',
+    });
+    await expect(generateAndStoreTopicCandidates(0, 'reel', 'tuesday_reels')).rejects.toMatchObject({
+      code: 'CONTENT_TENANT_SCOPE_REQUIRED',
+    });
+    await expect(generateWeeklyPackage(0)).rejects.toMatchObject({
+      code: 'CONTENT_TENANT_SCOPE_REQUIRED',
+    });
+    expect(() => getMissingScheduledInventoryCount(0, {
+      format: 'reel',
+      sourceJob: 'tuesday_reels',
+      targetCount: 5,
+    })).toThrowError(expect.objectContaining({ code: 'CONTENT_TENANT_SCOPE_REQUIRED' }));
+    expect(() => storeTopicCandidates([], 'reel', 'manual')).toThrowError(
+      expect.objectContaining({ code: 'CONTENT_TENANT_SCOPE_REQUIRED' }),
+    );
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(completeOneShotWithSearch).not.toHaveBeenCalled();
+    expect(completeOneShotWithWebSearch).not.toHaveBeenCalled();
   });
 
   it('rejects a mismatched script before the canonical workflow can persist or return it', async () => {

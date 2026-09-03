@@ -6,10 +6,8 @@ describe('content-intelligence-route-utils', () => {
   it('builds a stable intelligence summary with localized labels and honest statuses', () => {
     const summary = buildContentIntelligenceSummary({
       language: 'pt-PT',
-      reactionJob: { lastRunAt: '2026-04-14T08:00:00.000Z', lastResult: 'success' },
-      performanceJob: { lastRunAt: '2026-04-13T06:00:00.000Z', lastResult: 'success' },
       autoresearchJob: { lastRunAt: null, lastResult: 'never' },
-      discoverySignals: [{ id: 1 }],
+      discoverySignals: [{ id: 1, source_agent: 'content-discovery' }],
       optimizationSignals: [{ id: 1 }, { id: 2 }],
       voiceEntries: [
         {
@@ -29,9 +27,11 @@ describe('content-intelligence-route-utils', () => {
 
     expect(summary.discovery).toMatchObject({
       status: 'ready',
-      cadenceHours: 4,
+      reactionRadarLifecycle: 'paused',
+      cadenceHours: null,
       activeCount: 1,
-      lastStatus: 'success',
+      lastRunAt: null,
+      lastStatus: 'paused',
     });
     expect(summary.script).toMatchObject({
       status: 'ready',
@@ -44,7 +44,18 @@ describe('content-intelligence-route-utils', () => {
       status: 'ready',
       cadence: 'weekly',
       activeInsightCount: 2,
+      performanceLifecycle: 'paused',
+      performanceLastRunAt: null,
+      performanceLastStatus: 'paused',
+      seoLifecycle: 'paused',
+      seoLastRunAt: null,
+      seoLastStatus: 'paused',
       autoresearchLastStatus: 'never',
+    });
+    expect(summary.schedule).toEqual({
+      status: 'ready',
+      statusSemantics: 'feature_availability_not_calendar_authority',
+      calendarAuthority: 'not_included',
     });
     expect(summary.localized).toEqual({
       discoveryLabel: 'Discovery',
@@ -57,11 +68,10 @@ describe('content-intelligence-route-utils', () => {
   it('builds detailed localized drill-in payloads for discovery, script, schedule, and optimization', () => {
     const detail = buildContentIntelligenceDetail({
       language: 'en-US',
-      reactionJob: { lastRunAt: '2026-04-14T08:00:00.000Z', lastResult: 'success' },
-      performanceJob: { lastRunAt: '2026-04-13T06:00:00.000Z', lastResult: 'success' },
       autoresearchJob: { lastRunAt: null, lastResult: 'never' },
       discoverySignals: [
         {
+          source_agent: 'reaction-radar',
           signal_type: 'reaction_opportunity',
           payload: { title: 'fitness', summary: 'Janela de reação ativa: treino com forte gancho' },
           priority: 'urgent',
@@ -107,16 +117,17 @@ describe('content-intelligence-route-utils', () => {
     });
 
     expect(detail.discovery).toMatchObject({
-      status: 'ready',
+      status: 'warming_up',
+      reactionRadarLifecycle: 'paused',
+      cadenceHours: null,
+      activeCount: 0,
+      lastRunAt: null,
+      lastStatus: 'paused',
       deskReadyCount: 1,
       preferredTopics: ['fitness', 'training consistency'],
       monitoredPillars: [{ name: 'fitness', keywordCount: 1 }],
     });
-    expect(detail.discovery.recentSignals[0]).toMatchObject({
-      title: 'Training',
-      summary: 'Reaction window: treino com forte gancho',
-      priority: 'urgent',
-    });
+    expect(detail.discovery.recentSignals).toEqual([]);
     expect(detail.script.entries[0]).toMatchObject({
       category: 'brand_voice',
       label: 'Brand Voice',
@@ -130,6 +141,9 @@ describe('content-intelligence-route-utils', () => {
     });
     expect(detail.schedule).toMatchObject({
       status: 'ready',
+      statusSemantics: 'recommendation_availability_not_calendar_authority',
+      calendarAuthority: 'not_included',
+      recommendationSemantics: 'proposal_not_calendar_reservation',
       filmingRecommendation: {
         date: '2026-04-18',
         confidence: 'high',
@@ -139,6 +153,14 @@ describe('content-intelligence-route-utils', () => {
     expect(detail.optimization.recentSignals[0]).toMatchObject({
       type: 'learning_digest',
       summary: 'Hooks with stronger contrast won this week.',
+    });
+    expect(detail.optimization).toMatchObject({
+      performanceLifecycle: 'paused',
+      performanceLastRunAt: null,
+      performanceLastStatus: 'paused',
+      seoLifecycle: 'paused',
+      seoLastRunAt: null,
+      seoLastStatus: 'paused',
     });
   });
 });

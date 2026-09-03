@@ -453,6 +453,26 @@ describe('M8 — token-zero verification keeps true claims', () => {
 });
 
 describe('M8 — surgical downgrade preserves innocent sentences', () => {
+  it.each([
+    'Proposal only; nothing was saved or published.',
+    'No creative proposal was saved or published.',
+    'Proposta apenas; nada foi guardado ou publicado.',
+    'Nenhuma proposta criativa foi guardada ou publicada.',
+  ])('does not treat an explicit non-action disclaimer as a success claim: %s', (text) => {
+    const contract = makeContract({
+      ownerSkill: 'content',
+      actionability: 'answer_only',
+      intent: 'content.create',
+      language: text.startsWith('Proposta') || text.startsWith('Nenhuma') ? 'pt' : 'en',
+      verificationStatus: 'not_required',
+    });
+
+    const result = applyChatResponseQualityGate({ text, contract });
+
+    expect(result.issues).not.toContain('unverified_success_claim');
+    expect(result.text).toBe(text);
+  });
+
   it('removes only the offending sentence and keeps the rest', () => {
     const text = 'Here is your plan for the afternoon. I scheduled it for 2:00. Let me know if you want a different slot.';
     const contract = makeContract({

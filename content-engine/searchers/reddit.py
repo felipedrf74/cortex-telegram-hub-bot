@@ -15,16 +15,11 @@ import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.base import ResearchSourceUnavailable
 from searchers.mock_fixtures import mock_search_result, query_slug
+from services.log_safety import safe_error_type
 
 logger = logging.getLogger("content-engine.reddit")
-
-# Niche-specific subreddits for targeted research
-NICHE_SUBREDDITS = {
-    "fitness": ["fitness", "running", "cycling", "triathlon", "AdvancedRunning"],
-    "commentary": ["CreatorEconomy", "youtube", "socialmedia", "OutOfTheLoop"],
-}
-ALL_SUBREDDITS = [s for subs in NICHE_SUBREDDITS.values() for s in subs]
 
 REDDIT_SEARCH_URL = "https://www.reddit.com/search.json"
 REDDIT_HEADERS = {"User-Agent": "CortexBot/1.0 (content research)"}
@@ -37,13 +32,18 @@ def _query_fingerprint(query: str) -> str:
 class RedditSearcher:
     name = "reddit"
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        language: str | None = None,
+    ) -> list[SearchResult]:
         if getattr(cfg, "fixture_mode", False):
             logger.debug("Content-engine fixture mode — returning mock Reddit results")
             return self._mock(query, max_results)
         if getattr(cfg, "research_network_disabled", False):
             logger.info("Reddit search disabled for this isolated runtime")
-            return []
+            raise ResearchSourceUnavailable(self.name, "network_disabled")
 
         params = {
             "q": query,
@@ -59,8 +59,19 @@ class RedditSearcher:
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPError as exc:
-            logger.warning("Reddit search failed: %s", exc)
-            return []
+            status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.warning(
+                "Reddit search failed (query_hash=%s query_len=%d status_code=%s error_type=%s)",
+                _query_fingerprint(query),
+                len(query),
+                status_code,
+                safe_error_type(exc),
+            )
+            # Let the orchestrator's health-aware fan-out distinguish an
+            # unavailable provider from a successful empty result. The
+            # exception stays categorical so neither the query nor upstream
+            # response bytes cross the search boundary.
+            raise RuntimeError("Reddit search provider unavailable") from None
 
         results: list[SearchResult] = []
         for child in data.get("data", {}).get("children", [])[:max_results]:
@@ -81,6 +92,7 @@ class RedditSearcher:
                 thumbnail_url=thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("http") else None,
                 metadata={
                     "subreddit": post.get("subreddit", ""),
+                    "author": post.get("author", ""),
                     "score": score,
                     "num_comments": num_comments,
                     "upvote_ratio": post.get("upvote_ratio", 0),

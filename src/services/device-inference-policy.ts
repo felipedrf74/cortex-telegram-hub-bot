@@ -231,6 +231,7 @@ export function reserveDeviceInferenceAdmission(input: {
     };
   }
 
+  const db = getDb();
   const tenantScope = String(input.tenantId);
   const existing = getAdmissionByReplay({ ...input, tenantScope });
   if (existing) {
@@ -259,7 +260,7 @@ export function reserveDeviceInferenceAdmission(input: {
       clientOperationId: input.clientOperationId,
     },
     now,
-  });
+  }, db);
   if (reserved.kind !== 'reserved' && reserved.kind !== 'replay') {
     return denialFromCreditResult(reserved);
   }
@@ -276,7 +277,7 @@ export function reserveDeviceInferenceAdmission(input: {
   const issuedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + DEVICE_INFERENCE_ADMISSION_TTL_MS).toISOString();
   try {
-    getDb().prepare(
+    db.prepare(
       `INSERT INTO device_inference_admissions (
          id, tenant_scope, user_id, device_id, operation_key, request_digest,
          client_operation_id, policy_version, reservation_id, state, issued_at, expires_at
@@ -297,7 +298,7 @@ export function reserveDeviceInferenceAdmission(input: {
     const replay = getAdmissionByReplay({ ...input, tenantScope });
     if (replay) return { kind: 'replay', admission: mapAdmission(replay) };
     if (reserved.kind === 'reserved') {
-      releaseAiCreditReservation({ reservationId: reserved.reservation.id, now });
+      releaseAiCreditReservation({ reservationId: reserved.reservation.id, now }, db);
     }
     throw error;
   }
@@ -396,8 +397,8 @@ export function settleDeviceInferenceAdmission(input: {
           reservationId: row.reservation_id,
           resultRef: `device:${row.id}`,
           now,
-        })
-      : releaseAiCreditReservation({ reservationId: row.reservation_id, now });
+        }, db)
+      : releaseAiCreditReservation({ reservationId: row.reservation_id, now }, db);
     const settledState: 'completed' | 'released' | 'expired' = admissionExpired
       ? 'expired'
       : completed
@@ -449,7 +450,7 @@ export function expireStaleDeviceInferenceAdmissions(
   }>;
   let expired = 0;
   for (const row of rows) {
-    const settlement = releaseAiCreditReservation({ reservationId: row.reservation_id, now });
+    const settlement = releaseAiCreditReservation({ reservationId: row.reservation_id, now }, db);
     const state = settlement.kind === 'invalid_state' && settlement.state === 'captured'
       ? 'completed'
       : 'expired';

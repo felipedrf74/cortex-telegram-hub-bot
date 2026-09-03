@@ -18,6 +18,10 @@ export interface ScriptPreflightBrief {
 
 export interface ScriptStructuredOutput {
   titleOptions: string[];
+  /**
+   * Legacy compatibility field for the opening beat/first line. The name does
+   * not impose a three-second timing rule.
+   */
   firstThreeSeconds: string;
   promise: string;
   shortSetup: string;
@@ -75,6 +79,8 @@ interface ScriptQualityCopy {
   retentionLong: string;
   ctaGoal: string;
   supportingContext: string;
+  runtimeFallback: string;
+  beatLabel: string;
   riskReview: string;
   riskGuarantee: string;
   objective: (topic: string) => string;
@@ -113,19 +119,19 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
     proofFallback: 'Add one concrete example, demo, source, or before/after proof before publishing.',
     toneWithVoice: 'Apply user-scoped Voice DNA without quoting it verbatim.',
     toneWithoutVoice: 'Use a clear creator voice; do not impersonate another creator.',
-    retentionLong: 'Deliver the title/thumbnail promise early, then reset attention every major section.',
+    retentionLong: 'Deliver the title/thumbnail promise clearly, then consider an attention reset where a major transition needs it.',
     ctaGoal: 'Give one clear next action, not multiple competing CTAs.',
     supportingContext: 'Use as supporting context.',
     riskReview: 'Review factual claims before publishing.',
     riskGuarantee: 'Remove guarantees or mark them as opinion before publishing.',
     objective: (topic) => `Make ${topic} useful, memorable, and worth acting on.`,
-    retentionShort: (duration) => `Hold attention through ${duration} with a first-frame promise, quick proof, and one payoff.`,
+    retentionShort: (duration) => `For ${duration}, test an opening promise, an early proof cue, and one clear payoff; adapt the sequence to the topic and evidence.`,
     bodyFallback: (topic) => `Explain ${topic} with one concrete example and one action.`,
     titleOptions: (topic) => [`The ${topic} mistake nobody notices`, `${topic}: the proof-first version`],
     hook: (topic) => `The ${topic} mistake is not effort; it is missing the proof that makes people care.`,
     ctaShort: 'Save this and test the first step today.',
     ctaLong: 'Pick one action from this video and measure the result this week.',
-    promiseShort: (topic) => `In under a minute, make ${topic} feel concrete, useful, and worth saving.`,
+    promiseShort: (topic) => `Make ${topic} concrete and useful in the selected short-form runtime.`,
     promiseLong: (topic) => `Show the audience the problem, the proof, and the practical rule behind ${topic}.`,
     setup: (audience, emotionalDriver, objective) => `Audience: ${audience}. Emotional driver: ${emotionalDriver}. Objective: ${objective}`,
     beats: (topic) => [
@@ -136,10 +142,10 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       `Close with one action the viewer can test the next time ${topic} comes up.`,
     ],
     visualShort: () => [
-      'First frame: creator on screen with a concrete problem overlay.',
-      'Show one proof object, screen, before/after, or demo by the second beat.',
+      'Consider an opening visual that makes the concrete topic or problem clear.',
+      'Show a proof object, screen, before/after, or demo early when it helps comprehension.',
       'Use native sound only when it supports the proof rhythm; keep voice/captions understandable without audio.',
-      'Use large captions for the action step.',
+      'Use legible captions when the format and creator style call for them.',
     ],
     visualLong: () => [
       'Title/thumbnail promise should match the first section.',
@@ -147,10 +153,10 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       'Use section cards or screen captures to reset attention.',
     ],
     editShort: () => [
-      'Cut dead air aggressively.',
-      'Reset attention every 2-3 beats.',
-      'Keep one idea per caption.',
-      'End on the CTA, not a second topic.',
+      'Remove dead air when it obscures the intended pace or meaning.',
+      'Place attention resets only where a transition or proof cue benefits from one.',
+      'Keep caption density legible for the selected format.',
+      'Keep the ending aligned with the requested objective.',
     ],
     editLong: () => [
       'Compress the intro.',
@@ -159,7 +165,7 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       'Close with one CTA.',
     ],
     headings: {
-      firstThreeSeconds: 'FIRST 3 SECONDS',
+      firstThreeSeconds: 'OPENING BEAT',
       promise: 'PROMISE',
       setup: 'SETUP',
       beats: 'BEATS',
@@ -169,6 +175,8 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       cta: 'CTA',
       riskClaimNotes: 'RISK / CLAIM NOTES',
     },
+    runtimeFallback: 'the selected runtime',
+    beatLabel: 'BEAT',
   },
   'pt-BR': {
     audienceFallback: 'público específico para este tema',
@@ -177,19 +185,19 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
     proofFallback: 'Adicione um exemplo concreto, demonstração, fonte ou prova de antes e depois antes de publicar.',
     toneWithVoice: 'Aplique o DNA de Voz do usuário sem citá-lo literalmente.',
     toneWithoutVoice: 'Use uma voz clara de criador; não imite outro criador.',
-    retentionLong: 'Entregue cedo a promessa do título e da miniatura e recupere a atenção a cada seção importante.',
+    retentionLong: 'Entregue com clareza a promessa do título e da miniatura e considere uma retomada de atenção quando uma transição importante precisar dela.',
     ctaGoal: 'Dê uma próxima ação clara, sem várias chamadas concorrentes.',
     supportingContext: 'Use como contexto de apoio.',
     riskReview: 'Revise as afirmações factuais antes de publicar.',
     riskGuarantee: 'Remova garantias ou marque-as como opinião antes de publicar.',
     objective: (topic) => `Torne ${topic} útil, memorável e capaz de gerar ação.`,
-    retentionShort: (duration) => `Prenda a atenção por ${duration} com uma promessa no primeiro quadro, uma prova rápida e uma recompensa.`,
+    retentionShort: (duration) => `Para ${duration}, teste uma promessa de abertura, uma prova antecipada e uma recompensa clara; adapte a sequência ao tema e às evidências.`,
     bodyFallback: (topic) => `Explique ${topic} com um exemplo concreto e uma ação.`,
     titleOptions: (topic) => [`O erro em ${topic} que ninguém percebe`, `${topic}: a versão guiada por provas`],
     hook: (topic) => `O erro em ${topic} não é falta de esforço; é falta da prova que faz as pessoas se importarem.`,
     ctaShort: 'Salve isto e teste o primeiro passo hoje.',
     ctaLong: 'Escolha uma ação deste vídeo e meça o resultado nesta semana.',
-    promiseShort: (topic) => `Em menos de um minuto, torne ${topic} concreto, útil e digno de ser salvo.`,
+    promiseShort: (topic) => `Torne ${topic} concreto e útil no tempo curto selecionado.`,
     promiseLong: (topic) => `Mostre ao público o problema, a prova e a regra prática por trás de ${topic}.`,
     setup: (audience, emotionalDriver, objective) => `Público: ${audience}. Motivação emocional: ${emotionalDriver}. Objetivo: ${objective}`,
     beats: (topic) => [
@@ -200,10 +208,10 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       `Termine com uma ação que o público possa testar quando ${topic} surgir novamente.`,
     ],
     visualShort: () => [
-      'Primeiro quadro: criador em cena com uma sobreposição que mostra um problema concreto.',
-      'Mostre um objeto de prova, tela, antes e depois ou demonstração até a segunda etapa.',
+      'Considere uma imagem de abertura que deixe claro o tema ou problema concreto.',
+      'Mostre um objeto de prova, tela, antes e depois ou demonstração cedo quando isso ajudar a compreensão.',
       'Use som nativo apenas quando ele apoiar o ritmo da prova; mantenha a voz e as legendas compreensíveis sem áudio.',
-      'Use legendas grandes para o passo de ação.',
+      'Use legendas legíveis quando o formato e o estilo do criador pedirem.',
     ],
     visualLong: () => [
       'A promessa do título e da miniatura deve corresponder à primeira seção.',
@@ -211,10 +219,10 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       'Use cartões de seção ou capturas de tela para recuperar a atenção.',
     ],
     editShort: () => [
-      'Corte pausas desnecessárias de forma agressiva.',
-      'Recupere a atenção a cada 2 ou 3 etapas.',
-      'Mantenha uma ideia por legenda.',
-      'Termine na chamada para ação, sem introduzir um segundo tema.',
+      'Remova pausas quando elas prejudicarem o ritmo ou o significado pretendido.',
+      'Use retomadas de atenção apenas quando uma transição ou prova se beneficiar delas.',
+      'Mantenha a densidade das legendas legível para o formato selecionado.',
+      'Mantenha o final alinhado ao objetivo solicitado.',
     ],
     editLong: () => [
       'Encurte a introdução.',
@@ -223,7 +231,7 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       'Termine com uma única chamada para ação.',
     ],
     headings: {
-      firstThreeSeconds: 'PRIMEIROS 3 SEGUNDOS',
+      firstThreeSeconds: 'ABERTURA',
       promise: 'PROMESSA',
       setup: 'CONTEXTO',
       beats: 'ETAPAS',
@@ -233,6 +241,8 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       cta: 'CHAMADA PARA AÇÃO',
       riskClaimNotes: 'NOTAS DE RISCO / AFIRMAÇÕES',
     },
+    runtimeFallback: 'o tempo selecionado',
+    beatLabel: 'ETAPA',
   },
   'pt-PT': {
     audienceFallback: 'público específico para este tema',
@@ -241,19 +251,19 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
     proofFallback: 'Adiciona um exemplo concreto, demonstração, fonte ou prova de antes e depois antes de publicar.',
     toneWithVoice: 'Aplica o ADN de Voz do utilizador sem o citar literalmente.',
     toneWithoutVoice: 'Usa uma voz clara de criador; não imites outro criador.',
-    retentionLong: 'Entrega cedo a promessa do título e da miniatura e recupera a atenção em cada secção importante.',
+    retentionLong: 'Entrega com clareza a promessa do título e da miniatura e considera uma retoma de atenção quando uma transição importante precisar dela.',
     ctaGoal: 'Dá uma próxima ação clara, sem várias chamadas concorrentes.',
     supportingContext: 'Usa como contexto de apoio.',
     riskReview: 'Revê as afirmações factuais antes de publicar.',
     riskGuarantee: 'Remove garantias ou identifica-as como opinião antes de publicar.',
     objective: (topic) => `Torna ${topic} útil, memorável e capaz de gerar ação.`,
-    retentionShort: (duration) => `Mantém a atenção durante ${duration} com uma promessa no primeiro plano, uma prova rápida e uma recompensa.`,
+    retentionShort: (duration) => `Para ${duration}, testa uma promessa de abertura, uma prova antecipada e uma recompensa clara; adapta a sequência ao tema e às provas.`,
     bodyFallback: (topic) => `Explica ${topic} com um exemplo concreto e uma ação.`,
     titleOptions: (topic) => [`O erro em ${topic} que ninguém nota`, `${topic}: a versão orientada por provas`],
     hook: (topic) => `O erro em ${topic} não é a falta de esforço; é a falta da prova que faz as pessoas interessarem-se.`,
     ctaShort: 'Guarda isto e testa o primeiro passo hoje.',
     ctaLong: 'Escolhe uma ação deste vídeo e mede o resultado esta semana.',
-    promiseShort: (topic) => `Em menos de um minuto, torna ${topic} concreto, útil e digno de ser guardado.`,
+    promiseShort: (topic) => `Torna ${topic} concreto e útil no tempo curto selecionado.`,
     promiseLong: (topic) => `Mostra ao público o problema, a prova e a regra prática por trás de ${topic}.`,
     setup: (audience, emotionalDriver, objective) => `Público: ${audience}. Motivação emocional: ${emotionalDriver}. Objetivo: ${objective}`,
     beats: (topic) => [
@@ -264,10 +274,10 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       `Termina com uma ação que o público possa testar quando ${topic} voltar a surgir.`,
     ],
     visualShort: () => [
-      'Primeiro plano: criador em cena com uma sobreposição de um problema concreto.',
-      'Mostra um elemento de prova, ecrã, antes e depois ou demonstração até à segunda etapa.',
+      'Considera uma imagem de abertura que torne claro o tema ou problema concreto.',
+      'Mostra um elemento de prova, ecrã, antes e depois ou demonstração cedo quando isso ajudar a compreensão.',
       'Usa som nativo apenas quando apoiar o ritmo da prova; mantém a voz e as legendas compreensíveis sem áudio.',
-      'Usa legendas grandes para o passo de ação.',
+      'Usa legendas legíveis quando o formato e o estilo do criador o pedirem.',
     ],
     visualLong: () => [
       'A promessa do título e da miniatura deve corresponder à primeira secção.',
@@ -275,10 +285,10 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       'Usa cartões de secção ou capturas de ecrã para recuperar a atenção.',
     ],
     editShort: () => [
-      'Corta agressivamente as pausas desnecessárias.',
-      'Recupera a atenção a cada 2 ou 3 etapas.',
-      'Mantém uma ideia por legenda.',
-      'Termina na chamada para ação, sem introduzir um segundo tema.',
+      'Remove pausas quando prejudicarem o ritmo ou o significado pretendido.',
+      'Usa retomas de atenção apenas quando uma transição ou prova beneficiar delas.',
+      'Mantém a densidade das legendas legível para o formato selecionado.',
+      'Mantém o final alinhado com o objetivo pedido.',
     ],
     editLong: () => [
       'Encurta a introdução.',
@@ -287,7 +297,7 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       'Termina com uma única chamada para ação.',
     ],
     headings: {
-      firstThreeSeconds: 'PRIMEIROS 3 SEGUNDOS',
+      firstThreeSeconds: 'ABERTURA',
       promise: 'PROMESSA',
       setup: 'CONTEXTO',
       beats: 'ETAPAS',
@@ -297,6 +307,8 @@ const SCRIPT_QUALITY_COPY: Record<Lang, ScriptQualityCopy> = {
       cta: 'CHAMADA PARA AÇÃO',
       riskClaimNotes: 'NOTAS DE RISCO / AFIRMAÇÕES',
     },
+    runtimeFallback: 'o tempo selecionado',
+    beatLabel: 'ETAPA',
   },
 };
 
@@ -327,9 +339,7 @@ export function buildScriptPreflightBrief(params: {
     .slice(0, 5);
   const duration = params.targetDurationSeconds && params.targetDurationSeconds > 0
     ? `${params.targetDurationSeconds}s`
-    : platform === 'short_form'
-      ? '30-60s'
-      : '6-10min';
+    : copy.runtimeFallback;
 
   return {
     language,
@@ -414,14 +424,13 @@ export function analyzeAndImproveScript(input: {
   if (!PROOF_PATTERN.test(fullText)) revisionActions.push('proof_or_example_added_before_publish');
   if (!VISUAL_PATTERN.test(fullText)) revisionActions.push('platform_visual_direction_added');
   if (!CTA_PATTERN.test(fullText)) revisionActions.push('single_primary_cta_added');
-  if (preflight.platform === 'short_form' && rawScript.length > 1800) complianceWarnings.push('short_form_script_too_long_for_platform');
 
-  const hookScore = scoreBoolean(hook.length >= 18 && !WEAK_INTRO_PATTERN.test(hook), 96, 62);
+  const hookScore = scoreBoolean(Boolean(hook) && !WEAK_INTRO_PATTERN.test(hook), 96, 62);
   const proofScore = scoreBoolean(PROOF_PATTERN.test(fullText) || proofNotes.length > 0, 95, 70);
   const platformFitScore = scoreBoolean(preflight.platform !== 'short_form' || (visualDirection.length > 0 && editNotes.length > 0), 96, 68);
   const ctaScore = scoreBoolean(Boolean(cta && CTA_PATTERN.test(cta)), 95, 70);
   const structureScore = scoreBoolean(structuredOutput.beatByBeatScript.length >= 5, 96, 68);
-  const retentionScore = scoreBoolean(editNotes.length >= 3 && structuredOutput.firstThreeSeconds.length >= 18, 95, 70);
+  const retentionScore = scoreBoolean(editNotes.length > 0 && Boolean(structuredOutput.firstThreeSeconds), 95, 70);
   const voiceFitScore = scoreBoolean(preflight.toneVoiceConstraints.length > 0, 93, 78);
   const penalty = blockers.length * 25 + complianceWarnings.length * 4;
   const overallScore = clampScore(Math.round(
@@ -453,7 +462,7 @@ function deriveHook(script: string, topic: string, copy: ScriptQualityCopy): str
   const firstUsefulLine = script
     .split(/\n+/)
     .map(cleanLine)
-    .find((line) => line.length >= 18 && !WEAK_INTRO_PATTERN.test(line));
+    .find((line) => Boolean(line) && !WEAK_INTRO_PATTERN.test(line));
   return firstUsefulLine || copy.hook(topic.trim());
 }
 
@@ -495,8 +504,7 @@ function buildBeats(
   const beats = existing.length >= 4 ? existing : [...existing, ...defaultBeats];
   const sliced = beats.slice(0, 10);
   if (brief.platform !== 'short_form') return sliced;
-  const markers = ['0-3s', '3-8s', '8-15s', '15-25s', '25-35s', '35-45s', '45-55s', '55-60s'];
-  return sliced.map((beat, index) => `[${markers[Math.min(index, markers.length - 1)]}] ${beat}`);
+  return sliced.map((beat, index) => `[${copy.beatLabel} ${index + 1}] ${beat}`);
 }
 
 function buildVisualDirection(brief: ScriptPreflightBrief, copy: ScriptQualityCopy): string[] {

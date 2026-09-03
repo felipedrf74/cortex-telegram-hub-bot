@@ -61,6 +61,7 @@ import {
 import { getLocalInferenceRuntimeControl } from '../../services/local-inference-runtime-control';
 import { isContentEngineScriptCategory } from '../../services/local-inference-vocabulary';
 import { isProviderRequestCancellation } from '../../services/ai-provider';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 const INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION = [
   'You are Nexus Hub\'s output-only internal text-generation boundary.',
@@ -102,6 +103,10 @@ function throwIfInternalAiCompleteCancelled(abortSignal?: AbortSignal): void {
   throw abortSignal.reason instanceof Error
     ? abortSignal.reason
     : contentEngineClientDisconnectedError();
+}
+
+function safeInternalAiErrorName(error: unknown): string {
+  return safeContentLogErrorFields(error).errorName;
 }
 
 function sendInvalidInternalInferenceAttribution(res: Response): void {
@@ -285,7 +290,10 @@ export function internalRoutes(): Router {
           });
         } catch (fallbackErr) {
           const persistenceError = tripApiUsagePersistenceFailure('anthropic', category);
-          logger.error({ err: fallbackErr, code: persistenceError.code }, 'Internal usage persistence degraded');
+          logger.error(
+            { errorName: safeInternalAiErrorName(fallbackErr), code: persistenceError.code },
+            'Internal usage persistence degraded',
+          );
           throw persistenceError;
         }
       }
@@ -294,7 +302,10 @@ export function internalRoutes(): Router {
         try {
           await settleNexusPointOverageForUser(scopedUserId, apiUsageId);
         } catch (settleErr) {
-          logger.warn({ err: settleErr, apiUsageId, userId: scopedUserId }, 'Internal usage Nexus Points settlement failed');
+          logger.warn(
+            { errorName: safeInternalAiErrorName(settleErr), apiUsageId, userId: scopedUserId },
+            'Internal usage Nexus Points settlement failed',
+          );
         }
       }
 
@@ -304,7 +315,10 @@ export function internalRoutes(): Router {
         const { recordUsage } = require('../../services/usage-metering');
         recordUsage(scopedUserId, inputTokens, outputTokens, cost, false);
       } catch (meterErr) {
-        logger.warn({ err: meterErr, userId: scopedUserId, category }, 'Internal usage analytics persistence failed');
+        logger.warn(
+          { errorName: safeInternalAiErrorName(meterErr), userId: scopedUserId, category },
+          'Internal usage analytics persistence failed',
+        );
       }
 
       // Push telemetry event
@@ -318,7 +332,10 @@ export function internalRoutes(): Router {
           durationMs: durationMs ?? 0,
         });
       } catch (eventErr) {
-        logger.warn({ err: eventErr, userId: scopedUserId, category }, 'Internal usage telemetry publish failed');
+        logger.warn(
+          { errorName: safeInternalAiErrorName(eventErr), userId: scopedUserId, category },
+          'Internal usage telemetry publish failed',
+        );
       }
 
       logger.info(
@@ -328,7 +345,7 @@ export function internalRoutes(): Router {
 
       res.json({ ok: true, costUsd: cost });
     } catch (err: any) {
-      logger.error({ err }, 'Internal report-usage failed');
+      logger.error({ errorName: safeInternalAiErrorName(err) }, 'Internal report-usage failed');
       if (sendAiBudgetError(res, err)) return;
       sendError(res, 'INTERNAL', 'Internal report-usage failure', 500);
     }
@@ -338,9 +355,9 @@ export function internalRoutes(): Router {
   //
   // AI completion proxy — the Python content-engine calls this instead
   // of hitting Anthropic directly. This routes through the TS backend's
-  // Gemini→OpenAI→Anthropic cascade (completeOneShotWithFallback),
-  // giving Python automatic provider selection, usage metering, and
-  // kill switch coverage.
+  // provider selection (completeOneShotWithFallback), usage metering, and
+  // kill switch coverage. Configuration fallthrough is allowed before
+  // dispatch; a dispatched provider failure is terminal.
   //
   // Body: {
   //   prompt: string,        // user prompt text
@@ -638,8 +655,8 @@ export function internalRoutes(): Router {
           INTERNAL_AI_PROXY_SYSTEM_INSTRUCTION,
           userPrompt,
           category,
-          // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
-          // and ANTHROPIC_API_KEY is configured.
+          // Anthropic configuration-fallthrough thunk — only reachable before
+          // any provider dispatch and only when runtime fallback is enabled.
           async () => {
             throwIfInternalAiCompleteCancelled(activeAbortSignal);
             const { trackedCreate } = require('../../portal/anthropic-hook');
@@ -665,11 +682,13 @@ export function internalRoutes(): Router {
           {
             maxTokens,
             temperature,
+            maxRetries: 0,
             timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens),
             jsonMode,
             userId: scopedUserId,
             tenantId: scopedTenantId,
             abortSignal: activeAbortSignal,
+            allowFallbackAfterProviderFailure: false,
           },
         );
 
@@ -698,7 +717,7 @@ export function internalRoutes(): Router {
           } catch (shadowError) {
             logger.warn({
               category,
-              errorName: shadowError instanceof Error ? shadowError.name : typeof shadowError,
+              errorName: safeInternalAiErrorName(shadowError),
             }, 'Unable to schedule detached Content shadow after visible completion');
           }
         }
@@ -729,7 +748,7 @@ export function internalRoutes(): Router {
           || (res.destroyed && !res.writableEnded)) {
         return;
       }
-      logger.error({ err }, 'Internal ai-complete failed');
+      logger.error({ errorName: safeInternalAiErrorName(err) }, 'Internal ai-complete failed');
       if (sendAiBudgetError(res, err)) return;
       if (err instanceof SkillInferencePolicyError) {
         sendError(res, err.code, err.message, err.status, err.details);
@@ -765,13 +784,18 @@ export function internalRoutes(): Router {
         sendError(res, 'FORBIDDEN', 'Signed attribution is required for scoped performance summary', 403);
         return;
       }
+      if (requestedTenantId && verifiedAttribution && requestedTenantId !== verifiedAttribution.tenantId) {
+        sendError(res, 'FORBIDDEN', 'Requested tenant does not match signed attribution', 403);
+        return;
+      }
       const ownerTarget = getOwnerBootstrapTarget();
+      const scopedUserId = verifiedAttribution?.userId ?? ownerTarget?.tenantId;
       const scopedTenantId = verifiedAttribution?.tenantId ?? ownerTarget?.tenantId;
-      if (!scopedTenantId) {
+      if (!scopedUserId || !scopedTenantId) {
         sendError(res, 'SERVICE_UNAVAILABLE', 'Owner bootstrap target unavailable', 503);
         return;
       }
-      const summary = getPerformanceSummary(scopedTenantId, days);
+      const summary = getPerformanceSummary(scopedUserId, days, scopedTenantId);
       res.json({
         entries: summary.entries.map((e: any) => ({
           views: e.views,
@@ -789,7 +813,7 @@ export function internalRoutes(): Router {
         avgRetention: summary.avgRetention,
       });
     } catch (err: any) {
-      logger.error({ err }, 'Internal performance-summary failed');
+      logger.error({ errorName: safeInternalAiErrorName(err) }, 'Internal performance-summary failed');
       sendError(res, 'INTERNAL', 'Internal performance-summary failure', 500);
     }
   });

@@ -367,7 +367,7 @@ describe('migration inventory', () => {
     });
     const onDisk = migrationFiles
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(inventory).toHaveLength(302);
+    expect(inventory).toHaveLength(303);
     expect(inventory).toHaveLength(onDisk.length);
     expect(() => assertMigrationInventoryShape(inventory)).not.toThrow();
     for (const entry of inventory) {
@@ -375,11 +375,11 @@ describe('migration inventory', () => {
       expect(typeof entry.predecessorCompatible).toBe('boolean');
     }
     expect(inventory.at(-1)).toMatchObject({
-      file: '311_activate_secretary_2_2_skill_version.sql',
+      file: '312_content_neutral_legacy_defaults.sql',
       kind: 'backfill',
       predecessorCompatible: true,
     });
-    expect(inventory.slice(-9)).toMatchObject([
+    expect(inventory.slice(-10)).toMatchObject([
       {
         file: '303_training_coach_v2_contracts.sql',
         kind: 'expand',
@@ -422,6 +422,11 @@ describe('migration inventory', () => {
       },
       {
         file: '311_activate_secretary_2_2_skill_version.sql',
+        kind: 'backfill',
+        predecessorCompatible: true,
+      },
+      {
+        file: '312_content_neutral_legacy_defaults.sql',
         kind: 'backfill',
         predecessorCompatible: true,
       },
@@ -516,7 +521,7 @@ describe('migration inventory', () => {
     // still-green zero-unknown assertion. Deliberate policy changes update this
     // exact snapshot together.
     const compatible = inventory.filter((entry) => entry.predecessorCompatible).length;
-    expect(compatible).toBe(174);
+    expect(compatible).toBe(175);
   });
 });
 
@@ -772,7 +777,7 @@ describe('second-round adversarial probes', () => {
     // block every release for a classifier gap rather than a real risk.
     const dir = join(process.cwd(), 'migrations');
     const files = readdirSync(dir).filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(files.length).toBe(302);
+    expect(files.length).toBe(303);
     const unknown = files.filter(
       (file) => classifyMigrationSql(readFileSync(join(dir, file), 'utf8')).kind === 'unknown',
     );

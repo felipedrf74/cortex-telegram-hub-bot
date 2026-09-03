@@ -40,8 +40,10 @@ vi.mock('../../src/utils/logger', () => ({
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import { getAiCreditWallet, grantMonthlyAiCredits, grantPromotionalAiCredits } from '../../src/services/ai-credit-ledger';
 import {
+  captureContentScriptJobCreditsForCompletion,
+  ContentScriptJobCreditSettlementError,
+  releaseContentScriptJobCreditsForTerminal,
   reserveContentScriptJobCredits,
-  settleContentScriptJobCredits,
 } from '../../src/services/content-script-job-credits';
 import { cancelContentScriptJobsForAccountDeletion } from '../../src/services/content-script-job-account-lifecycle';
 
@@ -61,17 +63,6 @@ function reserve(overrides: Record<string, unknown> = {}) {
   } as Parameters<typeof reserveContentScriptJobCredits>[0]);
 }
 
-function settle(outcome: 'captured' | 'released', overrides: Record<string, unknown> = {}) {
-  return settleContentScriptJobCredits({
-    tenantId: 40,
-    userId: 40,
-    jobId: JOB,
-    outcome,
-    now: NOW,
-    ...overrides,
-  } as Parameters<typeof settleContentScriptJobCredits>[0]);
-}
-
 describe('content-script-job-credits', () => {
   beforeEach(() => {
     db = createMigratedTestDatabase();
@@ -86,7 +77,6 @@ describe('content-script-job-credits', () => {
   it('is inert while credits admission is disabled', () => {
     hybridCreditsEnabled = false;
     expect(reserve()).toEqual({ kind: 'disabled' });
-    expect(settle('captured')).toEqual({ kind: 'no_reservation' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_reservations').get()).toEqual({ count: 0 });
   });
 
@@ -95,6 +85,37 @@ describe('content-script-job-credits', () => {
     expect(longForm).toMatchObject({ kind: 'reserved', reservation: { operationClass: 'standard_script', credits: 10 } });
     const short = reserve({ jobId: 'script_job_short', longForm: false });
     expect(short).toMatchObject({ kind: 'reserved', reservation: { operationClass: 'standard', credits: 1 } });
+  });
+
+  it('keeps admission reads and reservation writes on the caller database', () => {
+    const isolated = createMigratedTestDatabase();
+    try {
+      isolated.prepare(`INSERT INTO ai_credit_lots (
+        user_id, lot_type, credits_granted, granted_at, expires_at,
+        source_kind, source_ref, status
+      ) VALUES (?, 'monthly', 500, ?, ?, 'subscription_period', ?, 'active')`)
+        .run(91, NOW.toISOString(), PERIOD_END.toISOString(), '2026-08-isolated');
+
+      const result = reserveContentScriptJobCredits({
+        tenantId: 91,
+        userId: 91,
+        jobId: 'script_job_isolated',
+        plan: 'pro',
+        longForm: true,
+        now: NOW,
+      }, isolated);
+
+      expect(result).toMatchObject({
+        kind: 'reserved',
+        reservation: { userId: 91, operationClass: 'standard_script', credits: 10 },
+      });
+      expect(isolated.prepare('SELECT COUNT(*) AS count FROM ai_credit_reservations').get())
+        .toEqual({ count: 1 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM ai_credit_reservations WHERE user_id = 91').get())
+        .toEqual({ count: 0 });
+    } finally {
+      isolated.close();
+    }
   });
 
   it('prices delivery modes per plan §2: scheduled 10, priority 12', () => {
@@ -113,21 +134,91 @@ describe('content-script-job-credits', () => {
 
   it('captures once on completion; repeated settlement is idempotent', () => {
     reserve();
-    expect(settle('captured')).toEqual({ kind: 'captured' });
-    expect(settle('captured')).toEqual({ kind: 'already_settled' });
-    expect(settle('released')).toEqual({ kind: 'already_settled' });
+    expect(captureContentScriptJobCreditsForCompletion({
+      tenantId: 40, userId: 40, jobId: JOB, now: NOW,
+    }, db)).toBe('captured');
+    expect(captureContentScriptJobCreditsForCompletion({
+      tenantId: 40, userId: 40, jobId: JOB, now: NOW,
+    }, db)).toBe('already_captured');
+    expect(releaseContentScriptJobCreditsForTerminal({
+      tenantId: 40, userId: 40, jobId: JOB, now: NOW,
+    }, db)).toBe('already_settled');
     const wallet = getAiCreditWallet(40, 'pro', NOW);
     expect(wallet.availableCredits).toBe(490);
     expect(wallet.reservedCredits).toBe(0);
     expect(wallet.dailyUsedCredits).toBe(10);
   });
 
+  it('strict completion capture rejects a reservation that can no longer settle', () => {
+    reserve();
+    db.prepare(`
+      UPDATE ai_credit_reservations
+         SET state = 'expired', settled_at = ?
+       WHERE state = 'reserved'
+    `).run(NOW.toISOString());
+
+    expect(() => captureContentScriptJobCreditsForCompletion({
+      tenantId: 40,
+      userId: 40,
+      jobId: JOB,
+      now: NOW,
+    })).toThrowError(expect.objectContaining<Partial<ContentScriptJobCreditSettlementError>>({
+      code: 'CONTENT_SCRIPT_CREDIT_SETTLEMENT_FAILED',
+      settlementState: 'expired',
+    }));
+  });
+
   it('releases on failure and restores the balance', () => {
     reserve();
-    expect(settle('released')).toEqual({ kind: 'released' });
+    expect(releaseContentScriptJobCreditsForTerminal({
+      tenantId: 40, userId: 40, jobId: JOB, now: NOW,
+    }, db)).toBe('released');
     const wallet = getAiCreditWallet(40, 'pro', NOW);
     expect(wallet.availableCredits).toBe(500);
     expect(wallet.dailyUsedCredits).toBe(0);
+  });
+
+  it('rolls a terminal job transition back when its credit release cannot commit', () => {
+    reserve();
+    db.prepare(`INSERT INTO content_script_jobs (
+      job_id, tenant_id, owner_user_id, plan_id, idempotency_key, request_hash,
+      operation_id, request_json, target_duration_seconds, status, stage,
+      progress_percent, model_digest
+    ) VALUES (?, 40, 40, 'pro', 'idem-release-failure', ?,
+              'op-release-failure', '{}', 900, 'queued', 'queued', 0, ?)`)
+      .run(JOB, 'a'.repeat(64), `sha256:${'b'.repeat(64)}`);
+    db.exec(`CREATE TRIGGER reject_test_script_credit_release
+      BEFORE UPDATE OF state ON ai_credit_reservations
+      WHEN OLD.state = 'reserved' AND NEW.state = 'released'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated script credit release failure');
+      END`);
+
+    expect(() => cancelContentScriptJobsForAccountDeletion(40))
+      .toThrowError(expect.objectContaining<Partial<ContentScriptJobCreditSettlementError>>({
+        code: 'CONTENT_SCRIPT_CREDIT_SETTLEMENT_FAILED',
+        settlementState: 'release_error',
+      }));
+    expect(db.prepare('SELECT status FROM content_script_jobs WHERE job_id = ?').get(JOB))
+      .toEqual({ status: 'queued' });
+    expect(db.prepare('SELECT state FROM ai_credit_reservations').get())
+      .toEqual({ state: 'reserved' });
+  });
+
+  it('strict terminal release is idempotent after the reservation settles', () => {
+    reserve();
+    expect(releaseContentScriptJobCreditsForTerminal({
+      tenantId: 40,
+      userId: 40,
+      jobId: JOB,
+      now: NOW,
+    }, db)).toBe('released');
+    expect(releaseContentScriptJobCreditsForTerminal({
+      tenantId: 40,
+      userId: 40,
+      jobId: JOB,
+      now: NOW,
+    }, db)).toBe('already_settled');
   });
 
   it('re-entering admission for an in-flight job continues under the open reservation', () => {
@@ -140,12 +231,16 @@ describe('content-script-job-credits', () => {
 
   it('a retry after release reserves a fresh attempt under the same job identity', () => {
     reserve();
-    settle('released');
+    expect(releaseContentScriptJobCreditsForTerminal({
+      tenantId: 40, userId: 40, jobId: JOB, now: NOW,
+    }, db)).toBe('released');
     const retried = reserve();
     expect(retried).toMatchObject({ kind: 'reserved' });
     if (retried.kind !== 'reserved') throw new Error('unreachable');
     expect(retried.reservation.clientOperationId).toBe(`${JOB}#a2`);
-    expect(settle('captured')).toEqual({ kind: 'captured' });
+    expect(captureContentScriptJobCreditsForCompletion({
+      tenantId: 40, userId: 40, jobId: JOB, now: NOW,
+    }, db)).toBe('captured');
     // One capture across two attempts: the user paid for exactly one script.
     expect(getAiCreditWallet(40, 'pro', NOW).dailyUsedCredits).toBe(10);
   });
@@ -195,11 +290,4 @@ describe('content-script-job-credits', () => {
     expect(db.prepare("SELECT state FROM ai_credit_reservations").get()).toEqual({ state: 'released' });
   });
 
-  it('never breaks the job transition when settlement faults', () => {
-    reserve();
-    const broken = settleContentScriptJobCredits({
-      tenantId: NaN as unknown as number, userId: NaN as unknown as number, jobId: JOB, outcome: 'captured', now: NOW,
-    });
-    expect(['no_reservation', 'error']).toContain(broken.kind);
-  });
 });

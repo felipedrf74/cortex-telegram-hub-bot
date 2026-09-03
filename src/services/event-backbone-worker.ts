@@ -24,6 +24,9 @@ import { chatLegacyTimeoutContinuationJobHandler } from './chat-legacy-timeout-c
 import { consumeTrainingSecretaryFeedbackEvent } from './training-secretary-feedback-consumer';
 import { consumeCookingMealPrepProviderSyncCompleted } from './cooking-calendar-sync-completion';
 import { consumeSecretarySourceSkillFeedbackEvent } from './secretary-source-skill-feedback-consumers';
+import {
+  consumeContentScheduleSignalReconciliationEvent,
+} from './content-schedule-signal-reconciliation';
 
 const PROJECTABLE_EVENT_TYPES = new Set([
   'auth.user.logged_in',
@@ -84,6 +87,10 @@ export const DEFAULT_EVENT_DIRECT_EFFECTS = [
     eventType: 'secretary.source_feedback.requested.v1',
     effect: 'record_secretary_source_skill_feedback',
   },
+  {
+    eventType: 'content.schedule_signal_reconciliation.requested.v1',
+    effect: 'reconcile_content_schedule_filming_signal',
+  },
 ] as const;
 
 function normalizeEventCreatedAtUtc(value: string): string {
@@ -102,6 +109,10 @@ export const defaultEventHandlers: EventHandler[] = [
   {
     eventType: '*',
     async handle(event, db) {
+      if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[5].eventType) {
+        consumeContentScheduleSignalReconciliationEvent(event, db);
+        return;
+      }
       if (event.eventType === DEFAULT_EVENT_DIRECT_EFFECTS[4].eventType) {
         // Generic source-skill feedback is a DB-only monotonic projection.
         // The consumer re-reads the exact scoped agenda version and never
@@ -343,13 +354,6 @@ export const defaultJobHandlers: JobHandler[] = [
     handle(job) {
       if (!job.userId) return;
       projectSummaryReadModelsForUser({ tenantId: job.tenantId, userId: job.userId, summaryTypes: ['training', 'home', 'week'] });
-    },
-  },
-  {
-    jobType: 'content_radar_scan_stub_or_existing',
-    idempotent: true,
-    handle() {
-      // Intentionally no provider call in local/job foundation mode.
     },
   },
   {

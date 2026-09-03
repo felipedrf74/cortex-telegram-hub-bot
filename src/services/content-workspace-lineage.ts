@@ -1160,7 +1160,16 @@ function sanitizeSourceMetadata(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new ContentWorkspaceLineageError('CONTENT_VALIDATION_FAILED', 'metadata must be an object.', 400, { field: 'metadata' });
   }
-  const allowed = new Set(['language', 'mimeType', 'publishedAt', 'provider', 'externalDocumentId']);
+  const allowed = new Set([
+    'language',
+    'mimeType',
+    'publishedAt',
+    'accessedAt',
+    'publisher',
+    'author',
+    'provider',
+    'externalDocumentId',
+  ]);
   const output: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (!allowed.has(key) || raw === undefined || raw === null) continue;
@@ -1194,6 +1203,14 @@ function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
 }
 
 function normalizeIdempotencyKey(value: string): string {
+  if (typeof value === 'string' && /[\u0000-\u001F\u007F-\u009F]/u.test(value)) {
+    throw new ContentWorkspaceLineageError(
+      'CONTENT_VALIDATION_FAILED',
+      'idempotencyKey contains unsupported control characters.',
+      400,
+      { field: 'idempotencyKey' },
+    );
+  }
   const key = requireBoundedText(value, 'idempotencyKey', 200, { singleLine: true });
   if (key.length < 8) throw new ContentWorkspaceLineageError('CONTENT_VALIDATION_FAILED', 'idempotencyKey must contain at least 8 characters.', 400, { field: 'idempotencyKey' });
   return key;

@@ -35,9 +35,11 @@ function scriptResult(overrides: Partial<ScriptResponse> = {}): ScriptResponse {
 
 describe('chat script shortcut response helpers', () => {
   it('reads brand voice defensively without letting content-reference failures break chat', () => {
-    expect(getUserBrandVoiceForChatScript(12, () => ({ synthesized_text: 'Direct, practical, warm.' }))).toBe('Direct, practical, warm.');
-    expect(getUserBrandVoiceForChatScript(12, () => ({ synthesized_text: '' }))).toBeNull();
-    expect(getUserBrandVoiceForChatScript(12, () => {
+    const scopedReader = vi.fn(() => ({ synthesized_text: 'Direct, practical, warm.' }));
+    expect(getUserBrandVoiceForChatScript(12, 34, scopedReader)).toBe('Direct, practical, warm.');
+    expect(scopedReader).toHaveBeenCalledWith('brand_voice', 12, 34);
+    expect(getUserBrandVoiceForChatScript(12, 34, () => ({ synthesized_text: '' }))).toBeNull();
+    expect(getUserBrandVoiceForChatScript(12, 34, () => {
       throw new Error('content references unavailable');
     })).toBeNull();
   });

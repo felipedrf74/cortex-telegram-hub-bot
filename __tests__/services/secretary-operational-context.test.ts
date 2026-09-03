@@ -74,7 +74,10 @@ vi.mock('../../src/skills/registry', async () => {
   return { ...actual, isSubmoduleEnabled: mocks.isSubmoduleEnabled };
 });
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({ composeDailyBrief: mocks.composeDailyBrief }));
-vi.mock('../../src/services/weekly-plan-orchestrator', () => ({ composeWeeklyPlan: mocks.composeWeeklyPlan }));
+vi.mock('../../src/services/weekly-plan-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/weekly-plan-orchestrator')>(
+    '../../src/services/weekly-plan-orchestrator',
+  )), composeWeeklyPlan: mocks.composeWeeklyPlan }));
 
 import { collectSecretaryOperationalContext } from '../../src/services/chat-core-v2/secretary-operational-context';
 

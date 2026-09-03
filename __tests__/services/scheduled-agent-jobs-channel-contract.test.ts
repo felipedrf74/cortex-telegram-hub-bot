@@ -234,7 +234,7 @@ describe('scheduled channel agent contract', () => {
     const adapter = capturedAdapter();
     expect(adapter.jobId).toBe('channel_relearn');
     expect(adapter.providerRouting).toBe(
-      'gemini-primary-openai-fallback-anthropic-gated-last-resort',
+      'gemini-primary-configuration-fallthrough-single-attempt',
     );
     expect(adapter.prepare({ tenantId: 0, userId: 0 })).toEqual({
       kind: 'skip',

@@ -4,6 +4,7 @@ import type { Router, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { logger } from '../../utils/logger';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 import {
   assessContentWorkspaceSource,
   ContentWorkspaceLineageError,
@@ -57,6 +58,11 @@ import {
 } from '../../services/content-workspace-decision-projection';
 import { getContentWorkspaceTodaySummary } from '../../services/content-workspace-read-models';
 import { getUserTimezoneById } from '../../services/user-service';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
+import {
+  ContentIdempotencyKeyError,
+  resolveContentIdempotencyKey,
+} from './content-idempotency-key';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -98,6 +104,7 @@ export function registerContentWorkspaceRoutes(
         expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
         captureOrigin: 'script_generation',
       });
+      if (!result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         captureSchemaVersion: result.schemaVersion,
@@ -134,6 +141,7 @@ export function registerContentWorkspaceRoutes(
         idempotencyKey: readIdempotencyKey(req),
         captureOrigin: 'approved_variant',
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         captureSchemaVersion: result.schemaVersion,
@@ -233,6 +241,7 @@ export function registerContentWorkspaceRoutes(
         formatId: req.body?.formatId,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         item: result.value,
@@ -256,6 +265,7 @@ export function registerContentWorkspaceRoutes(
         expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         deletion: result.value,
@@ -281,6 +291,7 @@ export function registerContentWorkspaceRoutes(
         expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         item: result.value,
@@ -336,6 +347,7 @@ export function registerContentWorkspaceRoutes(
         expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         item: result.value,
@@ -361,6 +373,7 @@ export function registerContentWorkspaceRoutes(
         expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         item: result.value,
@@ -388,6 +401,7 @@ export function registerContentWorkspaceRoutes(
         favorite: req.body?.favorite,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         item: result.value,
@@ -431,6 +445,7 @@ export function registerContentWorkspaceRoutes(
         title: req.body?.title,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         copy: result.value,
@@ -455,6 +470,9 @@ export function registerContentWorkspaceRoutes(
         expectedWorkflowVersion: req.body?.expectedWorkflowVersion,
         idempotencyKey: readIdempotencyKey(req),
       });
+      const changed = !result.replayed
+        && result.value.workflowVersion > Number(req.body?.expectedWorkflowVersion);
+      if (changed) invalidateContentDerivedCaches(scope.userId);
       let decisionProjection;
       if (result.value.productionState === 'review') {
         try {
@@ -464,7 +482,7 @@ export function registerContentWorkspaceRoutes(
             operation: 'content_workspace_review_decision_project_after_transition',
             itemId: result.value.id,
             workflowVersion: result.value.workflowVersion,
-            errorName: projectionError instanceof Error ? projectionError.name : typeof projectionError,
+            ...safeContentLogErrorFields(projectionError),
           }, 'Content entered review but Decision Center projection failed');
           decisionProjection = unavailableContentWorkspaceReviewDecision(
             result.value.id,
@@ -477,7 +495,7 @@ export function registerContentWorkspaceRoutes(
         item: result.value,
         mutation: {
           replayed: result.replayed,
-          changed: !result.replayed && result.value.workflowVersion > Number(req.body?.expectedWorkflowVersion),
+          changed,
         },
         ...(decisionProjection ? { decisionProjection } : {}),
       });
@@ -510,6 +528,7 @@ export function registerContentWorkspaceRoutes(
         sourceArtifactId: req.body?.sourceArtifactId,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         artifact: result.value,
@@ -558,6 +577,7 @@ export function registerContentWorkspaceRoutes(
         provenance: { source: 'authenticated_user_api' },
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       const authoritative = requireAuthoritativeArtifactContext(scope, result.value.artifactId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
@@ -590,6 +610,7 @@ export function registerContentWorkspaceRoutes(
         actorId: String(scope.userId),
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       const authoritative = requireAuthoritativeArtifactContext(scope, result.value.artifactId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
@@ -683,6 +704,7 @@ export function registerContentWorkspaceRoutes(
         claims: req.body?.claims,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       const artifact = getContentArtifact(scope, result.lineage.artifactId);
       const item = artifact ? getContentWorkspaceItem(scope, artifact.itemId) : null;
       if (!item) {
@@ -717,6 +739,7 @@ export function registerContentWorkspaceRoutes(
         metadata: req.body?.metadata,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.created && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         relationship: result.value,
@@ -741,6 +764,7 @@ export function registerContentWorkspaceRoutes(
         position: req.body?.position,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         relationship: result.value,
@@ -765,6 +789,7 @@ export function registerContentWorkspaceRoutes(
         expectedFromWorkflowVersion: req.body?.expectedFromWorkflowVersion,
         idempotencyKey: readIdempotencyKey(req),
       });
+      if (result.changed && !result.replayed) invalidateContentDerivedCaches(scope.userId);
       sendSuccess(res, {
         schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
         removal: result.value,
@@ -785,7 +810,7 @@ function resolveRouteScope(
   details?: Record<string, unknown>,
 ): ContentWorkspaceScope | null {
   if (!ensureValidContentRouteScope(res, req.userId, operation, details)) return null;
-  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+  if (!Number.isSafeInteger(req.tenantId) || Number(req.tenantId) <= 0) {
     sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
     return null;
   }
@@ -824,8 +849,7 @@ function requireAuthoritativeArtifactContext(scope: ContentWorkspaceScope, artif
 }
 
 function readIdempotencyKey(req: { body?: any; header(name: string): string | undefined }): string {
-  if (typeof req.body?.idempotencyKey === 'string') return req.body.idempotencyKey;
-  return req.header('x-idempotency-key') ?? '';
+  return resolveContentIdempotencyKey(req);
 }
 
 function queryString(value: unknown, field: string): string | undefined {
@@ -869,6 +893,10 @@ function sendWorkspaceError(
     sendError(res, error.code, error.message, error.status, error.details);
     return;
   }
-  logger.error({ err: error, tenantId: scope.tenantId, userId: scope.userId }, logMessage);
+  if (error instanceof ContentIdempotencyKeyError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
+  logger.error({ ...safeContentLogErrorFields(error), tenantId: scope.tenantId, userId: scope.userId }, logMessage);
   sendInternalError(res, 'Content workspace is temporarily unavailable.');
 }

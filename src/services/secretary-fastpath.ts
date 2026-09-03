@@ -795,7 +795,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         ?? brief.day.secretary.priorityNote;
       const executionOrder = coordination?.executionOrder?.length
         ? coordination.executionOrder
-        : brief.day.secretary.sequence.slice(0, 4);
+        : brief.day.secretary.sequence.slice(0, 3);
       const blockerLine = coordination?.blockers?.[0]?.summary ?? null;
 
       if (!topPriority && executionOrder.length === 0) {

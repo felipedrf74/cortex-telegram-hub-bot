@@ -7,10 +7,13 @@ const mockGetContentCreatorProfile = vi.fn(() => ({
   audience: 'founders',
   pillars: ['Cost control'],
   niches: ['creator ops'],
+  platforms: [{ name: 'YouTube', cadence: 'weekly', enabled: true }],
   voiceRules: ['proof first'],
   preferredFormats: ['YouTube'],
   dislikedTopics: [],
   bannedTopics: [],
+  trustedSources: ['Official documentation'],
+  dislikedSources: ['Anonymous aggregators'],
   contentGoals: ['make content viable'],
   voiceExamples: ['Short example'],
 }));
@@ -38,6 +41,9 @@ describe('content engine profile payload', () => {
     expect(payload.user_id).toBe(7);
     expect(payload.tenant_id).toBe(44);
     expect(payload.creator_profile).toContain('Cost control');
+    expect(payload.creator_profile).toContain('Enabled platforms: YouTube (weekly)');
+    expect(payload.creator_profile).toContain('Trusted sources: Official documentation');
+    expect(payload.creator_profile).toContain('Disliked sources: Anonymous aggregators');
     expect(payload.internal_attribution_token).toBeTruthy();
     const claims = verifyInternalAttributionToken(
       payload.internal_attribution_token,
@@ -60,6 +66,34 @@ describe('content engine profile payload', () => {
     const claims = verifyInternalAttributionToken(payload.internal_attribution_token, 'content_engine_report');
     expect(claims?.userId).toBe(7);
     expect(claims?.tenantId).toBe(44);
+  });
+
+  it('serializes an operation-authoritative language into both payload fields', async () => {
+    const { buildCurrentCreatorProfilePayload } = await import('../../src/services/content-engine-profile-payload');
+
+    const payload = await runWithContext(
+      { source: 'http', userId: 7, tenantId: 44 },
+      () => buildCurrentCreatorProfilePayload('en-US', 'content_engine_titles', {
+        authoritativeLanguageHint: true,
+      }),
+    );
+
+    expect(payload.language).toBe('en-US');
+    expect(payload.creator_profile).toContain('Primary output language: en-US.');
+    expect(payload.creator_profile).not.toContain('Primary output language: pt-BR.');
+  });
+
+  it('fails closed before inference when creator profile loading fails', async () => {
+    vi.stubEnv('INTERNAL_ATTRIBUTION_SECRET', 'payload-secret');
+    mockGetContentCreatorProfile.mockImplementationOnce(() => {
+      throw new Error('profile unavailable');
+    });
+    const { buildCurrentCreatorProfilePayload } = await import('../../src/services/content-engine-profile-payload');
+
+    expect(() => runWithContext(
+      { source: 'http', userId: 7, tenantId: 44 },
+      () => buildCurrentCreatorProfilePayload('en-US', 'content_engine_report'),
+    )).toThrow('profile unavailable');
   });
 
   it.each([

@@ -26,7 +26,12 @@ vi.mock('../../src/utils/logger', () => ({
 
 import { setDbProvider } from '../../src/services/intelligence-bus';
 import { runPipelineAgent } from '../../src/agents/pipeline-agent';
-import { runSEOAgent } from '../../src/agents/seo-agent';
+import {
+  handleAddSEOKeyword,
+  handleSEORank,
+  runSEOAgent,
+  seedKeywordsIfEmpty,
+} from '../../src/agents/seo-agent';
 import { runPerformanceAgent } from '../../src/agents/performance-agent';
 import { runReactionRadar } from '../../src/agents/reaction-radar-agent';
 import { buildEditorialCoordinationSignals } from '../../src/agents/editorial-coordinator-agent';
@@ -100,40 +105,62 @@ describe('Content operational agents direct health checks', () => {
     expect(latestAgentRun('pipeline-agent')).toMatchObject({ status: 'success', signals_produced: 1 });
   });
 
-  it('SEO and performance agents fail closed when no user-scoped creator channel is configured', async () => {
+  it('SEO and performance agents report their tenant-scope pause without emitting signals', async () => {
     await runSEOAgent();
     await runPerformanceAgent();
 
     expect(latestAgentRun('seo-agent')).toMatchObject({
       status: 'skipped',
       signals_produced: 0,
-      error_message: 'No user-scoped creator YouTube channel configured',
+      error_message: 'User-scoped SEO rank storage/signals not supported yet',
     });
     expect(latestAgentRun('performance-agent')).toMatchObject({
       status: 'skipped',
       signals_produced: 0,
-      error_message: 'No user-scoped creator YouTube channel configured',
+      error_message: 'User-scoped performance signals not supported yet',
     });
     expect(activeSignals()).toEqual([]);
   });
 
-  it('reaction radar skips entirely when no user-scoped creator channel exists', async () => {
-    // Creator gate (2026-07-03 audit): without a verified own channel there
-    // is no consumer for radar signals, so the run must not burn YouTube
-    // quota at all — same fail-closed rationale as the SEO/performance agents.
+  it('paused SEO startup and commands do not mutate the global keyword table', async () => {
+    const tableExists = () => Boolean(testDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'seo_keywords'",
+    ).get());
+    const before = tableExists();
+    const addReply = vi.fn();
+    const rankReply = vi.fn();
+
+    seedKeywordsIfEmpty();
+    await handleAddSEOKeyword({ match: 'private keyword', reply: addReply });
+    await handleSEORank({ reply: rankReply });
+
+    expect(tableExists()).toBe(before);
+    expect(addReply).toHaveBeenCalledWith(
+      expect.stringContaining('paused'),
+      { parse_mode: 'HTML' },
+    );
+    expect(addReply).toHaveBeenCalledWith(
+      expect.stringContaining('No keyword was saved'),
+      { parse_mode: 'HTML' },
+    );
+    expect(rankReply).toHaveBeenCalledWith(
+      expect.stringContaining('No global rankings are available'),
+      { parse_mode: 'HTML' },
+    );
+  });
+
+  it('reaction radar reports its tenant-user scope pause without emitting signals', async () => {
     await runReactionRadar();
 
     expect(latestAgentRun('reaction-radar')).toMatchObject({
       status: 'skipped',
       signals_produced: 0,
-      error_message: 'No user-scoped creator YouTube channel configured',
+      error_message: 'Paused until reaction discovery and emitted opportunities are tenant-user scoped',
     });
     expect(activeSignals('reaction_opportunity')).toEqual([]);
   }, 8_000);
 
-  it('reaction radar completes without fake opportunities when platform APIs are unavailable', async () => {
-    // Seed a verified own channel so the run passes the creator gate and
-    // exercises the API-unavailable path.
+  it('a user-scoped creator channel cannot bypass the reaction radar pause', async () => {
     testDb.prepare(`
       INSERT INTO content_ref_channels (channel_url, channel_name, channel_id, status, added_via, user_id, tenant_id, owner_user_id)
       VALUES ('https://youtube.com/@creator', 'Test Creator', 'UC_test_creator', 'active', 'ios_own_channel', 7, 7, 7)
@@ -142,8 +169,9 @@ describe('Content operational agents direct health checks', () => {
     await runReactionRadar();
 
     expect(latestAgentRun('reaction-radar')).toMatchObject({
-      status: 'success',
+      status: 'skipped',
       signals_produced: 0,
+      error_message: 'Paused until reaction discovery and emitted opportunities are tenant-user scoped',
     });
     expect(activeSignals('reaction_opportunity')).toEqual([]);
   }, 8_000);
@@ -174,6 +202,9 @@ describe('Content operational agents direct health checks', () => {
           mode: 'reaction_window',
           title: 'AI creator systems angle',
           summary: 'Timely reaction to a platform trend.',
+          scheduledDate: '2026-05-15',
+          dateSemantics: 'recommended_work_date',
+          calendarConfirmed: false,
           confidence: 'high',
           sourceType: 'reaction_opportunity',
         },
@@ -196,14 +227,23 @@ describe('Content operational agents direct health checks', () => {
 
     expect(result.signals.map((signal) => signal.signalType)).toEqual([
       'content_capture_opportunity',
-      'shoot_day_locked',
       'sponsor_deliverable_due',
     ]);
     expect(result.signals.find((signal) => signal.signalType === 'content_capture_opportunity')?.payload).toMatchObject({
       reason: 'Clear afternoon focus block and fresh reaction window.',
       nextExecutionMode: 'reaction_window',
+      nextExecutionDateSemantics: 'recommended_work_date',
+      nextExecutionCalendarConfirmed: false,
       sourceSignalType: 'reaction_opportunity',
+      planStatus: 'proposed',
+      semantics: 'proposal_not_calendar_reservation',
     });
+    expect(result.signals.find((signal) => signal.signalType === 'sponsor_deliverable_due')?.payload).toMatchObject({
+      status: 'factual_constraint',
+      publicationAuthority: 'not_established',
+      semantics: 'external_deadline_not_publication_authority',
+    });
+    expect(result.signals.some((signal) => signal.signalType === 'shoot_day_locked')).toBe(false);
     expect(JSON.stringify(result.signals)).not.toMatch(/post consistently|generic|undefined/i);
   });
 });

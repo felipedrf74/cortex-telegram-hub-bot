@@ -21,6 +21,10 @@ import {
   newAssistantMessageId,
 } from '../support';
 import { routedChatTurnCtx, type ChatStage, type ChatStageResult, type ChatTurnCtx } from '../types';
+import {
+  parseContentCreativeShortcut,
+  parseContentScriptShortcut,
+} from '../../chat-shortcut-parsers';
 
 export const internetResearchStage: ChatStage = {
   name: 'internet_research',
@@ -29,6 +33,8 @@ export const internetResearchStage: ChatStage = {
     const r = routedChatTurnCtx(ctx);
     return Boolean(
       isChatResearchRouterEnabled(process.env, { userId: r.userId, tenantId: r.tenantId })
+      && !parseContentScriptShortcut(r.normalizedText)
+      && !parseContentCreativeShortcut(r.normalizedText)
       && r.preTurnContract?.routeKind === 'internet_research'
       && (r.preTurnContract.groundingRequired === 'web' || r.preTurnContract.groundingRequired === 'local_and_web'),
     );

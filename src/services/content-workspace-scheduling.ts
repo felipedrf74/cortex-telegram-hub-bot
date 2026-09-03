@@ -30,6 +30,10 @@ import {
   startContentWorkspaceObservation,
 } from './content-workspace-observability';
 import { assertContentWorkspaceWriteEnabled } from './content-workspace-capabilities';
+import { emitDomainEvent } from './event-outbox';
+import { CONTENT_SCHEDULE_SIGNAL_RECONCILIATION_EVENT } from './content-schedule-signal-reconciliation';
+import { safeContentLogErrorFields } from './content-log-safety';
+import { logger } from '../utils/logger';
 
 export const CONTENT_SCHEDULE_SCHEMA_VERSION = 'content-schedule-v1';
 export const CONTENT_SCHEDULE_WORK_KINDS = [
@@ -334,7 +338,7 @@ function createContentSchedulePreviewInternal(
   const preferredWindows = normalizeWindows(input.preferredWindows, 'preferredWindows');
   const priority = enumValue(input.priority ?? 'normal', ['low', 'normal', 'high', 'urgent'] as const, 'priority');
   const deadlineAt = optionalIso(input.deadlineAt, 'deadlineAt');
-  const shareContentTitle = input.shareContentTitle === true;
+  const shareContentTitle = optionalBoolean(input.shareContentTitle, 'shareContentTitle') ?? false;
   const idempotencyKey = normalizeIdempotencyKey(input.idempotencyKey);
   const now = normalizeNow(input.now);
   const requestedArtifactId = input.artifactId == null
@@ -509,7 +513,9 @@ export function confirmContentSchedulePreview(
     assertContentWorkspaceWriteEnabled(normalizeScope(input.scope), 'scheduling');
     const result = confirmContentSchedulePreviewInternal(input, db, dependencies);
     observation.complete(result.replayed ? 'replayed' : result.changed ? 'success' : 'no_change');
-    if (result.changed) recordContentWorkspaceProductSignal('content_scheduled');
+    if (result.changed) {
+      recordContentWorkspaceProductSignal('internal_scheduled_state_or_confirmed_work_block');
+    }
     return result;
   } catch (error) {
     observation.completeFromError(error);
@@ -603,6 +609,9 @@ function confirmContentSchedulePreviewInternal(
   }).immediate();
 
   if (prepared.kind === 'replay') {
+    db.transaction(() => {
+      enqueueContentScheduleSignalReconciliation(db, scope, prepared.binding);
+    }).immediate();
     return {
       value: mapScheduleView(
         prepared.binding,
@@ -1131,17 +1140,24 @@ function cancelContentScheduleInternal(
         409,
       );
     }
-    if (bindingForKey.state !== 'cancel_failed') {
+    const replayAgendaFamily = readAgendaFamily(
+      dependencies,
+      scope,
+      bindingForKey.secretary_source_intent_id,
+      bindingForKey.secretary_agenda_item_id,
+      db,
+    );
+    const cancellationIsLocallyConfirmed = replayAgendaFamily.length > 0
+      && !replayAgendaFamily.some((agenda) => isActiveAgendaLifecycle(agenda.lifecycleState));
+    if (bindingForKey.state === 'cancelled'
+      || (bindingForKey.state === 'cancel_pending' && cancellationIsLocallyConfirmed)) {
+      db.transaction(() => {
+        enqueueContentScheduleSignalReconciliation(db, scope, bindingForKey);
+      }).immediate();
       return {
         value: mapScheduleView(
           bindingForKey,
-          readAgendaFamily(
-            dependencies,
-            scope,
-            bindingForKey.secretary_source_intent_id,
-            bindingForKey.secretary_agenda_item_id,
-            db,
-          ),
+          replayAgendaFamily,
           db,
           scope,
         ),
@@ -1333,6 +1349,7 @@ function cancelContentScheduleInternal(
     );
     const updated = findBindingById(db, scope, binding.id);
     if (!updated) throw inconsistentScheduleState();
+    enqueueContentScheduleSignalReconciliation(db, scope, updated);
     return updated;
   }).immediate();
 
@@ -1724,6 +1741,45 @@ function safeCancelAgendaFamily(
   return after.length > 0 && !after.some((agenda) => isActiveAgendaLifecycle(agenda.lifecycleState));
 }
 
+function enqueueContentScheduleSignalReconciliation(
+  db: Database.Database,
+  scope: ContentWorkspaceScope,
+  binding: ScheduleBindingRow,
+): void {
+  if (!['cancel_pending', 'cancel_failed', 'cancelled'].includes(binding.state)) return;
+  const cancellationFingerprint = binding.cancellation_request_hash
+    ?? hashPayload({ bindingId: binding.id, itemId: binding.item_id, state: 'cancelled' });
+  try {
+    emitDomainEvent({
+      tenantId: scope.tenantId,
+      userId: scope.userId,
+      sourceSkill: 'content',
+      eventType: CONTENT_SCHEDULE_SIGNAL_RECONCILIATION_EVENT,
+      entityType: 'content_schedule_binding',
+      entityId: binding.id,
+      schemaVersion: 'content.schedule-signal-reconciliation.v1',
+      payload: { itemId: binding.item_id },
+      privacyClassification: 'private_content',
+      idempotencyKey: `content.schedule_signal_reconciliation:${binding.id}:${cancellationFingerprint}`,
+    }, db);
+  } catch (error) {
+    logger.error(
+      { ...safeContentLogErrorFields(error), bindingId: binding.id },
+      'Content schedule signal reconciliation enqueue failed',
+    );
+    throw new ContentScheduleError(
+      'CONTENT_SCHEDULE_SIGNAL_RECONCILIATION_QUEUE_UNAVAILABLE',
+      'The work-block cancellation could not queue its derived-signal reconciliation. Retry cancellation safely.',
+      503,
+      {
+        recovery: 'retry_cancellation',
+        secretaryCancellationMayBeCommitted: true,
+        publicationExecution: 'not_performed',
+      },
+    );
+  }
+}
+
 function reconcileContentScheduleBinding(
   db: Database.Database,
   dependencies: ContentScheduleDependencies,
@@ -1788,21 +1844,28 @@ function reconcileContentScheduleBinding(
     && cancelledAt === binding.cancelled_at
   ) return;
 
-  db.prepare(`
-    UPDATE content_schedule_bindings
-       SET state = ?, provider_sync_state = ?, last_error_code = ?,
-           cancelled_at = ?, updated_at = ?
-     WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
-  `).run(
-    nextState,
-    providerSyncState,
-    lastErrorCode,
-    cancelledAt,
-    now,
-    binding.id,
-    scope.tenantId,
-    scope.userId,
-  );
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE content_schedule_bindings
+         SET state = ?, provider_sync_state = ?, last_error_code = ?,
+             cancelled_at = ?, updated_at = ?
+       WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+    `).run(
+      nextState,
+      providerSyncState,
+      lastErrorCode,
+      cancelledAt,
+      now,
+      binding.id,
+      scope.tenantId,
+      scope.userId,
+    );
+    const updated = findBindingById(db, scope, binding.id);
+    if (!updated) throw inconsistentScheduleState();
+    if (!isActiveAgendaLifecycle(current.lifecycleState)) {
+      enqueueContentScheduleSignalReconciliation(db, scope, updated);
+    }
+  }).immediate();
 }
 
 function assertNoUnresolvedContentSchedule(
@@ -1956,18 +2019,30 @@ function normalizeIdempotencyKey(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length < 8 || value.trim().length > 200) {
     throw new ContentScheduleError('CONTENT_IDEMPOTENCY_KEY_REQUIRED', 'Provide an idempotency key between 8 and 200 characters.', 400);
   }
-  return value.trim();
+  const normalized = value.trim();
+  if (/[\u0000-\u001F\u007F-\u009F]/u.test(normalized)) {
+    throw new ContentScheduleError(
+      'CONTENT_VALIDATION_FAILED',
+      'The idempotency key contains unsupported control characters.',
+      400,
+      { field: 'idempotencyKey' },
+    );
+  }
+  return normalized;
 }
 
 function normalizeOpaqueKey(value: unknown, field: string, prefix: string): string {
-  if (typeof value !== 'string' || !value.startsWith(prefix) || value.length > 200) {
+  if (typeof value !== 'string'
+    || !value.startsWith(prefix)
+    || value.length > 200
+    || !/^[A-Za-z0-9._:-]+$/.test(value)) {
     throw new ContentScheduleError('CONTENT_VALIDATION_FAILED', `${field} is invalid.`, 400, { field });
   }
   return value;
 }
 
 function positiveInteger(value: unknown, field: string): number {
-  if (!Number.isInteger(value) || Number(value) <= 0) {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
     throw new ContentScheduleError('CONTENT_VALIDATION_FAILED', `${field} must be a positive integer.`, 400, { field });
   }
   return Number(value);
@@ -2004,6 +2079,11 @@ function normalizeWindow(value: unknown, field: string): SecretaryTimeWindow {
     throw new ContentScheduleError('CONTENT_VALIDATION_FAILED', `${field} must be a time window.`, 400, { field });
   }
   const record = value as Record<string, unknown>;
+  if (record.hard !== undefined && typeof record.hard !== 'boolean') {
+    throw new ContentScheduleError('CONTENT_VALIDATION_FAILED', `${field}.hard must be a boolean.`, 400, {
+      field: `${field}.hard`,
+    });
+  }
   const start = requiredIso(record.start, `${field}.start`);
   const end = requiredIso(record.end, `${field}.end`);
   if (Date.parse(end) <= Date.parse(start)) {
@@ -2015,10 +2095,14 @@ function normalizeWindow(value: unknown, field: string): SecretaryTimeWindow {
 function sanitizeWindow(value: unknown): SecretaryTimeWindow | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  if (typeof record.start !== 'string' || typeof record.end !== 'string') return null;
-  if (!Number.isFinite(Date.parse(record.start)) || !Number.isFinite(Date.parse(record.end))) return null;
-  if (Date.parse(record.end) <= Date.parse(record.start)) return null;
-  return { start: new Date(record.start).toISOString(), end: new Date(record.end).toISOString() };
+  try {
+    const start = requiredCalendarIso(record.start, 'secretaryPreview.start');
+    const end = requiredCalendarIso(record.end, 'secretaryPreview.end');
+    if (Date.parse(end) <= Date.parse(start)) return null;
+    return { start, end };
+  } catch {
+    return null;
+  }
 }
 
 function isWindow(value: SecretaryTimeWindow | null): value is SecretaryTimeWindow {
@@ -2034,10 +2118,7 @@ function minutesBetween(window: SecretaryTimeWindow): number {
 }
 
 function requiredIso(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) {
-    throw new ContentScheduleError('CONTENT_VALIDATION_FAILED', `${field} must be an ISO date-time.`, 400, { field });
-  }
-  return new Date(value).toISOString();
+  return requiredCalendarIso(value, field);
 }
 
 function requiredCalendarIso(value: unknown, field: string): string {
@@ -2082,8 +2163,16 @@ function requiredCalendarIso(value: unknown, field: string): string {
 }
 
 function optionalIso(value: unknown, field: string): string | null {
-  if (value == null || value === '') return null;
+  if (value == null) return null;
   return requiredIso(value, field);
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new ContentScheduleError('CONTENT_VALIDATION_FAILED', `${field} must be a boolean.`, 400, { field });
+  }
+  return value;
 }
 
 function normalizeNow(value: unknown): string {

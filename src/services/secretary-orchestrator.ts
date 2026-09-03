@@ -4,7 +4,12 @@ import { DateTime } from 'luxon';
 import { config } from '../config';
 import { secretaryTodayLabels, secretaryTodayText } from './secretary-today-copy';
 import type { WeeklyPlanSourceHealth } from './secretary-planning-context';
-import type { WeeklyPlanDay, WeeklyPlanResponse } from './weekly-plan-orchestrator';
+import {
+  hasConfirmedPrivateContentBlock,
+  isCurrentConfirmedPrivateContentBlock,
+  type WeeklyPlanDay,
+  type WeeklyPlanResponse,
+} from './weekly-plan-orchestrator';
 
 export type SecretarySkillId = 'secretary' | 'training' | 'content' | 'cooking' | 'finance';
 export type PlanConfidence = 'low' | 'medium' | 'high';
@@ -48,7 +53,7 @@ export type NextBestActionKind =
   | 'salvage_day'
   | 'batch_overdue'
   | 'lighten_day'
-  | 'ship_content'
+  | 'work_content'
   | 'protect_training'
   | 'finance_first'
   | 'portable_day'
@@ -233,7 +238,7 @@ export function buildSecretaryCoordination(input: SecretaryOrchestrationInput): 
     blockers,
     protectedBlocks,
     language,
-  }).slice(0, 4);
+  }).slice(0, 2);
   const nextBestAction = chooseNextBestAction({
     input,
     signals,
@@ -266,7 +271,7 @@ export function buildSecretaryCoordination(input: SecretaryOrchestrationInput): 
     nextBestAction?.title ?? null,
     ...suggestedMoves.map((move) => move.title),
     ...input.day.secretary.sequence,
-  ]).slice(0, 5);
+  ]).slice(0, 3);
 
   const handoffs = dedupeStrings([
     ...crossSkillImpacts.map((impact) => impact.summary),
@@ -490,6 +495,10 @@ function compactEntries(values: Array<SecretaryTodayEntryModel | null | undefine
   return values.filter((value): value is SecretaryTodayEntryModel => Boolean(value));
 }
 
+function isConfirmedPrivateContentBlock(content: WeeklyPlanDay['content']): boolean {
+  return hasConfirmedPrivateContentBlock(content);
+}
+
 function deriveSignals(day: WeeklyPlanDay): DerivedDaySignals {
   const availableSkills = resolveAvailableSkills(day);
   const eventCount = day.secretary.calendarEventCount ?? (day.secretary.busy ? 4 : 0);
@@ -505,7 +514,7 @@ function deriveSignals(day: WeeklyPlanDay): DerivedDaySignals {
 
   const isCalendarOverloaded = day.secretary.busy || eventCount >= 4 || criticalMeetingCount >= 2;
   const isFragmentedDay = day.secretary.fragmented ?? (eventCount >= 4 && criticalMeetingCount >= 1);
-  const hasContentWindow = Boolean(day.content?.status === 'scheduled' && day.content?.blockStart && day.content?.blockEnd);
+  const hasContentWindow = isConfirmedPrivateContentBlock(day.content);
   const hasBlockedContent = day.content?.status === 'blocked';
   const hasFinancePressure = hasMeaningfulFinancePressure(day.finance);
   const needsRecoveryProtection = trainingNeedsRecovery(day);
@@ -609,12 +618,12 @@ function buildDayOrchestration(
     case 'high_output_day':
       return {
         posture,
-        title: text(language, 'Hoje tem uma janela real para entregar.', 'Hoje tem uma janela real para entregar.', 'Today has a real delivery window.'),
+        title: text(language, 'Hoje tem um bloco privado de trabalho confirmado.', 'Hoje tem um bloco privado de trabalho confirmado.', 'Today has a confirmed private work block.'),
         summary: text(
           language,
-          'Usa o bloco limpo para shipping ou foco profundo, não para setup disperso.',
-          'Use o bloco limpo para shipping ou foco profundo, não para setup disperso.',
-          'Use the clean block for shipping or deep focus, not for setup sprawl.',
+          'Usa o bloco para o objetivo de trabalho registado; agendar trabalho não agenda publicação.',
+          'Use o bloco para o objetivo de trabalho registrado; agendar trabalho não agenda publicação.',
+          'Use the block for its recorded work purpose; scheduling work does not schedule publication.',
         ),
         confidence: 'high',
         mainThing: input.day.content?.title ?? input.day.secretary.priorityNote,
@@ -724,12 +733,12 @@ function buildWeekOrchestration(
     case 'output':
       return {
         posture,
-        title: text(language, 'A semana está montada para entrega.', 'A semana está montada para entrega.', 'This week is set up for delivery.'),
+        title: text(language, 'A semana tem blocos confirmados para trabalho focado.', 'A semana tem blocos confirmados para trabalho focado.', 'This week has confirmed blocks for focused work.'),
         summary: text(
           language,
-          'Vale proteger os blocos que realmente fazem trabalho sair da porta.',
-          'Vale proteger os blocos que realmente fazem o trabalho sair da porta.',
-          'It is worth protecting the windows that actually ship work.',
+          'Vale usar cada sessão para o objetivo registado sem inferir publicação ou entrega.',
+          'Vale usar cada sessão para o objetivo registrado sem inferir publicação ou entrega.',
+          'Use each session for its recorded purpose without inferring publication or delivery.',
         ),
         confidence: 'medium',
         reasons,
@@ -958,9 +967,9 @@ function buildBlockers(
         input.conflicts[0]?.message,
         text(
           language,
-          'Admin, calendário e entrega estão a puxar na mesma direção limitada.',
-          'Admin, calendário e entrega estão puxando na mesma direção limitada.',
-          'Admin, calendar, and delivery are pulling on the same limited window.',
+          'Admin, calendário e trabalho confirmado estão a competir pela mesma janela limitada.',
+          'Admin, calendário e trabalho confirmado estão competindo pela mesma janela limitada.',
+          'Admin, calendar, and confirmed work are competing for the same limited window.',
         ),
       ])!,
       affectedArea: signals.hasFinancePressure ? 'finance' : 'content',
@@ -990,9 +999,9 @@ function buildBlockers(
       title: text(language, 'Há trabalho dependente sem caminho limpo.', 'Há trabalho dependente sem caminho limpo.', 'Dependent work has no clean path yet.'),
       summary: text(
         language,
-        'Conteúdo ou entrega ainda não têm uma janela utilizável para fechar o ciclo.',
-        'Conteúdo ou entrega ainda não têm uma janela utilizável para fechar o ciclo.',
-        'Content or delivery still lacks a usable window to close the loop.',
+        'A proposta de trabalho de conteúdo ainda não tem um bloco privado confirmado.',
+        'A proposta de trabalho de conteúdo ainda não tem um bloco privado confirmado.',
+        'The Content work proposal still lacks a confirmed private block.',
       ),
       affectedArea: 'content',
       affectedSkills: dedupeSkills([
@@ -1001,9 +1010,9 @@ function buildBlockers(
       ]),
       recommendedAction: text(
         language,
-        'Empurra preparação vaga para outro dia e reserva a próxima janela limpa para fechar a dependência.',
-        'Empurre preparação vaga para outro dia e reserve a próxima janela limpa para fechar a dependência.',
-        'Push vague prep work out and reserve the next clean window to close the dependency.',
+        'Empurra preparação vaga para outro dia e pede à Secretary uma pré-visualização para a próxima janela.',
+        'Empurre preparação vaga para outro dia e peça ao Secretário uma pré-visualização para a próxima janela.',
+        'Push vague prep work out and ask Secretary to preview the next window.',
       ),
       score: 58,
     });
@@ -1052,17 +1061,22 @@ function buildProtectedBlocks(
     });
   }
 
-  if (signals.hasContentWindow && input.day.content?.blockStart && input.day.content?.blockEnd) {
-    blocks.push({
-      id: `content:${input.date}`,
-      type: 'content',
-      title: input.day.content.title || text(language, 'Janela de conteúdo', 'Janela de conteúdo', 'Content window'),
-      summary: input.day.content.note
-        || text(language, 'Usa esta janela para entrega, não para alargar o setup.', 'Use esta janela para entrega, não para alongar o setup.', 'Use this slot for delivery, not for setup sprawl.'),
-      windowLabel: formatWindow(input.day.content.blockStart, input.day.content.blockEnd),
-      quality: 'creative',
-      affectedSkills: ['content', 'secretary'],
-    });
+  if (signals.hasContentWindow && input.day.content) {
+    const confirmedBlocks = (input.day.content.confirmedBlocks ?? [])
+      .filter(isCurrentConfirmedPrivateContentBlock);
+    for (const [index, block] of confirmedBlocks.entries()) {
+      blocks.push({
+        id: `content:${input.date}:${block.itemId}`,
+        type: 'content',
+        title: block.title || input.day.content.title || text(language, 'Janela de conteúdo', 'Janela de conteúdo', 'Content window'),
+        summary: index === 0 && input.day.content.note
+          ? input.day.content.note
+          : text(language, 'Sessão privada confirmada pela Secretary; isto não publica conteúdo.', 'Sessão privada confirmada pelo Secretário; isso não publica conteúdo.', 'Secretary-confirmed private work session; this does not publish content.'),
+        windowLabel: formatWindow(block.startsAt, block.endsAt),
+        quality: 'creative',
+        affectedSkills: ['content', 'secretary'],
+      });
+    }
   }
 
   if (signals.hasFinancePressure) {
@@ -1149,9 +1163,9 @@ function buildCrossSkillImpacts(
       skillLabel: skillLabel('content', language),
       summary: text(
         language,
-        'Conteúdo tem uma janela boa, mas precisa de shipping e não de mais preparação.',
-        'Conteúdo tem uma janela boa, mas precisa de shipping e não de mais preparação.',
-        'Content has a good window, but it needs shipping, not more prep.',
+        'Conteúdo tem uma sessão privada confirmada para avançar o trabalho registado; isto não implica publicação.',
+        'Conteúdo tem uma sessão privada confirmada para avançar o trabalho registrado; isso não implica publicação.',
+        'Content has a confirmed private session for its recorded work; this does not imply publication.',
       ),
     });
   } else if (signals.hasBlockedContent) {
@@ -1286,7 +1300,7 @@ function buildResolutions(opts: {
           blockerId: blocker.id,
           action: 'protect',
           title: contentWindow
-            ? text(language, `Protege ${contentWindow} como janela real.`, `Proteja ${contentWindow} como janela real.`, `Protect ${contentWindow} as a real window.`)
+            ? text(language, `Mantém ${contentWindow} como bloco privado confirmado.`, `Mantenha ${contentWindow} como bloco privado confirmado.`, `Keep ${contentWindow} as the confirmed private block.`)
             : text(language, 'Cria uma janela curta mas real.', 'Crie uma janela curta mas real.', 'Create a short but real focus window.'),
           summary: text(
             language,
@@ -1324,13 +1338,13 @@ function buildResolutions(opts: {
           title: signals.hasFinancePressure
             ? text(language, 'Fecha o bloco administrativo primeiro.', 'Feche o bloco administrativo primeiro.', 'Handle the admin block first.')
             : contentWindow
-              ? text(language, `Usa ${contentWindow} para entregar.`, `Use ${contentWindow} para entregar.`, `Use ${contentWindow} to ship.`)
+              ? text(language, `Revê o conflito do bloco de conteúdo em ${contentWindow}.`, `Revise o conflito do bloco de conteúdo em ${contentWindow}.`, `Review the Content-block conflict at ${contentWindow}.`)
               : text(language, 'Define o bloco que não pode falhar.', 'Defina o bloco que não pode falhar.', 'Define the block that cannot slip.'),
           summary: text(
             language,
-            'O resto fica atrás desse compromisso em vez de competir com ele.',
-            'O resto fica atrás desse compromisso em vez de competir com ele.',
-            'Everything else should sit behind that commitment instead of competing with it.',
+            'Pede à Secretary para reconciliar os blocos confirmados; não inventes uma nova ordem ou publicação.',
+            'Peça ao Secretário para reconciliar os blocos confirmados; não invente uma nova ordem ou publicação.',
+            'Ask Secretary to reconcile the confirmed blocks; do not invent a new order or publication.',
           ),
           targetWindow: contentWindow,
           affectedSkills: blocker.affectedSkills,
@@ -1345,9 +1359,9 @@ function buildResolutions(opts: {
           title: text(language, 'Move a preparação vaga para fora do dia.', 'Mova a preparação vaga para fora do dia.', 'Move vague prep work out of the day.'),
           summary: text(
             language,
-            'Guarda a próxima janela limpa para fechar a dependência com uma entrega concreta.',
-            'Guarde a próxima janela limpa para fechar a dependência com uma entrega concreta.',
-            'Save the next clean window to close the dependency with a concrete delivery.',
+            'Guarda a próxima janela limpa para fechar a dependência com um resultado de trabalho concreto.',
+            'Guarde a próxima janela limpa para fechar a dependência com um resultado de trabalho concreto.',
+            'Save the next clean window to close the dependency with a concrete work result.',
           ),
           targetWindow: contentWindow,
           affectedSkills: blocker.affectedSkills,
@@ -1474,15 +1488,15 @@ function chooseNextBestAction(opts: {
 
   if (topBlocker?.kind === 'deadline_collision' && signals.hasContentWindow) {
     return {
-      kind: 'ship_content',
+      kind: 'work_content',
       title: contentWindow
-        ? text(language, `Usa ${contentWindow} para entregar.`, `Use ${contentWindow} para entregar.`, `Use ${contentWindow} to ship.`)
-        : text(language, 'Usa a janela de conteúdo para entregar.', 'Use a janela de conteúdo para entregar.', 'Use the content window to ship.'),
+        ? text(language, `Revê o bloco de conteúdo em ${contentWindow}.`, `Revise o bloco de conteúdo em ${contentWindow}.`, `Review the Content work block at ${contentWindow}.`)
+        : text(language, 'Revê o bloco privado de conteúdo.', 'Revise o bloco privado de conteúdo.', 'Review the private Content work block.'),
       summary: text(
         language,
-        'O conflito real do dia está nessa entrega, não no resto do ruído.',
-        'O conflito real do dia está nessa entrega, não no resto do ruído.',
-        'The real collision today sits in that delivery, not in the surrounding noise.',
+        'O conflito real envolve uma sessão privada confirmada; a Secretary deve reconciliá-lo sem inferir publicação.',
+        'O conflito real envolve uma sessão privada confirmada; o Secretário deve reconciliá-lo sem inferir publicação.',
+        'The real collision involves a confirmed private session; Secretary should reconcile it without inferring publication.',
       ),
       whyNow: topBlocker.summary,
       targetWindow: contentWindow,
@@ -1567,13 +1581,13 @@ function chooseNextBestAction(opts: {
 
   if (signals.hasContentWindow) {
     return {
-      kind: 'ship_content',
-      title: text(language, 'Usa a janela de conteúdo para entregar.', 'Use a janela de conteúdo para entregar.', 'Use the content window to ship.'),
+      kind: 'work_content',
+      title: text(language, 'Usa o bloco de conteúdo para o trabalho registado.', 'Use o bloco de conteúdo para o trabalho registrado.', 'Use the Content block for its recorded work.'),
       summary: text(
         language,
-        'Hoje precisa de entrega, não de mais preparação difusa.',
-        'Hoje precisa de entrega, não de mais preparação difusa.',
-        'Today needs delivery, not more diffuse preparation.',
+        'O bloco privado está confirmado, mas não é uma promessa de publicação ou entrega.',
+        'O bloco privado está confirmado, mas não é uma promessa de publicação ou entrega.',
+        'The private block is confirmed, but it is not a publication or delivery promise.',
       ),
       whyNow: input.day.content?.note ?? null,
       targetWindow: protectedBlocks.find((block) => block.type === 'content')?.windowLabel ?? null,
@@ -1711,7 +1725,7 @@ function selectWeekPosture(input: SecretaryOrchestrationInput, signals: DerivedD
   const travelDays = days.filter((day) => day.secretary.travel).length;
   const busyDays = days.filter((day) => day.secretary.busy).length;
   const recoveryDays = days.filter((day) => trainingNeedsRecovery(day)).length;
-  const contentDays = days.filter((day) => day.content?.status === 'scheduled').length;
+  const contentDays = days.filter((day) => isConfirmedPrivateContentBlock(day.content)).length;
   const financeDays = days.filter((day) => hasMeaningfulFinancePressure(day.finance)).length;
 
   if (travelDays > 0) return 'travel_logistics';
@@ -1752,7 +1766,7 @@ function weekReasons(input: SecretaryOrchestrationInput, signals: DerivedDaySign
   const days = input.weekPlan.days;
   const busyDays = days.filter((day) => day.secretary.busy).length;
   const recoveryDays = days.filter((day) => trainingNeedsRecovery(day)).length;
-  const contentDays = days.filter((day) => day.content?.status === 'scheduled').length;
+  const contentDays = days.filter((day) => isConfirmedPrivateContentBlock(day.content)).length;
 
   return dedupeStrings([
     busyDays >= 2
@@ -1811,7 +1825,7 @@ function shouldPrioritizeFinanceFirst(opts: {
   if (!signals.hasFinancePressure) return false;
 
   // Finance should not trump the cases where the day is already constrained by
-  // travel, recovery, or a genuine delivery collision with a real ship window.
+  // travel, recovery, or a genuine conflict involving a confirmed private work block.
   if (signals.isTravelDay || signals.needsRecoveryProtection) return false;
   if (topBlocker?.kind === 'deadline_collision' && signals.hasContentWindow) return false;
 

@@ -34,13 +34,15 @@ describe('runtime manifests', () => {
       providerCapableJobs: 8,
       sharedRunnerJobs: 8,
       eventHandlers: 1,
-      directEventEffects: 5,
+      directEventEffects: 6,
       // Phase 1B: +1 queued handler (training_plan_calendar_sync) in its own
       // 'training-plan-calendar-sync' runtime group.
-      queuedJobHandlers: 10,
+      queuedJobHandlers: 9,
     });
     // Phase 1B: +1 scheduler job (training_plan_calendar_sync_worker drain).
-    expect(result).toMatchObject({ jobs: 69, scheduledJobs: 69 });
+    // Three registered Content jobs are lifecycle=paused metadata only and do
+    // not receive cron callbacks until tenant-user scoped storage ships.
+    expect(result).toMatchObject({ jobs: 69, scheduledJobs: 66 });
   });
 
   it('keeps parent skill and domain metadata byte-identical to CapabilityManifest generation', () => {
@@ -86,8 +88,8 @@ describe('runtime manifests', () => {
       schema: 'nexus.agent-job-manifest.v3',
       jobs: 69,
       eventHandlers: 1,
-      directEventEffects: 5,
-      queuedJobHandlers: 10,
+      directEventEffects: 6,
+      queuedJobHandlers: 9,
     });
     expect(fs.readFileSync(manifestPath, 'utf8')).toBe(before);
 
@@ -106,6 +108,11 @@ describe('runtime manifests', () => {
       expect(job.domain.trim()).not.toBe('');
       expect(job.schedule.trim()).not.toBe('');
     }
+    expect(manifest.jobs.filter((job: any) => job.lifecycle === 'paused').map((job: any) => job.id).sort()).toEqual([
+      'performance_agent',
+      'reaction_radar',
+      'seo_agent',
+    ]);
   });
 
   it('classifies every job and gives every provider-capable job zero-call unchanged-input enforcement', () => {
@@ -135,9 +142,17 @@ describe('runtime manifests', () => {
       .every((job: any) => job.inputFingerprint.tests.length > 0)).toBe(true);
 
     const jobsById = Object.fromEntries(manifest.jobs.map((job: any) => [job.id, job]));
-    for (const id of ['channel_relearn', 'garmin_coach', 'voice_evolution']) {
+    expect(jobsById.garmin_coach.providerRouting).toBe(
+      'gemini-primary-openai-fallback-anthropic-gated-last-resort',
+    );
+    for (const id of ['channel_relearn', 'voice_evolution']) {
       expect(jobsById[id].providerRouting).toBe(
-        'gemini-primary-openai-fallback-anthropic-gated-last-resort',
+        'gemini-primary-configuration-fallthrough-single-attempt',
+      );
+    }
+    for (const id of ['friday_weekly', 'thursday_youtube', 'tuesday_reels']) {
+      expect(jobsById[id].providerRouting).toBe(
+        'grounded-provider-configuration-fallthrough-single-attempt',
       );
     }
     expect(manifest.jobs
@@ -306,7 +321,7 @@ describe('runtime manifests', () => {
   it('fails closed when event or durable queued-job runtime handler registries drift', () => {
     const manifest = loadAgentJobManifest();
     expect(manifest.eventHandlers).toHaveLength(1);
-    expect(manifest.queuedJobHandlers).toHaveLength(10);
+    expect(manifest.queuedJobHandlers).toHaveLength(9);
     expect(manifest.eventHandlers[0]).toMatchObject({
       id: 'default_event_router',
       eventType: '*',
@@ -328,6 +343,13 @@ describe('runtime manifests', () => {
         eventType: 'cooking.meal_prep_provider_sync.completed.v1',
         providerUsage: 'none',
         tenantScope: 'durable-event-owner-and-exact-secretary-tenant',
+      }),
+      expect.objectContaining({
+        id: 'reconcile_content_schedule_filming_signal:content.schedule_signal_reconciliation.requested.v1',
+        eventType: 'content.schedule_signal_reconciliation.requested.v1',
+        providerUsage: 'none',
+        tenantScope: 'durable-event-owner-and-exact-content-tenant',
+        outputPolicy: 'exact-binding-verified-shoot-day-lock-dismissal',
       }),
       expect.objectContaining({
         id: 'record_secretary_source_skill_feedback:secretary.source_feedback.requested.v1',
@@ -359,6 +381,10 @@ describe('runtime manifests', () => {
         effect: 'complete_cooking_meal_prep_provider_sync',
       },
       {
+        eventType: 'content.schedule_signal_reconciliation.requested.v1',
+        effect: 'reconcile_content_schedule_filming_signal',
+      },
+      {
         eventType: 'training.plan_revision.activated.v1',
         effect: 'record_training_learning_observation',
       },
@@ -387,7 +413,6 @@ describe('runtime manifests', () => {
       'project_read_models',
       'deliver_notification',
       'training_summary_projector',
-      'content_radar_scan_stub_or_existing',
       'content_topic_secretary_sync',
       'sync_calendar_safe_mock',
     ].map((jobType) => ({ jobType, idempotent: true }));

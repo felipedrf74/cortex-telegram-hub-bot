@@ -93,4 +93,12 @@ describe('chat content refinement helpers', () => {
 
     expect(sanitizeScriptBody(script)).toBe('Say this now');
   });
+
+  it.each([
+    'SOURCE-BOUND SOURCES:',
+    'FONTES ASSOCIADAS (NÃO VERIFICADAS):',
+    'FONTES VERIFICADAS:',
+  ])('removes %s source appendices from editable chat copy', (label) => {
+    expect(sanitizeScriptBody(`Keep this body.\n${label}\n1. Source`)).toBe('Keep this body.');
+  });
 });

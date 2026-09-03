@@ -40,11 +40,13 @@ class CompiledPrompt:
     over_budget: bool
     cacheable_prefix_hash: str
     sections: list[CompiledSection]
+    output_token_budget: int | None = None
 
     def metadata(self) -> dict:
         return {
             "tokenEstimate": self.token_estimate,
             "maxTokens": self.max_tokens,
+            "outputTokenBudget": self.output_token_budget,
             "overBudget": self.over_budget,
             "cacheablePrefixHash": self.cacheable_prefix_hash,
             "sections": [

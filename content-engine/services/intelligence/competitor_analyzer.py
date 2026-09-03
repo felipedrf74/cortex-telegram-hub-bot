@@ -11,10 +11,16 @@ import logging
 import httpx
 
 from config import cfg
-from models.requests import CompetitorRequest, CompetitorResponse
+from models.requests import CompetitorAnalysisPayload, CompetitorRequest, CompetitorResponse
 from services.claude_client import ask_claude_json
 from services.creator_context import creator_profile_block, language_instruction
 from services.creative.operation_prompt_compilers import OperationPromptInput, build_operation_metadata, compile_operation_prompt
+from services.creative.output_contracts import (
+    CreativeOutputContractError,
+    localized_contract_warning,
+    localized_research_warning,
+    validate_model_object,
+)
 
 logger = logging.getLogger("content-engine.competitor")
 
@@ -120,6 +126,7 @@ async def analyze(req: CompetitorRequest) -> CompetitorResponse:
 Use the creator profile only to tailor useful, scoped recommendations. Do not assume ideology, language, audience, belief system, diet, nationality, or founder persona when it is not supplied."""
 
     videos = await _fetch_channel_videos(req.channel, req.max_videos)
+    research_degraded = not videos
 
     video_summary = [
         f"{v['title']} | {v['views']:,} views | {v['likes']:,} likes | {v['published_at'][:10]}"
@@ -137,14 +144,38 @@ Use the creator profile only to tailor useful, scoped recommendations. Do not as
             "avg_views, top_performer, strengths, weaknesses, actionable_insights. "
             "If no recent videos are supplied, mark confidence as low and avoid invented metrics."
         ),
+        system_prompt=system_prompt,
     ))
 
-    analysis = await ask_claude_json(compiled.prompt, system=system_prompt, max_tokens=1800)
+    analysis = await ask_claude_json(
+        compiled.prompt,
+        system=system_prompt,
+        max_tokens=compiled.output_token_budget or 1800,
+        category="content_engine_competitor",
+    )
+    warnings: list[str] = []
+    if research_degraded:
+        warnings.append(localized_research_warning(req.language, "competitor analysis"))
+    try:
+        payload = validate_model_object(analysis, CompetitorAnalysisPayload)
+        bounded_analysis = payload.model_dump(exclude_none=True)
+        # Channel identity is request-owned scope, not provider-authored copy.
+        bounded_analysis["channel"] = req.channel
+        if research_degraded:
+            bounded_analysis["confidence"] = "low"
+        degraded = research_degraded
+    except CreativeOutputContractError:
+        logger.warning("Competitor provider output failed the bounded response contract")
+        bounded_analysis = {}
+        degraded = True
+        warnings.append(localized_contract_warning(req.language, "competitor analysis"))
 
     duration_ms = int((time.monotonic() - start) * 1000)
     return CompetitorResponse(
         channel=req.channel,
-        analysis=analysis if isinstance(analysis, dict) else {"raw": analysis},
+        analysis=bounded_analysis,
         duration_ms=duration_ms,
-        **build_operation_metadata(req, "competitor_insight", compiled),
+        degraded=degraded,
+        warnings=warnings,
+        **build_operation_metadata(req, "competitor_insight", compiled, duration_ms=duration_ms),
     )

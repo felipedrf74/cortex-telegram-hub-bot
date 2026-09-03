@@ -37,6 +37,8 @@ const REPRICING_RETIREMENT_BASE_SHA = 'fb78be73e9880a4a9f77f193c6477d7a0203d4df'
 const QA3_INBOX_RETIREMENT_BASE_SHA = '98ec86210f34ad94ea250c8a1eb10ea71aee2db4';
 // Release A provider privacy boundary and explicit authorized-retry fixtures.
 const RELEASE_A_RETIREMENT_BASE_SHA = '92b722ee02242fd37453ece17d74cfc53102d961';
+// Content Creation end-to-end contract replacement and cleanup ownership.
+const CONTENT_CREATION_RETIREMENT_BASE_SHA = 'e96c1ccfda321f419a6732a3aee676d1481060cc';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -551,7 +553,22 @@ describe('lean changed-area classification', () => {
       REPRICING_RETIREMENT_BASE_SHA,
       QA3_INBOX_RETIREMENT_BASE_SHA,
       RELEASE_A_RETIREMENT_BASE_SHA,
+      CONTENT_CREATION_RETIREMENT_BASE_SHA,
     ]));
+
+    const contentCreationRetirements = policy.retirementMappings.filter((mapping: {
+      baseSha?: string;
+    }) => mapping.baseSha === CONTENT_CREATION_RETIREMENT_BASE_SHA);
+    expect(contentCreationRetirements).toHaveLength(31);
+    expect(contentCreationRetirements.every((mapping: {
+      test?: string;
+      requiredChangedPaths?: string[];
+      replacementTests?: string[];
+    }) => (
+      typeof mapping.test === 'string'
+      && mapping.requiredChangedPaths?.includes(mapping.test)
+      && mapping.replacementTests?.includes(mapping.test)
+    ))).toBe(true);
 
     expect(policy.retirementMappings.filter((mapping: { baseSha?: string }) => (
       mapping.baseSha === RELEASE_A_RETIREMENT_BASE_SHA

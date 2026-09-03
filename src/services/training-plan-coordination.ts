@@ -121,7 +121,9 @@ export interface TrainingPlanCoordination {
   weeklySessionTarget: number;
   strengthSessionTarget: number;
   resolvedLongWorkoutDay: string | null;
-  protectFilmingDay: string | null;
+  /** Day containing a current Secretary-confirmed private Content recording
+   * work session. Advisory filming recommendations never populate this field. */
+  protectConfirmedRecordingDay: string | null;
   maxHardSessionsPerWeek: number;
   conservativeFirstWeek: boolean;
   firstWeekIntensityReductionPct: number;
@@ -166,7 +168,7 @@ export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInp
   const recoveryState = extractRecoveryState(input.training);
   const cookingRisk = extractCookingRisk(input.cooking);
   const budget = extractBudget(input.finance);
-  const filmingDay = extractFilmingDay(input.content);
+  const confirmedRecordingDay = extractConfirmedRecordingDay(input.content);
   const athlete = extractAthleteConstraintProfile(input.fitnessProfile, input.gymProfile, input.runProfile);
   const secretary = extractSecretaryConstraints(input.secretary);
   const secretaryFeedback = input.training?.secretaryFeedback ?? null;
@@ -223,7 +225,7 @@ export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInp
       : requestedSessions;
 
   const lowCostBias = budget?.budgetMode === 'tight' || budget?.budgetMode === 'controlled' || selectiveTrainingSpend;
-  const resolvedLongWorkoutDay = resolveLongWorkoutDay(input.longWorkoutDay ?? null, filmingDay);
+  const resolvedLongWorkoutDay = resolveLongWorkoutDay(input.longWorkoutDay ?? null, confirmedRecordingDay);
   const progressionRampCapPct = athlete.beginner || recoveryState === 'critical'
     ? 4
     : recoveryState === 'strained' || athlete.impactSensitive || athlete.lowerBodySensitive
@@ -275,8 +277,8 @@ export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInp
     resolvedLongWorkoutDay
       ? `Anchor the longest session on ${capitalizeDay(resolvedLongWorkoutDay)} unless the calendar makes the adjacent day clearly safer.`
       : null,
-    filmingDay
-      ? `Keep ${capitalizeDay(filmingDay)} lower-fatigue when possible because Content currently prefers that day for filming.`
+    confirmedRecordingDay
+      ? `Secretary confirms a current private Content recording work session on ${capitalizeDay(confirmedRecordingDay)}; keep training lower-fatigue around that block.`
       : null,
     lowCostBias
       ? `Avoid recommending new paid equipment, premium classes, or supplement-dependent strategies; prefer current equipment and lower-friction execution.`
@@ -325,7 +327,7 @@ export function buildTrainingPlanCoordination(input: TrainingPlanCoordinationInp
     weeklySessionTarget,
     strengthSessionTarget,
     resolvedLongWorkoutDay,
-    protectFilmingDay: filmingDay,
+    protectConfirmedRecordingDay: confirmedRecordingDay,
     maxHardSessionsPerWeek: secretaryHardCap,
     conservativeFirstWeek,
     firstWeekIntensityReductionPct,
@@ -365,8 +367,8 @@ export function applyTrainingPlanCoordination(
       rebalanceStrengthSessions(sessions, coordination.strengthSessionTarget);
     }
 
-    if (coordination.protectFilmingDay) {
-      lightenFilmingDay(sessions, coordination.protectFilmingDay);
+    if (coordination.protectConfirmedRecordingDay) {
+      lightenConfirmedRecordingDay(sessions, coordination.protectConfirmedRecordingDay);
     }
 
     if (coordination.protectFocusDay) {
@@ -497,17 +499,17 @@ function rebalanceStrengthSessions(sessions: CoordinatedTrainingSession[], targe
   }
 }
 
-function lightenFilmingDay(sessions: CoordinatedTrainingSession[], filmingDay: string): void {
-  const targetDay = normalizeDay(filmingDay);
+function lightenConfirmedRecordingDay(sessions: CoordinatedTrainingSession[], recordingDay: string): void {
+  const targetDay = normalizeDay(recordingDay);
   if (!targetDay) return;
 
-  const filmingIndex = sessions.findIndex((session) => normalizeDay(session.dayOfWeek) === targetDay && isHighDemandSession(session));
-  if (filmingIndex < 0) return;
+  const recordingDayIndex = sessions.findIndex((session) => normalizeDay(session.dayOfWeek) === targetDay && isHighDemandSession(session));
+  if (recordingDayIndex < 0) return;
 
-  const session = sessions[filmingIndex];
-  sessions[filmingIndex] = session.sessionType === 'gym'
-    ? toMobilitySession(session, 'Content filming is favored on this day, so keep the training demand low.')
-    : toRecoveryCardioSession(session, 'Content filming is favored on this day, so keep the session smooth and non-taxing.');
+  const session = sessions[recordingDayIndex];
+  sessions[recordingDayIndex] = session.sessionType === 'gym'
+    ? toMobilitySession(session, 'A current Secretary-confirmed private Content recording block is on this day, so keep the training demand low around it.')
+    : toRecoveryCardioSession(session, 'A current Secretary-confirmed private Content recording block is on this day, so keep the session smooth and non-taxing around it.');
 }
 
 function capHardSessions(sessions: CoordinatedTrainingSession[], maxHardSessions: number): void {
@@ -1056,7 +1058,7 @@ function insertionDayScore(
   const ordered = orderedSessionEntries(sessions);
 
   if (coordination.protectFocusDay === day) score -= 4;
-  if (coordination.protectFilmingDay === day) score -= 3;
+  if (coordination.protectConfirmedRecordingDay === day) score -= 3;
   if (longSessionDay && areAdjacentDays(longSessionDay, day) && coordination.protectRecoveryAfterLongSession) score -= 4;
 
   for (const entry of ordered) {
@@ -1194,20 +1196,47 @@ function extractBudget(finance: FinanceMeshContext | null): {
   };
 }
 
-function extractFilmingDay(content: ContentMeshContext | null): string | null {
-  const date = content?.filmingRecommendation?.date;
-  if (!date) return null;
-  const day = new Date(`${date}T12:00:00Z`).getUTCDay();
-  return VALID_DAYS[(day + 6) % 7] ?? null;
+function extractConfirmedRecordingDay(content: ContentMeshContext | null): string | null {
+  const schedule = content?.workSchedule;
+  if (
+    schedule?.authority !== 'secretary'
+    || !['current', 'partially_unavailable'].includes(schedule.authorityStatus)
+    || !['confirmed', 'partial'].includes(schedule.planStatus)
+    || schedule.semantics !== 'private_work_session'
+    || !Array.isArray(schedule.confirmedBlocks)
+  ) {
+    return null;
+  }
+
+  for (const block of schedule.confirmedBlocks) {
+    if (
+      block?.workKind !== 'record'
+      || block.authority !== 'secretary'
+      || block.authorityStatus !== 'current'
+      || block.semantics !== 'private_work_session'
+      || !['scheduled', 'provider_synced', 'sync_failed'].includes(block.state)
+    ) {
+      continue;
+    }
+
+    const date = block.date;
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const parsed = new Date(`${date}T12:00:00Z`);
+    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) continue;
+    const day = parsed.getUTCDay();
+    return VALID_DAYS[(day + 6) % 7] ?? null;
+  }
+
+  return null;
 }
 
-function resolveLongWorkoutDay(requestedLongWorkoutDay: string | null, filmingDay: string | null): string | null {
+function resolveLongWorkoutDay(requestedLongWorkoutDay: string | null, confirmedRecordingDay: string | null): string | null {
   const requested = normalizeRequestedLongWorkoutDay(requestedLongWorkoutDay);
-  if (requested && requested !== filmingDay) return requested;
-  if (requested === 'saturday' && filmingDay === 'saturday') return 'sunday';
-  if (requested === 'sunday' && filmingDay === 'sunday') return 'saturday';
+  if (requested && requested !== confirmedRecordingDay) return requested;
+  if (requested === 'saturday' && confirmedRecordingDay === 'saturday') return 'sunday';
+  if (requested === 'sunday' && confirmedRecordingDay === 'sunday') return 'saturday';
   if (requested) return requested;
-  return filmingDay === 'saturday' ? 'sunday' : 'saturday';
+  return confirmedRecordingDay === 'saturday' ? 'sunday' : 'saturday';
 }
 
 function normalizeRequestedLongWorkoutDay(value: string | null): string | null {

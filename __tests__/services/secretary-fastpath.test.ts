@@ -52,7 +52,10 @@ vi.mock('../../src/services/unified-mail-pressure', () => ({
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: vi.fn(),
 }));
-vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+vi.mock('../../src/services/weekly-plan-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/weekly-plan-orchestrator')>(
+    '../../src/services/weekly-plan-orchestrator',
+  )),
   composeWeeklyPlan: vi.fn(),
 }));
 vi.mock('../../src/services/decision-center', () => ({

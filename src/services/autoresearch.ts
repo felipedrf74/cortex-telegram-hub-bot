@@ -29,6 +29,7 @@ import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { withAiBudgetReservation } from './cost-guardrail';
 import { rethrowAiUsageFailClosedError } from './api-usage-fallback';
 import { hasValidLiveTopicFields } from './content-workflow';
+import { contentLogFingerprint, safeContentLogErrorFields } from './content-log-safety';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -202,7 +203,7 @@ function evaluateDeterministicCriterion(
     if (targetId === 'topic_gen' && criterionId === 'complete_fields') {
       const parsed = parseJsonOutput(output);
       if (!Array.isArray(parsed) || parsed.length === 0) return false;
-      return parsed.every(hasValidLiveTopicFields);
+      return parsed.every((candidate) => hasValidLiveTopicFields(candidate));
     }
 
     if (criterionId === 'valid_json') {
@@ -497,7 +498,14 @@ Return ONLY valid JSON. No markdown fences.`;
       description: parsed.description || 'Unknown mutation',
     };
   } catch (err) {
-    logger.error({ err, text: text.slice(0, 200) }, 'Failed to parse mutation JSON');
+    logger.error(
+      {
+        ...safeContentLogErrorFields(err),
+        responseLength: text.length,
+        responseFingerprint: contentLogFingerprint(text),
+      },
+      'Failed to parse mutation JSON',
+    );
     throw new Error('Mutation proposal returned invalid JSON');
   }
 }
@@ -525,7 +533,10 @@ function gitCommitPrompt(target: EvalTarget, round: number, oldScore: number, ne
     logger.info({ target: target.id, round, hash, msg }, 'Autoresearch git commit');
     return hash;
   } catch (err) {
-    logger.error({ err, target: target.id, round }, 'Git commit failed');
+    logger.error(
+      { ...safeContentLogErrorFields(err), target: target.id, round },
+      'Git commit failed',
+    );
     return null;
   }
 }
@@ -562,7 +573,10 @@ function storeRound(
       target.model, target.scorerModel,
     );
   } catch (err) {
-    logger.error({ err, target: target.id, round }, 'Failed to store autoresearch round');
+    logger.error(
+      { ...safeContentLogErrorFields(err), target: target.id, round },
+      'Failed to store autoresearch round',
+    );
   }
 }
 
@@ -575,7 +589,10 @@ function getRescoreThreshold(): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_RESCORE_THRESHOLD;
   const parsed = Number.parseFloat(raw);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    logger.warn({ raw }, 'Invalid AUTORESEARCH_RESCORE_THRESHOLD; using default');
+    logger.warn(
+      { rawLength: raw.length, rawFingerprint: contentLogFingerprint(raw) },
+      'Invalid AUTORESEARCH_RESCORE_THRESHOLD; using default',
+    );
     return DEFAULT_RESCORE_THRESHOLD;
   }
   return parsed;
@@ -614,7 +631,7 @@ function readLastRunFingerprint(
     return row ?? null;
   } catch (err) {
     logger.warn(
-      { err, target: targetId },
+      { ...safeContentLogErrorFields(err), target: targetId },
       'Autoresearch pre-flight history lookup failed; running without skip gate',
     );
     return null;
@@ -637,7 +654,10 @@ function persistRunFingerprint(target: EvalTarget, runId: string, finalScore: nu
       WHERE run_id = ?
     `).run(promptHash, finalScore, runId);
   } catch (err) {
-    logger.error({ err, target: target.id, runId }, 'Failed to persist autoresearch run fingerprint');
+    logger.error(
+      { ...safeContentLogErrorFields(err), target: target.id, runId },
+      'Failed to persist autoresearch run fingerprint',
+    );
   }
 }
 
@@ -669,7 +689,15 @@ export async function runAutoresearch(
   const startTime = Date.now();
 
   const report = async (msg: string) => {
-    logger.info({ target: targetId, runId }, msg);
+    logger.info(
+      {
+        target: targetId,
+        runId,
+        progressLength: msg.length,
+        progressFingerprint: contentLogFingerprint(msg),
+      },
+      'Autoresearch progress',
+    );
     if (onProgress) await onProgress(msg).catch(() => {});
   };
 
@@ -683,7 +711,7 @@ export async function runAutoresearch(
       currentHash = computePromptStateHash(target);
     } catch (err) {
       logger.warn(
-        { err, target: targetId },
+        { ...safeContentLogErrorFields(err), target: targetId },
         'Autoresearch pre-flight hash failed; running without skip gate',
       );
     }
@@ -871,11 +899,15 @@ export async function runAutoresearch(
       // unmetered follow-up provider call in a later round.
       rethrowAiUsageFailClosedError(err);
       if (err instanceof InvalidAutoresearchScorerOutputError) {
-        logger.error({ err, target: targetId, round }, 'Autoresearch aborted: invalid scorer output');
+        logger.error(
+          { ...safeContentLogErrorFields(err), target: targetId, round },
+          'Autoresearch aborted: invalid scorer output',
+        );
         throw err;
       }
-      logger.error({ err, target: targetId, round }, 'Autoresearch round failed');
-      await report(`Round ${round}: ERROR — ${(err as Error).message}`);
+      const safeError = safeContentLogErrorFields(err);
+      logger.error({ ...safeError, target: targetId, round }, 'Autoresearch round failed');
+      await report(`Round ${round}: ERROR — ${safeError.errorCode ?? safeError.errorName}`);
       rounds.push({
         round,
         baselineScore: currentScore,

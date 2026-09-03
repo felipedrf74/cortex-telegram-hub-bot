@@ -10,6 +10,7 @@ const agentRouteMocks = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   withAiBudgetReservation: vi.fn(),
   getUserLanguage: vi.fn(() => 'en-US'),
+  invalidateContentDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/database', async () => {
@@ -55,10 +56,16 @@ vi.mock('../../src/services/user-service', async (importOriginal) => {
   };
 });
 
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => agentRouteMocks.invalidateContentDerivedCaches(...args),
+}));
+
 import {
   buildContentAgencyPackage,
   type ContentAgencyPackage,
 } from '../../src/services/content-agency';
+import { ApiUsagePersistenceError } from '../../src/services/api-usage-fallback';
 import { registerContentAgentJobRoutes } from '../../src/api/routes/content-agent-job-routes';
 import {
   createContentArtifact,
@@ -97,6 +104,7 @@ describe('content agent job routes', () => {
     agentRouteMocks.withAiBudgetReservation.mockImplementation(async (_request, callback) => callback());
     agentRouteMocks.getUserLanguage.mockReset();
     agentRouteMocks.getUserLanguage.mockReturnValue('en-US');
+    agentRouteMocks.invalidateContentDerivedCaches.mockClear();
   });
 
   afterEach(() => testDb.close());
@@ -119,6 +127,44 @@ describe('content agent job routes', () => {
     expect(mismatched.statusCode).toBe(403);
     expect(mismatched.body.error.code).toBe('CONTENT_TENANT_SCOPE_MISMATCH');
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agent_jobs').get()).toEqual({ count: 0 });
+  });
+
+  it('requires one matching 8-200 character idempotency key on all six specialist mutations', async () => {
+    const mutationPaths = [
+      '/workspace/agent-jobs',
+      '/workspace/agent-jobs/job_missing/run',
+      '/workspace/agent-jobs/job_missing/cancel',
+      '/workspace/agent-jobs/job_missing/retry',
+      '/workspace/agent-proposals/proposal_missing/accept',
+      '/workspace/agent-proposals/proposal_missing/reject',
+    ];
+    const before = mutationCounts();
+
+    for (const path of mutationPaths) {
+      const missing = await dispatch('POST', path);
+      expect(missing.statusCode).toBe(400);
+      expect(missing.body.error.code).toBe('CONTENT_IDEMPOTENCY_KEY_REQUIRED');
+
+      const short = await dispatch('POST', path, { idempotencyKey: 'short' });
+      expect(short.statusCode).toBe(400);
+      expect(short.body.error.code).toBe('CONTENT_VALIDATION_FAILED');
+
+      const oversized = await dispatch('POST', path, {}, OWNER.userId, OWNER.tenantId, {
+        'x-idempotency-key': 'x'.repeat(201),
+      });
+      expect(oversized.statusCode).toBe(400);
+      expect(oversized.body.error.code).toBe('CONTENT_VALIDATION_FAILED');
+
+      const conflict = await dispatch('POST', path, {
+        idempotencyKey: 'route-agent-body-001',
+      }, OWNER.userId, OWNER.tenantId, {
+        'x-idempotency-key': 'route-agent-header-001',
+      });
+      expect(conflict.statusCode).toBe(409);
+      expect(conflict.body.error.code).toBe('CONTENT_IDEMPOTENCY_KEY_CONFLICT');
+    }
+
+    expect(mutationCounts()).toEqual(before);
   });
 
   it('returns a typed conflict when the package is not bound to the target artifact', async () => {
@@ -148,12 +194,16 @@ describe('content agent job routes', () => {
     const request = {
       artifactId: fixture.artifact.id,
       packageId: fixture.pkg.id,
-      idempotencyKey: 'route-agent-create-001',
     };
-    const created = await dispatch('POST', '/workspace/agent-jobs', request);
-    const replay = await dispatch('POST', '/workspace/agent-jobs', request);
+    const created = await dispatch('POST', '/workspace/agent-jobs', request, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-agent-create-001',
+    });
+    const replay = await dispatch('POST', '/workspace/agent-jobs', {
+      ...request,
+      idempotencyKey: 'route-agent-create-001',
+    });
     const jobKey = created.body.data.job.jobKey;
-    const completed = await dispatch('POST', `/workspace/agent-jobs/${jobKey}/run`, {}, 501, 501, {
+    const completed = await dispatch('POST', `/workspace/agent-jobs/${jobKey}/run`, undefined, 501, 501, {
       'x-idempotency-key': 'route-agent-run-001',
     });
     const beforeReads = mutationCounts();
@@ -218,6 +268,38 @@ describe('content agent job routes', () => {
     expect(serialized).not.toContain('sourcePackageHash');
   });
 
+  it('fails closed with the shared retryable contract when usage persistence is unavailable', async () => {
+    const fixture = seedFixture('usage-persistence');
+    const created = await dispatch('POST', '/workspace/agent-jobs', {
+      artifactId: fixture.artifact.id,
+      packageId: fixture.pkg.id,
+      idempotencyKey: 'route-agent-usage-create-001',
+    });
+    const jobKey = created.body.data.job.jobKey;
+    agentRouteMocks.withAiBudgetReservation.mockRejectedValueOnce(
+      new ApiUsagePersistenceError('gemini', 'content_agent_specialists'),
+    );
+
+    const response = await dispatch('POST', `/workspace/agent-jobs/${jobKey}/run`, {
+      idempotencyKey: 'route-agent-usage-run-001',
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers['retry-after']).toBe('60');
+    expect(response.body.error).toMatchObject({
+      code: 'SERVICE_DEGRADED',
+      details: { retryable: true, retryAfterSeconds: 60 },
+    });
+    expect(agentRouteMocks.completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare('SELECT status, last_error_code FROM content_agent_jobs WHERE job_key = ?')
+      .get(jobKey)).toEqual({
+      status: 'failed',
+      last_error_code: 'AI_USAGE_PERSISTENCE_FAILED',
+    });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agent_proposals').get())
+      .toEqual({ count: 0 });
+  });
+
   it('requires explicit proposal decisions and appends only the accepted revision', async () => {
     const fixture = seedFixture('accept');
     const job = await createAndRun(fixture, 'accept');
@@ -241,6 +323,9 @@ describe('content agent job routes', () => {
     const replay = await dispatch('POST', `/workspace/agent-proposals/${editor.proposalKey}/accept`, {
       idempotencyKey: 'route-agent-accept-001',
     });
+
+    expect(agentRouteMocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(agentRouteMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(OWNER.userId);
 
     expect(rejected.body.data).toMatchObject({
       proposal: { status: 'rejected' },
@@ -440,7 +525,7 @@ function mutationCounts(): Record<string, number> {
 async function dispatch(
   method: string,
   path: string,
-  body: Record<string, unknown> = {},
+  body: Record<string, unknown> | undefined = {},
   userId: number | undefined = OWNER.userId,
   tenantId: number | undefined = OWNER.tenantId,
   headers: Record<string, string> = {},

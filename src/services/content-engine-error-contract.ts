@@ -25,6 +25,12 @@ export type ForwardedLocalInferenceCode =
   | 'INFERENCE_SCHEMA_VALUE_INVALID'
   | 'LOCAL_INFERENCE_FAILED';
 
+export type ForwardedContentPolicyCode =
+  | 'CONTENT_UNSUPPORTED_TOPIC'
+  | 'CONTENT_HIGH_RISK_REVIEW_REQUIRED'
+  | 'CONTENT_RESEARCH_REQUIRED'
+  | 'CONTENT_RESEARCH_QUERY_INVALID';
+
 /** Public-safe quota denial forwarded by the Python Content Engine. */
 export class ForwardedAiBudgetError extends Error {
   readonly code: ForwardedAiBudgetCode;
@@ -69,12 +75,33 @@ export class ForwardedLocalInferenceError extends Error {
   }
 }
 
+/** Public-safe Content safety/grounding denial forwarded by the Python hop. */
+export class ForwardedContentPolicyError extends Error {
+  readonly status = 422 as const;
+  readonly publicMessage: string;
+  readonly details: Readonly<{ retryable: false }>;
+
+  constructor(readonly code: ForwardedContentPolicyCode) {
+    super(code);
+    this.name = 'ForwardedContentPolicyError';
+    this.publicMessage = FORWARDED_CONTENT_POLICY_MESSAGES[code];
+    this.details = Object.freeze({ retryable: false });
+  }
+}
+
 const FORWARDED_AI_BUDGET_CODES = new Set<ForwardedAiBudgetCode>([
   'AI_PLAN_REQUIRED',
   'AI_DAILY_LIMIT_REACHED',
   'AI_MONTHLY_LIMIT_REACHED',
   'SERVICE_DEGRADED',
 ]);
+
+const FORWARDED_AI_BUDGET_MESSAGES: Record<ForwardedAiBudgetCode, string> = {
+  AI_PLAN_REQUIRED: 'An active paid plan is required.',
+  AI_DAILY_LIMIT_REACHED: 'Daily AI quota reached.',
+  AI_MONTHLY_LIMIT_REACHED: 'Monthly AI quota reached.',
+  SERVICE_DEGRADED: 'AI service is temporarily unavailable.',
+};
 
 const FORWARDED_LOCAL_INFERENCE_STATUS = new Map<ForwardedLocalInferenceCode, 400 | 403 | 409 | 429 | 502 | 503>([
   ['LOCAL_PRIMARY_DISABLED', 409],
@@ -95,6 +122,37 @@ const FORWARDED_LOCAL_INFERENCE_STATUS = new Map<ForwardedLocalInferenceCode, 40
   ['INFERENCE_SCHEMA_VALUE_INVALID', 502],
   ['LOCAL_INFERENCE_FAILED', 503],
 ]);
+
+const FORWARDED_LOCAL_INFERENCE_MESSAGES: Record<ForwardedLocalInferenceCode, string> = {
+  LOCAL_PRIMARY_DISABLED: 'Local-primary Content inference is not enabled.',
+  LOCAL_PLAN_REQUIRED: 'This plan does not include model-backed local operations.',
+  LOCAL_FAIR_USE_REACHED: 'Local model fair-use limit reached.',
+  LOCAL_CAPACITY_BUSY: 'Local inference capacity is temporarily busy.',
+  LOCAL_QUEUE_FULL: 'Local inference queue is full.',
+  LOCAL_QUEUE_DEADLINE: 'Local inference request expired while waiting for capacity.',
+  LOCAL_INFERENCE_ATTRIBUTION_UNAVAILABLE: 'Local inference attribution is temporarily unavailable.',
+  INTERNAL_ATTRIBUTION_INVALID: 'Signed Content inference scope was rejected.',
+  INTERNAL_INFERENCE_ATTRIBUTION_INVALID: 'Signed Content inference scope was rejected.',
+  INTERNAL_INFERENCE_ATTRIBUTION_MISMATCH: 'Signed Content inference scope was rejected.',
+  ACCOUNT_DELETION_IN_PROGRESS: 'No new Content inference can start while this account is being deleted.',
+  PRIVATE_LOCAL_ROUTE_UNAVAILABLE: 'This private workload is local-only and local routing is not currently available.',
+  INFERENCE_PROVIDER_UNAVAILABLE: 'Inference provider routing is unavailable.',
+  INFERENCE_CONTEXT_LIMIT_EXCEEDED: 'The compiled inference context exceeds this plan and model limit.',
+  INFERENCE_EMPTY_OUTPUT: 'Inference provider returned no usable output.',
+  INFERENCE_SCHEMA_VALUE_INVALID: 'Inference output did not match the server-owned schema.',
+  LOCAL_INFERENCE_FAILED: 'Local content generation is temporarily unavailable.',
+};
+
+const FORWARDED_CONTENT_POLICY_MESSAGES: Record<ForwardedContentPolicyCode, string> = {
+  CONTENT_UNSUPPORTED_TOPIC: 'This request is not supported for content generation.',
+  CONTENT_HIGH_RISK_REVIEW_REQUIRED: 'This request requires reviewer-attested authority before content generation.',
+  CONTENT_RESEARCH_REQUIRED: 'Usable research evidence is required before this content can be generated.',
+  CONTENT_RESEARCH_QUERY_INVALID: 'The research query did not match the requested content subject.',
+};
+
+const FORWARDED_CONTENT_POLICY_CODES = new Set<ForwardedContentPolicyCode>(
+  Object.keys(FORWARDED_CONTENT_POLICY_MESSAGES) as ForwardedContentPolicyCode[],
+);
 
 function parseErrorEnvelope(rawBody: string): Record<string, unknown> | null {
   let payload: unknown;
@@ -117,6 +175,24 @@ function parseErrorEnvelope(rawBody: string): Record<string, unknown> | null {
       : null;
 }
 
+function boundedMachineToken(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function boundedTimestamp(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length > 64 || !Number.isFinite(Date.parse(value))) return undefined;
+  return value;
+}
+
+function boundedNonNegativeInteger(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000_000
+    ? Number(value)
+    : undefined;
+}
+
 export function parseForwardedAiBudgetError(res: Response, rawBody: string): ForwardedAiBudgetError | null {
   const status = res.status;
   if (status !== 403 && status !== 429) return null;
@@ -130,13 +206,17 @@ export function parseForwardedAiBudgetError(res: Response, rawBody: string): For
   const detailRecord = rawDetails && typeof rawDetails === 'object' && !Array.isArray(rawDetails)
     ? rawDetails as Record<string, unknown>
     : {};
-  const forwardedDetailKeys = [
-    'window', 'resetAt', 'unblocksAt', 'dailyResetAt', 'monthlyResetAt',
-    'requiredPlan', 'currentPlan', 'blockReason', 'retryable',
-  ] as const;
   const details: Record<string, unknown> = {};
-  for (const key of forwardedDetailKeys) {
-    if (Object.prototype.hasOwnProperty.call(detailRecord, key)) details[key] = detailRecord[key];
+  for (const key of ['window', 'requiredPlan', 'currentPlan', 'blockReason'] as const) {
+    const safeValue = boundedMachineToken(detailRecord[key]);
+    if (safeValue !== undefined) details[key] = safeValue;
+  }
+  for (const key of ['resetAt', 'unblocksAt', 'dailyResetAt', 'monthlyResetAt'] as const) {
+    const safeValue = boundedTimestamp(detailRecord[key]);
+    if (safeValue !== undefined) details[key] = safeValue;
+  }
+  if (typeof detailRecord.retryable === 'boolean') {
+    details.retryable = detailRecord.retryable;
   }
   const retryAfter = Number(res.headers.get('retry-after'));
   if (status === 429 && Number.isFinite(retryAfter) && retryAfter > 0) {
@@ -145,9 +225,7 @@ export function parseForwardedAiBudgetError(res: Response, rawBody: string): For
   return new ForwardedAiBudgetError({
     code: code as ForwardedAiBudgetCode,
     status,
-    message: typeof error.message === 'string' && error.message.trim()
-      ? error.message
-      : code,
+    message: FORWARDED_AI_BUDGET_MESSAGES[code as ForwardedAiBudgetCode],
     details,
   });
 }
@@ -166,8 +244,12 @@ export function parseForwardedLocalInferenceError(
     ? rawDetails as Record<string, unknown>
     : {};
   const details: Record<string, unknown> = {};
-  for (const key of ['retryable', 'hourlyLimit', 'dailyLimit', 'contextLimitTokens'] as const) {
-    if (Object.prototype.hasOwnProperty.call(candidateDetails, key)) details[key] = candidateDetails[key];
+  if (typeof candidateDetails.retryable === 'boolean') {
+    details.retryable = candidateDetails.retryable;
+  }
+  for (const key of ['hourlyLimit', 'dailyLimit', 'contextLimitTokens'] as const) {
+    const safeValue = boundedNonNegativeInteger(candidateDetails[key]);
+    if (safeValue !== undefined) details[key] = safeValue;
   }
   if (!Object.prototype.hasOwnProperty.call(details, 'retryable')) {
     details.retryable = expectedStatus >= 500;
@@ -175,17 +257,29 @@ export function parseForwardedLocalInferenceError(
   return new ForwardedLocalInferenceError({
     code,
     status: expectedStatus,
-    message: typeof error.message === 'string' && error.message.trim()
-      ? error.message
-      : code,
+    message: FORWARDED_LOCAL_INFERENCE_MESSAGES[code],
     details,
   });
+}
+
+export function parseForwardedContentPolicyError(
+  res: Response,
+  rawBody: string,
+): ForwardedContentPolicyError | null {
+  if (res.status !== 422) return null;
+  const error = parseErrorEnvelope(rawBody);
+  if (!error || typeof error.code !== 'string') return null;
+  const code = error.code as ForwardedContentPolicyCode;
+  return FORWARDED_CONTENT_POLICY_CODES.has(code)
+    ? new ForwardedContentPolicyError(code)
+    : null;
 }
 
 export function parseForwardedContentEngineError(
   res: Response,
   rawBody: string,
-): ForwardedAiBudgetError | ForwardedLocalInferenceError | null {
+): ForwardedAiBudgetError | ForwardedLocalInferenceError | ForwardedContentPolicyError | null {
   return parseForwardedAiBudgetError(res, rawBody)
-    ?? parseForwardedLocalInferenceError(res, rawBody);
+    ?? parseForwardedLocalInferenceError(res, rawBody)
+    ?? parseForwardedContentPolicyError(res, rawBody);
 }

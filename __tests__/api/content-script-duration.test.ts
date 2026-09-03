@@ -5,6 +5,7 @@ import {
   CONTENT_LIVE_EVAL_OPT_IN,
 } from '../../src/services/content-live-evaluation-artifact';
 import { ContentOutputLanguageMismatchError } from '../../src/services/content-output-language';
+import { ContentWorkspaceError } from '../../src/services/content-workspace';
 
 const mockGetScript = vi.fn(async () => ({
   topic: 'Test topic',
@@ -96,7 +97,11 @@ const mockGetContentResearchArtifact = vi.fn(() => ({
   freshnessClass: 'cached',
   language: 'pt-BR',
   format: 'YouTube',
-  claims: ['Stored compact claim.'],
+  claims: [],
+  claimBinding: {
+    status: 'unavailable',
+    reasonCode: 'CONTENT_CLAIM_SOURCE_BINDING_NOT_MODELED',
+  },
   unsafeOrUnverifiedClaims: [],
   expiresAt: '2026-04-17T00:00:00.000Z',
 }));
@@ -108,6 +113,18 @@ const mockSaveGeneratedScriptToWorkspace = vi.fn(() => ({
   revisionId: 453,
   replayed: false,
 }));
+const mockFingerprintContentScriptSaveRequest = vi.fn(() => 'a'.repeat(64));
+const mockReserveContentScriptSaveRequest = vi.fn((..._args: unknown[]): any => ({
+  kind: 'started' as const,
+  leaseToken: 'content-script-lease-001',
+}));
+const mockCompleteContentScriptSaveRequest = vi.fn();
+const mockCompleteContentScriptSaveRequestAtomically = vi.fn((input: any) => (
+  input.buildResponse(undefined)
+));
+const mockMarkContentScriptSaveRequestDispatched = vi.fn();
+const mockReleaseContentScriptSaveRequest = vi.fn();
+const mockInvalidateContentDerivedCaches = vi.fn();
 const mockRecordContentVariantFeedback = vi.fn(() => ({
   topic: 'Test topic',
   variantKind: 'script',
@@ -236,7 +253,7 @@ vi.mock('../../src/services/content-engine', () => ({
   },
   getScript: (...args: unknown[]) => {
     const providerBoundary = args[16] as ((providerCall: () => Promise<unknown>) => Promise<unknown>) | undefined;
-    const providerCall = () => mockGetScript(...args.slice(0, 16), undefined, args[17]);
+    const providerCall = () => mockGetScript(...args.slice(0, 16), undefined, args[17], args[18]);
     return providerBoundary ? providerBoundary(providerCall) : providerCall();
   },
 }));
@@ -273,6 +290,24 @@ vi.mock('../../src/services/content-token-artifact-store', () => ({
 
 vi.mock('../../src/services/content-workspace-capture', () => ({
   saveGeneratedScriptToWorkspace: (...args: unknown[]) => mockSaveGeneratedScriptToWorkspace(...args),
+}));
+
+vi.mock('../../src/services/content-script-idempotency', () => ({
+  fingerprintContentScriptSaveRequest: (...args: unknown[]) => mockFingerprintContentScriptSaveRequest(...args),
+  reserveContentScriptSaveRequest: (...args: unknown[]) => mockReserveContentScriptSaveRequest(...args),
+  completeContentScriptSaveRequest: (...args: unknown[]) => mockCompleteContentScriptSaveRequest(...args),
+  completeContentScriptSaveRequestAtomically: (...args: unknown[]) => (
+    mockCompleteContentScriptSaveRequestAtomically(...args)
+  ),
+  markContentScriptSaveRequestDispatched: (...args: unknown[]) => (
+    mockMarkContentScriptSaveRequestDispatched(...args)
+  ),
+  releaseContentScriptSaveRequest: (...args: unknown[]) => mockReleaseContentScriptSaveRequest(...args),
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => mockInvalidateContentDerivedCaches(...args),
 }));
 
 interface MockRes {
@@ -345,7 +380,21 @@ async function dispatch(
 
 describe('Content API — script duration presets', () => {
   beforeEach(() => {
-    mockGetScript.mockClear();
+    mockGetScript.mockReset();
+    mockGetScript.mockResolvedValue({
+      topic: 'Test topic',
+      script: '[0:00] Test script',
+      hook: 'Test hook',
+      title_options: ['Title A', 'Title B', 'Title C'],
+      sources_used: [],
+      estimated_duration: '10:00',
+      duration_ms: 1200,
+      hashtags: ['#test'],
+      caption: 'Caption',
+      cta: 'CTA',
+      degraded: false,
+      warnings: [],
+    });
     mockCompleteOneShotWithFallback.mockClear();
     mockCompleteOneShotWithSearch.mockClear();
     mockCompleteOneShotWithOpenAIWebSearch.mockClear();
@@ -355,11 +404,24 @@ describe('Content API — script duration presets', () => {
     mockGetContentSourcePackage.mockClear();
     mockGetContentResearchArtifact.mockClear();
     mockSaveGeneratedScriptToWorkspace.mockClear();
+    mockFingerprintContentScriptSaveRequest.mockReset();
+    mockFingerprintContentScriptSaveRequest.mockReturnValue('a'.repeat(64));
+    mockReserveContentScriptSaveRequest.mockReset();
+    mockReserveContentScriptSaveRequest.mockReturnValue({
+      kind: 'started',
+      leaseToken: 'content-script-lease-001',
+    });
+    mockCompleteContentScriptSaveRequest.mockClear();
+    mockCompleteContentScriptSaveRequestAtomically.mockClear();
+    mockMarkContentScriptSaveRequestDispatched.mockClear();
+    mockReleaseContentScriptSaveRequest.mockClear();
+    mockInvalidateContentDerivedCaches.mockClear();
     mockRecordContentVariantFeedback.mockClear();
     mockWithAiBudgetReservation.mockClear();
     mockGetAllKnowledge.mockClear();
     mockListRecentContentIdeaMemory.mockClear();
-    mockResolveScriptTopicContext.mockClear();
+    mockResolveScriptTopicContext.mockReset();
+    mockResolveScriptTopicContext.mockReturnValue(null);
     mockBuildAuthorizedContentReferenceContext.mockClear();
     mockBuildContentCreativeProfileContext.mockClear();
     mockAssessContentNovelty.mockClear();
@@ -468,6 +530,57 @@ describe('Content API — script duration presets', () => {
     expect(mockGetScript).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: 'format alias', field: 'format', value: 'shorts', code: 'VALIDATION' },
+    { label: 'mode casing', field: 'mode', value: 'DRAFT', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'language alias', field: 'language', value: 'en', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'render mode casing', field: 'renderMode', value: 'STRUCTURED', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'script style alias', field: 'scriptStyle', value: 'outline', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'non-string legacy style', field: 'style', value: [], code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'null legacy style', field: 'style', value: null, code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'empty legacy style', field: 'style', value: '', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'wrong-case legacy style', field: 'style', value: 'Outline', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'unknown legacy style', field: 'style', value: 'cinematic', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'string minute duration', field: 'maxDurationMinutes', value: '8', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'fractional second duration', field: 'targetDurationSeconds', value: 60.5, code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'string force-refresh flag', field: 'forceRefresh', value: 'true', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'numeric regenerate flag', field: 'regenerate', value: 1, code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'string save flag', field: 'saveToIdeas', value: 'true', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'string high-risk flag', field: 'highRiskAcknowledged', value: 'true', code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'numeric high-risk alias', field: 'acknowledgeHighRisk', value: 1, code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'non-string unused idempotency key', field: 'idempotencyKey', value: 42, code: 'CONTENT_VALIDATION_FAILED' },
+    { label: 'short unused idempotency key', field: 'idempotencyKey', value: 'short', code: 'CONTENT_VALIDATION_FAILED' },
+  ])('rejects an explicit non-contract $label before provider work', async ({ field, value, code }) => {
+    const response = await dispatch({
+      topic: 'Strict script request',
+      [field]: value,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code,
+      details: { field },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('rejects conflicting canonical and legacy script style selectors', async () => {
+    const response = await dispatch({
+      topic: 'Strict script request',
+      scriptStyle: 'detailed',
+      style: 'outline',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_VALIDATION_FAILED',
+      details: { field: 'style' },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
   it('rejects unsupported YouTube duration presets', async () => {
     const response = await dispatch({
       topic: 'Build a SaaS product solo',
@@ -559,6 +672,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-001',
     });
 
     expect(response.statusCode).toBe(200);
@@ -586,9 +700,375 @@ describe('Content API — script duration presets', () => {
       topic: response.body.data.topic,
       format: 'YouTube',
       scriptText: response.body.data.script,
+      idempotencyKey: 'save-script-test-001',
       captureOrigin: 'script_generation',
     }));
     expect(mockRecordContentVariantFeedback).not.toHaveBeenCalled();
+    expect(mockCompleteContentScriptSaveRequestAtomically).toHaveBeenCalledWith(expect.objectContaining({
+      scope: { tenantId: 12, userId: 12 },
+      idempotencyKey: 'save-script-test-001',
+      requestFingerprint: 'a'.repeat(64),
+      leaseToken: 'content-script-lease-001',
+      buildResponse: expect.any(Function),
+    }));
+    expect(mockCompleteContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockMarkContentScriptSaveRequestDispatched).toHaveBeenCalledWith({
+      scope: { tenantId: 12, userId: 12 },
+      idempotencyKey: 'save-script-test-001',
+      requestFingerprint: 'a'.repeat(64),
+      leaseToken: 'content-script-lease-001',
+    });
+    expect(mockReleaseContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('replays a completed save request before budget, provider, artifact, or workspace work', async () => {
+    const replayedResponse = {
+      topic: 'Previously generated topic',
+      script: '[0:00] Previously generated script',
+      savedIdea: { saved: true, workspace: { itemId: 91 } },
+    };
+    mockReserveContentScriptSaveRequest.mockReturnValueOnce({
+      kind: 'replay',
+      response: replayedResponse,
+    });
+
+    const response = await dispatch({
+      topic: 'Retry-safe saved script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'completed-save-key-001',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({ ok: true, cached: false, data: replayedResponse });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+    expect(mockCompleteContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockMarkContentScriptSaveRequestDispatched).not.toHaveBeenCalled();
+    expect(mockReleaseContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockInvalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('rejects an in-progress save request before starting provider work', async () => {
+    mockReserveContentScriptSaveRequest.mockImplementationOnce(() => {
+      throw new ContentWorkspaceError(
+        'CONTENT_IDEMPOTENCY_IN_PROGRESS',
+        'This script request is already in progress.',
+        409,
+        { retryAfterSeconds: 30 },
+      );
+    });
+
+    const response = await dispatch({
+      topic: 'Retry-safe saved script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'active-save-key-001',
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_IDEMPOTENCY_IN_PROGRESS',
+      details: { retryAfterSeconds: 30 },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('fingerprints resolved header language so one key cannot replay a different-language response', async () => {
+    await dispatch({
+      topic: 'Language-scoped script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'language-save-key-001',
+    }, '/script', { 'x-language': 'pt-BR' });
+    await dispatch({
+      topic: 'Language-scoped script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'language-save-key-001',
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(mockFingerprintContentScriptSaveRequest).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      language: 'pt-BR',
+      format: 'YouTube',
+      targetDurationSeconds: 480,
+      saveToIdeas: true,
+    }));
+    expect(mockFingerprintContentScriptSaveRequest).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      language: 'en-US',
+      format: 'YouTube',
+      targetDurationSeconds: 480,
+      saveToIdeas: true,
+    }));
+  });
+
+  it('fingerprints equivalent canonical body-key and header-key requests identically', async () => {
+    await dispatch({
+      topic: 'Equivalent retry request',
+      format: 'Reel',
+      targetDurationSeconds: 60,
+      mode: 'draft',
+      renderMode: 'structured',
+      style: 'outline',
+      saveToIdeas: true,
+      idempotencyKey: 'equivalent-save-key-001',
+    });
+    await dispatch({
+      topic: 'Equivalent retry request',
+      format: 'Reel',
+      maxDurationMinutes: 1,
+      mode: 'draft',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+      saveToIdeas: true,
+    }, '/script', { 'x-idempotency-key': 'equivalent-save-key-001' });
+
+    const firstSemanticRequest = mockFingerprintContentScriptSaveRequest.mock.calls[0]?.[0];
+    const secondSemanticRequest = mockFingerprintContentScriptSaveRequest.mock.calls[1]?.[0];
+    expect(firstSemanticRequest).toEqual(secondSemanticRequest);
+    expect(firstSemanticRequest).not.toHaveProperty('idempotencyKey');
+    expect(firstSemanticRequest).toMatchObject({
+      format: 'Reel',
+      maxDurationMinutes: 1,
+      targetDurationSeconds: 60,
+      mode: 'draft',
+      renderMode: 'structured',
+      scriptStyle: 'bullets',
+    });
+  });
+
+  it.each([
+    {
+      label: 'topic feedback',
+      requestField: 'topicFeedbackId',
+      contextField: 'topicFeedbackId',
+      firstId: 101,
+      secondId: 102,
+    },
+    {
+      label: 'saved idea',
+      requestField: 'ideaId',
+      contextField: 'ideaId',
+      firstId: 201,
+      secondId: 202,
+    },
+    {
+      label: 'workspace item',
+      requestField: 'workspaceItemId',
+      contextField: 'pipelineId',
+      firstId: 301,
+      secondId: 302,
+    },
+  ])('rejects one idempotency key reused with different authorized $label context before provider work', async ({
+    requestField,
+    contextField,
+    firstId,
+    secondId,
+  }) => {
+    mockResolveScriptTopicContext.mockImplementation((_userId, raw: Record<string, unknown>) => {
+      const id = Number(raw[requestField]);
+      return {
+        [contextField]: id,
+        niche: 'creator operations',
+        hookIdea: `Authorized hook ${id}`,
+        whyNow: `Authorized reason ${id}`,
+        angleTag: `authorized-angle-${id}`,
+        sourceJob: `authorized-source-${id}`,
+      };
+    });
+    const actualIdempotency = await vi.importActual<typeof import('../../src/services/content-script-idempotency')>(
+      '../../src/services/content-script-idempotency',
+    );
+    mockFingerprintContentScriptSaveRequest.mockImplementation(
+      actualIdempotency.fingerprintContentScriptSaveRequest,
+    );
+    let reservedRequest: { idempotencyKey: string; requestFingerprint: string } | null = null;
+    mockReserveContentScriptSaveRequest.mockImplementation((input: {
+      idempotencyKey: string;
+      requestFingerprint: string;
+    }) => {
+      if (reservedRequest == null) {
+        reservedRequest = {
+          idempotencyKey: input.idempotencyKey,
+          requestFingerprint: input.requestFingerprint,
+        };
+        return { kind: 'started', leaseToken: 'semantic-context-lease' };
+      }
+      if (
+        input.idempotencyKey === reservedRequest.idempotencyKey
+        && input.requestFingerprint !== reservedRequest.requestFingerprint
+      ) {
+        throw new ContentWorkspaceError(
+          'CONTENT_IDEMPOTENCY_KEY_REUSED',
+          'This idempotency key was already used for a different script request.',
+          409,
+          { operation: 'content_script_generation_request_v1' },
+        );
+      }
+      return { kind: 'replay', response: {} };
+    });
+
+    const baseRequest = {
+      topic: 'Context-specific creator workflow',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'semantic-context-key-001',
+    };
+    const firstResponse = await dispatch({ ...baseRequest, [requestField]: firstId });
+    expect(firstResponse.statusCode).toBe(200);
+    expect(mockGetScript).toHaveBeenCalledTimes(1);
+
+    mockGetScript.mockClear();
+    mockWithAiBudgetReservation.mockClear();
+    mockGetAllKnowledge.mockClear();
+    mockBuildAuthorizedContentReferenceContext.mockClear();
+    mockPersistContentArtifacts.mockClear();
+    mockSaveGeneratedScriptToWorkspace.mockClear();
+
+    const secondResponse = await dispatch({ ...baseRequest, [requestField]: secondId });
+
+    expect(secondResponse.statusCode).toBe(409);
+    expect(secondResponse.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'CONTENT_IDEMPOTENCY_KEY_REUSED',
+        details: { operation: 'content_script_generation_request_v1' },
+      },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockGetAllKnowledge).not.toHaveBeenCalled();
+    expect(mockBuildAuthorizedContentReferenceContext).not.toHaveBeenCalled();
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+
+    const firstSemanticRequest = mockFingerprintContentScriptSaveRequest.mock.calls[0]?.[0];
+    const secondSemanticRequest = mockFingerprintContentScriptSaveRequest.mock.calls[1]?.[0];
+    expect(firstSemanticRequest).toMatchObject({
+      topicContext: {
+        pipelineId: contextField === 'pipelineId' ? firstId : null,
+        topicFeedbackId: contextField === 'topicFeedbackId' ? firstId : null,
+        ideaId: contextField === 'ideaId' ? firstId : null,
+        niche: 'creator operations',
+        hookIdea: `Authorized hook ${firstId}`,
+        whyNow: `Authorized reason ${firstId}`,
+        angleTag: `authorized-angle-${firstId}`,
+        sourceJob: `authorized-source-${firstId}`,
+      },
+    });
+    expect(secondSemanticRequest).toMatchObject({
+      topicContext: expect.objectContaining({
+        [contextField]: secondId,
+        hookIdea: `Authorized hook ${secondId}`,
+        whyNow: `Authorized reason ${secondId}`,
+        angleTag: `authorized-angle-${secondId}`,
+        sourceJob: `authorized-source-${secondId}`,
+      }),
+    });
+    expect(secondSemanticRequest).not.toEqual(firstSemanticRequest);
+    expect(mockResolveScriptTopicContext.mock.invocationCallOrder[1])
+      .toBeLessThan(mockReserveContentScriptSaveRequest.mock.invocationCallOrder[1]);
+  });
+
+  it('requires an idempotency key before starting a save-enabled generation', async () => {
+    const response = await dispatch({
+      topic: 'Retry-safe saved script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_IDEMPOTENCY_KEY_REQUIRED',
+      details: { field: 'idempotencyKey' },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('rejects conflicting body and header idempotency keys before generation', async () => {
+    const response = await dispatch({
+      topic: 'Retry-safe saved script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'body-save-key-001',
+    }, '/script', { 'x-idempotency-key': 'header-save-key-001' });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_IDEMPOTENCY_KEY_CONFLICT',
+      details: { field: 'idempotencyKey' },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('surfaces typed workspace idempotency reuse conflicts', async () => {
+    mockSaveGeneratedScriptToWorkspace.mockImplementationOnce(() => {
+      throw new ContentWorkspaceError(
+        'CONTENT_IDEMPOTENCY_KEY_REUSED',
+        'The idempotency key was already used for a different script.',
+        409,
+        { field: 'idempotencyKey' },
+      );
+    });
+
+    const response = await dispatch({
+      topic: 'Retry-safe saved script',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'reused-save-key-001',
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_IDEMPOTENCY_KEY_REUSED',
+      details: { field: 'idempotencyKey' },
+    });
+  });
+
+  it('rolls back the atomic save but preserves the dispatched receipt after a workspace failure', async () => {
+    mockCompleteContentScriptSaveRequestAtomically.mockImplementationOnce((input: any) => (
+      input.buildResponse({ transaction: true })
+    ));
+    mockSaveGeneratedScriptToWorkspace.mockImplementationOnce(() => {
+      throw new Error('workspace storage unavailable');
+    });
+
+    const response = await dispatch({
+      topic: 'Retry after atomic save failure',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      saveToIdeas: true,
+      idempotencyKey: 'atomic-save-failure-001',
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body.error.code).toBe('INTERNAL');
+    expect(mockCompleteContentScriptSaveRequestAtomically).toHaveBeenCalledOnce();
+    expect(mockCompleteContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockMarkContentScriptSaveRequestDispatched).toHaveBeenCalledWith({
+      scope: { tenantId: 12, userId: 12 },
+      idempotencyKey: 'atomic-save-failure-001',
+      requestFingerprint: 'a'.repeat(64),
+      leaseToken: 'content-script-lease-001',
+    });
+    expect(mockReleaseContentScriptSaveRequest).not.toHaveBeenCalled();
   });
 
   it('persists the complete engine script including a long tail sentinel', async () => {
@@ -616,6 +1096,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-002',
     });
 
     expect(response.statusCode).toBe(200);
@@ -648,6 +1129,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-003',
     });
 
     expect(response.statusCode).toBe(422);
@@ -667,44 +1149,22 @@ describe('Content API — script duration presets', () => {
     expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
   });
 
-  it('withholds Spanish engine output before artifact or workspace persistence', async () => {
-    const leakedScript = 'Aquí tienes un guion completo para organizar tu mañana sin estrés.';
-    mockGetScript.mockResolvedValueOnce({
-      topic: 'Historical Spanish-authored topic',
-      script: leakedScript,
-      hook: '¿Quieres transformar tus hábitos desde esta mañana?',
-      title_options: ['Cómo organizar tu mañana'],
-      sources_used: [{ title: 'Public source', url: 'https://example.com/source' }],
-      estimated_duration: '8:00',
-      duration_ms: 1200,
-      hashtags: ['#hábitos'],
-      caption: 'Una rutina clara para empezar bien.',
-      cta: 'Guarda este guion.',
-      degraded: false,
-      warnings: [],
-      cache_status: 'fresh',
-    });
-
+  it('rejects a retired Spanish body language before provider or persistence work', async () => {
     const response = await dispatch({
       topic: 'Cómo organizar tu mañana',
       language: 'es-419',
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-004',
     }, '/script', { 'x-language': 'es-419' });
 
-    expect(mockGetScript).toHaveBeenCalledTimes(1);
-    expect(response.statusCode).toBe(502);
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(400);
     expect(response.body.error).toMatchObject({
-      code: 'CONTENT_SCRIPT_LOCALE_MISMATCH',
-      details: {
-        contentMutationApplied: false,
-        displayWithheld: true,
-        retryable: true,
-      },
+      code: 'CONTENT_VALIDATION_FAILED',
+      details: { field: 'language' },
     });
-    expect(JSON.stringify(response.body)).not.toContain(leakedScript);
-    expect(JSON.stringify(response.body)).not.toContain('Aquí tienes');
     expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
     expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
   });
@@ -720,6 +1180,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-005',
     }, '/script', { 'x-language': 'en-US' });
 
     expect(response.statusCode).toBe(502);
@@ -733,6 +1194,25 @@ describe('Content API — script duration presets', () => {
     });
     expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
     expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('localizes a locale-mismatch error with the body-selected language override', async () => {
+    mockGetScript.mockRejectedValueOnce(
+      new ContentOutputLanguageMismatchError('en', 'es', 'content-engine-script'),
+    );
+
+    const response = await dispatch({
+      topic: 'Build a reliable morning workflow',
+      language: 'en-US',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+    }, '/script', { 'x-language': 'pt-BR' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_LOCALE_MISMATCH',
+      message: 'The generated script did not match the requested language and was withheld. Please retry.',
+    });
   });
 
   it('withholds Spanish generated metadata before source or workspace persistence', async () => {
@@ -762,6 +1242,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-006',
     }, '/script', { 'x-language': 'en-US' });
 
     expect(response.statusCode).toBe(502);
@@ -795,6 +1276,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-007',
     }, '/script', { 'x-language': 'en-US' });
 
     expect(response.statusCode).toBe(502);
@@ -823,6 +1305,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-008',
     }, '/script', { 'x-language': 'en-US' });
 
     expect(response.statusCode).toBe(502);
@@ -849,6 +1332,7 @@ describe('Content API — script duration presets', () => {
       format: 'Reel',
       maxDurationMinutes: 1,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-009',
     }, '/script', { 'x-language': 'pt-BR' });
 
     expect(response.statusCode).toBe(200);
@@ -888,6 +1372,7 @@ describe('Content API — script duration presets', () => {
       format: 'YouTube',
       maxDurationMinutes: 8,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-010',
     });
 
     expect(response.statusCode).toBe(200);
@@ -903,6 +1388,93 @@ describe('Content API — script duration presets', () => {
     }));
     expect(mockSaveGeneratedScriptToWorkspace).not.toHaveBeenCalled();
     expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('publishes stored research IDs and refs only after artifact persistence succeeds', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Accessible creator workflow',
+      script: 'Start with the user need. Verify the workflow against the cited accessibility reference. Then show one concrete example and end with a measurable next action.',
+      hook: 'A polished workflow can still fail the people who need it most.',
+      title_options: ['Build an accessible creator workflow'],
+      sources_used: [{
+        title: 'Web Content Accessibility Guidelines',
+        url: 'https://www.w3.org/TR/WCAG22/',
+        source_type: 'primary',
+        relevance_note: 'Primary accessibility reference for the workflow.',
+      }],
+      estimated_duration: '1:00',
+      duration_ms: 1200,
+      hashtags: ['#accessibility'],
+      caption: 'Verify the workflow before publishing.',
+      cta: 'Review one step against the reference today.',
+      degraded: false,
+      warnings: [],
+      cache_status: 'fresh',
+    });
+    mockPersistContentArtifacts.mockReturnValueOnce({
+      sourcePackageId: 'sp_persisted_truth',
+      researchArtifactId: 'ra_persisted_truth',
+      voiceCardVersion: 'voice-v1',
+    });
+
+    const response = await dispatch({
+      topic: 'Accessible creator workflow',
+      language: 'en-US',
+      format: 'Reel',
+      targetDurationSeconds: 60,
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.research).toMatchObject({
+      sourcePackageId: 'sp_persisted_truth',
+      researchArtifactId: 'ra_persisted_truth',
+    });
+    expect(response.body.data.artifactRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'source_package', id: 'sp_persisted_truth', source: 'stored' }),
+      expect.objectContaining({ type: 'research_artifact', id: 'ra_persisted_truth', source: 'stored' }),
+    ]));
+    expect(response.body.data.reuseStatus).toBe('fresh');
+  });
+
+  it('keeps generated research useful but never claims it was stored after persistence fails', async () => {
+    mockGetScript.mockResolvedValueOnce({
+      topic: 'Accessible creator workflow',
+      script: 'Start with the user need. Verify the workflow against the cited accessibility reference. Then show one concrete example and end with a measurable next action.',
+      hook: 'A polished workflow can still fail the people who need it most.',
+      title_options: ['Build an accessible creator workflow'],
+      sources_used: [{
+        title: 'Web Content Accessibility Guidelines',
+        url: 'https://www.w3.org/TR/WCAG22/',
+        source_type: 'primary',
+        relevance_note: 'Primary accessibility reference for the workflow.',
+      }],
+      estimated_duration: '1:00',
+      duration_ms: 1200,
+      hashtags: ['#accessibility'],
+      caption: 'Verify the workflow before publishing.',
+      cta: 'Review one step against the reference today.',
+      degraded: false,
+      warnings: [],
+      cache_status: 'fresh',
+    });
+    mockPersistContentArtifacts.mockImplementationOnce(() => {
+      throw new Error('simulated artifact store outage');
+    });
+
+    const response = await dispatch({
+      topic: 'Accessible creator workflow',
+      language: 'en-US',
+      format: 'Reel',
+      targetDurationSeconds: 60,
+    }, '/script', { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.research.sourceSummary).not.toEqual([]);
+    expect(response.body.data.research).not.toHaveProperty('sourcePackageId');
+    expect(response.body.data.research).not.toHaveProperty('researchArtifactId');
+    expect(response.body.data.artifactRefs.map((ref: any) => ref.type)).not.toContain('source_package');
+    expect(response.body.data.artifactRefs.map((ref: any) => ref.type)).not.toContain('research_artifact');
+    expect(response.body.data.reuseStatus).toBe('fresh');
   });
 
   it('does not label recovered fresh metadata parsing as provider fallback', async () => {
@@ -933,6 +1505,7 @@ describe('Content API — script duration presets', () => {
       format: 'Reel',
       targetDurationSeconds: 60,
       saveToIdeas: true,
+      idempotencyKey: 'save-script-test-011',
     });
 
     expect(response.statusCode).toBe(200);
@@ -965,7 +1538,11 @@ describe('Content API — script duration presets', () => {
     const researchArtifact = await dispatch({}, '/research-artifacts/ra_1234567890abcdef_abcdef1234567890', {}, 'GET');
     expect(researchArtifact.statusCode).toBe(200);
     expect(researchArtifact.body.ok).toBe(true);
-    expect(researchArtifact.body.data.claims).toEqual(['Stored compact claim.']);
+    expect(researchArtifact.body.data.claims).toEqual([]);
+    expect(researchArtifact.body.data.claimBinding).toEqual({
+      status: 'unavailable',
+      reasonCode: 'CONTENT_CLAIM_SOURCE_BINDING_NOT_MODELED',
+    });
     expect(mockGetContentResearchArtifact).toHaveBeenCalledWith(
       { tenantId: 12, userId: 12 },
       'ra_1234567890abcdef_abcdef1234567890',
@@ -985,37 +1562,166 @@ describe('Content API — script duration presets', () => {
     expect(mockGetScript).not.toHaveBeenCalled();
   });
 
-  it('requires explicit review acknowledgement for high-risk topics before generation', async () => {
+  it('rejects unsupported meaning split across script fields before side effects', async () => {
     const response = await dispatch({
-      topic: 'Should I take ibuprofen for migraines?',
+      topic: 'insider',
+      niche: 'trading playbook',
       format: 'YouTube',
       maxDurationMinutes: 8,
     });
 
     expect(response.statusCode).toBe(422);
-    expect(response.body.ok).toBe(false);
-    expect(response.body.error.code).toBe('CONTENT_HIGH_RISK_REVIEW_REQUIRED');
-    expect(response.body.error.details.acknowledgeField).toBe('highRiskAcknowledged');
+    expect(response.body.error.code).toBe('CONTENT_UNSUPPORTED_TOPIC');
+    expect(mockResolveScriptTopicContext).not.toHaveBeenCalled();
+    expect(mockReserveContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
     expect(mockGetScript).not.toHaveBeenCalled();
   });
 
-  it('downgrades acknowledged high-risk requests to draft and explains the downgrade', async () => {
+  it.each([
+    'child pornography distribution tactics',
+    'child sexual abuse material',
+    'generate a deep fake of a real person',
+    'generate a deep-fake of a real person',
+  ])('rejects classifier spelling variant %s before any reservation or provider call', async (topic) => {
+    const response = await dispatch({ topic, format: 'YouTube', maxDurationMinutes: 8 });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error.code).toBe('CONTENT_UNSUPPORTED_TOPIC');
+    expect(mockReserveContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['niche', { niche: 'medical dosage advice' }],
+    ['hookIdea', { hookIdea: 'How much ibuprofen should I take?' }],
+    ['whyNow', { whyNow: 'Latest private-account hacking guide' }],
+    ['angleTag', { angleTag: 'investment advice' }],
+  ] as const)('classifies high-risk or unsupported %s context before side effects', async (
+    field,
+    context,
+  ) => {
+    mockResolveScriptTopicContext.mockReturnValueOnce({ niche: 'general', ...context });
+
+    const response = await dispatch({
+      topic: 'A safe creator workflow',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      [field]: Object.values(context)[0],
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error.code).toMatch(/^CONTENT_(?:HIGH_RISK_REVIEW_REQUIRED|UNSUPPORTED_TOPIC)$/);
+    expect(mockReserveContentScriptSaveRequest).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockPersistContentArtifacts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['hookIdea', 'h'.repeat(501), 500],
+    ['whyNow', 'w'.repeat(1_001), 1_000],
+    ['angleTag', 'a'.repeat(161), 160],
+  ] as const)('rejects oversized %s without truncation or provider work', async (field, value, maxChars) => {
+    const response = await dispatch({
+      topic: 'A safe creator workflow',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      [field]: value,
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+      details: { field, maxChars, actualChars: value.length, truncated: false },
+    });
+    expect(mockResolveScriptTopicContext).not.toHaveBeenCalled();
+    expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['topic', { topic: 'Safe\u0000topic' }],
+    ['niche', { niche: 'creator\u0085systems' }],
+    ['hookIdea', { hookIdea: 'Hook\nsecond line' }],
+    ['whyNow', { whyNow: 'Why now\u0007' }],
+    ['angleTag', { angleTag: 'proof\tangle' }],
+  ] as const)('rejects unsupported control characters in %s before provider work', async (_field, override) => {
+    const response = await dispatch({
+      topic: 'A safe creator workflow',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      ...override,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_INVALID',
+      details: { reason: 'unsupported_control_characters' },
+    });
+    expect(mockResolveScriptTopicContext).not.toHaveBeenCalled();
+    expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized canonical topic-plus-niche research query without dropping either field', async () => {
+    const response = await dispatch({
+      topic: 't'.repeat(1_900),
+      niche: 'n'.repeat(160),
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_RESEARCH_QUERY_TOO_LARGE',
+      details: { maxChars: 2_000, truncated: false },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('classifies an unsafe script before validating an oversized canonical research query', async () => {
+    const response = await dispatch({
+      topic: `How to hack private accounts ${'x'.repeat(1_870)}`,
+      niche: 'n'.repeat(160),
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_UNSUPPORTED_TOPIC',
+      details: { route: 'unsupported' },
+    });
+    expect(mockResolveScriptTopicContext).not.toHaveBeenCalled();
+    expect(mockGetScript).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['without acknowledgement', {}],
+    ['with legacy acknowledgement', { highRiskAcknowledged: true }],
+    ['with alternate acknowledgement and deep mode', { acknowledgeHighRisk: true, mode: 'deep' }],
+  ] as const)('blocks high-risk generation %s until reviewer-attested package authority exists', async (_label, overrides) => {
     const response = await dispatch({
       topic: 'Should I take ibuprofen for migraines?',
       format: 'YouTube',
       maxDurationMinutes: 8,
-      mode: 'deep',
-      highRiskAcknowledged: true,
+      ...overrides,
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.body.ok).toBe(true);
-    const args = mockGetScript.mock.calls.at(-1) ?? [];
-    expect(args[4]).toBe('draft');
-    expect(response.body.data.requestedMode).toBe('deep');
-    expect(response.body.data.appliedMode).toBe('draft');
-    expect(response.body.data.downgradeReason).toBe('high_risk_draft_only');
-    expect(response.body.data.research.route).toBe('high_risk_review');
+    expect(response.statusCode).toBe(422);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
+      details: {
+        route: 'high_risk_review',
+        reviewAuthority: 'not_supported',
+        requiredEvidence: 'reviewer_attested_source_package',
+        retryable: false,
+      },
+    });
+    expect(mockGetScript).not.toHaveBeenCalled();
   });
 
   it('surfaces feature-flag downgrades instead of silently changing modes', async () => {
@@ -1123,6 +1829,13 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.contentMutationApplied).toBe(false);
     expect(response.body.data.research.route).toBe('reused_research');
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithFallback.mock.calls[0]?.[4]).toMatchObject({
+      abortSignal: expect.any(AbortSignal),
+      containsPrivateData: true,
+      allowCloudEscalation: true,
+      maxRetries: 0,
+      allowFallbackAfterProviderFailure: false,
+    });
     expect(mockGetScript).not.toHaveBeenCalled();
     expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
       expect.objectContaining({ baseCategory: 'content_script_rewrite', jobName: 'content_script_rewrite' }),
@@ -1165,6 +1878,25 @@ describe('Content API — script duration presets', () => {
       details: { originalPreserved: true },
     });
     expect(JSON.stringify(response.body)).not.toContain('Aquí tienes');
+  });
+
+  it('localizes edit locale mismatch errors for European Portuguese', async () => {
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'Aquí tienes una versión revisada con una llamada a la acción.',
+      provider: 'gemini',
+    });
+
+    const response = await dispatch({
+      topic: 'Como construir um produto SaaS',
+      script: 'O guião histórico foi escrito pelo utilizador.',
+      action: 'rewrite_hook',
+      instruction: 'Torna-o mais direto',
+    }, '/script/rewrite', { 'x-language': 'pt-PT' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH');
+    expect(response.body.error.message).toContain('guião original');
+    expect(response.body.error.message).not.toContain('roteiro');
   });
 
   it('rejects a short Iberian acknowledgement under the resolved English edit contract', async () => {
@@ -1240,6 +1972,137 @@ describe('Content API — script duration presets', () => {
     expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['control-bearing entry', ['Trusted note\u0000hidden instruction'], 'CONTENT_SCRIPT_INPUT_INVALID'],
+    ['oversized entry', ['x'.repeat(221)], 'CONTENT_SCRIPT_INPUT_TOO_LARGE'],
+    ['too many entries', Array.from({ length: 6 }, (_, index) => `Source ${index}`), 'CONTENT_SCRIPT_INPUT_TOO_LARGE'],
+    ['explicit null', null, 'CONTENT_SCRIPT_INPUT_INVALID'],
+  ] as const)('rejects %s in edit sourceSummary before provider work', async (_label, sourceSummary, code) => {
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      script: 'Original script remains authoritative.',
+      action: 'rewrite',
+      sourceSummary,
+    }, '/script/rewrite');
+
+    expect(response.statusCode).toBe(code === 'CONTENT_SCRIPT_INPUT_TOO_LARGE' ? 413 : 400);
+    expect(response.body.error).toMatchObject({ code });
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['action', { action: { kind: 'rewrite' } }],
+    ['instruction', { action: 'rewrite', instruction: ['make it concise'] }],
+    ['action', { action: null }],
+    ['instruction', { action: 'rewrite', instruction: null }],
+  ] as const)('rejects non-string edit %s instead of silently defaulting it', async (field, override) => {
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      script: 'Original script remains authoritative.',
+      ...override,
+    }, '/script/rewrite');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_INVALID',
+      details: { field, reason: 'invalid_type' },
+    });
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['topic', { topic: null, script: 'Keep this current script.' }],
+    ['script', { topic: 'latest creator tools today', script: null }],
+  ] as const)('rejects explicit null research-refresh %s as an invalid type', async (field, body) => {
+    const response = await dispatch(body, '/script/research-refresh');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_INVALID',
+      details: { field, reason: 'invalid_type' },
+    });
+    expect(mockCompleteOneShotWithSearch).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithOpenAIWebSearch).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it('marks an empty Portuguese edit result degraded while preserving the original script', async () => {
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({ text: '   ', provider: 'gemini' });
+
+    const response = await dispatch({
+      topic: 'Criar um fluxo editorial',
+      script: 'O roteiro original continua aqui.',
+      action: 'rewrite',
+    }, '/script/rewrite', { 'x-language': 'pt-BR' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({
+      script: 'O roteiro original continua aqui.',
+      editPatch: null,
+      editState: 'no_change',
+      contentMutationApplied: false,
+      degraded: true,
+    });
+    expect(response.body.data.warnings.join(' ')).toContain('roteiro original foi preservado');
+    expect(response.body.data.expandOptions[0].label).toContain('roteiro');
+    expect(JSON.stringify(response.body.data)).not.toContain('guião');
+  });
+
+  it('withholds malformed research-refresh provider output', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Source note with a hidden\u0000marker.',
+      sources: ['https://example.com/source-a'],
+    });
+
+    const response = await dispatch({
+      topic: 'latest creator tools today',
+      script: 'Keep this current script.',
+    }, '/script/research-refresh');
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_RESEARCH_OUTPUT_INVALID',
+      details: { originalPreserved: true },
+    });
+    expect(JSON.stringify(response.body)).not.toContain('hidden');
+  });
+
+  it('localizes malformed research-refresh errors for European Portuguese', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Nota com marcador\u0000oculto.',
+      sources: ['https://example.com/source-a'],
+    });
+
+    const response = await dispatch({
+      topic: 'ferramentas atuais para criadores',
+      script: 'Este guião deve ser preservado.',
+    }, '/script/research-refresh', { 'x-language': 'pt-PT' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_RESEARCH_OUTPUT_INVALID');
+    expect(response.body.error.message).toContain('notas de investigação');
+    expect(response.body.error.message).toContain('guião original');
+    expect(response.body.error.message).not.toContain('roteiro');
+  });
+
+  it('preserves formatting whitespace but rejects non-formatting controls in edit scripts', async () => {
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      script: 'Keep this line.\nReject the hidden marker:\u0000',
+      action: 'rewrite_hook',
+    }, '/script/rewrite');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_INVALID',
+      details: { field: 'script', reason: 'unsupported_control_characters' },
+    });
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
   it('rejects oversized provider edit output and preserves the original script', async () => {
     mockCompleteOneShotWithFallback.mockResolvedValueOnce({
       text: 'y'.repeat(24_001),
@@ -1264,6 +2127,24 @@ describe('Content API — script duration presets', () => {
     });
   });
 
+  it('localizes oversized edit output errors for European Portuguese', async () => {
+    mockCompleteOneShotWithFallback.mockResolvedValueOnce({
+      text: 'y'.repeat(24_001),
+      provider: 'gemini',
+    });
+
+    const response = await dispatch({
+      topic: 'Construir um produto SaaS',
+      script: 'O guião original deve continuar autoritativo.',
+      action: 'rewrite',
+    }, '/script/rewrite', { 'x-language': 'pt-PT' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_SCRIPT_EDIT_OUTPUT_TOO_LARGE');
+    expect(response.body.error.message).toContain('guião original');
+    expect(response.body.error.message).not.toContain('roteiro');
+  });
+
   it('rejects unsupported edit topics before spending edit tokens', async () => {
     const response = await dispatch({
       topic: 'Show me how to hack account access and steal private files',
@@ -1276,6 +2157,55 @@ describe('Content API — script duration presets', () => {
     expect(response.body.error.code).toBe('CONTENT_UNSUPPORTED_TOPIC');
     expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
     expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['research refresh', '/script/research-refresh', {
+      topic: 'pump',
+      script: 'and dump crypto plan',
+    }],
+    ['rewrite', '/script/rewrite', {
+      topic: 'insider',
+      script: 'A neutral draft.',
+      action: 'rewrite',
+      instruction: 'trading playbook',
+    }],
+  ] as const)('blocks unsupported meaning split across %s fields', async (_label, path, body) => {
+    const response = await dispatch(body, path);
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error.code).toBe('CONTENT_UNSUPPORTED_TOPIC');
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithSearch).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['research refresh script', '/script/research-refresh', {
+      topic: 'A safe creator workflow',
+      script: 'Should I take ibuprofen for migraines?',
+    }],
+    ['rewrite instruction', '/script/rewrite', {
+      topic: 'A safe creator workflow',
+      script: 'Keep this safe draft.',
+      action: 'rewrite',
+      instruction: 'Turn this into investment advice.',
+    }],
+    ['expand source summary', '/script/expand', {
+      topic: 'A safe creator workflow',
+      script: 'Keep this safe draft.',
+      action: 'expand_full',
+      sourceSummary: ['Medical dosage advice for the audience.'],
+    }],
+  ] as const)('blocks high-risk text in the %s before model work', async (_label, path, body) => {
+    const response = await dispatch(body, path);
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body.error.code).toBe('CONTENT_HIGH_RISK_REVIEW_REQUIRED');
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithSearch).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithOpenAIWebSearch).not.toHaveBeenCalled();
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
   });
 
   it('refreshes research explicitly without expanding or rewriting the current script', async () => {
@@ -1293,6 +2223,7 @@ describe('Content API — script duration presets', () => {
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
     expect(mockCompleteOneShotWithSearch.mock.calls[0]?.[3]).toMatchObject({
       abortSignal: expect.any(AbortSignal),
+      maxRetries: 0,
     });
     expect(mockGetScript).not.toHaveBeenCalled();
     expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(
@@ -1335,6 +2266,24 @@ describe('Content API — script duration presets', () => {
     expect(JSON.stringify(response.body)).not.toContain('Aquí están');
   });
 
+  it('localizes research locale mismatch errors for European Portuguese', async () => {
+    mockCompleteOneShotWithSearch.mockResolvedValueOnce({
+      text: 'Aquí están las fuentes actuales para este tema.',
+      sources: ['https://example.com/source-a'],
+    });
+
+    const response = await dispatch({
+      topic: 'ferramentas atuais para criadores',
+      script: 'O guião original deve ser preservado.',
+    }, '/script/research-refresh', { 'x-language': 'pt-PT' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body.error.code).toBe('CONTENT_RESEARCH_LOCALE_MISMATCH');
+    expect(response.body.error.message).toContain('notas de investigação');
+    expect(response.body.error.message).toContain('guião original');
+    expect(response.body.error.message).not.toContain('roteiro');
+  });
+
   it('refreshes through bounded OpenAI search when Gemini maximum cost does not fit', async () => {
     mockIsOpenAIConfigured.mockReturnValue(true);
     mockCompleteOneShotWithSearch.mockRejectedValueOnce(Object.assign(
@@ -1351,6 +2300,26 @@ describe('Content API — script duration presets', () => {
     expect(response.body.data.operationTrace.provider).toBe('openai-web-search');
     expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
     expect(mockCompleteOneShotWithOpenAIWebSearch).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithOpenAIWebSearch.mock.calls[0]?.[3]).toMatchObject({
+      maxRetries: 0,
+    });
+  });
+
+  it('does not repeat an ambiguous Gemini research failure on OpenAI', async () => {
+    mockIsOpenAIConfigured.mockReturnValue(true);
+    mockCompleteOneShotWithSearch.mockRejectedValueOnce(Object.assign(
+      new Error('upstream connection reset after request dispatch'),
+      { status: 503, retryable: true },
+    ));
+
+    const response = await dispatch({
+      topic: 'latest creator tools today',
+      script: 'Keep this current script.',
+    }, '/script/research-refresh');
+
+    expect(response.statusCode).toBe(500);
+    expect(mockCompleteOneShotWithSearch).toHaveBeenCalledTimes(1);
+    expect(mockCompleteOneShotWithOpenAIWebSearch).not.toHaveBeenCalled();
   });
 
   it('localizes topic-generation format validation for Portuguese requests', async () => {
@@ -1396,5 +2365,8 @@ describe('Content API — script duration presets', () => {
     expect(engineArgs[9]).toBe(480);
     expect(engineArgs[10]).toEqual(topicContext);
     expect(engineArgs[15]).toBe(12);
+    expect(engineArgs[18]).toMatchObject({
+      researchQuery: 'TOPIC: Build a repeatable creator workflow | NICHE: creator operations',
+    });
   });
 });

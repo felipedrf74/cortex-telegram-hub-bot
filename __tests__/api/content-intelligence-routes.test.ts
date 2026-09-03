@@ -10,16 +10,17 @@ vi.mock('../../src/portal/telemetry', () => ({
   getJobStatuses: vi.fn(() => [
     { name: 'reaction_radar', lastRunAt: '2026-04-24T08:00:00.000Z', lastResult: 'success' },
     { name: 'performance_agent', lastRunAt: '2026-04-24T09:00:00.000Z', lastResult: 'running' },
+    { name: 'seo_agent', lastRunAt: '2026-04-22T09:00:00.000Z', lastResult: 'success' },
     { name: 'autoresearch', lastRunAt: '2026-04-23T09:00:00.000Z', lastResult: 'success' },
   ]),
 }));
 
 vi.mock('../../src/services/intelligence-bus', () => ({
-  readSignals: vi.fn((source: string, types: string[], limit: number, userId: number, days: number, tenantId?: number) => {
+  readSignals: vi.fn((_source: string, types: string[], limit: number, userId: number, days: number, tenantId?: number) => {
     if (types.includes('reaction_opportunity')) {
       return [{
         id: 11,
-        source_agent: source,
+        source_agent: 'reaction-radar',
         signal_type: 'reaction_opportunity',
         payload: { topic: 'marathon', title: 'Marathon angle', summary: `${limit}:${userId}:${days}:${tenantId}` },
         priority: 'normal',
@@ -34,22 +35,56 @@ vi.mock('../../src/services/intelligence-bus', () => ({
         evidence_count: 2,
       }];
     }
-    return [{
-      id: 21,
-      source_agent: source,
-      signal_type: 'pillar_performance',
-      payload: { pillar: 'training', summary: `${limit}:${userId}:${days}:${tenantId}` },
-      priority: 'normal',
-      consumed_by: [],
-      status: 'active',
-      created_at: '2026-04-24T08:00:00.000Z',
-      expires_at: '2026-04-25T08:00:00.000Z',
-      user_id: userId,
-      confidence: 0.7,
-      format_tag: null,
-      pillar_tag: null,
-      evidence_count: 4,
-    }];
+    return [
+      {
+        id: 21,
+        source_agent: 'performance-agent',
+        signal_type: 'pillar_performance',
+        payload: { pillar: 'training', summary: 'Historical paused-agent signal.' },
+        priority: 'normal',
+        consumed_by: [],
+        status: 'active',
+        created_at: '2026-04-24T08:00:00.000Z',
+        expires_at: '2026-04-25T08:00:00.000Z',
+        user_id: userId,
+        confidence: 0.7,
+        format_tag: null,
+        pillar_tag: null,
+        evidence_count: 4,
+      },
+      {
+        id: 22,
+        source_agent: 'autoresearch',
+        signal_type: 'creator_learning_digest',
+        payload: { summary: `${limit}:${userId}:${days}:${tenantId}` },
+        priority: 'normal',
+        consumed_by: [],
+        status: 'active',
+        created_at: '2026-04-24T08:30:00.000Z',
+        expires_at: '2026-04-25T08:30:00.000Z',
+        user_id: userId,
+        confidence: 0.8,
+        format_tag: null,
+        pillar_tag: null,
+        evidence_count: 2,
+      },
+      {
+        id: 23,
+        source_agent: 'seo-agent',
+        signal_type: 'hook_effectiveness',
+        payload: { summary: 'Historical paused SEO signal.' },
+        priority: 'normal',
+        consumed_by: [],
+        status: 'active',
+        created_at: '2026-04-24T08:15:00.000Z',
+        expires_at: '2026-04-25T08:15:00.000Z',
+        user_id: userId,
+        confidence: 0.6,
+        format_tag: null,
+        pillar_tag: null,
+        evidence_count: 1,
+      },
+    ];
   }),
 }));
 
@@ -232,6 +267,7 @@ describe('content intelligence routes', () => {
       77,
       7,
       7700,
+      { excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'], strict: true },
     );
     expect(readSignals).toHaveBeenCalledWith(
       'ios-content-intelligence',
@@ -240,15 +276,25 @@ describe('content intelligence routes', () => {
       77,
       14,
       7700,
+      { excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'], strict: true },
     );
-    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 7700);
+    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 7700, { strict: true });
     expect(filterSignalsForRadarPreferences).toHaveBeenCalledWith(expect.any(Array), ['marathon']);
-    expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77, 7700);
-    expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77, 7700);
+    expect(getVoiceDna).toHaveBeenCalledWith(undefined, 77, 7700, { strict: true });
+    expect(getKnowledgeStats).toHaveBeenCalledWith(undefined, 77, 7700, { strict: true });
     expect(getPerformanceSummary).toHaveBeenCalledWith(77, 30, 7700);
-    expect(response.body.data.discovery.activeCount).toBe(1);
+    expect(response.body.data.discovery.activeCount).toBe(0);
     expect(response.body.data.script.status).toBe('ready');
-    expect(response.body.data.optimization.status).toBe('syncing');
+    expect(response.body.data.optimization).toMatchObject({
+      status: 'ready',
+      activeInsightCount: 1,
+      performanceLifecycle: 'paused',
+      performanceLastRunAt: null,
+      performanceLastStatus: 'paused',
+      seoLifecycle: 'paused',
+      seoLastRunAt: null,
+      seoLastStatus: 'paused',
+    });
     expect(response.body.data.optimization.performanceSummary).toMatchObject({
       count: 2,
       avgViews: 3250,
@@ -278,14 +324,20 @@ describe('content intelligence routes', () => {
       88,
       7,
       8800,
+      { excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'], strict: true },
     );
     expect(getFilmingRecommendation).toHaveBeenCalledWith(88, undefined, 8800);
     expect(localizeFilmingRecommendation).toHaveBeenCalledWith(expect.any(Object), 'pt-BR');
     expect(buildRadarTopicSummaries).toHaveBeenCalledWith(['marathon'], expect.any(Array));
     expect(getContentDeskItems).toHaveBeenCalledWith(88, 3, 8800);
     expect(response.body.data.discovery.preferredTopics).toEqual(['marathon']);
-    expect(response.body.data.discovery.monitoredPillars).toEqual([{ name: 'marathon', keywordCount: 1 }]);
+    expect(response.body.data.discovery.monitoredPillars).toEqual([{ name: 'marathon', keywordCount: 0 }]);
     expect(response.body.data.schedule.filmingRecommendation.reason).toContain('pt-BR:');
+    expect(response.body.data.schedule).toMatchObject({
+      statusSemantics: 'recommendation_availability_not_calendar_authority',
+      calendarAuthority: 'not_included',
+      recommendationSemantics: 'proposal_not_calendar_reservation',
+    });
     expect(response.body.data.optimization.performanceSummary.recentEntries).toHaveLength(2);
     expect(response.body.data.optimization.performanceSummary.recentEntries[0]).toMatchObject({
       id: 91,
@@ -293,6 +345,10 @@ describe('content intelligence routes', () => {
       likes: 340,
       comments: 52,
       subsGained: 10,
+    });
+    expect(response.body.data.optimization.recentSignals).toHaveLength(1);
+    expect(response.body.data.optimization.recentSignals[0]).toMatchObject({
+      type: 'creator_learning_digest',
     });
   });
 

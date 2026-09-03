@@ -7,6 +7,18 @@ const mockReadContentMeshContext = vi.fn();
 const mockReadSecretaryMeshContext = vi.fn();
 
 vi.mock('../../src/services/cross-agent-learning', () => ({
+  canConsumeConfirmedContentWorkSchedule: (schedule: {
+    authority?: string;
+    authorityStatus?: string;
+    planStatus?: string;
+    semantics?: string;
+  } | null | undefined) => Boolean(
+    schedule
+    && schedule.authority === 'secretary'
+    && (schedule.authorityStatus === 'current' || schedule.authorityStatus === 'partially_unavailable')
+    && (schedule.planStatus === 'confirmed' || schedule.planStatus === 'partial')
+    && schedule.semantics === 'private_work_session'
+  ),
   readTrainingMeshContext: (...args: unknown[]) => mockReadTrainingMeshContext(...args),
   readCookingMeshContext: (...args: unknown[]) => mockReadCookingMeshContext(...args),
   readFinanceMeshContext: (...args: unknown[]) => mockReadFinanceMeshContext(...args),
@@ -88,6 +100,63 @@ function meshSignal(input: {
   };
 }
 
+function contentMesh(overrides: Record<string, unknown> = {}) {
+  return {
+    upcomingTopicCount: 3,
+    deadlines: [
+      {
+        itemId: 101,
+        title: 'Race-week recap',
+        date: '2026-04-18',
+        deadlineAt: '2026-04-18T17:00:00.000Z',
+        status: 'ready',
+        semantics: 'target_date_not_publication',
+      },
+    ],
+    workSchedule: {
+      authority: 'secretary',
+      authorityStatus: 'current',
+      planStatus: 'confirmed',
+      semantics: 'private_work_session',
+      confirmedBlocks: [
+        {
+          itemId: 101,
+          title: 'Race-week recap',
+          date: '2026-04-18',
+          startsAt: '2026-04-18T14:00:00.000Z',
+          endsAt: '2026-04-18T16:00:00.000Z',
+          workKind: 'record',
+          state: 'provider_synced',
+          authority: 'secretary',
+          authorityStatus: 'current',
+          semantics: 'private_work_session',
+          contentChangedSinceScheduling: false,
+        },
+      ],
+      attentionCount: 0,
+    },
+    filmingRecommendation: {
+      date: '2026-04-18',
+      blockStart: '2026-04-18T14:00:00.000Z',
+      blockEnd: '2026-04-18T16:00:00.000Z',
+    },
+    nextExecution: null,
+    derivedSignals: [
+      meshSignal({
+        sourceAgent: 'mesh.content-calendar',
+        signalType: 'content_capture_opportunity',
+        meshPriority: 3,
+        payload: {
+          status: 'proposed',
+          scheduleAuthority: 'secretary',
+          scheduleSemantics: 'proposal_not_calendar_reservation',
+        },
+      }),
+    ],
+    ...overrides,
+  };
+}
+
 function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
@@ -143,23 +212,7 @@ describe('shared-decision-context', () => {
         { signalType: 'tax_deadline', payload: { reminderDate: '2026-04-30' } },
       ],
     });
-    mockReadContentMeshContext.mockResolvedValue({
-      derivedSignals: [
-        {
-          signalType: 'publishing_commitment',
-          payload: {
-            upcomingTopicCount: 3,
-            nextDate: '2026-04-18',
-            nextTopicTitle: 'Race-week recap',
-          },
-        },
-      ],
-      filmingRecommendation: {
-        date: '2026-04-18',
-        blockStart: '2026-04-18T14:00:00.000Z',
-        blockEnd: '2026-04-18T16:00:00.000Z',
-      },
-    });
+    mockReadContentMeshContext.mockResolvedValue(contentMesh());
     mockReadSecretaryMeshContext.mockResolvedValue({
       focusBlock: {
         date: '2026-04-17',
@@ -180,7 +233,8 @@ describe('shared-decision-context', () => {
     expect(context).toContain('Secretary: calendar is busy on 2 day(s) with 9 events; travel is scheduled on 2026-04-19; focus protection is currently best on 2026-04-17; admin pressure shows 2 overdue and 1 due today');
     expect(context).toContain('fueling support is at_risk because hard training lacks meals on 2026-04-18');
     expect(context).toContain('Finance: projected budget remaining is 18% for 2026-04; training spend mode is selective; supplement mode is pause_new');
-    expect(context).toContain('Content: 3 topic(s) are queued');
+    expect(context).toContain('Content: Content plan status is confirmed under current Secretary authority with 1 private work block(s)');
+    expect(context).toContain('"Race-week recap" has an advisory target date on 2026-04-18, not a publication event or calendar reservation');
     expect(context).not.toContain('Training: recovery is strained');
     expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
     expect(mockReadSecretaryMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
@@ -193,9 +247,125 @@ describe('shared-decision-context', () => {
     expect(context).toContain('session immovability is high for Tempo Run');
     expect(context).toContain('Cooking: 2 day(s) still have no meals planned; fueling support is at_risk with 1 hard training day(s) still lacking meals; execution readiness is partial; shopping forecast is EUR 16.65');
     expect(context).toContain('Finance: projected budget remaining is 18% for 2026-04; budget mode is controlled; tax deadline lands on 2026-04-30');
-    expect(context).toContain('Content: 3 topic(s) are queued; next publish target is "Race-week recap" on 2026-04-18; best filming window is 2026-04-18 14:00-16:00');
+    expect(context).toContain('Content: Content plan status is confirmed under current Secretary authority with 1 private work block(s)');
+    expect(context).toContain('Secretary confirms a private filming block for "Race-week recap" from 2026-04-18T14:00:00.000Z to 2026-04-18T16:00:00.000Z; it does not publish content');
+    expect(context).toContain('proposed filming window is 2026-04-18 14:00-16:00; Secretary has not reserved it');
     expect(context).not.toContain('BRL');
     expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42, tenantId: 42 });
+  });
+
+  it('propagates a current zero-block Content schedule as unplanned', async () => {
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'unplanned',
+        semantics: 'private_work_session',
+        confirmedBlocks: [],
+        attentionCount: 0,
+      },
+      filmingRecommendation: null,
+      derivedSignals: [],
+    }));
+
+    const [context, contracts] = await Promise.all([
+      buildSharedDecisionContext('secretary', 42),
+      buildSharedDecisionContracts('secretary', 42),
+    ]);
+
+    expect(context).toContain('Content plan status is unplanned; current Secretary authority reports zero confirmed private work blocks');
+    expect(contracts.content?.notes).toContain(
+      'Content plan status is unplanned; current Secretary authority reports zero confirmed private work blocks',
+    );
+    expect(contracts.content?.nonNegotiables).toHaveLength(0);
+  });
+
+  it('propagates partial Secretary authority while preserving only the current confirmed block', async () => {
+    const confirmedBlock = contentMesh().workSchedule.confirmedBlocks[0];
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'partially_unavailable',
+        planStatus: 'partial',
+        semantics: 'private_work_session',
+        confirmedBlocks: [confirmedBlock],
+        attentionCount: 1,
+      },
+      filmingRecommendation: null,
+      derivedSignals: [],
+    }));
+
+    const [context, contracts] = await Promise.all([
+      buildSharedDecisionContext('secretary', 42),
+      buildSharedDecisionContracts('secretary', 42),
+    ]);
+
+    expect(context).toContain('Content plan status is partial because Secretary authority is partially unavailable (1 block(s) need attention)');
+    expect(context).toContain('Secretary confirms a private filming block for "Race-week recap"');
+    expect(contracts.content?.nonNegotiables).toHaveLength(1);
+    expect(contracts.content?.notes).toContain(
+      'Content plan status is partial because Secretary authority is partially unavailable (1 block(s) need attention)',
+    );
+  });
+
+  it('keeps a current sync-failed Content block non-negotiable while naming provider attention separately', async () => {
+    const providerAttentionBlock = {
+      ...contentMesh().workSchedule.confirmedBlocks[0],
+      state: 'sync_failed',
+    };
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'confirmed',
+        semantics: 'private_work_session',
+        confirmedBlocks: [providerAttentionBlock],
+        attentionCount: 1,
+      },
+      filmingRecommendation: null,
+      derivedSignals: [],
+    }));
+
+    const [context, contracts] = await Promise.all([
+      buildSharedDecisionContext('secretary', 42),
+      buildSharedDecisionContracts('secretary', 42),
+    ]);
+
+    expect(context).toContain('Content plan status is confirmed under current Secretary authority with 1 private work block(s)');
+    expect(context).toContain('the private block remains confirmed while provider sync needs attention');
+    expect(contracts.content?.nonNegotiables).toHaveLength(1);
+    expect(contracts.content?.nonNegotiables[0]).toContain('unless Secretary reflows or cancels it');
+  });
+
+  it('propagates unavailable Content scheduling authority without inventing protected work', async () => {
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'unavailable',
+        planStatus: 'unavailable',
+        semantics: 'private_work_session',
+        confirmedBlocks: contentMesh().workSchedule.confirmedBlocks,
+        attentionCount: 0,
+      },
+      filmingRecommendation: null,
+      derivedSignals: [],
+    }));
+
+    const [context, contracts] = await Promise.all([
+      buildSharedDecisionContext('secretary', 42),
+      buildSharedDecisionContracts('secretary', 42),
+    ]);
+
+    expect(context).toContain('Content plan status is unavailable because Secretary scheduling authority could not be read');
+    expect(context).not.toContain('Secretary confirms a private filming block');
+    expect(contracts.content?.nonNegotiables).toHaveLength(0);
+    expect(contracts.content?.notes).toContain(
+      'Content plan status is unavailable because Secretary scheduling authority could not be read',
+    );
   });
 
   it('gives Secretary safe completion facts without raw health feedback', async () => {
@@ -275,25 +445,45 @@ describe('shared-decision-context', () => {
         }),
       ],
     });
-    mockReadContentMeshContext.mockResolvedValue({
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
+      upcomingTopicCount: 2,
+      deadlines: [
+        {
+          itemId: 202,
+          title: 'Build week recap',
+          date: '2026-04-21',
+          deadlineAt: '2026-04-21T17:00:00.000Z',
+          status: 'drafting',
+          semantics: 'target_date_not_publication',
+        },
+      ],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'unplanned',
+        semantics: 'private_work_session',
+        confirmedBlocks: [],
+        attentionCount: 0,
+      },
+      filmingRecommendation: null,
       derivedSignals: [
         meshSignal({
           sourceAgent: 'mesh.content-calendar',
-          signalType: 'publishing_commitment',
-          meshPriority: 2,
-          payload: { upcomingTopicCount: 2, nextDate: '2026-04-21', nextTopicTitle: 'Build week recap' },
+          signalType: 'content_capture_opportunity',
+          meshPriority: 3,
+          payload: { status: 'proposed', scheduleSemantics: 'proposal_not_calendar_reservation' },
         }),
       ],
-      filmingRecommendation: null,
-    });
+    }));
 
     const cookingContext = await buildSharedDecisionContext('cooking', 42);
     const secretaryContext = await buildSharedDecisionContext('secretary', 42);
 
     expect(cookingContext).toContain('Training: fueling support is elevated with high carb focus');
     expect(cookingContext).toContain('training.fueling_requirements: source=mesh.training-fueling');
-    expect(secretaryContext).toContain('Content: 2 topic(s) are queued; next publish target is "Build week recap" on 2026-04-21');
-    expect(secretaryContext).toContain('content.publishing_commitment: source=mesh.content-calendar');
+    expect(secretaryContext).toContain('Content: Content plan status is unplanned; current Secretary authority reports zero confirmed private work blocks');
+    expect(secretaryContext).toContain('"Build week recap" has an advisory target date on 2026-04-21, not a publication event or calendar reservation');
+    expect(secretaryContext).toContain('content.content_capture_opportunity: source=mesh.content-calendar');
   });
 
   it('shares Finance constraints into Training and Cooking without losing scope metadata', async () => {
@@ -343,7 +533,9 @@ describe('shared-decision-context', () => {
     expect(cookingContext).toContain('travel is scheduled on 2026-04-19');
     expect(cookingContext).toContain('focus protection is currently best on 2026-04-17');
     expect(cookingContext).toContain('admin pressure shows 2 overdue and 1 due today');
-    expect(cookingContext).toContain('Content: next publish target is "Race-week recap" on 2026-04-18; best filming window is 2026-04-18 14:00-16:00');
+    expect(cookingContext).toContain('Content: Content plan status is confirmed under current Secretary authority with 1 private work block(s)');
+    expect(cookingContext).toContain('Secretary confirms a private filming block for "Race-week recap"');
+    expect(cookingContext).toContain('filming proposal points to 2026-04-18 14:00-16:00');
     expect(contentContext).toContain('<purpose_gate purpose="content_planning" disclosure="coarse" explicit_user_intent="false"');
     expect(contentContext).toContain('Secretary: schedule-derived availability is constrained; prefer short, movable production blocks');
     expect(contentContext).toContain('Training: training-derived capacity is constrained; keep production light and flexible');
@@ -830,7 +1022,7 @@ describe('shared-decision-context', () => {
       }),
       derivedSignals: [],
     });
-    mockReadContentMeshContext.mockResolvedValueOnce({ derivedSignals: [], filmingRecommendation: null });
+    mockReadContentMeshContext.mockResolvedValueOnce(null);
     mockReadSecretaryMeshContext.mockResolvedValueOnce({ derivedSignals: [], focusBlock: null });
 
     const context = await buildSharedDecisionContext('finance', 42);
@@ -959,7 +1151,7 @@ describe('shared-decision-context', () => {
       }),
       derivedSignals: [],
     });
-    mockReadContentMeshContext.mockResolvedValueOnce({ derivedSignals: [], filmingRecommendation: null });
+    mockReadContentMeshContext.mockResolvedValueOnce(null);
     mockReadSecretaryMeshContext.mockResolvedValueOnce({ derivedSignals: [], focusBlock: null });
 
     const context = await buildSharedDecisionContext('secretary', 42);
@@ -1034,12 +1226,18 @@ describe('shared-decision-context', () => {
     expect(mockReadFinanceMeshContext).not.toHaveBeenCalled();
   });
 
-  it('builds typed peer contracts for Secretary with non-negotiables and publish deadlines', async () => {
+  it('builds typed peer contracts for Secretary with confirmed blocks and advisory deadlines', async () => {
     const contracts = await buildSharedDecisionContracts('secretary', 42);
 
     expect(contracts.training?.nonNegotiables).toContain('Keep Tempo Run on 2026-04-17 protected before moving lower-value work.');
     expect(contracts.finance?.budgetMode).toBe('controlled');
-    expect(contracts.content?.publishDeadline).toBe('2026-04-18');
+    expect(contracts.content?.nonNegotiables).toContain(
+      'Keep the current Secretary-confirmed private filming block for "Race-week recap" from 2026-04-18T14:00:00.000Z to 2026-04-18T16:00:00.000Z unless Secretary reflows or cancels it.',
+    );
+    expect(contracts.content?.preferredWindows).toContain(
+      'Treat 2026-04-18 as an advisory target for "Race-week recap", not as publication evidence or a calendar reservation.',
+    );
+    expect(contracts.content).not.toHaveProperty('publishDeadline');
     expect(contracts.cooking?.notes).toContain('Shopping forecast: EUR 16.65.');
   });
 
@@ -1072,7 +1270,7 @@ describe('shared-decision-context', () => {
     const contracts = await buildSharedDecisionContracts('secretary', 42);
     // Default mock has recovery_state=strained → the filming-deferrable note should fire
     expect(contracts.training?.fallbackIfDeferred).toContain(
-      'Filming and content-capture blocks are the first-candidate for deferral while recovery stabilizes.',
+      'Unconfirmed filming and content-capture proposals are the first candidates for deferral while recovery stabilizes.',
     );
   });
 
@@ -1213,85 +1411,128 @@ describe('shared-decision-context', () => {
     expect(contracts.finance?.preferredWindows.some((line) => line.includes('10\u201350% remaining'))).toBe(true);
   });
 
-  it('publish deadline derives a filming/edit window 3–5 days before publish', async () => {
+  it('keeps a Content deadline advisory and never derives a protected work window', async () => {
     const contracts = await buildSharedDecisionContracts('secretary', 42);
-    // Default mock has nextDate='2026-04-18' → window is 2026-04-13 to 2026-04-15
-    expect(contracts.content?.nonNegotiables).toContain(
-      'Protect 2026-04-13\u20132026-04-15 as the filming/edit window for that publish date.',
+    expect(contracts.content?.preferredWindows).toContain(
+      'Treat 2026-04-18 as an advisory target for "Race-week recap", not as publication evidence or a calendar reservation.',
     );
+    expect(contracts.content?.nonNegotiables.some((line) => line.includes('2026-04-13'))).toBe(false);
+    expect(contracts.content).not.toHaveProperty('publishDeadline');
   });
 
-  it('keeps actionable content execution visible across secretary, cooking, and finance even without a publish date', async () => {
-    mockReadContentMeshContext.mockResolvedValue({
+  it('keeps actionable Content execution visible as a proposal with an advisory private deadline', async () => {
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
       derivedSignals: [],
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'proposed',
+        semantics: 'private_work_session',
+        confirmedBlocks: [],
+        attentionCount: 0,
+      },
       filmingRecommendation: null,
       nextExecution: {
         mode: 'script_ready',
         title: 'Marathon recap hook',
         summary: 'Script is already ready and only needs a protected execution block.',
         scheduledDate: '2026-04-19',
+        dateSemantics: 'private_deadline',
+        calendarConfirmed: false,
         confidence: 'high',
         sourceType: 'desk_item',
       },
-    });
+    }));
 
-    const [secretaryContext, financeContext, cookingContracts, financeContracts] = await Promise.all([
+    const [secretaryContext, financeContext, secretaryContracts, cookingContracts, financeContracts] = await Promise.all([
       buildSharedDecisionContext('secretary', 42),
       buildSharedDecisionContext('finance', 42),
+      buildSharedDecisionContracts('secretary', 42),
       buildSharedDecisionContracts('cooking', 42),
       buildSharedDecisionContracts('finance', 42),
     ]);
 
-    expect(secretaryContext).toContain('next content move is to execute the ready script "Marathon recap hook"');
-    expect(financeContext).toContain('next content move is to execute the ready script "Marathon recap hook"');
+    expect(secretaryContext).toContain('proposed next Content move is to work from the ready script "Marathon recap hook"; its private advisory deadline is 2026-04-19, not a reservation or publication event');
+    expect(financeContext).toContain('proposed next Content move is to work from the ready script "Marathon recap hook"; its private advisory deadline is 2026-04-19, not a reservation or publication event');
+    expect(secretaryContracts.content?.preferredWindows).toEqual([]);
     expect(cookingContracts.content?.notes).toContain(
-      'Next execution: next content move is to execute the ready script "Marathon recap hook" by 2026-04-19.',
+      'Next execution: proposed next Content move is to work from the ready script "Marathon recap hook"; its private advisory deadline is 2026-04-19, not a reservation or publication event.',
     );
     expect(financeContracts.content?.notes).toContain(
-      'Next execution: next content move is to execute the ready script "Marathon recap hook" by 2026-04-19.',
+      'Next execution: proposed next Content move is to work from the ready script "Marathon recap hook"; its private advisory deadline is 2026-04-19, not a reservation or publication event.',
     );
   });
 
   it('Training sees actionable content execution as creator workload, not optional noise', async () => {
-    mockReadContentMeshContext.mockResolvedValue({
+    mockReadContentMeshContext.mockResolvedValue(contentMesh({
       derivedSignals: [],
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'proposed',
+        semantics: 'private_work_session',
+        confirmedBlocks: [],
+        attentionCount: 0,
+      },
       filmingRecommendation: null,
       nextExecution: {
         mode: 'film_window',
         title: 'Strength block story',
         summary: 'Film the weekly training insight while the block is still current.',
         scheduledDate: '2026-04-21',
+        dateSemantics: 'recommended_work_date',
+        calendarConfirmed: false,
         confidence: 'high',
         sourceType: 'desk_item',
       },
-    });
+    }));
 
     const [context, contracts] = await Promise.all([
       buildSharedDecisionContext('triathlon', 42),
       buildSharedDecisionContracts('triathlon', 42),
     ]);
 
-    expect(context).toContain('next content move is to capture "Strength block story" on 2026-04-21');
+    expect(context).toContain('proposed next Content move is to capture "Strength block story"; its recommended work date is 2026-04-21, but Secretary has not confirmed a private block');
     expect(contracts.content?.preferredWindows).toContain(
-      'next content move is to capture "Strength block story" on 2026-04-21.',
+      'proposed next Content move is to capture "Strength block story"; its recommended work date is 2026-04-21, but Secretary has not confirmed a private block.',
     );
     expect(contracts.content?.fallbackIfDeferred).toContain(
-      'Avoid stacking hard doubles on the same day as the next content execution unless Secretary confirms spare capacity.',
+      'Avoid stacking hard doubles on a proposed Content work day unless Secretary confirms a private block and spare capacity.',
     );
   });
 
-  it('malformed publish date does not crash the contract builder', async () => {
-    mockReadContentMeshContext.mockResolvedValueOnce({
-      derivedSignals: [
-        { signalType: 'publishing_commitment', payload: { upcomingTopicCount: 1, nextDate: 'not-a-date' } },
+  it('keeps even a malformed Content target out of non-negotiables', async () => {
+    mockReadContentMeshContext.mockResolvedValueOnce(contentMesh({
+      deadlines: [
+        {
+          itemId: 303,
+          title: 'Malformed target',
+          date: 'not-a-date',
+          deadlineAt: 'not-a-date',
+          status: 'drafting',
+          semantics: 'target_date_not_publication',
+        },
       ],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'unplanned',
+        semantics: 'private_work_session',
+        confirmedBlocks: [],
+        attentionCount: 0,
+      },
+      derivedSignals: [],
       filmingRecommendation: null,
-    });
+    }));
 
     const contracts = await buildSharedDecisionContracts('secretary', 42);
-    // Should still return a contract, just without the filming-window line
     expect(contracts.content).not.toBeNull();
-    expect(contracts.content?.nonNegotiables.some((line) => line.includes('filming/edit window'))).toBe(false);
+    expect(contracts.content?.nonNegotiables).toHaveLength(0);
+    expect(contracts.content?.preferredWindows).toContain(
+      'Treat not-a-date as an advisory target for "Malformed target", not as publication evidence or a calendar reservation.',
+    );
   });
 
   it('at-risk fueling surfaces day-before prep reservation to Secretary', async () => {

@@ -1,6 +1,7 @@
 """
 Web search via SerpAPI. Synthetic results are available only in explicit
-fixture mode; an unconfigured production/development searcher returns no data.
+fixture mode; an unconfigured production/development searcher reports
+categorical source unavailability to the health-aware orchestrator.
 
 SerpAPI returns Google results as structured JSON — no scraping needed.
 Free tier: 100 searches/month.
@@ -14,6 +15,7 @@ import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.base import ResearchSourceUnavailable, resolve_search_locale
 from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.web")
@@ -28,24 +30,32 @@ def _query_fingerprint(query: str) -> str:
 class WebSearcher:
     name = "web"
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        language: str | None = None,
+    ) -> list[SearchResult]:
         if getattr(cfg, "fixture_mode", False):
             logger.debug("Content-engine fixture mode — returning synthetic web results")
             return self._mock(query, max_results)
         if getattr(cfg, "research_network_disabled", False):
             logger.info("Web search disabled for this isolated runtime")
-            return []
+            raise ResearchSourceUnavailable(self.name, "network_disabled")
         if not cfg.serpapi_key:
             logger.info("Web search unavailable because SERPAPI_API_KEY is not configured")
-            return []
+            raise ResearchSourceUnavailable(self.name, "credentials_missing")
 
-        params = {
+        language_code, region_code = resolve_search_locale(language)
+        params: dict[str, str | int] = {
             "q": query,
             "api_key": cfg.serpapi_key,
             "num": max_results,
-            "hl": "pt",
-            "gl": "br",
         }
+        if language_code:
+            params["hl"] = language_code
+        if region_code:
+            params["gl"] = region_code.lower()
         async with httpx.AsyncClient(timeout=cfg.searcher_timeout) as client:
             resp = await client.get(SERPAPI_ENDPOINT, params=params)
             try:

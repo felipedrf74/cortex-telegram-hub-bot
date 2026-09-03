@@ -24,6 +24,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
+  ContentDedupUnavailableError,
   getAngleDistribution,
   isDuplicateIdea,
   isDuplicateIdeaInBatch,
@@ -208,15 +209,19 @@ describe('content dedup deterministic classifier', () => {
     expect(asOtherUser).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
   });
 
-  it('fails open when the DB fetch throws', async () => {
+  it('fails closed with a typed retryable error when the DB fetch throws', async () => {
     testDb.close();
 
-    const result = await isDuplicateIdea('Anything at all', undefined, 42, 42);
-
-    expect(result).toEqual({ isDuplicate: false, similarTo: null, confidence: 0 });
+    await expect(isDuplicateIdea('Anything at all', undefined, 42, 42))
+      .rejects.toBeInstanceOf(ContentDedupUnavailableError);
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 42, tenantId: 42 }),
-      expect.stringContaining('Dedup check failed'),
+      expect.objectContaining({
+        userId: 42,
+        tenantId: 42,
+        errorName: 'TypeError',
+        errorFingerprint: expect.any(String),
+      }),
+      'Content dedup comparison set unavailable',
     );
   });
 
@@ -226,8 +231,7 @@ describe('content dedup deterministic classifier', () => {
   // contract for `isDuplicateIdea` — only positive-path coverage. These
   // tests pin the throw paths so a future regression that loosens
   // `resolveRequiredContentDedupScope` (e.g., adds back a userId fallback)
-  // surfaces immediately. Scope errors must THROW — only the fetch/classify
-  // path fails open.
+  // surfaces immediately. Scope and canonical-read errors must both throw.
   // ─────────────────────────────────────────────────────────────────────
 
   it('throws when userId is provided but tenantId is missing', async () => {

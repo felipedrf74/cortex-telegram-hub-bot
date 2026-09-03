@@ -207,4 +207,10 @@ describe('content-radar-feedback (CONTENT-UI-O2)', () => {
     expect(listRadarFeedback(0)).toEqual([]);
     expect(listRadarFeedback(-1)).toEqual([]);
   });
+
+  it('surfaces storage failure instead of returning an authoritative empty feedback list', () => {
+    testDb.exec('DROP TABLE content_radar_feedback');
+
+    expect(() => listRadarFeedback(USER_A, USER_A)).toThrow();
+  });
 });

@@ -6,8 +6,8 @@ import {
   contentBriefSlotExtractor,
   contentPipelineStageSlotExtractor,
   contentPublicationRequestSlotExtractor,
+  contentRewriteSlotExtractor,
   noopSlotExtractor,
-  topicSlotExtractor,
 } from '../../../registry-typed-slot-adapters';
 
 export const CONTENT_ACTIONS: ChatActionDefinition[] = [
@@ -118,15 +118,19 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
       confirmationPolicy: 'none',
       executor: 'content.rewrite',
       verifier: 'local_read_back',
-      typedSlotExtractors: [topicSlotExtractor],
+      typedSlotExtractors: [contentRewriteSlotExtractor],
       typedSlotValidators: [makeRequiredFieldsValidator(['sourceText', 'objective'])],
       supportedCards: STATUS_CARDS,
       examples: [
         {
-          text: 'Rewrite this caption to be shorter and punchier',
+          text: 'Rewrite this caption to be shorter and punchier: Morning routines start the night before.',
           locale: 'en',
           tags: ['golden'],
           expectedAction: 'content_rewrite',
+          expectedSlots: {
+            sourceText: 'Morning routines start the night before.',
+            objective: 'shorter and punchier',
+          },
         },
         {
           // Phase 3 batch 16: paraphrase — "Make this caption shorter" pattern.
@@ -136,7 +140,7 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
           expectedAction: 'content_rewrite',
         },
         {
-          text: 'Reescreve esta legenda para ficar mais curta',
+          text: 'Reescreve esta legenda para ficar mais curta: A rotina começa na noite anterior.',
           locale: 'pt',
           tags: ['golden'],
           expectedAction: 'content_rewrite',
@@ -159,7 +163,7 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
         },
         {
           // Phase 14 batch 73 (2026-05-16): Spanish-authored compatibility input; English response contract.
-          text: 'Reescribe esta caption para hacerla más corta',
+          text: 'Reescribe esta caption para hacerla más corta: La rutina empieza la noche anterior.',
           requestLocale: 'es',
           responseLocale: 'en',
           tags: ['golden'],
@@ -312,9 +316,9 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
   {
     skill: 'content',
     action: 'content_pipeline_stage_transition',
-    readableIntents: ['content pipeline stage transition', 'mark content filmed', 'move content to editing'],
+    readableIntents: ['content pipeline script-ready verification', 'mark content scripted', 'confirm saved script revision'],
     requiredFields: ['topicTitle', 'targetStage'],
-    optionalFields: ['youtubeUrl'],
+    optionalFields: [],
     providerDependencies: ['nexus'],
     risk: 'safe_write',
     confirmationPolicy: 'none',
@@ -325,40 +329,40 @@ export const CONTENT_ACTIONS: ChatActionDefinition[] = [
     supportedCards: STATUS_CARDS,
     examples: [
         {
-          text: 'Mark the recovery reel as filmed',
+          text: 'Mark the recovery reel as scripted',
           locale: 'en',
           tags: ['golden'],
           expectedAction: 'content_pipeline_stage_transition',
-          expectedSlots: { topicTitle: 'recovery reel', targetStage: 'filmed' },
+          expectedSlots: { topicTitle: 'recovery reel', targetStage: 'scripted' },
         },
         {
-          text: 'Move the morning routine reel to editing',
-          locale: 'en',
-          tags: ['golden'],
-          expectedAction: 'content_pipeline_stage_transition',
-          expectedSlots: { topicTitle: 'morning routine reel', targetStage: 'editing' },
-        },
-        {
-          text: 'Marca o reel de recuperação como filmado',
+          text: 'Marca o reel de recuperação como roteiro pronto',
           locale: 'pt',
           tags: ['golden'],
           expectedAction: 'content_pipeline_stage_transition',
-          expectedSlots: { topicTitle: 'reel de recuperação', targetStage: 'filmed' },
+          expectedSlots: { topicTitle: 'reel de recuperação', targetStage: 'scripted' },
         },
         {
-          text: 'Move o vídeo de mobilidade para edição',
-          locale: 'pt',
-          tags: ['golden'],
-          expectedAction: 'content_pipeline_stage_transition',
-          expectedSlots: { topicTitle: 'vídeo de mobilidade', targetStage: 'editing' },
-        },
-        {
-          text: 'Mueve el reel de recuperación a edición',
+          text: 'Marca el reel de recuperación como guion listo',
           requestLocale: 'es',
           responseLocale: 'en',
           tags: ['golden'],
           expectedAction: 'content_pipeline_stage_transition',
-          expectedSlots: { topicTitle: 'reel de recuperación', targetStage: 'editing' },
+          expectedSlots: { topicTitle: 'reel de recuperación', targetStage: 'scripted' },
+        },
+        {
+          text: 'Mark the recovery reel as filmed',
+          locale: 'en',
+          tags: ['negative'],
+          condition: 'filming_state_has_no_canonical_evidence_model',
+          expectedAction: null,
+        },
+        {
+          text: 'Move the morning routine reel to editing',
+          locale: 'en',
+          tags: ['negative'],
+          condition: 'editing_state_has_no_canonical_evidence_model',
+          expectedAction: null,
         },
         {
           text: 'I filmed the recovery reel yesterday',

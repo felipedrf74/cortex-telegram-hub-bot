@@ -47,6 +47,11 @@ export interface ContentCompatibilityProjection {
     publishedWindowLimit: number;
     publishedWindowMayBeTruncated: boolean;
   };
+  publicationTracking: {
+    availability: 'unavailable';
+    reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED';
+    publicationExecution: 'not_supported';
+  };
 }
 
 export function readContentCompatibilityProjection(
@@ -59,11 +64,13 @@ export function readContentCompatibilityProjection(
     itemType: 'content_item',
     limit: CONTENT_COMPATIBILITY_ITEM_LIMIT,
   }, db);
-  const items = workspaceItems.map(projectWorkspaceItem);
+  // `production_state = published` is only an internal legacy state. Without
+  // an external publication receipt it cannot be projected as publication.
+  const items = workspaceItems
+    .filter((item) => item.productionState !== 'published')
+    .map(projectWorkspaceItem);
   const ideas = items.filter((item) => item.stage === 'ideas');
   const scripted = items.filter((item) => item.stage === 'scripted');
-  const allPublished = items.filter((item) => item.stage === 'published');
-  const publishedWindowLimit = 10;
 
   return {
     schemaVersion: CONTENT_WORKSPACE_SCHEMA_VERSION,
@@ -73,13 +80,18 @@ export function readContentCompatibilityProjection(
       scripted,
       filmed: [],
       editing: [],
-      published: allPublished.slice(0, publishedWindowLimit),
+      published: [],
     },
     coverage: {
       itemLimit: CONTENT_COMPATIBILITY_ITEM_LIMIT,
       itemWindowMayBeTruncated: workspaceItems.length === CONTENT_COMPATIBILITY_ITEM_LIMIT,
-      publishedWindowLimit,
-      publishedWindowMayBeTruncated: allPublished.length > publishedWindowLimit,
+      publishedWindowLimit: 0,
+      publishedWindowMayBeTruncated: false,
+    },
+    publicationTracking: {
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
     },
   };
 }
@@ -92,9 +104,13 @@ export function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: nu
     editing: Array<{ title: string }>;
     published: Array<{ title: string }>;
   };
+  publicationTracking: ContentCompatibilityProjection['publicationTracking'];
 } {
   const projection = readContentCompatibilityProjection(db, userId, requireTenantId(tenantId));
-  return { stages: projection.stages };
+  return {
+    stages: projection.stages,
+    publicationTracking: projection.publicationTracking,
+  };
 }
 
 export function readContentHomeIdeas(
@@ -105,45 +121,10 @@ export function readContentHomeIdeas(
   return readContentCompatibilityProjection(db, userId, requireTenantId(tenantId)).stages.ideas;
 }
 
-export function readContentPublishedThisMonth(
-  db: ReturnType<typeof getDb>,
-  userId: number,
-  tenantId: number,
-  now: Date = new Date(),
-): { count: number; windowStart: string; windowEnd: string; source: 'content_workflow_events' } {
-  const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const windowEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  const row = db.prepare(`
-    SELECT COUNT(DISTINCT object_id) AS count
-      FROM content_workflow_events
-     WHERE tenant_id = ?
-       AND owner_user_id = ?
-       AND visibility_scope = 'user_private'
-       AND scope_status = 'active'
-       AND object_type = 'content_item'
-       AND action = 'workspace_state_changed'
-       AND to_state = 'published'
-       AND datetime(created_at) >= datetime(?)
-       AND datetime(created_at) < datetime(?)
-  `).get(tenantId, userId, windowStart.toISOString(), windowEnd.toISOString()) as { count: unknown } | undefined;
-  const count = Number(row?.count);
-  if (!Number.isSafeInteger(count) || count < 0) {
-    throw new Error('Content published metric returned an invalid count.');
-  }
-  return {
-    count,
-    windowStart: windowStart.toISOString(),
-    windowEnd: windowEnd.toISOString(),
-    source: 'content_workflow_events',
-  };
-}
-
 function projectWorkspaceItem(item: ContentWorkspaceItem): ContentCompatibilityItem {
-  const stage: ContentCompatibilityStage = item.productionState === 'published'
-    ? 'published'
-    : ['idea', 'brief', 'outline'].includes(item.artifactPhase)
-      ? 'ideas'
-      : 'scripted';
+  const stage: ContentCompatibilityStage = ['idea', 'brief', 'outline'].includes(item.artifactPhase)
+    ? 'ideas'
+    : 'scripted';
   return {
     id: String(item.id),
     title: item.title,
@@ -163,7 +144,7 @@ function projectWorkspaceItem(item: ContentWorkspaceItem): ContentCompatibilityI
 }
 
 function requireTenantId(tenantId: number | undefined): number {
-  if (!Number.isInteger(tenantId) || Number(tenantId) <= 0) {
+  if (!Number.isSafeInteger(tenantId) || Number(tenantId) <= 0) {
     throw new Error('A valid tenant scope is required for Content workspace reads.');
   }
   return Number(tenantId);

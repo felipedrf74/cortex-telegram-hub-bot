@@ -15,9 +15,18 @@ import { getUserLanguageById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import type { Lang } from '../../utils/i18n';
 import {
+  CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS,
+  CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS,
+  CONTENT_SCRIPT_MAX_NICHE_CHARS,
+  CONTENT_SCRIPT_MAX_REGENERATION_SEED_CHARS,
+  CONTENT_SCRIPT_MAX_TOPIC_CHARS,
+  CONTENT_SCRIPT_MAX_WHY_NOW_CHARS,
+  hasUnsupportedContentControlCharacters,
   invalidScriptFormatMessage,
   normalizeScriptFormat,
+  resolveContentScriptSaveIdempotencyKey,
   resolveScriptDurationPreset,
+  validateExplicitContentScriptRequestFields,
 } from './content-script-utils';
 import {
   buildScriptCreatorProfile,
@@ -35,7 +44,10 @@ import {
   getScript,
   SYNTHETIC_EVALUATION_SCRIPT_EXECUTION_POLICY,
 } from '../../services/content-engine';
-import { ForwardedLocalInferenceError } from '../../services/content-engine-error-contract';
+import {
+  ForwardedContentPolicyError,
+  ForwardedLocalInferenceError,
+} from '../../services/content-engine-error-contract';
 import { buildScriptPreflightBrief } from '../../services/content-script-quality';
 import { buildAuthorizedContentReferenceContext } from '../../services/content-reference-context';
 import { completeOneShotWithFallback, completeOneShotWithSearch } from '../../services/gemini-provider';
@@ -49,6 +61,7 @@ import {
 import {
   budgetStateFromQuota,
   buildClaimLedger,
+  buildContentArtifactRefs,
   buildContentNextActions,
   buildContentOperationTrace,
   buildCreatorVoiceCard,
@@ -75,6 +88,16 @@ import {
   persistContentArtifacts,
 } from '../../services/content-token-artifact-store';
 import { saveGeneratedScriptToWorkspace } from '../../services/content-workspace-capture';
+import {
+  completeContentScriptSaveRequest,
+  completeContentScriptSaveRequestAtomically,
+  fingerprintContentScriptSaveRequest,
+  markContentScriptSaveRequestDispatched,
+  releaseContentScriptSaveRequest,
+  reserveContentScriptSaveRequest,
+} from '../../services/content-script-idempotency';
+import { ContentWorkspaceError } from '../../services/content-workspace';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import { isPaidAiCostControlsEnforcementEnabled } from '../../services/entitlement';
 import { getCurrentRequestId } from '../../utils/request-context';
 import {
@@ -108,6 +131,13 @@ import {
   ContentOutputLanguageMismatchError,
   normalizeContentOutputLanguage,
 } from '../../services/content-output-language';
+import {
+  buildContentResearchSubject,
+  buildContentScriptResearchQuery,
+  ContentResearchPolicyError,
+  routeContentResearchWithSemanticSafety,
+} from '../../services/content-research-generation-policy';
+import { mapContentScriptEditInferenceError } from '../../services/content-script-edit-error-contract';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -156,7 +186,8 @@ export function registerContentScriptRoutes(
    *   topic: string (required),
    *   niche?: string (default "general"),
    *   format?: "YouTube" | "Reel" (default "YouTube"),
-   *   maxDurationMinutes?: number (default 8, range 1-30)
+   *   maxDurationMinutes?: 8 | 10 | 15 for YouTube, 1 for Reel,
+   *   targetDurationSeconds?: 480 | 600 | 900 for YouTube, 15 | 30 | 45 | 60 for Reel
    * }
    *
    * Returns structured script data — iOS renders natively.
@@ -195,6 +226,9 @@ export function registerContentScriptRoutes(
     }
 
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
+    const requestBody = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
     const {
       topic,
       niche,
@@ -211,15 +245,102 @@ export function registerContentScriptRoutes(
       regenerationSeed,
       saveToIdeas,
       idempotencyKey,
-      highRiskAcknowledged,
-      acknowledgeHighRisk,
-    } = req.body;
+      hookIdea,
+      whyNow,
+      angleTag,
+    } = requestBody;
 
-    if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
+    const explicitContractViolation = validateExplicitContentScriptRequestFields(requestBody, {
+      allowLegacyStyle: true,
+      booleanFields: [
+        'forceRefresh',
+        'regenerate',
+        'saveToIdeas',
+        'highRiskAcknowledged',
+        'acknowledgeHighRisk',
+      ],
+    });
+    if (explicitContractViolation) {
+      generationObservation.complete('blocked', 'validation_rejected');
+      const isInvalidFormat = explicitContractViolation.field === 'format';
+      sendError(
+        res,
+        isInvalidFormat ? 'VALIDATION' : 'CONTENT_VALIDATION_FAILED',
+        isInvalidFormat
+          ? invalidScriptFormatMessage(requestLanguage)
+          : explicitContractViolation.message,
+        400,
+        { field: explicitContractViolation.field },
+      );
+      return;
+    }
+
+    const optionalStringFields: Array<readonly [field: string, value: unknown]> = [
+      ['niche', niche],
+      ['regenerationSeed', regenerationSeed],
+      ['hookIdea', hookIdea],
+      ['whyNow', whyNow],
+      ['angleTag', angleTag],
+    ];
+    const invalidStringField = optionalStringFields.find(([, value]) => (
+      value !== undefined && typeof value !== 'string'
+    ));
+    if (invalidStringField) {
+      generationObservation.complete('blocked', 'validation_rejected');
+      sendError(
+        res,
+        'CONTENT_VALIDATION_FAILED',
+        `${invalidStringField[0]} must be a string.`,
+        400,
+        { field: invalidStringField[0] },
+      );
+      return;
+    }
+
+    const boundedTopic = readBoundedString(topic, CONTENT_SCRIPT_MAX_TOPIC_CHARS);
+    const boundedNiche = readBoundedString(niche, CONTENT_SCRIPT_MAX_NICHE_CHARS);
+    const boundedRegenerationSeed = readBoundedString(
+      regenerationSeed,
+      CONTENT_SCRIPT_MAX_REGENERATION_SEED_CHARS,
+    );
+    const boundedHookIdea = readBoundedString(hookIdea, CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS);
+    const boundedWhyNow = readBoundedString(whyNow, CONTENT_SCRIPT_MAX_WHY_NOW_CHARS);
+    const boundedAngleTag = readBoundedString(angleTag, CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS);
+    if (sendScriptInputValidationError(res, requestLanguage, [
+      { field: 'topic', result: boundedTopic },
+      { field: 'niche', result: boundedNiche },
+      { field: 'regenerationSeed', result: boundedRegenerationSeed },
+      { field: 'hookIdea', result: boundedHookIdea },
+      { field: 'whyNow', result: boundedWhyNow },
+      { field: 'angleTag', result: boundedAngleTag },
+    ])) {
+      generationObservation.complete('blocked', 'validation_rejected');
+      return;
+    }
+    if (!boundedTopic.value) {
       generationObservation.complete('blocked', 'validation_rejected');
       sendError(res, 'VALIDATION', 'topic is required', 400);
       return;
     }
+    const normalizedTopic = boundedTopic.value;
+
+    const saveIdempotency = resolveContentScriptSaveIdempotencyKey(
+      saveToIdeas,
+      idempotencyKey,
+      req.header('x-idempotency-key'),
+    );
+    if (saveIdempotency && 'code' in saveIdempotency) {
+      generationObservation.complete('blocked', 'validation_rejected');
+      sendError(
+        res,
+        saveIdempotency.code,
+        saveIdempotency.message,
+        saveIdempotency.status,
+        saveIdempotency.details,
+      );
+      return;
+    }
+    const resolvedSaveIdempotencyKey = saveIdempotency?.value;
 
     const normalizedFormat = normalizeScriptFormat(format);
     if (!normalizedFormat) {
@@ -252,9 +373,66 @@ export function registerContentScriptRoutes(
     const requestedMode = resolveScriptGenerationMode(mode);
     const targetRenderMode = resolveScriptRenderMode(renderMode);
     const targetScriptStyle = resolveScriptStyle(scriptStyle ?? style);
+    const targetLanguage = normalizeContentOutputLanguage(
+      liveEvalContext?.scenario.language
+        ?? (typeof language === 'string' && language.trim().length > 0
+          ? resolveScriptTargetLanguage(language, userId, getUserLanguageById)
+          : requestLanguage),
+    );
+    const shouldForceRefresh = forceRefresh === true || regenerate === true;
+    const explicitRegenerationSeed = shouldForceRefresh
+      && boundedRegenerationSeed.value
+      ? boundedRegenerationSeed.value
+      : null;
+    const normalizedNiche = boundedNiche.value ?? 'general';
+    const directSemanticValues = [
+      normalizedTopic,
+      normalizedNiche,
+      boundedHookIdea.value,
+      boundedWhyNow.value,
+      boundedAngleTag.value,
+    ];
+    const directRouteDecision = routeContentResearchWithSemanticSafety({
+      subject: buildScriptResearchSubject({
+        topic: normalizedTopic,
+        niche: normalizedNiche,
+        hookIdea: boundedHookIdea.value ?? null,
+        whyNow: boundedWhyNow.value ?? null,
+        angleTag: boundedAngleTag.value ?? null,
+      }),
+      semanticValues: directSemanticValues,
+      mode: requestedMode,
+      forceRefresh: shouldForceRefresh,
+    });
+    // Reject unsafe caller-authored semantics before resolving any referenced
+    // workspace/topic context. A second gate below classifies the merged,
+    // exact-scope context before query construction or cost-bearing work.
+    if (directRouteDecision.route === 'unsupported') {
+      generationObservation.complete('blocked', 'validation_rejected');
+      sendError(res, 'CONTENT_UNSUPPORTED_TOPIC', safeUnsupportedTopicMessage(requestLanguage), 422, {
+        route: directRouteDecision.route,
+        reason: directRouteDecision.reason,
+      });
+      return;
+    }
+    if (directRouteDecision.route === 'high_risk_review') {
+      generationObservation.complete('blocked', 'validation_rejected');
+      sendError(res, 'CONTENT_HIGH_RISK_REVIEW_REQUIRED', safeHighRiskMessage(requestLanguage), 422, {
+        route: directRouteDecision.route,
+        reason: directRouteDecision.reason,
+        reviewAuthority: 'not_supported',
+        requiredEvidence: 'reviewer_attested_source_package',
+        retryable: false,
+      });
+      return;
+    }
     const startMs = Date.now();
-    let targetLanguage: Lang = requestLanguage;
     let localScriptOperationId: string | null = null;
+    let scriptTopicContext: ReturnType<typeof resolveScriptTopicContext> = null;
+    let saveRequestFingerprint: string | null = null;
+    let saveRequestLeaseToken: string | null = null;
+    let saveRequestDispatched = false;
+    let saveRequestSettled = false;
     const requestAbortController = new AbortController();
     const abortOnClientDisconnect = (): void => {
       if (res.writableEnded || requestAbortController.signal.aborted) return;
@@ -268,6 +446,104 @@ export function registerContentScriptRoutes(
     if (req.aborted || res.destroyed) abortOnClientDisconnect();
 
     try {
+      scriptTopicContext = liveEvalContext
+        ? null
+        : resolveScriptTopicContext(userId, requestBody, undefined, tenantId);
+      const researchSubject = buildScriptResearchSubject({
+        topic: normalizedTopic,
+        niche: scriptTopicContext?.niche || normalizedNiche,
+        hookIdea: scriptTopicContext?.hookIdea ?? null,
+        whyNow: scriptTopicContext?.whyNow ?? null,
+        angleTag: scriptTopicContext?.angleTag ?? null,
+      });
+      const routeDecision = routeContentResearchWithSemanticSafety({
+        subject: researchSubject,
+        semanticValues: [
+          normalizedTopic,
+          scriptTopicContext?.niche || normalizedNiche,
+          scriptTopicContext?.hookIdea,
+          scriptTopicContext?.whyNow,
+          scriptTopicContext?.angleTag,
+        ],
+        mode: requestedMode,
+        forceRefresh: shouldForceRefresh,
+      });
+      // Every resolved request/context field that can shape generation is
+      // classified before idempotency reservation, budget admission,
+      // persistence, or provider work. A safe headline cannot hide a
+      // high-risk or abusive instruction in stored hook/angle context.
+      if (routeDecision.route === 'unsupported') {
+        generationObservation.complete('blocked', 'validation_rejected');
+        sendError(res, 'CONTENT_UNSUPPORTED_TOPIC', safeUnsupportedTopicMessage(requestLanguage), 422, {
+          route: routeDecision.route,
+          reason: routeDecision.reason,
+        });
+        return;
+      }
+      if (routeDecision.route === 'high_risk_review') {
+        generationObservation.complete('blocked', 'validation_rejected');
+        sendError(res, 'CONTENT_HIGH_RISK_REVIEW_REQUIRED', safeHighRiskMessage(requestLanguage), 422, {
+          route: routeDecision.route,
+          reason: routeDecision.reason,
+          reviewAuthority: 'not_supported',
+          requiredEvidence: 'reviewer_attested_source_package',
+          retryable: false,
+        });
+        return;
+      }
+      let researchQuery: string;
+      try {
+        researchQuery = buildContentScriptResearchQuery(
+          normalizedTopic,
+          scriptTopicContext?.niche || normalizedNiche,
+        );
+      } catch (error) {
+        if (!(error instanceof ContentResearchPolicyError)) throw error;
+        generationObservation.complete('blocked', 'validation_rejected');
+        sendError(res, error.code, error.message, error.status, error.details);
+        return;
+      }
+      saveRequestFingerprint = resolvedSaveIdempotencyKey
+        ? fingerprintContentScriptSaveRequest({
+          saveToIdeas: true,
+          topic: normalizedTopic,
+          niche: normalizedNiche,
+          format: normalizedFormat,
+          maxDurationMinutes: durationPreset.maxDurationMinutes,
+          targetDurationSeconds: durationPreset.targetDurationSeconds,
+          mode: requestedMode,
+          language: targetLanguage,
+          renderMode: targetRenderMode,
+          scriptStyle: targetScriptStyle,
+          forceRefresh: shouldForceRefresh,
+          regenerationSeed: explicitRegenerationSeed,
+          topicContext: {
+            pipelineId: scriptTopicContext?.pipelineId ?? null,
+            topicFeedbackId: scriptTopicContext?.topicFeedbackId ?? null,
+            ideaId: scriptTopicContext?.ideaId ?? null,
+            niche: scriptTopicContext?.niche || normalizedNiche,
+            hookIdea: scriptTopicContext?.hookIdea ?? null,
+            whyNow: scriptTopicContext?.whyNow ?? null,
+            angleTag: scriptTopicContext?.angleTag ?? null,
+            sourceJob: scriptTopicContext?.sourceJob ?? null,
+          },
+        })
+        : null;
+      if (resolvedSaveIdempotencyKey && saveRequestFingerprint) {
+        throwIfContentScriptRequestCancelled(requestAbortController.signal);
+        const reservation = reserveContentScriptSaveRequest({
+          scope: { tenantId, userId },
+          idempotencyKey: resolvedSaveIdempotencyKey,
+          requestFingerprint: saveRequestFingerprint,
+        });
+        if (reservation.kind === 'replay') {
+          generationObservation.complete('success');
+          sendSuccess(res, reservation.response);
+          return;
+        }
+        saveRequestLeaseToken = reservation.leaseToken;
+      }
+
       // CONT-M4: load the user's Voice DNA memory from content_knowledge
       // and pass it to the script engine so scripts reflect tone, structure,
       // phrases, and creator preferences instead of only topic research.
@@ -278,17 +554,9 @@ export function registerContentScriptRoutes(
         } catch { /* non-critical — generate without voice if DB fails */ }
       }
 
-      const scriptTopicContext = liveEvalContext
-        ? null
-        : resolveScriptTopicContext(userId, req.body || {}, undefined, tenantId);
-      targetLanguage = normalizeContentOutputLanguage(
-        liveEvalContext?.scenario.language
-          ?? resolveScriptTargetLanguage(language, userId, getUserLanguageById),
-      );
-      const shouldForceRefresh = forceRefresh === true || regenerate === true;
       const resolvedRegenerationSeed = shouldForceRefresh
-        ? (typeof regenerationSeed === 'string' && regenerationSeed.trim().length > 0
-          ? regenerationSeed.trim().slice(0, 120)
+        ? (explicitRegenerationSeed
+          ? explicitRegenerationSeed
           : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
         : null;
       const authorizedReferences = liveEvalContext
@@ -297,7 +565,7 @@ export function registerContentScriptRoutes(
       const generationPackage = buildContentGenerationPackage({
         tenantId,
         userId,
-        topic: topic.trim(),
+        topic: normalizedTopic,
         contentGoal: scriptTopicContext?.whyNow || `Generate a ${normalizedFormat} script`,
         formatId: normalizeContentGenerationFormat(normalizedFormat),
         platformId: normalizedFormat === 'Reel' ? 'instagram' : 'youtube',
@@ -310,7 +578,7 @@ export function registerContentScriptRoutes(
         tenantId,
         userId,
         language: targetLanguage,
-        niche: scriptTopicContext?.niche || niche || 'general',
+        niche: scriptTopicContext?.niche || normalizedNiche,
         voiceMemory,
       });
       let recentIdeaMemory: Array<{ topic: string; hook: string | null; angle: string | null; format: string | null }> = [];
@@ -319,45 +587,6 @@ export function registerContentScriptRoutes(
           recentIdeaMemory = listRecentContentIdeaMemory({ tenantId, userId }, 5);
         } catch { /* artifact cache unavailable — generation still proceeds */ }
       }
-      const routeDecision = routeContentResearch({
-        topic: topic.trim(),
-        mode: requestedMode,
-        forceRefresh: shouldForceRefresh,
-      });
-
-      if (routeDecision.route === 'unsupported') {
-        generationObservation.complete('blocked', 'validation_rejected');
-        sendError(
-          res,
-          'CONTENT_UNSUPPORTED_TOPIC',
-          requestLanguage.startsWith('pt')
-            ? 'Não posso gerar conteúdo para esse pedido. Reformule com um objetivo seguro e legítimo.'
-            : 'I cannot generate content for that request. Reframe it with a safe, legitimate goal.',
-          422,
-          { route: routeDecision.route, reason: routeDecision.reason },
-        );
-        return;
-      }
-
-      const highRiskAccepted = highRiskAcknowledged === true || acknowledgeHighRisk === true;
-      if (routeDecision.route === 'high_risk_review' && !highRiskAccepted) {
-        generationObservation.complete('blocked', 'claim_safety_block');
-        sendError(
-          res,
-          'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
-          requestLanguage.startsWith('pt')
-            ? 'Este tema precisa de revisão de fontes e enquadramento seguro antes da geração.'
-            : 'This topic needs source review and safer framing before generation.',
-          422,
-          {
-            route: routeDecision.route,
-            reason: routeDecision.reason,
-            acknowledgeField: 'highRiskAcknowledged',
-          },
-        );
-        return;
-      }
-
       // Keep one account-deletion admission across Python generation,
       // deterministic validation, persistence, and public delivery. Nested
       // inference calls may release earlier, but user-owned rows cannot be
@@ -376,40 +605,41 @@ export function registerContentScriptRoutes(
         : 'healthy';
 
       const forceDraftFlag = isContentForceDraftOnlyEnabled(process.env, { userId, tenantId });
-      const longformDisabled = isContentFullLongformDisabled(process.env, { userId, tenantId })
+      const longformFeatureDisabled = isContentFullLongformDisabled(process.env, { userId, tenantId })
+        && normalizedFormat === 'YouTube';
+      const longformDisabled = longformFeatureDisabled
         && requestedMode !== 'draft'
         && normalizedFormat === 'YouTube';
-      const highRiskDraftOnly = routeDecision.route === 'high_risk_review' && requestedMode !== 'draft';
+      const deepResearchDisabled = isContentDeepResearchDisabled(process.env, { userId, tenantId });
       // Included-window proximity is telemetry, not a quality switch. The
       // reservation layer either uses valid interactive Nexus Points headroom
       // or returns the stable quota error; it must not silently shrink a paid
       // user's requested delivery before that decision.
       const forcedDraft = forceDraftFlag
-        || longformDisabled
-        || highRiskDraftOnly;
-      const disabledDeep = isContentDeepResearchDisabled(process.env, { userId, tenantId }) && requestedMode === 'deep';
+        || longformDisabled;
+      const disabledDeep = deepResearchDisabled && requestedMode === 'deep';
       const disabledFresh = isContentFreshResearchDisabled(process.env, { userId, tenantId }) && routeDecision.route === 'fresh_compact';
-      const genMode = forcedDraft || disabledDeep || disabledFresh ? 'draft' : requestedMode;
+      const genMode = forcedDraft || disabledDeep || disabledFresh
+        ? 'draft'
+        : requestedMode;
       const downgradeReason = forceDraftFlag
-        ? 'force_draft_only'
-        : longformDisabled
-          ? 'longform_disabled'
-          : highRiskDraftOnly
-            ? 'high_risk_draft_only'
+          ? 'force_draft_only'
+          : longformDisabled
+            ? 'longform_disabled'
             : disabledDeep
               ? 'deep_research_disabled'
               : disabledFresh
                 ? 'fresh_research_disabled'
                 : 'none';
       const effectiveRouteDecision = routeContentResearch({
-        topic: topic.trim(),
+        topic: researchSubject,
         mode: genMode,
         forceRefresh: shouldForceRefresh && !disabledFresh,
       });
       const creatorProfile = [
         buildScriptCreatorProfile({
           language: targetLanguage,
-          niche: scriptTopicContext?.niche || niche || 'general',
+          niche: scriptTopicContext?.niche || normalizedNiche,
           voiceMemory: voiceCard.promptText,
         }),
         recentIdeaMemory.length > 0
@@ -450,7 +680,7 @@ export function registerContentScriptRoutes(
           {
             sectionName: 'topic_brief',
             text: [
-              `Topic: ${topic.trim()}`,
+              `Topic: ${normalizedTopic}`,
               scriptTopicContext?.whyNow ? `Why now: ${scriptTopicContext.whyNow}` : '',
               scriptTopicContext?.angleTag ? `Angle: ${scriptTopicContext.angleTag}` : '',
             ].filter(Boolean).join('\n'),
@@ -495,8 +725,7 @@ export function registerContentScriptRoutes(
       });
 
       const localContentEnrolled = isContentLocalPrimaryUserEnrolled(userId)
-        && !liveEvalContext
-        && routeDecision.route !== 'high_risk_review';
+        && !liveEvalContext;
       localScriptOperationId = localContentEnrolled ? randomUUID() : null;
       const cloudProviderBoundary = <T,>(providerCall: () => Promise<T>): Promise<T> => (
         withAiBudgetReservation({
@@ -514,9 +743,21 @@ export function registerContentScriptRoutes(
           } : {}),
         }, providerCall)
       );
+      // Close lease reclamation before entering a boundary that may consume
+      // provider work. If delivery later becomes ambiguous, the caller must
+      // use a new key instead of silently repeating that work after expiry.
+      if (resolvedSaveIdempotencyKey && saveRequestFingerprint && saveRequestLeaseToken) {
+        markContentScriptSaveRequestDispatched({
+          scope: { tenantId, userId },
+          idempotencyKey: resolvedSaveIdempotencyKey,
+          requestFingerprint: saveRequestFingerprint,
+          leaseToken: saveRequestLeaseToken,
+        });
+        saveRequestDispatched = true;
+      }
       const result = await getScript(
-        topic.trim(),
-        scriptTopicContext?.niche || niche || 'general',
+        normalizedTopic,
+        scriptTopicContext?.niche || normalizedNiche,
         durationPreset.maxDurationMinutes,
         normalizedFormat,
         genMode,
@@ -537,6 +778,7 @@ export function registerContentScriptRoutes(
           ...(localScriptOperationId ? { operationId: localScriptOperationId } : {}),
           localPrimaryAdmitted: localContentEnrolled,
           abortSignal: accountAbortSignal,
+          researchQuery,
         },
       );
       // The Python request may resolve at the same moment an account-erasure
@@ -558,7 +800,7 @@ export function registerContentScriptRoutes(
           { userId, tenantId, expectedLanguage: targetLanguage },
           'Content script output withheld because it violated the supported-language contract',
         );
-        sendContentScriptLocaleMismatch(res, requestLanguage);
+        sendContentScriptLocaleMismatch(res, targetLanguage);
         return;
       }
       const elapsedMs = Date.now() - startMs;
@@ -575,7 +817,7 @@ export function registerContentScriptRoutes(
       // instrument that call path explicitly in a follow-up.
       const cacheHit = result.cache_status === 'hit';
       const sourcePackage = buildSourcePackage({
-        topic: topic.trim(),
+        topic: normalizedTopic,
         language: targetLanguage,
         format: normalizedFormat,
         mode: genMode,
@@ -589,8 +831,8 @@ export function registerContentScriptRoutes(
         && sourcePackage.sources.length > 0;
       let persistedArtifacts: { sourcePackageId: string; researchArtifactId: string } | undefined;
       const preflightBrief = buildScriptPreflightBrief({
-        topic: topic.trim(),
-        niche: scriptTopicContext?.niche || niche || 'general',
+        topic: normalizedTopic,
+        niche: scriptTopicContext?.niche || normalizedNiche,
         format: normalizedFormat,
         language: targetLanguage,
         cta: result.cta,
@@ -657,7 +899,7 @@ export function registerContentScriptRoutes(
           {
             userId,
             tenantId,
-            topicLength: topic.trim().length,
+            topicLength: normalizedTopic.length,
             blockerCount: scriptResponse.scriptSafety.blockers.length,
           },
           'Content script output withheld by the quality safety gate',
@@ -680,18 +922,22 @@ export function registerContentScriptRoutes(
       // can still fail during deterministic response assembly, and that
       // failure must remain genuinely mutation-free.
       throwIfContentScriptRequestCancelled(accountAbortSignal);
-      if (canPersistSourcePackage) {
+      const persistAcceptedTokenArtifacts = (transactionDb?: ReturnType<typeof getDb>): void => {
         try {
-          const persisted = persistContentArtifacts({
+          throwIfContentScriptRequestCancelled(accountAbortSignal);
+          const artifactInput = {
             tenantId,
             userId,
-            topic: topic.trim(),
+            topic: normalizedTopic,
             voiceCard,
             sourcePackage,
             hook: result.hook,
             angle: scriptTopicContext?.angleTag ?? null,
             format: normalizedFormat,
-          });
+          };
+          const persisted = transactionDb
+            ? persistContentArtifacts(artifactInput, transactionDb)
+            : persistContentArtifacts(artifactInput);
           if (persisted.sourcePackageId && persisted.researchArtifactId) {
             persistedArtifacts = {
               sourcePackageId: persisted.sourcePackageId,
@@ -699,12 +945,40 @@ export function registerContentScriptRoutes(
             };
             scriptResponse.research.sourcePackageId = persistedArtifacts.sourcePackageId;
             scriptResponse.research.researchArtifactId = persistedArtifacts.researchArtifactId;
+            const storedSourceRefs = buildContentArtifactRefs({
+              sourcePackage: {
+                ...sourcePackage,
+                sourcePackageId: persistedArtifacts.sourcePackageId,
+                researchArtifactId: persistedArtifacts.researchArtifactId,
+              },
+            });
+            scriptResponse.artifactRefs = [
+              ...scriptResponse.artifactRefs.filter((ref) => (
+                ref.type !== 'source_package' && ref.type !== 'research_artifact'
+              )),
+              ...storedSourceRefs,
+            ];
           }
         } catch (err) {
-          logger.warn({ err, userId, tenantId }, 'Content token artifacts could not be persisted');
+          throwIfContentScriptRequestCancelled(accountAbortSignal);
+          logger.warn(
+            { ...safeContentScriptErrorFields(err), userId, tenantId },
+            'Content token artifacts could not be persisted',
+          );
         }
+      };
+      const settleSavedRequestAtomically = Boolean(
+        resolvedSaveIdempotencyKey
+        && saveRequestFingerprint
+        && saveRequestLeaseToken
+        && saveToIdeas === true,
+      );
+      if (canPersistSourcePackage && !settleSavedRequestAtomically) {
+        persistAcceptedTokenArtifacts();
       }
       let savedIdea: Record<string, unknown> | undefined;
+      let publicResponse: Record<string, unknown> | undefined;
+      let contentWorkspaceChanged = false;
       if (saveToIdeas === true) {
         const degradedGeneration = scriptResponse.degraded === true
           || scriptResponse.operationTrace?.cacheStatus === 'fallback';
@@ -720,63 +994,102 @@ export function registerContentScriptRoutes(
           };
         } else {
           throwIfContentScriptRequestCancelled(accountAbortSignal);
-          try {
-            const saved = saveGeneratedScriptToWorkspace({
+          const captureSavedIdea = (transactionDb?: ReturnType<typeof getDb>): Record<string, unknown> => {
+            try {
+              throwIfContentScriptRequestCancelled(accountAbortSignal);
+              const captureInput = {
+                scope: { tenantId, userId },
+                topic: scriptResponse.topic,
+                format: scriptResponse.format,
+                scriptText: scriptResponse.script,
+                hook: scriptResponse.hook,
+                titleOptions: scriptResponse.titleOptions ?? [],
+                sourcesUsed: scriptResponse.sourcesUsed ?? [],
+                claimsUsed: scriptResponse.claimLedger ?? [],
+                hashtags: scriptResponse.hashtags ?? [],
+                caption: scriptResponse.caption,
+                cta: scriptResponse.cta,
+                estimatedDuration: scriptResponse.estimatedDuration,
+                niche: scriptTopicContext?.niche || normalizedNiche,
+                generationDurationMs: scriptResponse.durationMs ?? elapsedMs,
+                sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+                topicFeedbackId: scriptTopicContext?.topicFeedbackId ?? null,
+                actorType: 'agent' as const,
+                actorId: 'content-script-generation',
+                idempotencyKey: resolvedSaveIdempotencyKey,
+                captureOrigin: 'script_generation' as const,
+              };
+              const saved = transactionDb
+                ? saveGeneratedScriptToWorkspace(captureInput, transactionDb)
+                : saveGeneratedScriptToWorkspace(captureInput);
+              contentWorkspaceChanged = !saved.replayed;
+              return {
+                saved: true,
+                topic: scriptResponse.topic,
+                variantKind: 'script',
+                accepted: false,
+                approvalStatus: 'draft',
+                learningApplied: false,
+                sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+                variantTextChars: scriptResponse.script.length,
+                workspace: {
+                  schemaVersion: saved.schemaVersion,
+                  itemId: saved.item.id,
+                  artifactId: saved.artifact.id,
+                  revisionId: saved.revisionId,
+                  workflowVersion: saved.item.workflowVersion,
+                  replayed: saved.replayed,
+                },
+              };
+            } catch (err) {
+              // Inside the atomic idempotency transaction every persistence
+              // failure must escape so both the workspace mutation and success
+              // receipt roll back. The non-atomic compatibility path can still
+              // return its explicit saved:false result.
+              throwIfContentScriptRequestCancelled(accountAbortSignal);
+              if (err instanceof ContentWorkspaceError || transactionDb) throw err;
+              logger.warn(
+                {
+                  ...safeContentScriptErrorFields(err),
+                  userId,
+                  tenantId,
+                  topicLength: normalizedTopic.length,
+                },
+                'Content script could not be saved to ideas',
+              );
+              return {
+                saved: false,
+                topic: scriptResponse.topic,
+                variantKind: 'script',
+                accepted: false,
+                sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
+                variantTextChars: scriptResponse.script.length,
+                reason: 'script_save_failed',
+              };
+            }
+          };
+          if (resolvedSaveIdempotencyKey && saveRequestFingerprint && saveRequestLeaseToken) {
+            publicResponse = completeContentScriptSaveRequestAtomically({
               scope: { tenantId, userId },
-              topic: scriptResponse.topic,
-              format: scriptResponse.format,
-              scriptText: scriptResponse.script,
-              hook: scriptResponse.hook,
-              titleOptions: scriptResponse.titleOptions ?? [],
-              sourcesUsed: scriptResponse.sourcesUsed ?? [],
-              claimsUsed: scriptResponse.claimLedger ?? [],
-              hashtags: scriptResponse.hashtags ?? [],
-              caption: scriptResponse.caption,
-              cta: scriptResponse.cta,
-              estimatedDuration: scriptResponse.estimatedDuration,
-              niche: scriptTopicContext?.niche || niche || 'general',
-              generationDurationMs: scriptResponse.durationMs ?? elapsedMs,
-              sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
-              topicFeedbackId: scriptTopicContext?.topicFeedbackId ?? null,
-              actorType: 'agent',
-              actorId: 'content-script-generation',
-              idempotencyKey: typeof idempotencyKey === 'string'
-                ? idempotencyKey
-                : req.header('x-idempotency-key'),
-              captureOrigin: 'script_generation',
-            });
-            savedIdea = {
-              saved: true,
-              topic: scriptResponse.topic,
-              variantKind: 'script',
-              accepted: false,
-              approvalStatus: 'draft',
-              learningApplied: false,
-              sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
-              variantTextChars: scriptResponse.script.length,
-              workspace: {
-                schemaVersion: saved.schemaVersion,
-                itemId: saved.item.id,
-                artifactId: saved.artifact.id,
-                revisionId: saved.revisionId,
-                workflowVersion: saved.item.workflowVersion,
-                replayed: saved.replayed,
+              idempotencyKey: resolvedSaveIdempotencyKey,
+              requestFingerprint: saveRequestFingerprint,
+              leaseToken: saveRequestLeaseToken,
+              buildResponse: (transactionDb) => {
+                throwIfContentScriptRequestCancelled(accountAbortSignal);
+                if (canPersistSourcePackage && !persistedArtifacts) {
+                  persistAcceptedTokenArtifacts(transactionDb);
+                }
+                savedIdea = captureSavedIdea(transactionDb);
+                return { ...scriptResponse, savedIdea };
               },
-            };
-          } catch (err) {
-            logger.warn({ err, userId, tenantId, topicLength: topic.trim().length }, 'Content script could not be saved to ideas');
-            savedIdea = {
-              saved: false,
-              topic: scriptResponse.topic,
-              variantKind: 'script',
-              accepted: false,
-              sourcePackageId: persistedArtifacts?.sourcePackageId ?? null,
-              variantTextChars: scriptResponse.script.length,
-              reason: 'script_save_failed',
-            };
+            });
+            saveRequestSettled = true;
+          } else {
+            savedIdea = captureSavedIdea();
           }
         }
       }
+      if (contentWorkspaceChanged) invalidateContentDerivedCaches(userId);
 
       if (generationQuality.reviewRequired || generationQuality.reviewWarnings.length > 0) {
         recordContentWorkspaceQualitySignal('generation_quality_warning');
@@ -786,8 +1099,24 @@ export function registerContentScriptRoutes(
       }
       recordContentWorkspaceProductSignal('script_generated');
       throwIfContentScriptRequestCancelled(accountAbortSignal);
+      publicResponse ??= savedIdea ? { ...scriptResponse, savedIdea } : scriptResponse;
+      if (
+        resolvedSaveIdempotencyKey
+        && saveRequestFingerprint
+        && saveRequestLeaseToken
+        && !saveRequestSettled
+      ) {
+        completeContentScriptSaveRequest({
+          scope: { tenantId, userId },
+          idempotencyKey: resolvedSaveIdempotencyKey,
+          requestFingerprint: saveRequestFingerprint,
+          leaseToken: saveRequestLeaseToken,
+          response: publicResponse,
+        });
+        saveRequestSettled = true;
+      }
       generationObservation.complete('success');
-      sendSuccess(res, savedIdea ? { ...scriptResponse, savedIdea } : scriptResponse);
+      sendSuccess(res, publicResponse);
       });
     } catch (err: any) {
       if (err?.code === 'ACCOUNT_DELETION_IN_PROGRESS') {
@@ -806,6 +1135,15 @@ export function registerContentScriptRoutes(
         generationObservation.complete('blocked', 'provider_failure');
         return;
       }
+      if (err instanceof ContentWorkspaceError) {
+        generationObservation.completeFromError(err);
+        logger.warn(
+          { code: err.code, status: err.status, userId, tenantId },
+          'Content script workspace save was rejected',
+        );
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
       if (err instanceof ContentOutputLanguageMismatchError) {
         if (localScriptOperationId) {
           rejectSkillInferenceApplicationOperationResults({
@@ -821,10 +1159,11 @@ export function registerContentScriptRoutes(
           { userId, tenantId, expectedLanguage: targetLanguage },
           'Content script output withheld because the engine rejected its supported-language contract',
         );
-        sendContentScriptLocaleMismatch(res, requestLanguage);
+        sendContentScriptLocaleMismatch(res, targetLanguage);
         return;
       }
-      if (err instanceof ForwardedLocalInferenceError) {
+      if (err instanceof ForwardedContentPolicyError
+          || err instanceof ForwardedLocalInferenceError) {
         generationObservation.completeFromError(err);
         if (err.status === 429 || err.status === 503) res.setHeader('Retry-After', '60');
         sendError(res, err.code, err.publicMessage, err.status, err.details);
@@ -839,10 +1178,34 @@ export function registerContentScriptRoutes(
         });
       }
       generationObservation.completeFromError(err);
-      logger.error({ err, topicLength: typeof topic === 'string' ? topic.trim().length : 0 }, 'iOS content/script failed');
+      logger.error(
+        { ...safeContentScriptErrorFields(err), topicLength: normalizedTopic.length },
+        'iOS content/script failed',
+      );
       if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Script generation failed');
     } finally {
+      if (
+        resolvedSaveIdempotencyKey
+        && saveRequestFingerprint
+        && saveRequestLeaseToken
+        && !saveRequestSettled
+        && !saveRequestDispatched
+      ) {
+        try {
+          releaseContentScriptSaveRequest({
+            scope: { tenantId, userId },
+            idempotencyKey: resolvedSaveIdempotencyKey,
+            requestFingerprint: saveRequestFingerprint,
+            leaseToken: saveRequestLeaseToken,
+          });
+        } catch (releaseError) {
+          logger.warn(
+            { ...safeContentScriptErrorFields(releaseError), userId, tenantId },
+            'Content script idempotency reservation could not be released',
+          );
+        }
+      }
       if (typeof req.off === 'function') req.off('aborted', abortOnClientDisconnect);
       if (typeof res.off === 'function') res.off('close', abortOnClientDisconnect);
     }
@@ -919,19 +1282,30 @@ export function registerContentScriptRoutes(
     const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
     const topicInput = readBoundedString(req.body?.topic, CONTENT_SCRIPT_EDIT_MAX_TOPIC_CHARS);
-    const scriptInput = readBoundedString(req.body?.script, CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS, { preserveWhitespace: true });
-    if (sendScriptInputLimitError(res, requestLanguage, [
+    const scriptInput = readBoundedString(req.body?.script, CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS, {
+      preserveWhitespace: true,
+      allowFormattingWhitespace: true,
+    });
+    if (sendScriptInputValidationError(res, requestLanguage, [
       { field: 'topic', result: topicInput },
       { field: 'script', result: scriptInput },
     ])) return;
     const topic = topicInput.value;
     const script = scriptInput.value;
     if (!topic || !script) {
-      sendError(res, 'VALIDATION', requestLanguage.startsWith('pt') ? 'topic e script são obrigatórios' : 'topic and script are required', 400);
+      sendError(res, 'VALIDATION', requiredTopicAndScriptMessage(requestLanguage), 400);
       return;
     }
 
-    const routeDecision = routeContentResearch({ topic, mode: 'standard', forceRefresh: true });
+    const routeDecision = routeContentResearchWithSemanticSafety({
+      subject: buildContentResearchSubject([
+        { label: 'Topic', value: topic },
+        { label: 'Existing script', value: script },
+      ]),
+      semanticValues: [topic, script],
+      mode: 'standard',
+      forceRefresh: true,
+    });
     if (routeDecision.route === 'unsupported') {
       sendError(res, 'CONTENT_UNSUPPORTED_TOPIC', safeUnsupportedTopicMessage(requestLanguage), 422, {
         route: routeDecision.route,
@@ -939,11 +1313,13 @@ export function registerContentScriptRoutes(
       });
       return;
     }
-    if (routeDecision.route === 'high_risk_review' && !hasHighRiskAcknowledgement(req.body)) {
+    if (routeDecision.route === 'high_risk_review') {
       sendError(res, 'CONTENT_HIGH_RISK_REVIEW_REQUIRED', safeHighRiskMessage(requestLanguage), 422, {
         route: routeDecision.route,
         reason: routeDecision.reason,
-        acknowledgeField: 'highRiskAcknowledged',
+        reviewAuthority: 'not_supported',
+        requiredEvidence: 'reviewer_attested_source_package',
+        retryable: false,
       });
       return;
     }
@@ -994,6 +1370,9 @@ export function registerContentScriptRoutes(
         const providerOptions = {
           maxTokens: 900,
           temperature: 0.2,
+          // Search calls have no cross-provider replay identity. A transport
+          // outcome may already have consumed work, so never retry it.
+          maxRetries: 0,
           userId,
           tenantId: routeTenantId,
           abortSignal: accountAbortSignal,
@@ -1017,7 +1396,9 @@ export function registerContentScriptRoutes(
             if (isProviderRequestCancellation(err)) throw err;
             throwIfContentScriptRequestCancelled(accountAbortSignal);
             rethrowAiUsageFailClosedError(err);
-            logger.warn({ err }, 'Bounded OpenAI research refresh failed; trying Gemini grounding');
+            // The provider may have accepted work before an ambiguous
+            // transport failure. Do not repeat the request elsewhere.
+            throw err;
           }
         }
 
@@ -1035,31 +1416,45 @@ export function registerContentScriptRoutes(
           throwIfContentScriptRequestCancelled(accountAbortSignal);
           geminiError = err;
           if (!isProviderHeadroomDenial(err)) rethrowAiUsageFailClosedError(err);
+          if (!isProviderHeadroomDenial(err)) throw err;
         }
 
         // Gemini grounding's list-price maximum alone can exceed Pro
         // headroom. One provider-capped OpenAI web search is cheaper and is
         // rechecked under this same locked reservation before network I/O.
-        if (!openAiAttempted && isOpenAIConfigured()) {
+        if (!openAiAttempted && isOpenAIConfigured() && isProviderHeadroomDenial(geminiError)) {
           try {
             return await completeWithBoundedOpenAi();
           } catch (err) {
             if (isProviderRequestCancellation(err)) throw err;
             throwIfContentScriptRequestCancelled(accountAbortSignal);
             rethrowAiUsageFailClosedError(err);
-            if (!isProviderHeadroomDenial(geminiError)) throw err;
+            throw err;
           }
         }
         throw geminiError;
       });
       throwIfContentScriptRequestCancelled(accountAbortSignal);
+      if (hasUnsupportedContentControlCharacters(text, { allowFormattingWhitespace: true })
+          || !Array.isArray(sources)
+          || sources.some((source) => (
+            typeof source !== 'string'
+            || hasUnsupportedContentControlCharacters(source)
+          ))) {
+        sendError(
+          res,
+          'CONTENT_RESEARCH_OUTPUT_INVALID',
+          researchOutputInvalidMessage(requestLanguage),
+          502,
+          { originalPreserved: true },
+        );
+        return;
+      }
       if (hasContentOutputLocaleMismatch(requestLanguage, text)) {
         sendError(
           res,
           'CONTENT_RESEARCH_LOCALE_MISMATCH',
-          requestLanguage.startsWith('pt')
-            ? 'As notas de pesquisa não respeitaram o idioma pedido. O roteiro original foi preservado.'
-            : 'The research notes did not match the requested language. The original script was preserved.',
+          researchLocaleMismatchMessage(requestLanguage),
           502,
           { originalPreserved: true },
         );
@@ -1082,7 +1477,10 @@ export function registerContentScriptRoutes(
         sourceSummary: refreshedSummary,
         requestedMode: 'research_refresh',
         appliedMode: 'research_refresh',
-        warnings: refreshedSummary.length === 0 ? ['No fresh source summary was returned.'] : [],
+        language: requestLanguage,
+        warnings: refreshedSummary.length === 0
+          ? [emptyResearchRefreshWarning(requestLanguage)]
+          : [],
       }));
       });
     } catch (err: any) {
@@ -1098,7 +1496,10 @@ export function registerContentScriptRoutes(
         return;
       }
       if (requestAbortController.signal.aborted || isProviderRequestCancellation(err)) return;
-      logger.error({ err, topicLength: topic.length }, 'iOS content/script research refresh failed');
+      logger.error(
+        { ...safeContentScriptErrorFields(err), topicLength: topic.length },
+        'iOS content/script research refresh failed',
+      );
       if (sendAiBudgetError(res, err)) return;
       sendInternalError(res, 'Research refresh failed');
     } finally {
@@ -1151,10 +1552,13 @@ async function handleScriptEditRoute(
   const routeTenantId = typeof tenantId === 'number' ? tenantId : userId;
   const requestLanguage = options.resolveContentLanguage(req, userId);
   const topicInput = readBoundedString(req.body?.topic, CONTENT_SCRIPT_EDIT_MAX_TOPIC_CHARS);
-  const scriptInput = readBoundedString(req.body?.script, CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS, { preserveWhitespace: true });
+  const scriptInput = readBoundedString(req.body?.script, CONTENT_SCRIPT_EDIT_MAX_INPUT_CHARS, {
+    preserveWhitespace: true,
+    allowFormattingWhitespace: true,
+  });
   const actionInput = readBoundedString(req.body?.action, CONTENT_SCRIPT_EDIT_MAX_ACTION_CHARS);
   const instructionInput = readBoundedString(req.body?.instruction, CONTENT_SCRIPT_EDIT_MAX_INSTRUCTION_CHARS);
-  if (sendScriptInputLimitError(res, requestLanguage, [
+  if (sendScriptInputValidationError(res, requestLanguage, [
     { field: 'topic', result: topicInput },
     { field: 'script', result: scriptInput },
     { field: 'action', result: actionInput },
@@ -1164,10 +1568,21 @@ async function handleScriptEditRoute(
   const currentScript = scriptInput.value;
   const action = actionInput.value ?? (options.kind === 'expand' ? 'expand_full' : 'rewrite');
   const instruction = instructionInput.value;
-  const sourceSummary = compactSourceSummary(sanitizeSourceSummary(req.body?.sourceSummary));
+  const sourceSummaryInput = parseRequestSourceSummary(req.body?.sourceSummary);
+  if ('error' in sourceSummaryInput) {
+    sendError(
+      res,
+      sourceSummaryInput.error.code,
+      sourceSummaryInput.error.message,
+      sourceSummaryInput.error.status,
+      sourceSummaryInput.error.details,
+    );
+    return;
+  }
+  const sourceSummary = compactSourceSummary(sourceSummaryInput.value);
 
   if (!topic || !currentScript) {
-    sendError(res, 'VALIDATION', requestLanguage.startsWith('pt') ? 'topic e script são obrigatórios' : 'topic and script are required', 400);
+    sendError(res, 'VALIDATION', requiredTopicAndScriptMessage(requestLanguage), 400);
     return;
   }
   if (options.kind === 'expand' && !action.startsWith('expand_')) {
@@ -1179,7 +1594,17 @@ async function handleScriptEditRoute(
     return;
   }
 
-  const routeDecision = routeContentResearch({ topic, mode: 'draft', forceRefresh: false });
+  const routeDecision = routeContentResearchWithSemanticSafety({
+    subject: buildContentResearchSubject([
+      { label: 'Topic', value: topic },
+      { label: 'Existing script', value: currentScript },
+      { label: 'Edit instruction', value: instruction },
+      { label: 'Source summary', value: sourceSummary.join('\n') },
+    ]),
+    semanticValues: [topic, currentScript, instruction, ...sourceSummary],
+    mode: 'draft',
+    forceRefresh: false,
+  });
   if (routeDecision.route === 'unsupported') {
     sendError(res, 'CONTENT_UNSUPPORTED_TOPIC', safeUnsupportedTopicMessage(requestLanguage), 422, {
       route: routeDecision.route,
@@ -1187,11 +1612,13 @@ async function handleScriptEditRoute(
     });
     return;
   }
-  if (routeDecision.route === 'high_risk_review' && !hasHighRiskAcknowledgement(req.body)) {
+  if (routeDecision.route === 'high_risk_review') {
     sendError(res, 'CONTENT_HIGH_RISK_REVIEW_REQUIRED', safeHighRiskMessage(requestLanguage), 422, {
       route: routeDecision.route,
       reason: routeDecision.reason,
-      acknowledgeField: 'highRiskAcknowledged',
+      reviewAuthority: 'not_supported',
+      requiredEvidence: 'reviewer_attested_source_package',
+      retryable: false,
     });
     return;
   }
@@ -1287,6 +1714,10 @@ async function handleScriptEditRoute(
           userId,
           tenantId: routeTenantId,
           abortSignal: accountAbortSignal,
+          containsPrivateData: true,
+          allowCloudEscalation: true,
+          maxRetries: 0,
+          allowFallbackAfterProviderFailure: false,
         },
       ));
     throwIfContentScriptRequestCancelled(accountAbortSignal);
@@ -1304,9 +1735,7 @@ async function handleScriptEditRoute(
       sendError(
         res,
         'CONTENT_SCRIPT_EDIT_OUTPUT_TOO_LARGE',
-        requestLanguage.startsWith('pt')
-          ? 'A edição gerada excedeu o limite seguro. O roteiro original foi preservado.'
-          : 'The generated edit exceeded the safe limit. The original script was preserved.',
+        scriptEditOutputTooLargeMessage(requestLanguage),
         502,
         {
           maxChars: CONTENT_SCRIPT_EDIT_MAX_OUTPUT_CHARS,
@@ -1328,9 +1757,7 @@ async function handleScriptEditRoute(
       sendError(
         res,
         'CONTENT_SCRIPT_EDIT_LOCALE_MISMATCH',
-        requestLanguage.startsWith('pt')
-          ? 'A edição gerada não respeitou o idioma pedido. O roteiro original foi preservado.'
-          : 'The generated edit did not match the requested language. The original script was preserved.',
+        scriptEditLocaleMismatchMessage(requestLanguage),
         502,
         { originalPreserved: true },
       );
@@ -1348,7 +1775,8 @@ async function handleScriptEditRoute(
       sourceSummary,
       requestedMode: options.kind,
       appliedMode: options.kind,
-      warnings: edited ? [] : ['The edit provider returned an empty response; original script was preserved.'],
+      language: requestLanguage,
+      warnings: edited ? [] : [emptyScriptEditWarning(requestLanguage)],
     }));
     });
   } catch (err: any) {
@@ -1365,14 +1793,24 @@ async function handleScriptEditRoute(
     }
     if (requestAbortController.signal.aborted || isProviderRequestCancellation(err)) return;
     logger.error({
-      err,
+      ...safeContentScriptErrorFields(err),
       topicLength: topic.length,
       actionLength: action.length,
       editKind: options.kind,
     }, `iOS content/script ${options.kind} failed`);
     if (sendAiBudgetError(res, err)) return;
     if (err instanceof SkillInferencePolicyError) {
-      sendError(res, err.code, err.message, err.status, err.details);
+      const publicError = mapContentScriptEditInferenceError(err);
+      if (publicError.retryAfterSeconds && typeof res.setHeader === 'function') {
+        res.setHeader('Retry-After', String(publicError.retryAfterSeconds));
+      }
+      sendError(
+        res,
+        publicError.code,
+        publicError.message,
+        publicError.status,
+        publicError.details,
+      );
       return;
     }
     sendInternalError(res, options.kind === 'expand' ? 'Script expansion failed' : 'Script rewrite failed');
@@ -1380,6 +1818,26 @@ async function handleScriptEditRoute(
     if (typeof req.removeListener === 'function') req.removeListener('aborted', abortOnClientDisconnect);
     if (typeof res.removeListener === 'function') res.removeListener('close', abortOnClientDisconnect);
   }
+}
+
+function safeContentScriptErrorFields(error: unknown): {
+  errorName: string;
+  errorCode: string | null;
+  status: number | null;
+} {
+  const candidate = error as { name?: unknown; code?: unknown; status?: unknown } | null;
+  const errorName = typeof candidate?.name === 'string' && candidate.name.trim()
+    ? candidate.name.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80)
+    : typeof error;
+  const errorCode = typeof candidate?.code === 'string' && candidate.code.trim()
+    ? candidate.code.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 120)
+    : null;
+  const status = Number.isInteger(candidate?.status)
+    && Number(candidate?.status) >= 100
+    && Number(candidate?.status) <= 599
+    ? Number(candidate?.status)
+    : null;
+  return { errorName, errorCode, status };
 }
 
 function buildScriptEditSystemPrompt(kind: ScriptEditKind, language: Lang): string {
@@ -1422,13 +1880,15 @@ function hasContentOutputLocaleMismatch(language: string, text: string): boolean
   }
 }
 
-function sendContentScriptLocaleMismatch(res: Response, requestLanguage: Lang): void {
+function sendContentScriptLocaleMismatch(res: Response, targetLanguage: Lang): void {
   sendError(
     res,
     'CONTENT_SCRIPT_LOCALE_MISMATCH',
-    requestLanguage.startsWith('pt')
-      ? 'O roteiro gerado não respeitou o idioma pedido e foi retido. Tente novamente.'
-      : 'The generated script did not match the requested language and was withheld. Please retry.',
+    targetLanguage === 'pt-BR'
+      ? 'O roteiro gerado não correspondeu ao idioma solicitado e foi retido. Tente novamente.'
+      : targetLanguage === 'pt-PT'
+        ? 'O roteiro gerado não respeitou o idioma pedido e foi retido. Tente novamente.'
+        : 'The generated script did not match the requested language and was withheld. Please retry.',
     502,
     {
       contentMutationApplied: false,
@@ -1474,6 +1934,7 @@ function buildScriptEditResponse(input: {
   sourceSummary: string[];
   requestedMode: string;
   appliedMode: string;
+  language: Lang;
   warnings: string[];
 }): Record<string, unknown> {
   const estimatedInputTokens = Math.ceil((input.topic.length + input.baseScript.length) / 4);
@@ -1506,6 +1967,16 @@ function buildScriptEditResponse(input: {
   const compatibilityScript = editPatch?.applyMode === 'replace_document'
     ? editPatch.proposedText
     : input.baseScript;
+  const degraded = input.warnings.length > 0
+    || (input.kind !== 'research_refresh' && editPatch === null);
+  const nextActions = buildContentNextActions({
+    mode: 'draft',
+    budgetState: input.budgetState as ContentBudgetState,
+    hasSourcePackage: input.sourceSummary.length > 0,
+  }).map((action) => ({
+    ...action,
+    label: localizedEditActionLabel(action.id, action.label, input.language),
+  }));
 
   return {
     topic: input.topic,
@@ -1550,12 +2021,8 @@ function buildScriptEditResponse(input: {
     qualityScore: null,
     qualityWarnings: input.warnings,
     budgetState: input.budgetState,
-    expandOptions: defaultEditExpandOptions(input.action),
-    nextActions: buildContentNextActions({
-      mode: 'draft',
-      budgetState: input.budgetState as ContentBudgetState,
-      hasSourcePackage: input.sourceSummary.length > 0,
-    }),
+    expandOptions: defaultEditExpandOptions(input.action, input.language),
+    nextActions,
     artifactRefs: [],
     operationTrace,
     claimLedger: buildClaimLedger({ text: compatibilityScript }),
@@ -1568,7 +2035,7 @@ function buildScriptEditResponse(input: {
       needsExpansion: input.kind !== 'expand',
       needsResearchRefresh: input.kind === 'research_refresh',
     },
-    degraded: false,
+    degraded,
     warnings: input.warnings,
     model: input.provider,
   };
@@ -1638,25 +2105,118 @@ function resolveScriptEditPatchTarget(kind: ScriptEditKind, action: string): Scr
   return { kind: 'document', id: 'script' };
 }
 
-function defaultEditExpandOptions(action: string): Array<{ id: string; label: string; action: string }> {
+function defaultEditExpandOptions(
+  action: string,
+  language: Lang,
+): Array<{ id: string; label: string; action: string }> {
   if (action === 'refresh_research') {
     return [
-      { id: 'expand-full', label: 'Expand full', action: 'expand_full' },
-      { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
+      { id: 'expand-full', label: localizedEditActionLabel('expand-full', 'Expand full', language), action: 'expand_full' },
+      { id: 'rewrite-hook', label: localizedEditActionLabel('rewrite-hook', 'Rewrite hook', language), action: 'rewrite_hook' },
     ];
   }
   return [
-    { id: 'expand-full', label: 'Expand full', action: 'expand_full' },
-    { id: 'rewrite-hook', label: 'Rewrite hook', action: 'rewrite_hook' },
-    { id: 'title-pack', label: 'Title pack', action: 'title_pack' },
-    { id: 'caption-pack', label: 'Caption pack', action: 'caption_pack' },
-    { id: 'refresh-research', label: 'Refresh research', action: 'refresh_research' },
+    { id: 'expand-full', label: localizedEditActionLabel('expand-full', 'Expand full', language), action: 'expand_full' },
+    { id: 'rewrite-hook', label: localizedEditActionLabel('rewrite-hook', 'Rewrite hook', language), action: 'rewrite_hook' },
+    { id: 'title-pack', label: localizedEditActionLabel('title-pack', 'Title pack', language), action: 'title_pack' },
+    { id: 'caption-pack', label: localizedEditActionLabel('caption-pack', 'Caption pack', language), action: 'caption_pack' },
+    { id: 'refresh-research', label: localizedEditActionLabel('refresh-research', 'Refresh research', language), action: 'refresh_research' },
   ];
+}
+
+function localizedEditActionLabel(id: string, fallback: string, language: Lang): string {
+  if (language === 'pt-BR') {
+    return ({
+      'expand-full': 'Expandir o roteiro completo',
+      'rewrite-hook': 'Reescrever o gancho',
+      'hook-pack': 'Pacote de ganchos',
+      'title-pack': 'Pacote de títulos',
+      'thumbnail-pack': 'Pacote de miniaturas',
+      'caption-pack': 'Pacote de legendas',
+      'refresh-research': 'Atualizar a pesquisa',
+    } as Record<string, string>)[id] ?? fallback;
+  }
+  if (language === 'pt-PT') {
+    return ({
+      'expand-full': 'Expandir o guião completo',
+      'rewrite-hook': 'Reescrever o gancho',
+      'hook-pack': 'Pacote de ganchos',
+      'title-pack': 'Pacote de títulos',
+      'thumbnail-pack': 'Pacote de miniaturas',
+      'caption-pack': 'Pacote de legendas',
+      'refresh-research': 'Atualizar a investigação',
+    } as Record<string, string>)[id] ?? fallback;
+  }
+  return fallback;
+}
+
+function emptyScriptEditWarning(language: Lang): string {
+  if (language === 'pt-BR') {
+    return 'O provedor retornou uma edição vazia; o roteiro original foi preservado.';
+  }
+  if (language === 'pt-PT') {
+    return 'O fornecedor devolveu uma edição vazia; o guião original foi preservado.';
+  }
+  return 'The edit provider returned an empty response; the original script was preserved.';
+}
+
+function emptyResearchRefreshWarning(language: Lang): string {
+  if (language === 'pt-BR') return 'Nenhum resumo novo de fontes foi retornado.';
+  if (language === 'pt-PT') return 'Não foi devolvido nenhum resumo novo de fontes.';
+  return 'No fresh source summary was returned.';
+}
+
+function requiredTopicAndScriptMessage(language: Lang): string {
+  if (language === 'pt-PT') return 'tópico e guião são obrigatórios';
+  if (language === 'pt-BR') return 'tópico e roteiro são obrigatórios';
+  return 'topic and script are required';
+}
+
+function researchOutputInvalidMessage(language: Lang): string {
+  if (language === 'pt-PT') {
+    return 'As notas de investigação tinham uma estrutura inválida. O guião original foi preservado.';
+  }
+  if (language === 'pt-BR') {
+    return 'As notas de pesquisa apresentaram uma estrutura inválida. O roteiro original foi preservado.';
+  }
+  return 'The research notes had an invalid structure. The original script was preserved.';
+}
+
+function researchLocaleMismatchMessage(language: Lang): string {
+  if (language === 'pt-PT') {
+    return 'As notas de investigação não respeitaram o idioma pedido. O guião original foi preservado.';
+  }
+  if (language === 'pt-BR') {
+    return 'As notas de pesquisa não respeitaram o idioma solicitado. O roteiro original foi preservado.';
+  }
+  return 'The research notes did not match the requested language. The original script was preserved.';
+}
+
+function scriptEditOutputTooLargeMessage(language: Lang): string {
+  if (language === 'pt-PT') {
+    return 'A edição gerada excedeu o limite seguro. O guião original foi preservado.';
+  }
+  if (language === 'pt-BR') {
+    return 'A edição gerada excedeu o limite seguro. O roteiro original foi preservado.';
+  }
+  return 'The generated edit exceeded the safe limit. The original script was preserved.';
+}
+
+function scriptEditLocaleMismatchMessage(language: Lang): string {
+  if (language === 'pt-PT') {
+    return 'A edição gerada não respeitou o idioma pedido. O guião original foi preservado.';
+  }
+  if (language === 'pt-BR') {
+    return 'A edição gerada não respeitou o idioma solicitado. O roteiro original foi preservado.';
+  }
+  return 'The generated edit did not match the requested language. The original script was preserved.';
 }
 
 interface BoundedStringResult {
   value: string | null;
+  invalidType: boolean;
   tooLarge: boolean;
+  invalidControlCharacters: boolean;
   actualChars: number;
   maxChars: number;
 }
@@ -1664,26 +2224,83 @@ interface BoundedStringResult {
 function readBoundedString(
   value: unknown,
   maxChars: number,
-  options: { preserveWhitespace?: boolean } = {},
+  options: { preserveWhitespace?: boolean; allowFormattingWhitespace?: boolean } = {},
 ): BoundedStringResult {
   if (typeof value !== 'string') {
-    return { value: null, tooLarge: false, actualChars: 0, maxChars };
+    return {
+      value: null,
+      invalidType: value !== undefined,
+      tooLarge: false,
+      invalidControlCharacters: false,
+      actualChars: 0,
+      maxChars,
+    };
   }
   const normalized = options.preserveWhitespace ? value : value.trim();
   if (!normalized.trim()) {
-    return { value: null, tooLarge: false, actualChars: normalized.length, maxChars };
+    return {
+      value: null,
+      invalidType: false,
+      tooLarge: false,
+      invalidControlCharacters: false,
+      actualChars: normalized.length,
+      maxChars,
+    };
   }
   if (normalized.length > maxChars) {
-    return { value: null, tooLarge: true, actualChars: normalized.length, maxChars };
+    return {
+      value: null,
+      invalidType: false,
+      tooLarge: true,
+      invalidControlCharacters: false,
+      actualChars: normalized.length,
+      maxChars,
+    };
   }
-  return { value: normalized, tooLarge: false, actualChars: normalized.length, maxChars };
+  const invalidControlCharacters = hasUnsupportedContentControlCharacters(normalized, {
+    allowFormattingWhitespace: options.allowFormattingWhitespace,
+  });
+  return {
+    value: invalidControlCharacters ? null : normalized,
+    invalidType: false,
+    tooLarge: false,
+    invalidControlCharacters,
+    actualChars: normalized.length,
+    maxChars,
+  };
 }
 
-function sendScriptInputLimitError(
+function sendScriptInputValidationError(
   res: Response,
   language: Lang,
   inputs: Array<{ field: string; result: BoundedStringResult }>,
 ): boolean {
+  const invalidType = inputs.find((input) => input.result.invalidType);
+  if (invalidType) {
+    sendError(
+      res,
+      'CONTENT_SCRIPT_INPUT_INVALID',
+      language.startsWith('pt')
+        ? `O campo ${invalidType.field} deve ser texto.`
+        : `${invalidType.field} must be a string.`,
+      400,
+      { field: invalidType.field, reason: 'invalid_type' },
+    );
+    return true;
+  }
+  const invalid = inputs.find((input) => input.result.invalidControlCharacters);
+  if (invalid) {
+    sendError(
+      res,
+      'CONTENT_SCRIPT_INPUT_INVALID',
+      language.startsWith('pt')
+        ? `O campo ${invalid.field} contém caracteres de controlo não suportados.`
+        : `${invalid.field} contains unsupported control characters.`,
+      400,
+      { field: invalid.field, reason: 'unsupported_control_characters' },
+    );
+    return true;
+  }
   const oversized = inputs.find((input) => input.result.tooLarge);
   if (!oversized) return false;
   sendError(
@@ -1703,6 +2320,22 @@ function sendScriptInputLimitError(
   return true;
 }
 
+function buildScriptResearchSubject(input: {
+  topic: string;
+  niche: string | null;
+  hookIdea: string | null;
+  whyNow: string | null;
+  angleTag: string | null;
+}): string {
+  return [
+    `Topic: ${input.topic}`,
+    input.niche ? `Niche: ${input.niche}` : '',
+    input.hookIdea ? `Hook idea: ${input.hookIdea}` : '',
+    input.whyNow ? `Why now: ${input.whyNow}` : '',
+    input.angleTag ? `Angle: ${input.angleTag}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 function sanitizeSourceSummary(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -1710,6 +2343,78 @@ function sanitizeSourceSummary(value: unknown): string[] {
     .map((item) => item.replace(/\s+/g, ' ').trim().slice(0, 220))
     .filter(Boolean)
     .slice(0, 5);
+}
+
+function parseRequestSourceSummary(value: unknown): { value: string[] } | {
+  error: {
+    code: string;
+    message: string;
+    status: number;
+    details: Record<string, unknown>;
+  };
+} {
+  if (value === undefined) return { value: [] };
+  if (!Array.isArray(value)) {
+    return {
+      error: {
+        code: 'CONTENT_SCRIPT_INPUT_INVALID',
+        message: 'sourceSummary must be an array of strings.',
+        status: 400,
+        details: { field: 'sourceSummary', reason: 'invalid_type' },
+      },
+    };
+  }
+  if (value.length > 5) {
+    return {
+      error: {
+        code: 'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+        message: 'sourceSummary may contain at most 5 entries. None were truncated.',
+        status: 413,
+        details: { field: 'sourceSummary', maxItems: 5, actualItems: value.length, truncated: false },
+      },
+    };
+  }
+  const output: string[] = [];
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== 'string') {
+      return {
+        error: {
+          code: 'CONTENT_SCRIPT_INPUT_INVALID',
+          message: `sourceSummary[${index}] must be a string.`,
+          status: 400,
+          details: { field: `sourceSummary[${index}]`, reason: 'invalid_type' },
+        },
+      };
+    }
+    if (hasUnsupportedContentControlCharacters(item, { allowFormattingWhitespace: true })) {
+      return {
+        error: {
+          code: 'CONTENT_SCRIPT_INPUT_INVALID',
+          message: `sourceSummary[${index}] contains unsupported control characters.`,
+          status: 400,
+          details: { field: `sourceSummary[${index}]`, reason: 'unsupported_control_characters' },
+        },
+      };
+    }
+    const normalized = item.replace(/\s+/gu, ' ').trim();
+    if (normalized.length > 220) {
+      return {
+        error: {
+          code: 'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+          message: `sourceSummary[${index}] exceeds the safe limit. It was not truncated.`,
+          status: 413,
+          details: {
+            field: `sourceSummary[${index}]`,
+            maxChars: 220,
+            actualChars: normalized.length,
+            truncated: false,
+          },
+        },
+      };
+    }
+    if (normalized) output.push(normalized);
+  }
+  return { value: output };
 }
 
 function compactSourceSummary(value: string[]): string[] {
@@ -1748,10 +2453,6 @@ function isRewriteAction(action: string): boolean {
   ].includes(action);
 }
 
-function hasHighRiskAcknowledgement(body: any): boolean {
-  return body?.highRiskAcknowledged === true || body?.acknowledgeHighRisk === true;
-}
-
 function safeUnsupportedTopicMessage(language: Lang): string {
   return language.startsWith('pt')
     ? 'Não posso gerar conteúdo para esse pedido. Reformule com um objetivo seguro e legítimo.'
@@ -1760,6 +2461,6 @@ function safeUnsupportedTopicMessage(language: Lang): string {
 
 function safeHighRiskMessage(language: Lang): string {
   return language.startsWith('pt')
-    ? 'Este tema precisa de revisão de fontes e enquadramento seguro antes da geração.'
-    : 'This topic needs source review and safer framing before generation.';
+    ? 'Este tema exige um pacote de fontes revisto por uma pessoa antes da geração. Essa autoridade de revisão ainda não é suportada.'
+    : 'This topic requires a human-reviewed source package before generation. That review authority is not supported yet.';
 }

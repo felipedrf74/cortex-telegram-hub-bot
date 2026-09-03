@@ -24,11 +24,11 @@ describe('content script quality report', () => {
       'weak_intro_rewritten_to_first_three_seconds_hook',
       'platform_visual_direction_added',
     ]));
-    expect(report.suggestedScript).toContain('FIRST 3 SECONDS:');
-    expect(report.suggestedScript).toContain('[0-3s]');
+    expect(report.suggestedScript).toContain('OPENING BEAT:');
+    expect(report.suggestedScript).toContain('[BEAT 1]');
     expect(report.suggestedScript).toContain('VISUAL DIRECTION:');
     expect(report.suggestedScript).toContain('CTA:');
-    expect(report.structuredOutput.beatByBeatScript.some((beat) => /^\[\d+-\d+s\]/.test(beat))).toBe(true);
+    expect(report.structuredOutput.beatByBeatScript.every((beat) => !/^\[\d+-\d+s\]/.test(beat))).toBe(true);
     expect(report.suggestedScript).not.toMatch(/^Today we are going to talk/i);
   });
 
@@ -88,7 +88,7 @@ describe('content script quality report', () => {
     expect(report.structuredOutput.cta).toMatch(/Watch|compare/i);
   });
 
-  it('builds TikTok/Reels/Shorts scripts with first-frame hook, captions, sound/editing notes, payoff, and pacing', () => {
+  it('builds TikTok/Reels/Shorts scripts with an opening hypothesis, captions, sound/editing notes, payoff, and ordinal beats', () => {
     const report = analyzeAndImproveScript({
       topic: 'proof-first creator workflow',
       script: 'Show the old workflow, cut to the proof screen, then save this and test one proof shot.',
@@ -110,14 +110,37 @@ describe('content script quality report', () => {
     ].join('\n');
     expect(report.overallScore).toBeGreaterThanOrEqual(94);
     expect(report.structuredOutput.firstThreeSeconds).toMatch(/proof sooner/i);
-    expect(productionGuidance).toMatch(/First frame/i);
+    expect(productionGuidance).toMatch(/opening visual/i);
     expect(productionGuidance).toMatch(/captions/i);
     expect(productionGuidance).toMatch(/native sound/i);
     expect(productionGuidance).toMatch(/proof|payoff/i);
     expect(report.structuredOutput.beatByBeatScript).toEqual(expect.arrayContaining([
-      expect.stringMatching(/^\[0-3s\]/),
-      expect.stringMatching(/^\[3-8s\]/),
+      expect.stringMatching(/^\[BEAT 1\]/),
+      expect.stringMatching(/^\[BEAT 2\]/),
     ]));
+  });
+
+  it('uses explicit requested timing without inventing default platform durations', () => {
+    const explicit = buildScriptPreflightBrief({
+      topic: 'proof loops',
+      format: 'Reel',
+      targetDurationSeconds: 45,
+    });
+    const unspecified = buildScriptPreflightBrief({
+      topic: 'proof loops',
+      format: 'Reel',
+    });
+    const untimedLongDraft = analyzeAndImproveScript({
+      topic: 'proof loops',
+      format: 'Reel',
+      hook: 'A topic-specific opening.',
+      script: `A reviewable draft without an explicit duration. ${'Evidence and explanation. '.repeat(100)}`,
+    });
+
+    expect(explicit.retentionGoal).toContain('45s');
+    expect(unspecified.retentionGoal).toContain('the selected runtime');
+    expect(JSON.stringify(unspecified)).not.toMatch(/30-60s|6-10min|first 3 seconds/i);
+    expect(untimedLongDraft.complianceWarnings).not.toContain('short_form_script_too_long_for_platform');
   });
 
   it('removes only the generated objective suffix when deriving default beats', () => {
@@ -141,8 +164,8 @@ describe('content script quality report', () => {
       sourceNote: 'Pesquisa de retenção: Use como contexto de apoio.',
       proofFallback: 'Adicione um exemplo concreto, demonstração, fonte ou prova de antes e depois antes de publicar.',
       longCta: 'Escolha uma ação deste vídeo e meça o resultado nesta semana.',
-      heading: 'PRIMEIROS 3 SEGUNDOS:',
-      visual: 'Primeiro quadro:',
+      heading: 'ABERTURA:',
+      visual: 'Considere uma imagem de abertura',
     },
     {
       language: 'pt-PT',
@@ -152,8 +175,8 @@ describe('content script quality report', () => {
       sourceNote: 'Pesquisa de retenção: Usa como contexto de apoio.',
       proofFallback: 'Adiciona um exemplo concreto, demonstração, fonte ou prova de antes e depois antes de publicar.',
       longCta: 'Escolhe uma ação deste vídeo e mede o resultado esta semana.',
-      heading: 'PRIMEIROS 3 SEGUNDOS:',
-      visual: 'Primeiro plano:',
+      heading: 'ABERTURA:',
+      visual: 'Considera uma imagem de abertura',
     },
   ] as const)(
     'keeps every synthesized fallback in $language when hook and CTA are missing',

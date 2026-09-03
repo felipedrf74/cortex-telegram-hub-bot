@@ -3,6 +3,7 @@
 import type { ScreenContractMeta } from './screen-contract-meta';
 import { buildScreenContractMeta } from './screen-contract-meta';
 import type { Lang } from '../utils/i18n';
+import type { ContentWorkPlanStatus } from './cross-agent-learning';
 
 export type ContentHomeStageKind =
   | 'noIdeaYet'
@@ -96,6 +97,13 @@ export interface PipelineHealthModel {
   title: string;
   summary: string;
   metrics: PipelineHealthMetric[];
+  publicationTracking: ContentHomePublicationTrackingUnavailable;
+}
+
+export interface ContentHomePublicationTrackingUnavailable {
+  availability: 'unavailable';
+  reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED';
+  publicationExecution: 'not_supported';
 }
 
 export interface ContentEmptyStateModel {
@@ -107,6 +115,7 @@ export interface ContentEmptyStateModel {
 export interface ContentHomeViewState {
   meta: ScreenContractMeta;
   hero: NextBestActionHeroModel;
+  workSchedule: ContentHomeWorkScheduleModel;
   reasoning: CreativeReasoningModel | null;
   flow: FlowStatusModel;
   actions: PrioritizedActionModel[];
@@ -123,6 +132,18 @@ export interface ContentHomeTopicDigest {
   scheduledDate: string | null;
 }
 
+export interface ContentHomeWorkScheduleDigest {
+  confirmedThisWeek: number;
+  attentionThisWeek: number;
+  authorityStatus: 'current' | 'partially_unavailable' | 'unavailable';
+  semantics: 'private_work_session';
+}
+
+export interface ContentHomeWorkScheduleModel extends ContentHomeWorkScheduleDigest {
+  authority: 'secretary';
+  planStatus: ContentWorkPlanStatus;
+}
+
 export interface ContentHomePipelineInput {
   stages: {
     ideas: ContentHomeIdeaDigest[];
@@ -131,6 +152,7 @@ export interface ContentHomePipelineInput {
     editing: ContentHomeIdeaDigest[];
     published: ContentHomeIdeaDigest[];
   };
+  publicationTracking: ContentHomePublicationTrackingUnavailable;
 }
 
 export interface ContentHomeSignalDigest {
@@ -151,6 +173,7 @@ export interface ContentHomeBuildInput {
   pipeline: ContentHomePipelineInput | null;
   ideas: ContentHomeIdeaDigest[];
   topics: ContentHomeTopicDigest[];
+  workSchedule?: ContentHomeWorkScheduleDigest | null;
   discovery: {
     activeCount: number;
     deskReadyCount: number;
@@ -181,9 +204,10 @@ interface Snapshot {
   scripted: number;
   filmed: number;
   editing: number;
-  published: number;
   directIdeas: number;
-  scheduledTopics: number;
+  deadlineTopics: number;
+  scheduledWorkBlocks: number;
+  scheduleAttention: number;
   readyTopics: number;
   draftingTopics: number;
   deskReady: number;
@@ -204,14 +228,60 @@ export function buildContentHomeViewState(
   const state = resolveState(input, snapshot);
 
   return {
-    meta: input.meta ?? inferContentContractMeta(input),
+    meta: buildContentContractMeta(input),
     hero: buildHero(state, input, snapshot, language),
+    workSchedule: buildWorkScheduleModel(input),
     reasoning: buildReasoning(state, input, snapshot, language),
     flow: buildFlow(state, snapshot, language),
     actions: buildActions(state, input, snapshot, language),
     pipelineHealth: buildPipelineHealth(state, snapshot, language),
     emptyState: buildEmptyState(state, input, snapshot, language),
   };
+}
+
+function buildContentContractMeta(input: ContentHomeBuildInput): ScreenContractMeta {
+  const meta = input.meta ?? inferContentContractMeta(input);
+  const authorityStatus = input.workSchedule?.authorityStatus ?? 'unavailable';
+  if (authorityStatus === 'current') return meta;
+
+  return buildScreenContractMeta({
+    ...meta,
+    isPartial: true,
+    reasonCodes: [
+      ...meta.reasonCodes,
+      authorityStatus === 'unavailable'
+        ? 'CONTENT_SCHEDULE_AUTHORITY_UNAVAILABLE'
+        : 'CONTENT_SCHEDULE_AUTHORITY_PARTIAL',
+    ],
+  });
+}
+
+function buildWorkScheduleModel(
+  input: ContentHomeBuildInput,
+): ContentHomeWorkScheduleModel {
+  const workSchedule = input.workSchedule ?? {
+    confirmedThisWeek: 0,
+    attentionThisWeek: 0,
+    authorityStatus: 'unavailable' as const,
+    semantics: 'private_work_session' as const,
+  };
+  return {
+    ...workSchedule,
+    authority: 'secretary',
+    planStatus: resolveContentWorkPlanStatus(input),
+  };
+}
+
+function resolveContentWorkPlanStatus(input: ContentHomeBuildInput): ContentWorkPlanStatus {
+  const workSchedule = input.workSchedule;
+  if (!workSchedule || workSchedule.authorityStatus === 'unavailable') return 'unavailable';
+  if (workSchedule.authorityStatus === 'partially_unavailable') return 'partial';
+  if (workSchedule.confirmedThisWeek > 0) return 'confirmed';
+  // Attention-only cancellation/provider states are not work proposals. A
+  // proposal requires an actionable filming recommendation that still needs
+  // Secretary confirmation.
+  if (input.filmingRecommendation != null) return 'proposed';
+  return 'unplanned';
 }
 
 function inferContentContractMeta(input: ContentHomeBuildInput): ScreenContractMeta {
@@ -230,11 +300,19 @@ function makeSnapshot(input: ContentHomeBuildInput): Snapshot {
   const scripted = input.pipeline?.stages.scripted.length ?? 0;
   const filmed = input.pipeline?.stages.filmed.length ?? 0;
   const editing = input.pipeline?.stages.editing.length ?? 0;
-  const published = input.pipeline?.stages.published.length ?? 0;
-
-  const scheduledTopics = input.topics.filter((topic) => !isTerminalTopic(topic.status) && topic.scheduledDate != null).length;
-  const readyTopics = input.topics.filter((topic) => topic.status === 'ready').length;
-  const draftingTopics = input.topics.filter((topic) => topic.status === 'drafting').length;
+  const activeTopics = input.topics.filter((topic) => !isTerminalTopic(topic.status)).length;
+  const deadlineTopics = input.topics.filter((topic) => !isTerminalTopic(topic.status) && topic.scheduledDate != null).length;
+  // Topics are a compatibility projection over the same canonical workspace
+  // items as pipeline. Use them only as a fallback when the canonical pipeline
+  // digest is unavailable, otherwise the Home backlog counts every item twice.
+  const readyTopics = input.pipeline == null
+    ? input.topics.filter((topic) => topic.status === 'ready').length
+    : 0;
+  const draftingTopics = input.pipeline == null
+    ? input.topics.filter((topic) => topic.status === 'drafting').length
+    : 0;
+  const scheduledWorkBlocks = input.workSchedule?.confirmedThisWeek ?? 0;
+  const scheduleAttention = input.workSchedule?.attentionThisWeek ?? 0;
 
   const deskReady = input.discovery?.deskReadyCount ?? 0;
   const monitoredPillars = input.discovery?.monitoredPillars.length ?? 0;
@@ -243,18 +321,23 @@ function makeSnapshot(input: ContentHomeBuildInput): Snapshot {
   const hasVoiceDNA = input.script?.hasBrandVoice ?? false;
   const activeDiscoverySignals = input.discovery?.activeCount ?? 0;
 
-  const totalOpenWork = pipelineIdeas + scripted + filmed + editing + draftingTopics + readyTopics + scheduledTopics;
+  const pipelineOpenWork = pipelineIdeas + scripted + filmed + editing;
+  const totalOpenWork = input.pipeline == null
+    ? Math.max(activeTopics, input.ideas.length)
+    : pipelineOpenWork;
   const hasAnyData =
-    pipelineIdeas + scripted + filmed + editing + published + input.ideas.length + input.topics.length + deskReady + monitoredPillars + optimizationSignals > 0;
+    pipelineIdeas + scripted + filmed + editing + input.ideas.length + input.topics.length
+      + deskReady + monitoredPillars + optimizationSignals + scheduledWorkBlocks + scheduleAttention > 0;
 
   return {
     pipelineIdeas,
     scripted,
     filmed,
     editing,
-    published,
     directIdeas: input.ideas.length,
-    scheduledTopics,
+    deadlineTopics,
+    scheduledWorkBlocks,
+    scheduleAttention,
     readyTopics,
     draftingTopics,
     deskReady,
@@ -269,13 +352,14 @@ function makeSnapshot(input: ContentHomeBuildInput): Snapshot {
 }
 
 function resolveState(input: ContentHomeBuildInput, snapshot: Snapshot): ContentHomeStageKind {
-  const hasMatureExecutionStep = snapshot.scripted > 0 || snapshot.readyTopics > 0 || snapshot.filmed > 0 || snapshot.scheduledTopics > 0;
+  const matureExecutionCount = snapshot.scripted + snapshot.readyTopics + snapshot.filmed + snapshot.editing;
+  const hasMatureExecutionStep = matureExecutionCount > 0;
 
-  if (snapshot.totalOpenWork >= 7 && (snapshot.scripted + snapshot.editing + snapshot.readyTopics) > 1) {
+  if (snapshot.totalOpenWork >= 7 && matureExecutionCount > 1) {
     return 'backlogOverload';
   }
 
-  if (snapshot.scheduledTopics > 0 && snapshot.scripted === 0 && snapshot.readyTopics === 0 && snapshot.filmed === 0 && snapshot.editing === 0 && snapshot.draftingTopics === 0) {
+  if (snapshot.scheduledWorkBlocks > 0 && !hasMatureExecutionStep && snapshot.draftingTopics === 0) {
     return 'scheduled';
   }
 
@@ -294,15 +378,15 @@ function resolveState(input: ContentHomeBuildInput, snapshot: Snapshot): Content
     return 'readyToFilm';
   }
 
-  if (snapshot.optimizationSignals > 0 && snapshot.published > 0) {
+  if (snapshot.optimizationSignals > 0) {
     return 'learningAvailable';
   }
 
-  if (snapshot.hasAnyData && snapshot.totalOpenWork === 0 && snapshot.published > 0) {
+  if (snapshot.hasAnyData && snapshot.totalOpenWork === 0) {
     return 'emptyPipeline';
   }
 
-  if (snapshot.directIdeas > 0 || snapshot.pipelineIdeas > 0 || snapshot.deskReady > 0) {
+  if (snapshot.directIdeas > 0 || snapshot.pipelineIdeas > 0 || snapshot.deskReady > 0 || snapshot.totalOpenWork > 0) {
     return 'scriptInProgress';
   }
 
@@ -321,6 +405,13 @@ function buildHero(
 ): NextBestActionHeroModel {
   const candidateTitle = preferredIdeaTitle(input, language);
   const filmingDate = input.filmingRecommendation ? shortDate(input.filmingRecommendation.date, language) : null;
+  const schedulePlanIsProposed = (input.filmingRecommendation != null || isScheduleDecisionState(state))
+    && scheduleDecisionRequiresReview(input, state);
+  const workPlanStatus = resolveContentWorkPlanStatus(input);
+  const hasConfirmedPlanAttention = workPlanStatus === 'confirmed' && snapshot.scheduleAttention > 0;
+  const scheduleDecisionConfidence = schedulePlanIsProposed
+    ? t(language, 'Revisão necessária', 'Review required')
+    : null;
 
   switch (state) {
     case 'noIdeaYet':
@@ -367,9 +458,11 @@ function buildHero(
           ? t(language, `Janela sugerida · ${filmingDate}`, `Suggested window · ${filmingDate}`)
           : t(language, 'Roteiro pronto para avançar', 'Script ready to move'),
         summary: input.filmingRecommendation?.localizedReason
-          ?? t(language, 'O sistema já vê maturidade suficiente para sair do texto e proteger a execução no calendário.', 'The system already sees enough maturity to move from text into protected execution on the calendar.'),
+          ?? t(language, 'O sistema já vê maturidade suficiente para propor uma sessão privada à Secretary; a recomendação ainda não reserva tempo.', 'The system sees enough maturity to propose a private session to Secretary; the recommendation does not reserve time yet.'),
         currentStage: t(language, 'Pronto para filmar', 'Ready to film'),
-        confidence: input.filmingRecommendation?.localizedConfidenceLabel ?? t(language, 'Alta confiança', 'High confidence'),
+        confidence: scheduleDecisionConfidence
+          ?? input.filmingRecommendation?.localizedConfidenceLabel
+          ?? t(language, 'Alta confiança', 'High confidence'),
         state,
         primaryAction: { title: t(language, 'Abrir agenda', 'Open schedule'), icon: 'calendar', target: 'schedule' },
         secondaryAction: { title: t(language, 'Ver pipeline', 'View pipeline'), icon: 'square.stack.3d.up.fill', target: 'pipeline' },
@@ -377,11 +470,39 @@ function buildHero(
     case 'scheduled':
       return {
         eyebrow: t(language, 'PRÓXIMA JOGADA', 'NEXT MOVE'),
-        title: tPT(language, 'Proteger a publicação já alinhada', 'Proteger a publicação já alinhada', 'Protect the scheduled publish move'),
-        subtitle: t(language, 'Peça já agendada', 'Piece already scheduled'),
-        summary: tPT(language, 'A próxima peça já tem lugar no calendário. O melhor uso deste momento é garantir que publicação, tarefas e contexto continuam alinhados.', 'A próxima peça já tem lugar no calendário. O melhor uso deste momento é garantir que publicação, tarefas e contexto continuem alinhados.', 'The next piece already has a place on the calendar. The best use of this moment is making sure publishing, tasks, and context stay aligned.'),
-        currentStage: t(language, 'Agendado', 'Scheduled'),
-        confidence: t(language, 'Alta confiança', 'High confidence'),
+        title: hasConfirmedPlanAttention
+          ? tPT(language, 'Mantém o bloco confirmado e revê a atenção da agenda', 'Mantenha o bloco confirmado e revise a atenção da agenda', 'Keep the confirmed block and review schedule attention')
+          : schedulePlanIsProposed
+            ? tPT(language, 'Rever o bloco confirmado e o estado do plano', 'Revisar o bloco confirmado e o estado do plano', 'Review the confirmed block and plan status')
+            : tPT(language, 'Proteger o bloco de trabalho já confirmado', 'Proteger o bloco de trabalho já confirmado', 'Protect the confirmed work block'),
+        subtitle: hasConfirmedPlanAttention
+          ? t(language, 'Sessão privada confirmada · atenção da agenda pendente', 'Private work session confirmed · schedule attention pending')
+          : schedulePlanIsProposed
+            ? t(language, `Estado do plano: ${workPlanStatus} · revisão necessária`, `Plan status: ${workPlanStatus} · review required`)
+            : t(language, 'Sessão privada já agendada', 'Private work session scheduled'),
+        summary: hasConfirmedPlanAttention
+          ? tPT(
+              language,
+              'O bloco privado confirmado continua protegido pela verdade local da Secretary, enquanto a sincronização ou outro estado da agenda precisa de atenção. Isto não agenda nem executa a publicação.',
+              'O bloco privado confirmado continua protegido pela verdade local do Secretário, enquanto a sincronização ou outro estado da agenda precisa de atenção. Isso não agenda nem executa a publicação.',
+              'The confirmed private block remains protected by current Secretary truth while provider sync or another schedule state needs attention. This does not schedule or execute publication.',
+            )
+          : schedulePlanIsProposed
+            ? tPT(
+                language,
+                `Existe um bloco privado confirmado, mas o estado global do plano é ${workPlanStatus}. Só o bloco confirmado está protegido; isto não agenda nem executa a publicação.`,
+                `Existe um bloco privado confirmado, mas o estado geral do plano é ${workPlanStatus}. Apenas o bloco confirmado está protegido; isso não agenda nem executa a publicação.`,
+                `A confirmed private block is visible, but the overall plan status is ${workPlanStatus}. Only the confirmed block is protected; this does not schedule or execute publication.`,
+              )
+            : tPT(language, 'O trabalho de conteúdo já tem um bloco privado confirmado. Revê o objetivo e os bloqueios; isto não agenda nem executa a publicação.', 'O trabalho de conteúdo já tem um bloco privado confirmado. Revise o objetivo e os bloqueios; isso não agenda nem executa a publicação.', 'Content work has a confirmed private block. Review its objective and blockers; this does not schedule or execute publication.'),
+        currentStage: hasConfirmedPlanAttention
+          ? t(language, 'Bloco confirmado · atenção pendente', 'Confirmed block · attention pending')
+          : schedulePlanIsProposed
+            ? t(language, `Plano ${workPlanStatus}`, `Plan ${workPlanStatus}`)
+            : t(language, 'Bloco de trabalho confirmado', 'Work block confirmed'),
+        confidence: schedulePlanIsProposed
+          ? t(language, 'Revisão necessária', 'Review required')
+          : t(language, 'Alta confiança', 'High confidence'),
         state,
         primaryAction: { title: t(language, 'Abrir agenda', 'Open schedule'), icon: 'calendar', target: 'schedule' },
         secondaryAction: { title: t(language, 'Ver pipeline', 'View pipeline'), icon: 'square.stack.3d.up.fill', target: 'pipeline' },
@@ -406,7 +527,9 @@ function buildHero(
         summary: input.filmingRecommendation?.localizedReason
           ?? t(language, 'Há uma boa janela na semana para avançar conteúdo sem lutar contra o resto do sistema.', 'There is a good week window to advance content without fighting the rest of the system.'),
         currentStage: t(language, 'Janela para avançar', 'Window to advance'),
-        confidence: input.filmingRecommendation?.localizedConfidenceLabel ?? t(language, 'Confiança média', 'Medium confidence'),
+        confidence: scheduleDecisionConfidence
+          ?? input.filmingRecommendation?.localizedConfidenceLabel
+          ?? t(language, 'Confiança média', 'Medium confidence'),
         state,
         primaryAction: {
           title: snapshot.deskReady > 0 || snapshot.directIdeas > 0 ? t(language, 'Continuar roteiro', 'Continue script') : t(language, 'Abrir radar', 'Open radar'),
@@ -448,7 +571,9 @@ function buildHero(
         summary: input.filmingRecommendation?.localizedReason
           ?? t(language, 'Há uma possibilidade na agenda, mas o sistema ainda não a lê como aposta forte.', 'There is a possible slot on the calendar, but the system does not yet read it as a strong bet.'),
         currentStage: t(language, 'Janela por confirmar', 'Window needs confirmation'),
-        confidence: input.filmingRecommendation?.localizedConfidenceLabel ?? t(language, 'Baixa confiança', 'Low confidence'),
+        confidence: scheduleDecisionConfidence
+          ?? input.filmingRecommendation?.localizedConfidenceLabel
+          ?? t(language, 'Baixa confiança', 'Low confidence'),
         state,
         primaryAction: { title: t(language, 'Abrir agenda', 'Open schedule'), icon: 'calendar', target: 'schedule' },
         secondaryAction: { title: t(language, 'Abrir radar', 'Open radar'), icon: 'dot.radiowaves.left.and.right', target: 'radar' },
@@ -463,6 +588,9 @@ function buildReasoning(
   language: Lang,
 ): CreativeReasoningModel | null {
   const signals: CreativeReasoningSignal[] = [];
+  const schedulePlanIsProposed = (input.filmingRecommendation != null || isScheduleDecisionState(state))
+    && scheduleDecisionRequiresReview(input, state);
+  const workPlanStatus = resolveContentWorkPlanStatus(input);
 
   const desk = input.discovery?.deskItems[0];
   if (desk) {
@@ -494,16 +622,57 @@ function buildReasoning(
       id: 'schedule',
       title: t(language, 'Agenda', 'Schedule'),
       effect: input.filmingRecommendation.localizedReason,
-      detail: input.filmingRecommendation.localizedConfidenceLabel,
-      tone: input.filmingRecommendation.confidence === 'low' ? 'caution' : 'supportive',
+      detail: t(language, 'A recomendação é uma proposta e requer confirmação da Secretary antes de reservar tempo.', 'The recommendation is a proposal and requires Secretary confirmation before it reserves time.'),
+      tone: 'caution',
     });
-  } else if (snapshot.scheduledTopics > 0) {
+  }
+
+  if (schedulePlanIsProposed) {
+    const authorityStatus = input.workSchedule?.authorityStatus ?? 'unavailable';
     signals.push({
-      id: 'calendar',
-      title: t(language, 'Calendário', 'Calendar'),
-      effect: t(language, `${snapshot.scheduledTopics} peça${snapshot.scheduledTopics === 1 ? '' : 's'} já estão protegidas no calendário.`, `${snapshot.scheduledTopics} piece${snapshot.scheduledTopics === 1 ? '' : 's'} are already protected on the calendar.`),
-      detail: null,
+      id: 'schedule-authority',
+      title: t(language, 'Autoridade da agenda', 'Schedule authority'),
+      effect: authorityStatus === 'unavailable'
+        ? t(language, 'A autoridade da agenda está indisponível e o estado do plano é unavailable.', 'Schedule authority is unavailable and plan status is unavailable.')
+        : authorityStatus === 'partially_unavailable'
+          ? t(language, 'A autoridade da agenda está parcial e o estado do plano é partial.', 'Schedule authority is partial and plan status is partial.')
+          : workPlanStatus === 'confirmed' && snapshot.scheduleAttention > 0
+            ? t(language, 'A autoridade da agenda está atual e o bloco privado continua confirmado, mas há um estado de sincronização ou agenda que precisa de atenção.', 'Schedule authority is current and the private block remains confirmed, but a provider-sync or schedule state needs attention.')
+            : workPlanStatus === 'unplanned'
+              ? t(language, 'A autoridade da agenda está atual, mas não há blocos privados confirmados: plano unplanned.', 'Schedule authority is current, but there are no confirmed private blocks: plan status unplanned.')
+              : t(language, 'A autoridade da agenda está atual, mas a janela continua proposta até a Secretary confirmar um bloco privado.', 'Schedule authority is current, but the window remains proposed until Secretary confirms a private block.'),
+      detail: workPlanStatus === 'confirmed' && snapshot.scheduleAttention > 0
+        ? t(language, 'O bloco confirmado continua protegido; revê a atenção do provider ou da agenda separadamente.', 'The confirmed block remains protected; review provider or schedule attention separately.')
+        : snapshot.scheduledWorkBlocks > 0
+          ? t(language, 'Os blocos confirmados continuam visíveis, mas revê o plano global antes de o tratar como protegido.', 'Confirmed blocks remain visible, but review the overall plan before treating it as protected.')
+          : t(language, 'Revê a agenda antes de tratar qualquer recomendação como protegida.', 'Review the schedule before treating any recommendation as protected.'),
+      tone: 'caution',
+    });
+  } else if (snapshot.scheduledWorkBlocks > 0) {
+    signals.push({
+      id: 'work-schedule',
+      title: t(language, 'Plano de trabalho', 'Work plan'),
+      effect: tPT(
+        language,
+        snapshot.scheduledWorkBlocks === 1 ? '1 sessão privada de conteúdo está confirmada para esta semana.' : `${snapshot.scheduledWorkBlocks} sessões privadas de conteúdo estão confirmadas para esta semana.`,
+        snapshot.scheduledWorkBlocks === 1 ? '1 sessão privada de conteúdo está confirmada para esta semana.' : `${snapshot.scheduledWorkBlocks} sessões privadas de conteúdo estão confirmadas para esta semana.`,
+        snapshot.scheduledWorkBlocks === 1 ? '1 private content work session is confirmed for this week.' : `${snapshot.scheduledWorkBlocks} private content work sessions are confirmed for this week.`,
+      ),
+      detail: t(language, 'Agendar trabalho não agenda publicação.', 'Scheduling work does not schedule publication.'),
       tone: 'supportive',
+    });
+  } else if (!input.filmingRecommendation && snapshot.deadlineTopics > 0) {
+    signals.push({
+      id: 'deadline',
+      title: t(language, 'Prazo do workspace', 'Workspace deadline'),
+      effect: tPT(
+        language,
+        snapshot.deadlineTopics === 1 ? '1 peça tem prazo, mas ainda não tem um bloco privado confirmado.' : `${snapshot.deadlineTopics} peças têm prazo, mas ainda não têm blocos privados confirmados.`,
+        snapshot.deadlineTopics === 1 ? '1 peça tem prazo, mas ainda não tem um bloco privado confirmado.' : `${snapshot.deadlineTopics} peças têm prazo, mas ainda não têm blocos privados confirmados.`,
+        snapshot.deadlineTopics === 1 ? '1 piece has a deadline but no confirmed private work block.' : `${snapshot.deadlineTopics} pieces have deadlines but no confirmed private work blocks.`,
+      ),
+      detail: t(language, 'Um prazo não é um evento de calendário.', 'A deadline is not a calendar event.'),
+      tone: 'caution',
     });
   }
 
@@ -555,7 +724,7 @@ function buildReasoning(
 
   return {
     title: t(language, 'Por que agora', 'Why this now'),
-    summary: reasoningSummary(state, language),
+    summary: reasoningSummary(state, input, language),
     confidence: confidenceLabel(state, input, language),
     signals: signals.slice(0, 4),
   };
@@ -576,7 +745,7 @@ function buildFlow(
   const writeStatus: ContentFlowStatus =
     state === 'scriptInProgress' || state === 'angleChosen' || (state === 'crossSkillOpportunity' && snapshot.deskReady > 0)
       ? 'current'
-      : (snapshot.scripted > 0 || snapshot.filmed > 0 || snapshot.editing > 0 || snapshot.published > 0)
+      : (snapshot.scripted > 0 || snapshot.filmed > 0 || snapshot.editing > 0)
         ? 'complete'
         : state === 'noIdeaYet'
           ? 'blocked'
@@ -585,7 +754,7 @@ function buildFlow(
   const scheduleStatus: ContentFlowStatus =
     state === 'readyToFilm' || state === 'lowConfidence' || state === 'scheduled'
       ? 'current'
-      : (snapshot.scheduledTopics > 0 || snapshot.published > 0)
+      : snapshot.scheduledWorkBlocks > 0
         ? 'complete'
         : (snapshot.scripted === 0 && snapshot.readyTopics === 0)
           ? 'blocked'
@@ -620,8 +789,8 @@ function buildFlow(
       {
         id: 'schedule',
         title: t(language, 'Agendar', 'Schedule'),
-        summary: snapshot.scheduledTopics > 0
-          ? t(language, `${snapshot.scheduledTopics} protegidos`, `${snapshot.scheduledTopics} protected`)
+        summary: snapshot.scheduledWorkBlocks > 0
+          ? t(language, `${snapshot.scheduledWorkBlocks} blocos`, `${snapshot.scheduledWorkBlocks} work blocks`)
           : t(language, 'Janela', 'Window'),
         status: scheduleStatus,
       },
@@ -701,13 +870,18 @@ function buildActions(
       ];
     case 'readyToFilm':
     case 'lowConfidence':
-    case 'scheduled':
       return [
         {
           id: 'schedule',
-          title: t(language, 'Reservar janela de gravação', 'Reserve filming window'),
-          summary: input.filmingRecommendation?.localizedReason ?? t(language, 'Protege agora a janela mais limpa do calendário.', 'Protect the cleanest calendar window now.'),
-          impact: t(language, 'Transforma intenção em execução', 'Turns intention into execution'),
+          title: t(language, 'Pedir janela de gravação', 'Request filming window'),
+          summary: input.filmingRecommendation
+            ? t(
+                language,
+                `${input.filmingRecommendation.localizedReason} Continua a ser uma proposta até a Secretary confirmar o bloco privado.`,
+                `${input.filmingRecommendation.localizedReason} This remains a proposal until Secretary confirms the private block.`,
+              )
+            : t(language, 'Pede à Secretary uma pré-visualização da janela mais limpa; ainda não existe reserva.', 'Ask Secretary to preview the cleanest window; no reservation exists yet.'),
+          impact: t(language, 'Inicia a confirmação sem assumir uma reserva', 'Starts confirmation without assuming a reservation'),
           estimatedEffort: t(language, '3 min', '3 min'),
           target: 'schedule',
           tint: 'accent',
@@ -724,8 +898,38 @@ function buildActions(
         {
           id: 'tasks',
           title: t(language, 'Atacar tarefas de conteúdo', 'Attack content tasks'),
-          summary: t(language, 'Fecha o que ainda está pendente antes de publicar ou filmar.', 'Close what is still pending before publishing or filming.'),
+          summary: t(language, 'Fecha o que ainda está pendente antes de filmar ou entregar a peça.', 'Close what is still pending before filming or handing off the piece.'),
           impact: t(language, 'Diminui atrito operacional', 'Reduces operational friction'),
+          estimatedEffort: t(language, '5 min', '5 min'),
+          target: 'tasks',
+          tint: 'warning',
+        },
+      ];
+    case 'scheduled':
+      return [
+        {
+          id: 'schedule',
+          title: t(language, 'Rever bloco de trabalho', 'Review work block'),
+          summary: t(language, 'Confirma objetivo, duração e dependências da sessão privada já agendada.', 'Confirm the objective, duration, and dependencies of the scheduled private session.'),
+          impact: t(language, 'Protege a execução sem confundir trabalho com publicação', 'Protects execution without confusing work with publication'),
+          estimatedEffort: t(language, '3 min', '3 min'),
+          target: 'schedule',
+          tint: 'accent',
+        },
+        {
+          id: 'pipeline',
+          title: t(language, 'Rever pipeline', 'Review pipeline'),
+          summary: t(language, 'Liga o bloco ao item e à próxima ação corretos.', 'Connect the block to the correct item and next action.'),
+          impact: t(language, 'Evita trabalho sem contexto', 'Avoids context-free work'),
+          estimatedEffort: t(language, '4 min', '4 min'),
+          target: 'pipeline',
+          tint: 'content',
+        },
+        {
+          id: 'tasks',
+          title: t(language, 'Resolver bloqueios', 'Resolve blockers'),
+          summary: t(language, 'Fecha dependências antes do início da sessão.', 'Close dependencies before the session starts.'),
+          impact: t(language, 'Aumenta a probabilidade de concluir o bloco', 'Improves the odds of completing the block'),
           estimatedEffort: t(language, '5 min', '5 min'),
           target: 'tasks',
           tint: 'warning',
@@ -802,17 +1006,22 @@ function buildPipelineHealth(
   snapshot: Snapshot,
   language: Lang,
 ): PipelineHealthModel {
-  const attentionCount = Math.max(0, snapshot.totalOpenWork - Math.max(1, snapshot.scheduledTopics + snapshot.published));
+  const attentionCount = Math.max(
+    snapshot.scheduleAttention,
+    Math.max(0, snapshot.totalOpenWork - Math.max(1, snapshot.scheduledWorkBlocks)),
+  );
 
   let summary: string;
   switch (state) {
     case 'backlogOverload':
       summary = t(language, 'Há muito trabalho aberto ao mesmo tempo. O sistema ganha mais quando fechas movimento, não quando acrescentas ferramentas.', 'There is too much open work at the same time. The system wins more when you close motion, not when you add tools.');
       break;
-    case 'readyToFilm':
-    case 'lowConfidence':
     case 'scheduled':
       summary = tPT(language, 'Já existe massa crítica suficiente para filmar ou agendar. O foco agora é proteger execução.', 'Já existe massa crítica suficiente para filmar ou agendar. O foco agora é proteger a execução.', 'There is enough momentum to film or schedule. The focus now is protecting execution.');
+      break;
+    case 'readyToFilm':
+    case 'lowConfidence':
+      summary = tPT(language, 'Já existe massa crítica suficiente para propor uma sessão. O foco agora é pedir confirmação à Secretary, não assumir uma reserva.', 'Já existe massa crítica suficiente para propor uma sessão. O foco agora é pedir confirmação ao Secretário, não assumir uma reserva.', 'There is enough momentum to propose a session. The focus now is asking Secretary to confirm it, not assuming a reservation.');
       break;
     case 'learningAvailable':
       summary = tPT(language, 'O sistema já está a ensinar o que repetir. Usa esse sinal para refinar o próximo conteúdo.', 'O sistema já está ensinando o que repetir. Use esse sinal para refinar o próximo conteúdo.', 'The system is already teaching what to repeat. Use that signal to refine the next piece.');
@@ -828,12 +1037,17 @@ function buildPipelineHealth(
   return {
     title: t(language, 'Saúde do pipeline', 'Pipeline health'),
     summary,
+    publicationTracking: {
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    },
     metrics: [
       { id: 'ideas', label: t(language, 'Ideias', 'Ideas'), value: String(Math.max(snapshot.pipelineIdeas, snapshot.directIdeas, snapshot.deskReady)), tint: 'info' },
       { id: 'scripts', label: t(language, 'Roteiros', 'Scripts'), value: String(Math.max(snapshot.scripted, snapshot.draftingTopics)), tint: 'content' },
       { id: 'ready', label: t(language, 'Prontos', 'Ready'), value: String(snapshot.readyTopics + snapshot.filmed), tint: 'accent' },
-      { id: 'scheduled', label: t(language, 'Agendados', 'Scheduled'), value: String(snapshot.scheduledTopics), tint: 'success' },
-      { id: 'published', label: t(language, 'Publicados', 'Published'), value: String(snapshot.published), tint: 'success' },
+      { id: 'scheduled', label: t(language, 'Blocos de trabalho', 'Work blocks'), value: String(snapshot.scheduledWorkBlocks), tint: 'success' },
+      { id: 'published', label: t(language, 'Publicação externa', 'External publishing'), value: t(language, 'Não monitorizada', 'Not tracked'), tint: 'info' },
       { id: 'attention', label: t(language, 'Atenção', 'Needs attention'), value: String(attentionCount), tint: 'warning' },
     ],
   };
@@ -887,6 +1101,10 @@ function confidenceLabel(
   input: ContentHomeBuildInput,
   language: Lang,
 ): string {
+  if (scheduleDecisionRequiresReview(input, state) && isScheduleDecisionState(state)) {
+    return t(language, 'Revisão necessária', 'Review required');
+  }
+
   switch (state) {
     case 'scheduled':
       return t(language, 'Alta confiança', 'High confidence');
@@ -906,7 +1124,20 @@ function confidenceLabel(
   }
 }
 
-function reasoningSummary(state: ContentHomeStageKind, language: Lang): string {
+function reasoningSummary(
+  state: ContentHomeStageKind,
+  input: ContentHomeBuildInput,
+  language: Lang,
+): string {
+  if (scheduleDecisionRequiresReview(input, state) && isScheduleDecisionState(state)) {
+    const planStatus = resolveContentWorkPlanStatus(input);
+    return t(
+      language,
+      `O sinal de conteúdo pode continuar válido, mas o estado do plano é ${planStatus}. Só blocos privados confirmados pela Secretary estão protegidos.`,
+      `The content signal may remain valid, but plan status is ${planStatus}. Only private work blocks confirmed by Secretary are protected.`,
+    );
+  }
+
   switch (state) {
     case 'noIdeaYet':
       return t(language, 'O sistema ainda precisa de um sinal forte antes de abrir o fluxo inteiro.', 'The system still needs a strong signal before opening the full flow.');
@@ -917,9 +1148,9 @@ function reasoningSummary(state: ContentHomeStageKind, language: Lang): string {
     case 'crossSkillOpportunity':
       return t(language, 'Há uma janela boa no sistema, mas ainda precisamos transformá-la numa peça concreta.', 'There is a good window in the system, but we still need to turn it into a concrete piece.');
     case 'readyToFilm':
-      return t(language, 'O sistema já juntou tema, maturidade e janela. Agora a decisão é proteger execução.', 'The system has already combined topic, maturity, and window. The decision now is protecting execution.');
+      return t(language, 'O sistema já juntou tema, maturidade e uma janela proposta. A próxima decisão é pedir confirmação da Secretary.', 'The system has combined topic, maturity, and a proposed window. The next decision is asking Secretary to confirm it.');
     case 'scheduled':
-      return t(language, 'A próxima peça já está protegida. A prioridade agora é manter a execução limpa até à publicação.', 'The next piece is already protected. The priority now is keeping execution clean until publish.');
+      return t(language, 'Já existe um bloco privado confirmado. A prioridade é chegar à sessão com objetivo e dependências claros.', 'A private work block is confirmed. The priority is reaching the session with a clear objective and dependencies.');
     case 'emptyPipeline':
       return t(language, 'O sistema tem memória e aprendizagem, mas não tem nenhuma peça viva agora.', 'The system has memory and learning, but it has no live piece right now.');
     case 'backlogOverload':
@@ -929,6 +1160,25 @@ function reasoningSummary(state: ContentHomeStageKind, language: Lang): string {
     case 'lowConfidence':
       return t(language, 'Existe oportunidade, mas o sistema ainda não a lê como decisão forte sem validação adicional.', 'There is opportunity, but the system does not yet read it as a strong decision without further validation.');
   }
+}
+
+function scheduleDecisionRequiresReview(
+  input: ContentHomeBuildInput,
+  state: ContentHomeStageKind,
+): boolean {
+  // A filming date is always a recommendation until Secretary confirms that
+  // exact private work block. An unrelated confirmed block must never promote
+  // the recommendation into calendar truth.
+  if (state !== 'scheduled' && input.filmingRecommendation != null) return true;
+  if ((input.workSchedule?.attentionThisWeek ?? 0) > 0) return true;
+  return resolveContentWorkPlanStatus(input) !== 'confirmed';
+}
+
+function isScheduleDecisionState(state: ContentHomeStageKind): boolean {
+  return state === 'readyToFilm'
+    || state === 'scheduled'
+    || state === 'crossSkillOpportunity'
+    || state === 'lowConfidence';
 }
 
 function optimizationSummary(input: ContentHomeBuildInput, language: Lang): string | null {

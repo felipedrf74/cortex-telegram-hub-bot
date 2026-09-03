@@ -457,7 +457,13 @@ describe('portal operations routes', () => {
       reasons: { CONTENT_SCHEDULE_STALE: 1 },
       product: {
         idea_captured_total: 3,
-        content_scheduled_total: 2,
+        internal_scheduled_state_or_confirmed_work_block: 2,
+      },
+      publicationTracking: {
+        status: 'unavailable',
+        publicationEvidence: false,
+        reasonCode: 'EXTERNAL_PUBLICATION_RECEIPTS_UNAVAILABLE',
+        internalWorkflowStateMetric: 'internal_workflow_published_state',
       },
       quality: {
         generated_total: 5,

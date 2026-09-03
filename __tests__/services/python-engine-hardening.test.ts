@@ -96,7 +96,7 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
   });
 
   it('does not log raw model text when JSON repair fails', () => {
-    expect(src).toContain('AI proxy returned non-JSON after repair attempt for category=%s (%d chars)');
+    expect(src).toContain('AI proxy returned non-JSON for category=%s (%d chars)');
     expect(src).not.toContain('raw[:200]');
   });
 
@@ -107,20 +107,18 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
     expect(src).not.toContain('e.response.text[:200]');
   });
 
-  it('repairs fenced or malformed JSON instead of immediately degrading research synthesis', () => {
+  it('extracts fenced JSON but never starts a second model call to repair malformed output', () => {
     expect(src).toContain('def _extract_json_candidate');
-    expect(src).toContain('def _repair_json_response');
-    expect(src).toContain('category=category');
-    expect(src).toContain('attribution_token=attribution_token');
-    expect(src).toContain('except AiProxyError:');
-    expect(src).toContain('AI JSON response repaired');
+    expect(src).not.toContain('def _repair_json_response');
+    expect(src).toContain('Invalid output is terminal for this single-attempt request');
+    expect(src).toContain('return {"raw": ""}');
   });
 });
 
 describe('Python content-engine sensitive log sinks', () => {
   it('does not log raw gap finder model output after malformed JSON', () => {
     const src = readPy('intelligence/gap_finder.py');
-    expect(src).toContain('Claude returned non-JSON in gap_finder (%d chars)');
+    expect(src).toContain('Gap provider output failed the bounded response contract');
     expect(src).not.toContain('raw: %s');
     expect(src).not.toContain('gaps.get("raw", ""))[:200]');
   });
@@ -177,7 +175,7 @@ describe('TypeScript content-engine callers — outbound internal auth', () => {
     expect(src).toContain('config.contentEngine.internalApiSecret');
     expect(src).toContain("baseCategory: 'content_engine_book'");
     expect(src).toContain("category: 'content_engine_book'");
-    expect(src).toContain('parseForwardedAiBudgetError');
+    expect(src).toContain('parseForwardedContentEngineError');
   });
 });
 
@@ -265,7 +263,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
 
   it('returns a degraded fallback script when AI generation fails', () => {
     expect(src).toContain('def _build_degraded_script_response');
-    expect(src).toContain('AI generation was unavailable; returned a topic-aware degraded draft grounded in available research.');
+    expect(src).toContain('provider_fallback_review_required');
+    expect(src).toContain('provider_fallback_research_claims_withheld');
     expect(src).toContain('except Exception as exc');
     expect(src).toContain('return _build_degraded_script_response(');
   });
@@ -275,7 +274,6 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _fallback_hook');
     expect(src).toContain('def _fallback_default_beats');
     expect(src).toContain('hashlib.sha1');
-    expect(src).toContain('topic-aware degraded draft');
     expect(src).not.toContain('The recovery protocol after hard intervals');
     expect(src).not.toContain('Most athletes finish hard intervals');
     expect(src).not.toContain('theoperator');
@@ -299,7 +297,6 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _normalize_render_mode');
     expect(src).toContain('def _render_mode_guidance');
     expect(src).toContain('def _clean_chat_script');
-    expect(src).toContain('def _is_usable_key_point');
     expect(src).toContain('if render_mode == "chat"');
     expect(src).toContain('format_and_quality_rules');
     expect(src).toContain('Do NOT use production tags such as [SFX:]');
@@ -317,16 +314,17 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('SCRIPT QUALITY BAR:');
     expect(src).toContain('Do not reuse the same hook/title/script skeleton');
     expect(src).toContain('Do NOT use decorative dividers or labels');
-    expect(src).toContain('Choose the order of bullets from the topic itself');
-    expect(src).toContain('Voice DNA memory was available, but the AI writer was unavailable');
+    expect(src).toContain('Pick a structure that fits this topic');
+    expect(src).toContain('provider_fallback_voice_dna_not_applied');
   });
 
   it('uses compact research by default and reserves deep search for explicit deep mode', () => {
     expect(src).toContain('def _normalize_generation_mode');
     expect(src).toContain('return normalized if normalized in {"draft", "quick", "standard", "deep"} else "draft"');
     expect(src).toContain('if not research_route["allowDeepSearch"]');
-    expect(src).toContain('research = await orchestrator.quick_search(req.topic, max_results=max_briefs, language=normalized_language)');
-    expect(src).toContain('research = await orchestrator.deep_search(req.topic, max_results=max_briefs, language=normalized_language)');
+    expect(src).toContain('research = await orchestrator.quick_search(');
+    expect(src).toContain('research = await orchestrator.deep_search(');
+    expect(src).toContain('research_subject,');
     expect(src).toContain('compile_prompt(normalized_mode');
   });
 
@@ -341,17 +339,18 @@ describe('Python requests.py — script render mode contract', () => {
   const src = readPy(path.join('..', 'models', 'requests.py'));
 
   it('ScriptRequest exposes render_mode with a structured default', () => {
-    expect(src).toContain('render_mode: str = Field(default="structured")');
+    expect(src).toContain('render_mode: Literal["structured", "chat"] = "structured"');
   });
 
   it('ScriptRequest exposes mode and topic_context for richer script generation', () => {
     expect(src).toContain('mode: Literal["draft", "quick", "standard", "deep"] = Field(default="draft")');
-    expect(src).toContain('script_style: str = Field(default="detailed")');
-    expect(src).toContain('topic_context: dict | None = Field(default=None)');
-    expect(src).toContain('creator_profile: str | None = Field(default=None)');
-    expect(src).toContain('force_refresh: bool = Field(default=False)');
-    expect(src).toContain('regeneration_seed: str | None = Field(default=None)');
-    expect(src).toContain('internal_attribution_token: str | None = Field(default=None)');
+    expect(src).toContain('script_style: Literal["detailed", "bullets"] = "detailed"');
+    expect(src).toContain('topic_context: ScriptTopicContext | None = Field(default=None)');
+    expect(src).toContain('creator_profile: BoundedCreatorProfile | None = None');
+    expect(src).toContain('force_refresh: bool = Field(default=False, strict=True)');
+    expect(src).toContain('regeneration_seed: Annotated[');
+    expect(src).toContain('max_length=120,');
+    expect(src).toContain('internal_attribution_token: BoundedAttributionToken | None = None');
   });
 });
 
@@ -452,7 +451,7 @@ describe('Python book_knowledge.py — no hallucination on empty search', () => 
   });
 
   it('logs a warning when search returns empty', () => {
-    expect(src).toContain('No web search results for');
+    expect(src).toContain('No web search results found for');
   });
 
   it('passes category to ask_claude_json', () => {

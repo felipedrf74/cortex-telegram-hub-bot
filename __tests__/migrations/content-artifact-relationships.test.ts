@@ -78,6 +78,8 @@ describe('migration 243 content artifact relationships', () => {
       relationshipType: 'variant_of',
     }, db)).toThrow('platform variants must remain with their source content item');
     expect(listContentArtifactRelationships({ tenantId: 777, userId: 777 }, [pair.sourceId], db)).toEqual([]);
+    expect(() => listContentArtifactRelationships(SCOPE, [Number.MAX_SAFE_INTEGER + 1], db))
+      .toThrowError(expect.objectContaining({ code: 'CONTENT_VALIDATION_FAILED', status: 400 }));
   });
 
   it('refuses rollback without deleting platform-variant lineage', () => {

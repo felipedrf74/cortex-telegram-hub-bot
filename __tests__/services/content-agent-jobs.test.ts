@@ -106,6 +106,7 @@ import {
 import { listContentArtifactRelationships } from '../../src/services/content-artifact-relationships';
 import { withDatabaseForTest } from '../../src/services/database';
 import { AiBudgetError } from '../../src/services/cost-guardrail';
+import { ApiUsagePersistenceError } from '../../src/services/api-usage-fallback';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 const OWNER: ContentWorkspaceScope = { tenantId: 501, userId: 501 };
@@ -136,6 +137,29 @@ describe('canonical Content specialist jobs', () => {
   });
 
   afterEach(() => db.close());
+
+  it('rejects unsafe artifact identifiers and control-bearing specialist replay keys', () => {
+    const fixture = seedFixture(db, 'strict-boundaries');
+    expect(() => createContentAgentJob({
+      scope: OWNER,
+      artifactId: Number.MAX_SAFE_INTEGER + 1,
+      packageId: fixture.pkg.id,
+      idempotencyKey: 'create-agent-unsafe-id-001',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentAgentJobError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => createContentAgentJob({
+      scope: OWNER,
+      artifactId: fixture.artifact.id,
+      packageId: fixture.pkg.id,
+      idempotencyKey: 'create-agent-key\nsecond-line',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentAgentJobError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+  });
 
   it('runs against the artifact produced by the canonical package handoff', () => {
     const pkg = buildContentAgencyPackage({
@@ -177,6 +201,8 @@ describe('canonical Content specialist jobs', () => {
         artifactId: handoff.workspaceArtifactId,
         packageId: pkg.id,
         status: 'queued',
+        executionMode: 'not_started',
+        independentReviewPerformed: false,
       });
     });
   });
@@ -255,6 +281,146 @@ describe('canonical Content specialist jobs', () => {
     ))).toBe(true);
     expect(completed.value.steps.every((step) => step.summary.fallbackReason === 'provider_unavailable')).toBe(true);
     expect(agentMocks.withAiBudgetReservation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim a specialist job when the request is already cancelled', async () => {
+    const fixture = seedFixture(db, 'cancelled-before-claim');
+    const created = createFixtureJob(db, fixture, 'cancelled-before-claim');
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('content_agent_job_run_client_disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    controller.abort(reason);
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: created.jobKey,
+      idempotencyKey: 'run-agent-cancelled-before-claim-001',
+      abortSignal: controller.signal,
+    }, db)).rejects.toBe(reason);
+
+    expect(getContentAgentJob(OWNER, created.jobKey, db)).toMatchObject({
+      status: 'queued',
+      attempt: 0,
+      lastErrorCode: null,
+    });
+    expect(agentMocks.withAiBudgetReservation).not.toHaveBeenCalled();
+    expect(agentMocks.completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('fails a claimed specialist job without checkpointing fallback output after disconnect', async () => {
+    const fixture = seedFixture(db, 'cancelled-after-dispatch');
+    const created = createFixtureJob(db, fixture, 'cancelled-after-dispatch');
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('content_agent_job_run_client_disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    agentMocks.completeOneShotWithFallback.mockImplementationOnce(async () => {
+      controller.abort(reason);
+      throw reason;
+    });
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: created.jobKey,
+      idempotencyKey: 'run-agent-cancelled-after-dispatch-001',
+      abortSignal: controller.signal,
+    }, db)).rejects.toBe(reason);
+
+    const failed = getContentAgentJob(OWNER, created.jobKey, db)!;
+    expect(failed).toMatchObject({
+      status: 'failed',
+      attempt: 1,
+      lastErrorCode: 'CONTENT_CLIENT_DISCONNECTED',
+      proposals: [],
+    });
+    expect(failed.steps.some((step) => step.status === 'completed')).toBe(false);
+    const persistedSteps = db.prepare(`
+      SELECT status, output_summary_json, proposal_count
+        FROM content_agent_job_steps
+       WHERE job_id = (SELECT id FROM content_agent_jobs WHERE job_key = ?)
+       ORDER BY id ASC
+    `).all(created.jobKey) as Array<{
+      status: string;
+      output_summary_json: string | null;
+      proposal_count: number;
+    }>;
+    expect(persistedSteps.every((step) => step.output_summary_json === '{}')).toBe(true);
+    expect(persistedSteps.every((step) => step.proposal_count === 0)).toBe(true);
+  });
+
+  it('aborts in-flight provider work after a durable specialist job cancellation', async () => {
+    const fixture = seedFixture(db, 'cancel-running-provider');
+    const created = createFixtureJob(db, fixture, 'cancel-running-provider');
+    let announceProviderStarted = (): void => undefined;
+    const providerStarted = new Promise<void>((resolve) => { announceProviderStarted = resolve; });
+    agentMocks.completeOneShotWithFallback.mockImplementation(async (
+      _system: string,
+      _user: string,
+      _category: string,
+      _anthropicFallback: () => Promise<string>,
+      options: { abortSignal?: AbortSignal },
+    ) => {
+      announceProviderStarted();
+      return new Promise((_resolve, reject) => {
+        const rejectFromAbort = (): void => reject(options.abortSignal?.reason);
+        if (options.abortSignal?.aborted) rejectFromAbort();
+        else options.abortSignal?.addEventListener('abort', rejectFromAbort, { once: true });
+      });
+    });
+
+    const running = runContentAgentJob({
+      scope: OWNER,
+      jobKey: created.jobKey,
+      idempotencyKey: 'run-agent-cancel-running-provider-001',
+    }, db);
+    await providerStarted;
+
+    const cancelled = cancelContentAgentJob({
+      scope: OWNER,
+      jobKey: created.jobKey,
+      idempotencyKey: 'cancel-agent-running-provider-001',
+    }, db);
+
+    expect(cancelled.value.status).toBe('cancelled');
+    await expect(running).rejects.toMatchObject<Partial<ContentAgentJobError>>({
+      code: 'CONTENT_AGENT_JOB_CANCELLED',
+    });
+    expect(getContentAgentJob(OWNER, created.jobKey, db)).toMatchObject({
+      status: 'cancelled',
+      proposals: [],
+      steps: expect.arrayContaining([
+        expect.objectContaining({ status: 'cancelled' }),
+      ]),
+    });
+  });
+
+  it('does not persist an arbitrary abort or provider error code in public job state', async () => {
+    const fixture = seedFixture(db, 'private-error-code');
+    const created = createFixtureJob(db, fixture, 'private-error-code');
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('private provider failure detail'), {
+      name: 'AbortError',
+      code: 'postgres://private-host/content?token=secret',
+    });
+    agentMocks.completeOneShotWithFallback.mockImplementationOnce(async () => {
+      controller.abort(reason);
+      throw reason;
+    });
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: created.jobKey,
+      idempotencyKey: 'run-agent-private-error-code-001',
+      abortSignal: controller.signal,
+    }, db)).rejects.toBe(reason);
+
+    expect(getContentAgentJob(OWNER, created.jobKey, db)).toMatchObject({
+      status: 'failed',
+      lastErrorCode: 'CONTENT_AGENT_INTERNAL_FAILURE',
+    });
   });
 
   it('runs provider-routed dependency groups in parallel and persists bounded review provenance', async () => {
@@ -358,6 +524,56 @@ describe('canonical Content specialist jobs', () => {
     });
   });
 
+  it('preserves a user-edited base through every cloud specialist prompt and accepted replacement', async () => {
+    const marker = 'PRESERVE_CLOUD_EDIT_BEFORE_JOB';
+    const fixture = seedFixture(db, 'cloud-edited-base');
+    saveContentRevision({
+      scope: OWNER,
+      artifactId: fixture.artifact.id,
+      baseRevision: 1,
+      content: { format: 'markdown', text: `# User-edited base\n\n${marker}` },
+      actorType: 'user',
+      actorId: String(OWNER.userId),
+      idempotencyKey: 'cloud-edited-base-revision-001',
+    }, db);
+    agentMocks.completeOneShotWithFallback.mockImplementation(async (
+      _system: unknown,
+      _user: unknown,
+      rawCategory: unknown,
+    ) => {
+      const role = String(rawCategory).replace('content_agent_', '') as ContentAgentRole;
+      return validProviderCompletion(
+        role,
+        'gemini',
+        `# ${role} replacement\n\n${marker}\n\nProvider improvement.`,
+      );
+    });
+
+    const completed = await runFixtureJob(db, fixture, 'cloud-edited-base');
+
+    expect(agentMocks.completeOneShotWithFallback).toHaveBeenCalledTimes(7);
+    for (const call of agentMocks.completeOneShotWithFallback.mock.calls) {
+      const prompt = String(call[1]);
+      expect(prompt).toContain('BASE_REVISION_DATA:');
+      expect(prompt).toContain(marker);
+      expect(prompt).toContain('"matchesOriginalAgencyBinding":false');
+      expect(call[4]).toMatchObject({
+        maxRetries: 0,
+        allowFallbackAfterProviderFailure: false,
+      });
+    }
+    const writer = completed.proposals.find((candidate) => candidate.role === 'writer')!;
+    expect(acceptContentAgentProposal({
+      scope: OWNER,
+      proposalKey: writer.proposalKey,
+      idempotencyKey: 'accept-cloud-edited-base-writer-001',
+    }, db).value.status).toBe('accepted');
+    expect(getContentArtifact(OWNER, fixture.artifact.id, db)?.currentRevision?.content).toEqual({
+      format: 'markdown',
+      text: `# writer replacement\n\n${marker}\n\nProvider improvement.`,
+    });
+  });
+
   it('keeps every local specialist batch within the Pro output ceiling while retaining seven role records', async () => {
     agentMocks.contentSpecialistsEnabled = true;
     agentMocks.localControlMode = 'active';
@@ -418,6 +634,138 @@ describe('canonical Content specialist jobs', () => {
     expect(completed.value.proposals.map((proposal) => proposal.role)).toEqual([
       'writer', 'editor', 'platform_adapter',
     ]);
+  });
+
+  it('preserves a user-edited base through every local specialist prompt and accepted replacement', async () => {
+    const marker = 'PRESERVE_LOCAL_EDIT_BEFORE_JOB';
+    const fixture = seedFixture(db, 'local-edited-base');
+    saveContentRevision({
+      scope: OWNER,
+      artifactId: fixture.artifact.id,
+      baseRevision: 1,
+      content: { format: 'markdown', text: `# User-edited local base\n\n${marker}` },
+      actorType: 'user',
+      actorId: String(OWNER.userId),
+      idempotencyKey: 'local-edited-base-revision-001',
+    }, db);
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    let callNumber = 0;
+    agentMocks.executeSkillInference.mockImplementation(async (request: {
+      prompt: string;
+      outputSchema: { properties: { outputs: { items: { properties: { role: { enum: ContentAgentRole[] } } } } } };
+    }) => {
+      callNumber += 1;
+      const roles = request.outputSchema.properties.outputs.items.properties.role.enum;
+      return {
+        text: 'group',
+        parsed: {
+          schemaVersion: 'content-agent-specialist-group-v1',
+          outputs: roles.map((role) => JSON.parse(validProviderCompletion(
+            role,
+            'gemini',
+            `# ${role} local replacement\n\n${marker}\n\nLocal provider improvement.`,
+          ).text)),
+        },
+        provider: 'ollama',
+        route: 'local',
+        runId: `local-edited-base-${callNumber}`,
+        operationId: 'local-edited-base',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      };
+    });
+
+    const completed = await runFixtureJob(db, fixture, 'local-edited-base');
+
+    expect(agentMocks.executeSkillInference).toHaveBeenCalledTimes(5);
+    for (const [request] of agentMocks.executeSkillInference.mock.calls) {
+      const prompt = String((request as { prompt?: unknown }).prompt);
+      expect(prompt).toContain('BASE_REVISION_DATA:');
+      expect(prompt).toContain(marker);
+      expect(prompt).toContain('"matchesOriginalAgencyBinding":false');
+    }
+    const writer = completed.proposals.find((candidate) => candidate.role === 'writer')!;
+    expect(acceptContentAgentProposal({
+      scope: OWNER,
+      proposalKey: writer.proposalKey,
+      idempotencyKey: 'accept-local-edited-base-writer-001',
+    }, db).value.status).toBe('accepted');
+    expect(getContentArtifact(OWNER, fixture.artifact.id, db)?.currentRevision?.content).toEqual({
+      format: 'markdown',
+      text: `# writer local replacement\n\n${marker}\n\nLocal provider improvement.`,
+    });
+  });
+
+  it('withholds package-derived replacements when provider review fails for a later user-edited base', async () => {
+    const fixture = seedFixture(db, 'edited-base-provider-failure');
+    saveContentRevision({
+      scope: OWNER,
+      artifactId: fixture.artifact.id,
+      baseRevision: 1,
+      content: { format: 'markdown', text: '# User-edited base\n\nDo not replace this from package ingress.' },
+      actorType: 'user',
+      actorId: String(OWNER.userId),
+      idempotencyKey: 'edited-base-provider-failure-revision-001',
+    }, db);
+
+    const completed = await runFixtureJob(db, fixture, 'edited-base-provider-failure');
+
+    expect(completed.proposals).toEqual([]);
+    expect(completed.steps.filter((step) => (
+      step.role === 'writer' || step.role === 'structural_editor' || step.role === 'platform_adapter'
+    )).every((step) => step.summary.warnings.some((warning) => (
+      warning.includes('includes user edits made after the original package handoff')
+    )))).toBe(true);
+  });
+
+  it('withholds complete replacements when the authoritative base exceeds the safe prompt limit', async () => {
+    const fixture = seedFixture(db, 'truncated-authoritative-base');
+    const omittedTail = 'OMITTED_AUTHORITATIVE_BASE_TAIL';
+    saveContentRevision({
+      scope: OWNER,
+      artifactId: fixture.artifact.id,
+      baseRevision: 1,
+      content: {
+        format: 'markdown',
+        text: `# Oversized user base\n\n${'a'.repeat(12_000)}\n${omittedTail}`,
+      },
+      actorType: 'user',
+      actorId: String(OWNER.userId),
+      idempotencyKey: 'truncated-authoritative-base-revision-001',
+    }, db);
+    agentMocks.completeOneShotWithFallback.mockImplementation(async (
+      _system: unknown,
+      _user: unknown,
+      rawCategory: unknown,
+    ) => validProviderCompletion(
+      String(rawCategory).replace('content_agent_', '') as ContentAgentRole,
+      'gemini',
+    ));
+
+    const completed = await runFixtureJob(db, fixture, 'truncated-authoritative-base');
+
+    expect(completed.proposals).toEqual([]);
+    const writerPrompt = String(agentMocks.completeOneShotWithFallback.mock.calls.find((call) => (
+      call[2] === 'content_agent_writer'
+    ))?.[1] ?? '');
+    expect(writerPrompt).toContain('"contentTruncated":true');
+    expect(writerPrompt).not.toContain(omittedTail);
+    expect(completed.steps.filter((step) => (
+      step.role === 'writer' || step.role === 'structural_editor' || step.role === 'platform_adapter'
+    )).every((step) => step.summary.warnings.some((warning) => (
+      warning.includes('authoritative base revision exceeded the safe specialist context limit')
+    )))).toBe(true);
+    for (const role of ['factuality', 'quality_reviewer'] as const) {
+      const review = completed.steps.find((step) => step.role === role)!;
+      expect(review.summary.warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining('result covers only the provided excerpt'),
+      ]));
+      expect(review.summary.nextAction).toContain('Review the omitted tail directly');
+      expect(review.summary.verificationState).toBe('model_reviewed_not_source_verified');
+    }
   });
 
   it('rejects local specialist evidence when lease loss discards the generated group', async () => {
@@ -523,7 +871,7 @@ describe('canonical Content specialist jobs', () => {
     );
   });
 
-  it('repairs only an invalid local specialist subset and records the rejected first group result', async () => {
+  it('discards a rejected local specialist group and repairs every role in that bounded run', async () => {
     agentMocks.contentSpecialistsEnabled = true;
     agentMocks.localControlMode = 'active';
     agentMocks.localRolloutPercent = 100;
@@ -563,6 +911,8 @@ describe('canonical Content specialist jobs', () => {
     expect(agentMocks.executeSkillInference.mock.calls[1]?.[0]).toMatchObject({
       taskType: 'content_specialist_group_repair',
     });
+    expect(agentMocks.executeSkillInference.mock.calls[1]?.[0].outputSchema.properties.outputs.items.properties.role.enum)
+      .toEqual(agentMocks.executeSkillInference.mock.calls[0]?.[0].outputSchema.properties.outputs.items.properties.role.enum);
     expect(agentMocks.rejectApplicationResult).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: 'run-1',
@@ -572,6 +922,71 @@ describe('canonical Content specialist jobs', () => {
     );
     expect(completed.value.steps).toHaveLength(7);
     expect(completed.value.steps.every((step) => step.summary.provider === 'ollama')).toBe(true);
+  });
+
+  it('rejects a repair with the wrong group schema version and falls back for the whole bounded run', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    let callNumber = 0;
+    agentMocks.executeSkillInference.mockImplementation(async (request: {
+      outputSchema: { properties: { outputs: { items: { properties: { role: { enum: ContentAgentRole[] } } } } } };
+    }) => {
+      callNumber += 1;
+      const roles = request.outputSchema.properties.outputs.items.properties.role.enum;
+      const outputs = roles.map((role) => JSON.parse(validProviderCompletion(role, 'gemini').text));
+      if (callNumber === 1) {
+        const research = outputs.find((output) => output.role === 'research');
+        if (research) research.title = '';
+      }
+      return {
+        text: 'group',
+        parsed: {
+          schemaVersion: callNumber === 2
+            ? 'content-agent-specialist-group-unsupported'
+            : 'content-agent-specialist-group-v1',
+          outputs,
+        },
+        provider: 'ollama',
+        route: 'local',
+        runId: `repair-schema-run-${callNumber}`,
+        operationId: 'grouped-specialists-repair-schema',
+        validationStatus: 'valid',
+        queueWaitMs: 0,
+        durationMs: 10,
+      };
+    });
+    const fixture = seedFixture(db, 'local-grouped-repair-schema');
+    const job = createFixtureJob(db, fixture, 'local-grouped-repair-schema');
+
+    const completed = await runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-local-grouped-repair-schema-001',
+    }, db);
+
+    expect(agentMocks.executeSkillInference).toHaveBeenCalledTimes(6);
+    expect(agentMocks.rejectApplicationResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'repair-schema-run-1',
+        reason: 'content_specialist_group_subset_invalid',
+      }),
+      db,
+    );
+    expect(agentMocks.rejectApplicationResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'repair-schema-run-2',
+        reason: 'content_specialist_group_repair_incomplete',
+      }),
+      db,
+    );
+    expect(completed.value.steps.filter((step) => ['strategy', 'research'].includes(step.role)).every((step) => (
+        step.summary.basis === 'package_derived'
+        && step.summary.fallbackReason === 'provider_output_invalid'
+      ))).toBe(true);
+    expect(completed.value.steps.filter((step) => !['strategy', 'research'].includes(step.role)).every(
+      (step) => step.summary.provider === 'ollama',
+    )).toBe(true);
   });
 
   it('stops grouped local specialist repair when account deletion cancels inference', async () => {
@@ -657,6 +1072,49 @@ describe('canonical Content specialist jobs', () => {
     expect(agentMocks.completeOneShotWithFallback).not.toHaveBeenCalled();
     expect(getContentAgentJob(OWNER, job.jobKey, db)).toMatchObject({
       status: 'failed',
+    });
+  });
+
+  it('fails closed instead of checkpointing package fallback when cloud usage persistence fails', async () => {
+    const usageFailure = new ApiUsagePersistenceError('gemini', 'content_agent_strategy');
+    agentMocks.completeOneShotWithFallback.mockRejectedValue(usageFailure);
+    const fixture = seedFixture(db, 'cloud-usage-persistence-failure');
+    const job = createFixtureJob(db, fixture, 'cloud-usage-persistence-failure');
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-cloud-usage-persistence-001',
+    }, db)).rejects.toBe(usageFailure);
+
+    expect(getContentAgentJob(OWNER, job.jobKey, db)).toMatchObject({
+      status: 'failed',
+      currentGroup: 0,
+      lastErrorCode: 'AI_USAGE_PERSISTENCE_FAILED',
+      proposals: [],
+    });
+  });
+
+  it('fails closed instead of checkpointing package fallback when local usage persistence fails', async () => {
+    agentMocks.contentSpecialistsEnabled = true;
+    agentMocks.localControlMode = 'active';
+    agentMocks.localRolloutPercent = 100;
+    const usageFailure = new ApiUsagePersistenceError('ollama', 'content_agent_specialist_group');
+    agentMocks.executeSkillInference.mockRejectedValue(usageFailure);
+    const fixture = seedFixture(db, 'local-usage-persistence-failure');
+    const job = createFixtureJob(db, fixture, 'local-usage-persistence-failure');
+
+    await expect(runContentAgentJob({
+      scope: OWNER,
+      jobKey: job.jobKey,
+      idempotencyKey: 'run-agent-local-usage-persistence-001',
+    }, db)).rejects.toBe(usageFailure);
+
+    expect(getContentAgentJob(OWNER, job.jobKey, db)).toMatchObject({
+      status: 'failed',
+      currentGroup: 0,
+      lastErrorCode: 'AI_USAGE_PERSISTENCE_FAILED',
+      proposals: [],
     });
   });
 
@@ -799,7 +1257,26 @@ describe('canonical Content specialist jobs', () => {
 
   it('localizes provider-unavailable fallback summaries for a Portuguese user', async () => {
     agentMocks.getUserLanguage.mockReturnValue('pt-BR');
-    const fixture = seedFixture(db, 'portuguese-fallback-copy');
+    const fixture = seedFixture(db, 'portuguese-fallback-copy', (pkg) => ({
+      ...pkg,
+      scriptVariants: pkg.scriptVariants.map((variant) => ({
+        ...variant,
+        title: 'Fluxo de conteúdo confiável',
+        coldOpen: 'Comece com uma ideia clara e verificável.',
+        promise: 'Organize um processo simples para revisar cada etapa.',
+        beats: ['Capture a ideia principal.', 'Revise as fontes antes de publicar.'],
+        payoff: 'Você terá um fluxo mais claro e seguro.',
+        cta: 'Escolha a próxima etapa para revisar.',
+        retentionDevices: ['Mostre um exemplo concreto na transição.'],
+        originalityNote: 'Desenvolvido a partir do briefing privado atual.',
+      })),
+      creativeDirection: {
+        ...pkg.creativeDirection,
+        firstFrame: 'Mostre a ideia principal no primeiro plano.',
+        shotList: ['Apresente o problema.', 'Mostre uma prova concreta.'],
+        captions: ['Use uma legenda clara e legível.'],
+      },
+    }));
 
     const completed = await runFixtureJob(db, fixture, 'portuguese-fallback-copy');
 
@@ -809,6 +1286,13 @@ describe('canonical Content specialist jobs', () => {
       || step.summary.summary.includes('fontes')
     ))).toBe(true);
     expect(JSON.stringify(completed.steps)).not.toContain('Model-backed specialist review was unavailable');
+    const fallbackProposals = completed.proposals.filter((proposal) => (
+      proposal.role === 'writer' || proposal.role === 'platform_adapter'
+    ));
+    expect(fallbackProposals).toHaveLength(2);
+    expect(JSON.stringify(fallbackProposals)).toContain('Roteiro');
+    expect(JSON.stringify(fallbackProposals)).not.toContain('Guião');
+    expect(fallbackProposals.every((proposal) => proposal.reviewBasis === 'package_derived')).toBe(true);
   });
 
   it('uses the same proposal engine with an explicit budget-derived fallback', async () => {
@@ -876,6 +1360,49 @@ describe('canonical Content specialist jobs', () => {
       code: 'CONTENT_AGENT_JOB_REVIEW_INCOMPLETE',
     }));
     expect(listContentRevisions(OWNER, fixture.artifact.id, db)).toHaveLength(1);
+  });
+
+  it('requires an active private parent job before accepting or rejecting a proposal', async () => {
+    const fixture = seedFixture(db, 'deleted-parent');
+    const job = await runFixtureJob(db, fixture, 'deleted-parent');
+    const [writer, editor] = job.proposals;
+    const parent = db.prepare(`
+      SELECT id
+        FROM content_agent_jobs
+       WHERE job_key = ?
+    `).get(job.jobKey) as { id: number };
+    const proposedBefore = db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_agent_proposals
+       WHERE job_id = ? AND status = 'proposed'
+    `).get(parent.id);
+
+    db.prepare(`
+      UPDATE content_agent_jobs
+         SET scope_status = 'deleted'
+       WHERE id = ? AND tenant_id = ? AND owner_user_id = ?
+    `).run(parent.id, OWNER.tenantId, OWNER.userId);
+
+    expect(getContentAgentJob(OWNER, job.jobKey, db)).toBeNull();
+    expect(() => rejectContentAgentProposal({
+      scope: OWNER,
+      proposalKey: writer!.proposalKey,
+      idempotencyKey: 'reject-deleted-parent-proposal-001',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentAgentJobError>>({
+      code: 'CONTENT_AGENT_PROPOSAL_NOT_FOUND',
+    }));
+    expect(() => acceptContentAgentProposal({
+      scope: OWNER,
+      proposalKey: editor!.proposalKey,
+      idempotencyKey: 'accept-deleted-parent-proposal-001',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentAgentJobError>>({
+      code: 'CONTENT_AGENT_PROPOSAL_NOT_FOUND',
+    }));
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+        FROM content_agent_proposals
+       WHERE job_id = ? AND status = 'proposed'
+    `).get(parent.id)).toEqual(proposedBefore);
   });
 
   it('accepts exactly one proposal through canonical revision CAS and stales siblings', async () => {
@@ -998,7 +1525,7 @@ describe('canonical Content specialist jobs', () => {
     expect(getContentAgentJob(OWNER, job.jobKey, db)?.proposals.every((proposal) => proposal.status === 'stale')).toBe(true);
   });
 
-  it('recovers an expired lease but rejects an active lease', async () => {
+  it('rejects an active lease and terminalizes an expired ambiguous dispatch until explicit retry', async () => {
     const activeFixture = seedFixture(db, 'active-lease');
     const active = createFixtureJob(db, activeFixture, 'active-lease');
     db.prepare(`
@@ -1014,22 +1541,50 @@ describe('canonical Content specialist jobs', () => {
 
     const expiredFixture = seedFixture(db, 'expired-lease');
     const expired = createFixtureJob(db, expiredFixture, 'expired-lease');
-    const firstStep = db.prepare('SELECT id FROM content_agent_job_steps WHERE job_id = (SELECT id FROM content_agent_jobs WHERE job_key = ?) ORDER BY id LIMIT 1')
-      .get(expired.jobKey) as { id: number };
+    const expiredSteps = db.prepare('SELECT id, role FROM content_agent_job_steps WHERE job_id = (SELECT id FROM content_agent_jobs WHERE job_key = ?) ORDER BY id LIMIT 2')
+      .all(expired.jobKey) as Array<{ id: number; role: ContentAgentRole }>;
+    const completedStep = expiredSteps[0]!;
+    const ambiguousStep = expiredSteps[1]!;
     db.prepare(`
       UPDATE content_agent_jobs
          SET status = 'running', lease_token = 'expired-token', lease_expires_at = ?
        WHERE job_key = ?
     `).run(new Date(Date.now() - 60_000).toISOString(), expired.jobKey);
-    db.prepare("UPDATE content_agent_job_steps SET status = 'running' WHERE id = ?").run(firstStep.id);
+    db.prepare("UPDATE content_agent_job_steps SET status = 'running' WHERE id = ?").run(completedStep.id);
+    db.prepare("UPDATE content_agent_job_steps SET status = 'completed' WHERE id = ?").run(completedStep.id);
+    db.prepare("UPDATE content_agent_job_steps SET status = 'running' WHERE id = ?").run(ambiguousStep.id);
 
-    const recovered = await runContentAgentJob({
+    await expect(runContentAgentJob({
       scope: OWNER,
       jobKey: expired.jobKey,
       idempotencyKey: 'run-expired-lease-001',
+    }, db)).rejects.toMatchObject<Partial<ContentAgentJobError>>({
+      code: 'CONTENT_AGENT_JOB_RETRY_REQUIRED',
+      details: {
+        retryRequired: true,
+        lastErrorCode: 'CONTENT_AGENT_JOB_DISPATCH_OUTCOME_UNKNOWN',
+      },
+    });
+    expect(agentMocks.completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(getContentAgentJob(OWNER, expired.jobKey, db)).toMatchObject({
+      status: 'failed',
+      lastErrorCode: 'CONTENT_AGENT_JOB_DISPATCH_OUTCOME_UNKNOWN',
+      steps: expect.arrayContaining([
+        expect.objectContaining({ role: completedStep.role, status: 'completed' }),
+        expect.objectContaining({ role: ambiguousStep.role, status: 'failed' }),
+      ]),
+    });
+
+    const retried = retryContentAgentJob({
+      scope: OWNER,
+      jobKey: expired.jobKey,
+      idempotencyKey: 'retry-expired-lease-001',
     }, db);
-    expect(recovered.value.status).toBe('completed');
-    expect(recovered.value.steps.every((step) => step.status === 'completed')).toBe(true);
+    expect(retried.value.status).toBe('queued');
+    expect(retried.value.steps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: completedStep.role, status: 'completed' }),
+      expect.objectContaining({ role: ambiguousStep.role, status: 'queued' }),
+    ]));
   });
 
   it('supports explicit cancellation and failed-job retry checkpoints', () => {
@@ -1339,6 +1894,7 @@ async function runFixtureJob(
 function validProviderCompletion(
   role: ContentAgentRole,
   provider: 'gemini' | 'openai' | 'anthropic',
+  proposalMarkdown?: string,
 ): { text: string; provider: 'gemini' | 'openai' | 'anthropic' } {
   const proposalRole = role === 'writer' || role === 'structural_editor' || role === 'platform_adapter';
   const title = `${role.split('_').map((part) => part[0]!.toUpperCase() + part.slice(1)).join(' ')} provider review`;
@@ -1357,7 +1913,7 @@ function validProviderCompletion(
         title: `${title} option`,
         summary: `Optional ${role} suggestion from the provider-routed workflow.`,
         reason: 'Improve the draft while preserving the user objective and explicit constraints.',
-        markdown: `# ${role} provider draft\n\nA bounded, editable ${role} proposal.`,
+        markdown: proposalMarkdown ?? `# ${role} provider draft\n\nA bounded, editable ${role} proposal.`,
       } : null,
     }),
   };

@@ -6,6 +6,7 @@
  */
 
 import { tryBuildTokenZeroChatMessageShortcutResponse } from '../../chat-message-shortcuts';
+import { inspectContentCreativeShortcut } from '../../chat-shortcut-parsers';
 import {
   deterministicReadGroundingFact,
   finalizeChatMessageResponse,
@@ -24,11 +25,16 @@ export const tokenZeroShortcutStage: ChatStage = {
   traceStages: ['token_zero_shortcut'],
   canHandle(ctx: ChatTurnCtx): boolean {
     const p = preparedChatTurnCtx(ctx);
+    const malformedCreativeCommand = p.normalizedText
+      ? inspectContentCreativeShortcut(p.normalizedText).status === 'invalid'
+      : false;
     return Boolean(
       p.normalizedText
       && p.normalizedAttachments.length === 0
-      && !p.bypassReadFastPathsForWriteIntent
-      && !p.bypassNaturalLanguageTokenZeroForChatCoreV2,
+      && (malformedCreativeCommand || (
+        !p.bypassReadFastPathsForWriteIntent
+        && !p.bypassNaturalLanguageTokenZeroForChatCoreV2
+      )),
     );
   },
   async handle(ctx: ChatTurnCtx): Promise<ChatStageResult> {

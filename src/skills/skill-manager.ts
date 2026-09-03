@@ -297,7 +297,6 @@ export interface SkillStatus {
 export function getSkillStatus(domain: DomainName): SkillStatus {
   const def = getSkillDefinition(domain);
   const skill = registry.getByName(domain);
-  const enabledSubs = new Set(registry.getEnabledSubmodules(domain));
 
   return {
     name: def?.name ?? domain,
@@ -306,7 +305,7 @@ export function getSkillStatus(domain: DomainName): SkillStatus {
     subSkills: (def?.subSkills ?? []).map(sub => ({
       name: sub.name,
       description: sub.description,
-      enabled: skill ? enabledSubs.has(sub.name) : true, // Default to enabled if skill not in DB
+      enabled: registry.isSubmoduleEnabled(domain, sub.name),
       toolCount: sub.tools.length,
     })),
   };

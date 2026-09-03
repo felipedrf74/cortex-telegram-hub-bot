@@ -18,6 +18,8 @@ export interface PersistContentArtifactsInput extends ContentArtifactScope {
   hook?: string | null;
   angle?: string | null;
   format?: string | null;
+  /** Research-only persistence must not masquerade as generated idea use. */
+  recordIdeaMemory?: boolean;
 }
 
 export interface PersistedContentArtifacts {
@@ -50,6 +52,7 @@ export interface RecordedContentVariantFeedback {
 export interface PublicSourcePackage {
   sourcePackageId: string;
   researchArtifactId: string;
+  topicHash: string;
   freshnessClass: SourcePackage['freshnessClass'];
   language: string;
   format: string;
@@ -66,6 +69,10 @@ export interface PublicResearchArtifact {
   language: string;
   format: string;
   claims: string[];
+  claimBinding: {
+    status: 'unavailable';
+    reasonCode: 'CONTENT_CLAIM_SOURCE_BINDING_NOT_MODELED';
+  };
   unsafeOrUnverifiedClaims: string[];
   expiresAt: string;
 }
@@ -296,7 +303,11 @@ export function persistContentArtifacts(
       result.sourcePackageId = pkg.sourcePackageId;
     }
 
-    if (input.sourcePackage && (input.hook || input.angle || input.topic)) {
+    if (
+      input.sourcePackage
+      && input.recordIdeaMemory !== false
+      && (input.hook || input.angle || input.topic)
+    ) {
       db.prepare(`
         INSERT INTO content_idea_memory (
           tenant_id, user_id, topic_hash, hook_hash, topic, hook, angle, format,
@@ -344,6 +355,7 @@ export function getContentSourcePackage(
   return {
     sourcePackageId: row.source_package_id,
     researchArtifactId: row.research_artifact_id,
+    topicHash: row.topic_hash,
     freshnessClass: row.freshness_class,
     language: row.language,
     format: row.format,
@@ -372,7 +384,13 @@ export function getContentResearchArtifact(
     freshnessClass: row.freshness_class,
     language: row.language,
     format: row.format,
-    claims: parseJsonArray(row.claims_json).filter((item): item is string => typeof item === 'string'),
+    // Legacy rows may contain source summaries in claims_json. Without exact
+    // source IDs per claim they are not claim evidence and must stay hidden.
+    claims: [],
+    claimBinding: {
+      status: 'unavailable',
+      reasonCode: 'CONTENT_CLAIM_SOURCE_BINDING_NOT_MODELED',
+    },
     unsafeOrUnverifiedClaims: parseJsonArray(row.unsafe_or_unverified_claims_json).filter((item): item is string => typeof item === 'string'),
     expiresAt: row.expires_at,
   };

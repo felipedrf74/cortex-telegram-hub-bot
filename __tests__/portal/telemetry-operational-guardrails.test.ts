@@ -297,4 +297,32 @@ describe('portal telemetry operational guardrails', () => {
       'job_history persist failed',
     );
   });
+
+  it('keeps Content job failures machine-only across status, history, notifications, and rethrows', async () => {
+    const telemetry = await import('../../src/portal/telemetry');
+    const notifyFailure = vi.fn(async () => {});
+    const privateDetail = 'private creator draft returned by provider';
+    telemetry.setJobFailureNotifier(notifyFailure);
+    telemetry.registerJob('private_content_job', 'Private Content Job', '* * * * *', 'content');
+
+    const wrapped = telemetry.wrapJob('private_content_job', async () => {
+      throw Object.assign(new Error(privateDetail), {
+        code: 'provider copied private text into this code',
+      });
+    });
+
+    await expect(wrapped()).rejects.toMatchObject({
+      code: 'CONTENT_SCHEDULED_JOB_FAILED',
+      message: 'CONTENT_SCHEDULED_JOB_FAILED',
+    });
+    expect(telemetry.getJobStatuses().find((job) => job.name === 'private_content_job'))
+      .toMatchObject({ lastResult: 'failed', lastError: 'CONTENT_SCHEDULED_JOB_FAILED' });
+    expect(db.prepare(`SELECT error_message FROM job_history WHERE job_name = ?`)
+      .get('private_content_job')).toEqual({ error_message: 'CONTENT_SCHEDULED_JOB_FAILED' });
+    expect(notifyFailure).toHaveBeenCalledWith(
+      'Private Content Job',
+      'CONTENT_SCHEDULED_JOB_FAILED',
+    );
+    expect(JSON.stringify(telemetry.getRecentEvents())).not.toContain(privateDetail);
+  });
 });

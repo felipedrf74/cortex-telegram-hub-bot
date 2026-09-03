@@ -167,6 +167,14 @@ export function buildHeuristicContentRefinementFallback(
 export function sanitizeScriptBody(script: string): string {
   let cleaned = script.trim();
   const sentinels = [
+    '\n📋 SOURCE-BOUND SOURCES:',
+    '\nSOURCE-BOUND SOURCES:',
+    '\n📋 FONTES ASSOCIADAS:',
+    '\nFONTES ASSOCIADAS:',
+    '\n📋 FONTES ASSOCIADAS (NÃO VERIFICADAS):',
+    '\nFONTES ASSOCIADAS (NÃO VERIFICADAS):',
+    // Legacy compatibility only. New generation must never present source-ID
+    // binding as factual verification.
     '\n📋 FONTES VERIFICADAS:',
     '\nFONTES VERIFICADAS:',
     '\nCTA:\n',

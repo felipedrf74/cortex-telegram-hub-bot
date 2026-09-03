@@ -12,7 +12,10 @@ import { logger } from '../../../../utils/logger';
 import { runChatCoreV2ActionGateway } from '../../../../services/chat-core-v2';
 import { createDecisionIntent } from '../../../../services/decision-center';
 import { trackPendingChatConfirmation } from '../../../../services/chat-pending-confirmations';
-import { parseContentScriptShortcut } from '../../chat-shortcut-parsers';
+import {
+  inspectContentCreativeShortcut,
+  parseContentScriptShortcut,
+} from '../../chat-shortcut-parsers';
 import {
   deterministicReadGroundingFact,
   finalizeChatMessageResponse,
@@ -45,7 +48,8 @@ export const actionGatewayStage: ChatStage = {
     return Boolean(
       ctx.normalizedText
       && ctx.normalizedAttachments.length === 0
-      && !parseContentScriptShortcut(ctx.normalizedText),
+      && !parseContentScriptShortcut(ctx.normalizedText)
+      && inspectContentCreativeShortcut(ctx.normalizedText).status === 'not_recognized',
     );
   },
   async handle(ctx: ChatTurnCtx): Promise<ChatStageResult> {

@@ -8,13 +8,14 @@ let testDb: Database.Database;
 const mocks = vi.hoisted(() => ({
   generateAndStoreTopicCandidates: vi.fn(),
   generateWeeklyPackage: vi.fn(),
-  updateFeedback: vi.fn(),
+  updateFeedback: vi.fn(() => true),
   recordContentPerformanceOutcome: vi.fn(),
   getPerformanceSummary: vi.fn(),
   getLearnedPatterns: vi.fn(),
   getArtifactChain: vi.fn(),
   getRecentScripts: vi.fn(),
   invalidateContentDerivedCaches: vi.fn(),
+  accountAdmission: vi.fn(),
   saveGeneratedScriptToWorkspace: vi.fn(() => ({
     schemaVersion: 'content-workspace-capture-v1',
     workspaceSchemaVersion: 'content-workspace-v1',
@@ -102,12 +103,16 @@ vi.mock('../../src/services/skill-inference-service', async () => ({
       && (error as { code?: unknown }).code === 'ACCOUNT_DELETION_IN_PROGRESS')
   ),
   runWithSkillInferenceAccountAdmission: (
-    input: { abortSignal?: AbortSignal },
+    input: { userId: number; abortSignal?: AbortSignal },
     operation: (signal: AbortSignal) => Promise<unknown>,
-  ) => operation(input.abortSignal ?? new AbortController().signal),
+  ) => {
+    mocks.accountAdmission(input);
+    return operation(input.abortSignal ?? new AbortController().signal);
+  },
 }));
 
 import { registerContentLearningRoutes } from '../../src/api/routes/content-learning-routes';
+import { ContentGenerationOutputError } from '../../src/services/content-generation-output-error';
 
 interface MockRes {
   statusCode: number;
@@ -130,7 +135,7 @@ function mockReq(
   method: string,
   path: string,
   userId: number | undefined = 41,
-  body: Record<string, unknown> = {},
+  body: unknown = {},
   query: Record<string, unknown> = {},
   headers: Record<string, string> = {},
 ): Request {
@@ -169,14 +174,21 @@ function makeEnsureValidScope() {
 async function dispatch(
   method: string,
   path: string,
-  body: Record<string, unknown> = {},
+  body: unknown = {},
   userId: number | undefined = 41,
   query: Record<string, unknown> = {},
   ensureValidScope = makeEnsureValidScope(),
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentLearningRoutes(router, () => 'pt-BR', ensureValidScope);
-  const req = mockReq(method, path, userId, body, query);
+  const parsedUrl = new URL(path, 'https://nexus.invalid');
+  const req = mockReq(
+    method,
+    `${parsedUrl.pathname}${parsedUrl.search}`,
+    userId,
+    body,
+    { ...Object.fromEntries(parsedUrl.searchParams.entries()), ...query },
+  );
   const res = mockRes();
 
   await new Promise<void>((resolve, reject) => {
@@ -193,11 +205,25 @@ async function dispatch(
   return { response: res, ensureValidScope };
 }
 
-function seedTopicFeedback(userId: number, topic: string, sentiment = 'pending'): number {
+interface TopicFeedbackSeedScope {
+  tenantId?: number;
+  ownerUserId?: number;
+  visibilityScope?: string;
+  scopeStatus?: string;
+  createdAt?: string;
+}
+
+function seedTopicFeedback(
+  userId: number,
+  topic: string,
+  sentiment = 'pending',
+  scope: TopicFeedbackSeedScope = {},
+): number {
   const result = testDb.prepare(`
     INSERT INTO content_topic_feedback
-      (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id,
+       tenant_id, owner_user_id, visibility_scope, scope_status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     topic,
     'ai-tech',
@@ -208,7 +234,11 @@ function seedTopicFeedback(userId: number, topic: string, sentiment = 'pending')
     'Strong signal today',
     'timely',
     userId,
-    '2026-04-23T10:00:00.000Z',
+    scope.tenantId ?? userId,
+    scope.ownerUserId ?? userId,
+    scope.visibilityScope ?? 'user_private',
+    scope.scopeStatus ?? 'active',
+    scope.createdAt ?? '2026-04-23T10:00:00.000Z',
   );
   return Number(result.lastInsertRowid);
 }
@@ -237,6 +267,10 @@ describe('content learning routes', () => {
         why_now TEXT,
         angle_tag TEXT,
         user_id INTEGER NOT NULL,
+        tenant_id INTEGER,
+        owner_user_id INTEGER,
+        visibility_scope TEXT,
+        scope_status TEXT,
         created_at TEXT
       );
       CREATE TABLE content_pipeline (
@@ -288,11 +322,34 @@ describe('content learning routes', () => {
     expect(mocks.generateAndStoreTopicCandidates).not.toHaveBeenCalled();
   });
 
+  it('rejects a null topic-generation body before spending inference', async () => {
+    const { response } = await dispatch('POST', '/topics/generate', null);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION',
+      message: 'request body must be a JSON object',
+    });
+    expect(mocks.generateAndStoreTopicCandidates).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsafe topic-generation sourceJob before spending inference', async () => {
+    const { response } = await dispatch('POST', '/topics/generate', {
+      format: 'reel',
+      sourceJob: 'not a safe job label',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({ code: 'VALIDATION' });
+    expect(mocks.generateAndStoreTopicCandidates).not.toHaveBeenCalled();
+  });
+
   it('generates topic candidates through the content workflow service', async () => {
     mocks.generateAndStoreTopicCandidates.mockResolvedValueOnce({
       format: 'youtube',
       sourceJob: 'manual',
       dayLabel: 'Sexta-feira',
+      generation: { provider: 'openai', grounded: true },
       candidates: [
         {
           feedbackId: 12,
@@ -322,6 +379,10 @@ describe('content learning routes', () => {
         abortSignal: expect.any(AbortSignal),
       }),
     );
+    expect(mocks.accountAdmission).toHaveBeenCalledWith({
+      userId: 77,
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
     expect(response.body.data).toEqual(expect.objectContaining({
       format: 'youtube',
@@ -333,16 +394,90 @@ describe('content learning routes', () => {
           title: 'Build in public without chaos',
         }),
       ],
+      generation: expect.objectContaining({
+        provider: 'openai',
+        researchUsed: true,
+      }),
     }));
   });
 
-  it('forbids feedback updates for another user topic', async () => {
-    const id = seedTopicFeedback(99, 'Other user topic');
+  it('binds weekly package generation to the HTTP request abort signal', async () => {
+    mocks.generateWeeklyPackage.mockResolvedValueOnce({
+      youtube: [],
+      reels: [],
+      generation: { provider: 'openai', grounded: true },
+    });
+
+    const { response } = await dispatch('POST', '/weekly-package', {}, 77);
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.accountAdmission).toHaveBeenCalledWith({
+      userId: 77,
+      abortSignal: expect.any(AbortSignal),
+    });
+    expect(mocks.generateWeeklyPackage).toHaveBeenCalledWith(
+      77,
+      77,
+      {},
+      expect.objectContaining({
+        requestSource: 'interactive',
+        abortSignal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it('returns a typed upstream-output error instead of a successful empty generation', async () => {
+    mocks.generateAndStoreTopicCandidates.mockRejectedValueOnce(
+      new ContentGenerationOutputError(
+        'topic_json_invalid',
+        { provider: 'anthropic', grounded: true },
+        { format: 'reel' },
+      ),
+    );
+
+    const { response } = await dispatch('POST', '/topics/generate', { format: 'reel' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'CONTENT_GENERATION_OUTPUT_INVALID',
+        details: {
+          reason: 'topic_json_invalid',
+          provider: 'anthropic',
+          grounded: true,
+          format: 'reel',
+        },
+      },
+    });
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { caseName: 'foreign user', rowUserId: 99, scope: {} },
+    { caseName: 'foreign owner', rowUserId: 41, scope: { ownerUserId: 99 } },
+    { caseName: 'foreign tenant', rowUserId: 41, scope: { tenantId: 99 } },
+    { caseName: 'tenant-shared', rowUserId: 41, scope: { visibilityScope: 'tenant_shared' } },
+    { caseName: 'public', rowUserId: 41, scope: { visibilityScope: 'public_published' } },
+    { caseName: 'quarantined', rowUserId: 41, scope: { scopeStatus: 'quarantined' } },
+  ])('returns the same not-found response for a $caseName feedback row', async ({ rowUserId, scope }) => {
+    const id = seedTopicFeedback(rowUserId, 'Protected topic', 'pending', scope);
 
     const { response } = await dispatch('POST', `/topics/${id}/feedback`, { sentiment: 'approved' }, 41);
 
-    expect(response.statusCode).toBe(403);
-    expect(response.body.error.code).toBe('FORBIDDEN');
+    expect(response.statusCode).toBe(404);
+    expect(response.body.error).toEqual({ code: 'NOT_FOUND', message: 'Topic not found' });
+    expect(mocks.updateFeedback).not.toHaveBeenCalled();
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('rejects a null topic-feedback body with validation instead of throwing', async () => {
+    const id = seedTopicFeedback(41, 'Owned topic');
+
+    const { response } = await dispatch('POST', `/topics/${id}/feedback`, null, 41);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION');
     expect(mocks.updateFeedback).not.toHaveBeenCalled();
   });
 
@@ -359,6 +494,31 @@ describe('content learning routes', () => {
       sentiment: 'approved',
       title: 'Owned topic',
     });
+  });
+
+  it('rejects partial and unsafe feedback identifiers before scoped storage reads', async () => {
+    const partial = await dispatch('POST', '/topics/11suffix/feedback', { sentiment: 'approved' }, 41);
+    const unsafe = await dispatch(
+      'POST',
+      `/topics/${Number.MAX_SAFE_INTEGER + 1}/feedback`,
+      { sentiment: 'approved' },
+      41,
+    );
+
+    expect(partial.response.statusCode).toBe(400);
+    expect(unsafe.response.statusCode).toBe(400);
+    expect(mocks.updateFeedback).not.toHaveBeenCalled();
+  });
+
+  it('returns not found when the scoped feedback update no longer matches', async () => {
+    const id = seedTopicFeedback(41, 'Owned topic');
+    mocks.updateFeedback.mockReturnValueOnce(false);
+
+    const { response } = await dispatch('POST', `/topics/${id}/feedback`, { sentiment: 'approved' }, 41);
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body.error).toEqual({ code: 'NOT_FOUND', message: 'Topic not found' });
+    expect(mocks.invalidateContentDerivedCaches).not.toHaveBeenCalled();
   });
 
   it('records generated variant feedback through direct REST learning path', async () => {
@@ -524,6 +684,10 @@ describe('content learning routes', () => {
   it('returns pending topics scoped to the authenticated user', async () => {
     seedTopicFeedback(41, 'My pending topic');
     seedTopicFeedback(99, 'Other pending topic');
+    seedTopicFeedback(41, 'Shared pending topic', 'pending', { visibilityScope: 'tenant_shared' });
+    seedTopicFeedback(41, 'Public pending topic', 'pending', { visibilityScope: 'public_published' });
+    seedTopicFeedback(41, 'Quarantined pending topic', 'pending', { scopeStatus: 'quarantined' });
+    seedTopicFeedback(41, 'Foreign-owner pending topic', 'pending', { ownerUserId: 99 });
 
     const { response } = await dispatch('GET', '/topics/pending', {}, 41);
 
@@ -537,8 +701,43 @@ describe('content learning routes', () => {
     ]);
   });
 
+  it('builds taste history only from active user-private feedback', async () => {
+    const createdAt = '2999-01-01T00:00:00.000Z';
+    seedTopicFeedback(41, 'My approved topic', 'approved', { createdAt });
+    seedTopicFeedback(41, 'Shared approved topic', 'approved', {
+      visibilityScope: 'tenant_shared',
+      createdAt,
+    });
+    seedTopicFeedback(41, 'Public rejected topic', 'rejected', {
+      visibilityScope: 'public_published',
+      createdAt,
+    });
+    seedTopicFeedback(41, 'Quarantined approved topic', 'approved', {
+      scopeStatus: 'quarantined',
+      createdAt,
+    });
+
+    const { response } = await dispatch('GET', '/taste-profile', {}, 41);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data).toMatchObject({
+      totalFeedback: 1,
+      approved: 1,
+      rejected: 0,
+      recentApproved: [{ title: 'My approved topic', niche: 'ai-tech' }],
+    });
+  });
+
   it('requires canonical revision identifiers, metrics, and idempotency when logging performance feedback', async () => {
     const { response } = await dispatch('POST', '/performance', { views: 1200 });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('CONTENT_PERFORMANCE_VALIDATION_FAILED');
+    expect(mocks.recordContentPerformanceOutcome).not.toHaveBeenCalled();
+  });
+
+  it.each([null, []])('rejects a non-object performance body %j before lineage mutation', async (body) => {
+    const { response } = await dispatch('POST', '/performance', body);
 
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('CONTENT_PERFORMANCE_VALIDATION_FAILED');
@@ -630,6 +829,18 @@ describe('content learning routes', () => {
     expect(response.statusCode).toBe(200);
     expect(mocks.getArtifactChain).toHaveBeenCalledWith(pipelineId, 41, 41);
     expect(response.body.data.pipeline).toEqual({ id: pipelineId });
+  });
+
+  it('rejects ambiguous artifact-chain and bounded list query values', async () => {
+    const partialChain = await dispatch('GET', '/artifact-chain/11suffix', {}, 41);
+    const invalidPerformance = await dispatch('GET', '/performance?days=30days', {}, 41);
+    const invalidRecent = await dispatch('GET', '/scripts/recent?days=0&limit=101', {}, 41);
+
+    expect(partialChain.response.statusCode).toBe(400);
+    expect(invalidPerformance.response.statusCode).toBe(400);
+    expect(invalidRecent.response.statusCode).toBe(400);
+    expect(mocks.getArtifactChain).not.toHaveBeenCalled();
+    expect(mocks.getRecentScripts).not.toHaveBeenCalled();
   });
 
   it('returns recent scripts using bounded query defaults', async () => {

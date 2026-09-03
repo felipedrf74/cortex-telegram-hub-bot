@@ -4,6 +4,7 @@ import type { Express, Request, Response } from 'express';
 import { config } from '../config';
 import { allowLocalHealthBypass } from '../api/secret-guards';
 import { getCacheStoreStats } from '../services/cache-store';
+import { isPausedContentAgent } from '../services/content-agent-lifecycle';
 import { getDashboardCacheInvalidationStats } from '../services/cache-coherence-registry';
 import { getStatus as getSentryStatus } from '../services/error-tracker';
 import { getRuntimeStatus } from '../services/runtime-status';
@@ -274,16 +275,20 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
     const runtime = getRuntimeStatus();
     const databaseProbe = probeDatabaseHealth();
 
-    const jobs = getJobStatuses().map(j => ({
-      name: j.name,
-      label: j.label,
-      cronExpression: j.cronExpression,
-      domain: j.domain,
-      lastRunAt: j.lastRunAt,
-      lastResult: j.lastResult,
-      lastDurationMs: j.lastDurationMs,
-      lastError: j.lastError,
-    }));
+    const jobs = getJobStatuses().map((job) => {
+      const paused = isPausedContentAgent(job.name);
+      return {
+        name: job.name,
+        label: job.label,
+        cronExpression: job.cronExpression,
+        domain: job.domain,
+        lifecycle: paused ? 'paused' : 'active',
+        lastRunAt: paused ? null : job.lastRunAt,
+        lastResult: paused ? 'paused' : job.lastResult,
+        lastDurationMs: paused ? null : job.lastDurationMs,
+        lastError: paused ? null : job.lastError,
+      };
+    });
 
     const recentEvents = getRecentEvents();
     const errorCount = recentEvents.filter(e => e.type === 'error').length;

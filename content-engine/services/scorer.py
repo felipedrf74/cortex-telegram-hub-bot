@@ -3,55 +3,12 @@ from typing import Iterable, Optional
 from models.research import SearchResult
 from models.scoring import ScoreBreakdown, ScoredResult
 
-# Scoring weights — edit these to shift what the engine prioritizes
+# Scoring weights for the bounded research-result ranker. The legacy
+# ``virality`` response field carries only a source-normalized observed
+# engagement signal; it is never a prediction of future performance.
 WEIGHT_RELEVANCE = 0.40
 WEIGHT_VIRALITY = 0.30
 WEIGHT_RECENCY = 0.30
-
-# Default content-pillar keywords — used for setup-safe relevance matching
-# when the authenticated creator's saved niches/keywords are unavailable.
-# Per-request scoring SHOULD override this with the creator's saved
-# pillar_keywords from creator memory (see content_creative_memory).
-#
-# Identity-safety contract (closed-beta v4.14.126+): keep these neutral —
-# no political, religious, dietary, or ideological lexicon that biases
-# scoring for non-default creators. The keywords here are GENRE labels
-# (ai, training, gaming, commentary), not ideology. To override per
-# request, pass `creator_keywords=[...]` into `score_results(...)` —
-# callers SHOULD pull these from the authenticated creator's saved
-# `pillar_keywords` and pass them through. The default fallback only
-# fires for first-touch / setup-safe scoring before a creator profile
-# exists.
-NICHE_KEYWORDS: dict[str, list[str]] = {
-    "ai-tech": [
-        "ai", "artificial intelligence", "machine learning", "claude", "gpt", "chatgpt",
-        "automation", "bot", "api", "coding", "programming", "devops", "terraform",
-        "docker", "kubernetes", "tech", "build",
-    ],
-    "commentary": [
-        "reaction", "react", "controversy", "viral", "trending", "drama", "opinion",
-        "take", "hot take", "commentary", "culture", "politics", "government",
-    ],
-    "training": [
-        "triathlon", "running", "cycling", "swimming", "gym", "strength", "training",
-        "workout", "diet", "recovery", "athlete", "marathon", "ironman",
-    ],
-    "gaming": [
-        "game", "gaming", "gta", "resident evil", "counter-strike", "cs2", "steam",
-        "playstation", "xbox", "nintendo",
-    ],
-    "wild-card": [],  # catch-all for anything not matching above
-}
-
-
-def _flatten_default_keywords() -> list[str]:
-    """Flatten the per-pillar default keywords into a single list for
-    setup-safe scoring when the caller doesn't supply creator keywords."""
-    flat: list[str] = []
-    for keywords in NICHE_KEYWORDS.values():
-        flat.extend(keywords)
-    return flat
-
 
 def _relevance_score(
     result: SearchResult,
@@ -59,17 +16,12 @@ def _relevance_score(
 ) -> float:
     """How relevant is this result to the authenticated creator's saved niches?
 
-    When `creator_keywords` is provided (the per-request override path),
-    relevance is computed against the creator's own saved pillar keywords.
-    When omitted, falls back to the genre-only setup-safe defaults from
-    `NICHE_KEYWORDS`. The fallback never includes ideological vocabulary
-    by contract — see the comment at the top of the module.
+    When `creator_keywords` is provided, relevance is computed against the
+    creator's own saved pillar keywords. When omitted, relevance is zero rather
+    than inferred from a hardcoded creator identity.
     """
     text = f"{result.title} {result.snippet}".lower()
-    if creator_keywords is not None:
-        keyword_pool = [kw for kw in creator_keywords if kw]
-    else:
-        keyword_pool = _flatten_default_keywords()
+    keyword_pool = [kw for kw in creator_keywords if kw] if creator_keywords is not None else []
 
     if not keyword_pool:
         return 0.0
@@ -79,24 +31,23 @@ def _relevance_score(
 
 
 def _virality_score(result: SearchResult) -> float:
-    """Estimate shareability / engagement potential."""
-    score = 0.3  # base score
-    text = f"{result.title} {result.snippet}".lower()
+    """Return an observed engagement signal without inventing a platform rule.
 
-    # Viral language signals
-    viral_signals = ["viral", "breaking", "shocking", "everyone", "polêmica", "absurdo", "urgente"]
-    score += sum(0.15 for s in viral_signals if s in text)
-
-    # YouTube metadata — high view counts signal virality
-    views = result.metadata.get("view_count", 0)
-    if views > 500_000:
-        score += 0.3
-    elif views > 100_000:
-        score += 0.2
-    elif views > 10_000:
-        score += 0.1
-
-    return min(score, 1.0)
+    ``virality`` is retained as the public compatibility field name. Raw view,
+    vote, and comment totals are not comparable across platforms, channel
+    sizes, audience ages, or collection windows, so they never create a score
+    here. A search adapter may supply ``normalized_engagement_score`` only
+    when it has already normalized the metric to the source cohort on [0, 1].
+    Missing, boolean, non-finite, or out-of-range evidence yields zero rather
+    than a fabricated neutral baseline.
+    """
+    value = result.metadata.get("normalized_engagement_score")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    normalized = float(value)
+    if normalized != normalized or normalized in {float("inf"), float("-inf")}:
+        return 0.0
+    return normalized if 0.0 <= normalized <= 1.0 else 0.0
 
 
 def _recency_score(result: SearchResult) -> float:
@@ -126,11 +77,12 @@ def score_result(
 ) -> ScoredResult:
     """Score a single search result across all dimensions.
 
-    Pass `creator_keywords` to use the authenticated creator's saved
-    pillar keywords for relevance matching; omit to fall back to
-    setup-safe genre defaults.
+    Pass `creator_keywords` to use the authenticated creator's saved pillar
+    keywords for relevance matching; omit to leave relevance at zero.
     """
     relevance = _relevance_score(result, creator_keywords=creator_keywords)
+    # API compatibility retains the field name ``virality`` even though this
+    # value is only normalized observed engagement, never predicted reach.
     virality = _virality_score(result)
     recency = _recency_score(result)
     composite = (
@@ -156,10 +108,9 @@ def score_results(
     """Score and rank results by composite score (descending).
 
     Pass `creator_keywords` (typically the authenticated creator's saved
-    `pillar_keywords` from creator memory) to score against the creator's
-    own pillars. When omitted, the setup-safe genre defaults from
-    `NICHE_KEYWORDS` are used. By contract those defaults carry no
-    ideological/dietary/political vocabulary.
+    `pillar_keywords` from creator memory) to score against the creator's own
+    pillars. When omitted, relevance remains zero; recency and any explicitly
+    source-normalized observed engagement evidence drive the ranking.
     """
     # Materialize the iterable once so we don't exhaust it across N calls.
     keywords_list = list(creator_keywords) if creator_keywords is not None else None

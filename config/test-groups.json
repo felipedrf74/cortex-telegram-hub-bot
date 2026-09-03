@@ -1,5 +1,5 @@
 {
-  "version": "2026-08-31.1",
+  "version": "2026-09-03.1",
   "core": {
     "targetSeconds": 30,
     "tests": [
@@ -12,6 +12,391 @@
     ]
   },
   "retirementMappings": [
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/agents/voice-evolution-agent.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/agents/voice-evolution-agent.test.ts",
+        "src/agents/voice-evolution-agent.ts"
+      ],
+      "replacementTests": [
+        "__tests__/agents/voice-evolution-agent.test.ts",
+        "__tests__/agents/voice-evolution-multi-tenant.test.ts"
+      ],
+      "reason": "Voice learning no longer treats generic transcript or legacy pipeline rows as creator-authored evidence. The retained schema and tenant suites replace those assertions with immutable agent-draft to creator-revision provenance, tenant isolation, and no-provider-call coverage for unverified inputs."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/agents/voice-evolution-multi-tenant.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/agents/voice-evolution-multi-tenant.test.ts",
+        "src/agents/voice-evolution-agent.ts"
+      ],
+      "replacementTests": [
+        "__tests__/agents/voice-evolution-multi-tenant.test.ts"
+      ],
+      "reason": "The retained tenant suite replaces transcript-shaped prompt and call-count assertions with the stricter creator-revision input contract, tenant-scoped fingerprints, governed book influence, cancellation, and zero-call behavior for unedited or cached material."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/chat-script-shortcut-response.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/chat-script-shortcut-response.test.ts",
+        "src/api/routes/chat-script-shortcut-response.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/chat-script-shortcut-response.test.ts"
+      ],
+      "reason": "Brand-voice lookup is now tenant scoped. The retained shortcut suite replaces user-only reader assertions with the exact brand_voice, user, and tenant reader contract while preserving empty and failed-read behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-dashboard.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-dashboard.test.ts",
+        "src/services/content-dashboard-service.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-dashboard.test.ts"
+      ],
+      "reason": "The Content dashboard no longer presents internal workflow state or paused producers as publication and live-agent proof. The retained suite replaces those assertions with nullable publication tracking, explicit availability, paused lifecycle, safe graph, and strict-read contracts."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-generation-meta.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-generation-meta.test.ts",
+        "src/api/routes/content-generation-meta.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-generation-meta.test.ts"
+      ],
+      "reason": "Generation metadata now exposes provider routing without the retired provider-shaped response contract. The retained suite pins the same timing and mode behavior against the provider-neutral metadata shape."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-intelligence-detail.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-intelligence-detail.test.ts",
+        "src/api/routes/content.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-intelligence-detail.test.ts"
+      ],
+      "reason": "Paused discovery producers and unverified publication signals are no longer returned as current intelligence. The retained detail suite replaces legacy recent-signal assertions with explicit paused discovery, bounded optimization, and authoritative schedule status."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-intelligence-route-utils.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-intelligence-route-utils.test.ts",
+        "src/api/routes/content-intelligence-route-utils.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-intelligence-route-utils.test.ts"
+      ],
+      "reason": "The intelligence projection now separates paused discovery from active optimization and includes schedule authority. The retained utility suite replaces a synthetic discovery signal assertion with those stricter projection boundaries."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-intelligence-routes.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-intelligence-routes.test.ts",
+        "src/api/routes/content-intelligence-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-intelligence-routes.test.ts"
+      ],
+      "reason": "Content intelligence reads are now strict, tenant scoped, lifecycle aware, and schedule authoritative. The retained route suite replaces the legacy syncing assertion with explicit unavailable sections and filtered active-signal behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-pipeline-routes.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-pipeline-routes.test.ts",
+        "src/api/routes/content-pipeline-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-pipeline-routes.test.ts"
+      ],
+      "reason": "Internal Content workflow stages no longer count as external publication receipts. The retained route suite replaces published-stage and monthly-count assertions with empty publication projection and typed unavailable tracking metadata."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-script-duration.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-script-duration.test.ts",
+        "src/api/routes/content-script-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-script-duration.test.ts",
+        "__tests__/services/content-script-idempotency.test.ts"
+      ],
+      "reason": "Script generation now uses canonical request selectors, strict locale admission, single-attempt routing, and durable save receipts. The retained route and idempotency suites replace retired downgrade and acknowledgement assertions with pre-provider validation, replay, conflict, rollback, and privacy boundaries."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/api/content-topic-context.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/api/content-topic-context.test.ts",
+        "src/api/routes/content-topic-context.ts"
+      ],
+      "replacementTests": [
+        "__tests__/api/content-topic-context.test.ts"
+      ],
+      "reason": "Fractional identifiers are no longer rounded into a different Content record. The retained context suite replaces the rounding assertion with strict positive-integer rejection and adds the surrounding scoped topic contract."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-agent-jobs.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-agent-jobs.test.ts",
+        "src/services/content-agent-jobs.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-agent-jobs.test.ts",
+        "__tests__/services/content-agent-lifecycle.test.ts"
+      ],
+      "reason": "Agent jobs now preserve paused and rejected lifecycle steps instead of claiming every step completed. The retained job and lifecycle suites replace the all-completed assertion with exact terminal states, review gates, and durable orchestration behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-dedup-routing.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-dedup-routing.test.ts",
+        "src/services/content-dedup.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-dedup-routing.test.ts"
+      ],
+      "reason": "Deduplication now returns the canonical scoped routing result rather than the retired aggregate shape. The retained suite pins the revised exact output while preserving cross-user, cross-tenant, and route isolation coverage."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-home-view-state.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-home-view-state.test.ts",
+        "src/services/content-home-view-state.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-home-view-state.test.ts"
+      ],
+      "reason": "Home empty states now distinguish blocked, unavailable, paused, and actionable Content states. The retained suite replaces the single legacy action-target assertion with explicit state, authority, and recovery-action contracts."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-mesh-context.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-mesh-context.test.ts",
+        "src/services/cross-agent-learning/content-mesh-context.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-mesh-context.test.ts"
+      ],
+      "reason": "Mesh context now separates advisory topic dates from Secretary-confirmed private work. The retained suite replaces the legacy scheduledTopics aggregate with the typed schedule-authority context and its privacy-safe projection."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-script-job-credits.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-script-job-credits.test.ts",
+        "src/services/content-script-job-credits.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-script-job-credits.test.ts",
+        "__tests__/services/ai-credit-ledger.test.ts"
+      ],
+      "reason": "The unused standalone settlement helper was removed and terminal credit ownership moved to the live account lifecycle. The retained job-credit and ledger suites replace helper-only captured and released cases with reservation, capture, release, and caller-database behavior on runtime paths."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-script-quality.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-script-quality.test.ts",
+        "src/services/content-script-quality.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-script-quality.test.ts"
+      ],
+      "reason": "Script quality now uses bounded structured beats and revised locale-safe synthesized fallbacks. The retained suite replaces the timestamp-format and obsolete fallback rows with exact EN, pt-BR, and pt-PT quality contracts."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-token-economy.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-token-economy.test.ts",
+        "src/services/content-token-economy.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-token-economy.test.ts"
+      ],
+      "reason": "Research support metadata is now source-package aware and distinguishes fresh, refreshed, and reused evidence. The retained token-economy suite replaces the legacy support-array assertion with the stricter bounded cache and provenance contract."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-workflow-user-scope.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-workflow-user-scope.test.ts",
+        "src/services/content-workflow.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-workflow-user-scope.test.ts",
+        "__tests__/services/content-workflow-engine-integration.test.ts"
+      ],
+      "reason": "Content workflow generation now uses tenant-scoped canonical workspace inputs and explicit engine boundaries instead of legacy candidate shapes. The retained workflow suites replace those assertions with isolation, cache invalidation, single-attempt routing, and canonical capture behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-workspace-observability-durable.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-workspace-observability-durable.test.ts",
+        "src/services/content-workspace-observability.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-workspace-observability-durable.test.ts"
+      ],
+      "reason": "Observability no longer labels internal workflow transitions as publication evidence. The retained durability suite replaces content_scheduled publication-shaped counts with private-work scheduling, availability, and durable read-failure semantics."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/content-workspace-read-models.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/content-workspace-read-models.test.ts",
+        "src/services/content-workspace-read-models.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-workspace-read-models.test.ts"
+      ],
+      "reason": "Workspace read models no longer infer publication totals or throughput from internal states. The retained suite replaces those counts with nullable publication tracking and authoritative private-work schedule projections."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/creator-config-eval.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/creator-config-eval.test.ts",
+        "src/services/eval-criteria.ts",
+        "prompts/creator-config.md"
+      ],
+      "replacementTests": [
+        "__tests__/services/creator-config-eval.test.ts",
+        "__tests__/security/creator-config-neutrality.test.ts"
+      ],
+      "reason": "Creator configuration no longer embeds provider- or niche-specific defaults as universal truth. The retained evaluation and neutrality suites replace those prompt literals with evidence-grounded, locale-aware, creator-scoped configuration criteria."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/cross-agent-learning.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/cross-agent-learning.test.ts",
+        "src/services/cross-agent-learning/signal-learning.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/cross-agent-learning.test.ts",
+        "__tests__/services/cross-agent-learning-contract.test.ts"
+      ],
+      "reason": "Cross-agent learning now projects bounded typed signals instead of the retired topPillars payload. The retained learning suites replace that assertion with producer, scope, lifecycle, and payload-version contracts."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/intelligence-bus-contract.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/intelligence-bus-contract.test.ts",
+        "src/services/intelligence-bus.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/intelligence-bus-contract.test.ts",
+        "__tests__/services/intelligence-bus.test.ts"
+      ],
+      "reason": "Intelligence-bus reads and invalidations now account for lifecycle aliases, scoped cache owners, and priority-sensitive planning effects. The retained suites replace positional SQL-call assertions with exact query-kind, filter, argument, and invalidation behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/python-engine-hardening.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/python-engine-hardening.test.ts",
+        "content-engine/services/claude_client.py",
+        "content-engine/routers/research.py",
+        "content-engine/models/requests.py"
+      ],
+      "replacementTests": [
+        "__tests__/services/python-engine-hardening.test.ts"
+      ],
+      "reason": "The Python engine now treats malformed provider output as terminal within a single attempt and validates bounded request models. The retained structural and Python runtime suites replace repair-call and fabricated-fallback assertions with exact no-retry, typed-error, and bounded-contract behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/shared-decision-context.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/shared-decision-context.test.ts",
+        "src/services/shared-decision-context.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/shared-decision-context.test.ts"
+      ],
+      "reason": "Content dates are advisory unless Secretary confirms a private work block, and internal workflow never proves publication. The retained decision-context suite replaces derived publish deadlines and filming commitments with confirmed, partial, failed-sync, unavailable, and proposal-only authority states."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/signal-ranking.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/signal-ranking.test.ts",
+        "src/agents/pipeline-agent.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/signal-ranking.test.ts",
+        "__tests__/state/content-performance-aggregate.test.ts"
+      ],
+      "reason": "Signal ranking no longer infers publication counts, conversion, or throughput from internal pipeline state. The retained ranking and aggregate suites replace numeric publication assertions with explicit unavailable tracking while preserving script-conversion evidence."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/training-plan-coordination.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/training-plan-coordination.test.ts",
+        "src/services/training-plan-coordination.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/training-plan-coordination.test.ts"
+      ],
+      "reason": "Training now protects only a Secretary-confirmed recording block, not an advisory Content recommendation. The retained suite replaces protectFilmingDay with exact confirmed, advisory, sync-attention, partial, and unavailable coordination behavior."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/services/transport-boundary.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/services/transport-boundary.test.ts",
+        "src/services/content-engine.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/transport-boundary.test.ts"
+      ],
+      "reason": "A source-line budget is not a transport boundary and was retired as the engine gained typed request and cancellation contracts. The retained suite continues to prove format-free structured responses and the absence of Telegram framework coupling."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/skills/skill-config.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/skills/skill-config.test.ts",
+        "src/skills/skill-config.ts",
+        "src/skills/content/manifest.json"
+      ],
+      "replacementTests": [
+        "__tests__/skills/skill-config.test.ts"
+      ],
+      "reason": "Content availability is provider neutral and dormant agents now start paused instead of enabled. The retained skill-config suite replaces the all-enabled loop with exact active and paused defaults plus manifest key neutrality."
+    },
+    {
+      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "test": "__tests__/state/content-performance-aggregate.test.ts",
+      "requiredChangedPaths": [
+        "__tests__/state/content-performance-aggregate.test.ts",
+        "src/state/content-performance-aggregate.ts"
+      ],
+      "replacementTests": [
+        "__tests__/state/content-performance-aggregate.test.ts"
+      ],
+      "reason": "Performance aggregation no longer infers external publication from internal states and now separates confirmed private work from schedule attention. The retained suite replaces published counts and labels with nullable tracking, user-reported performance, and partial-read availability behavior."
+    },
     {
       "baseSha": "92b722ee02242fd37453ece17d74cfc53102d961",
       "test": "__tests__/services/gemini-provider.test.ts",

@@ -9,6 +9,7 @@ const mockGetUpcomingTopicCount = vi.fn();
 const mockGetActiveContentPillars = vi.fn();
 const mockGetContentDeskItems = vi.fn();
 const mockGetNextContentExecutionHint = vi.fn();
+const mockGetContentCalendar = vi.fn();
 const mockGetRankedContentSignals = vi.fn();
 const mockGetKnowledgeStats = vi.fn();
 const mockGetVoiceDna = vi.fn();
@@ -30,6 +31,7 @@ const mockGetWeeklyAdherence = vi.fn();
 const mockGetLatestCompletionForPlan = vi.fn();
 const mockGetEvents = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
+const mockGetUserTimezoneById = vi.fn();
 
 vi.mock('../../src/config', () => ({
   config: {
@@ -72,6 +74,13 @@ vi.mock('../../src/services/content-scheduler', () => ({
 vi.mock('../../src/services/content-dashboard-service', () => ({
   getKnowledgeStats: (...args: unknown[]) => mockGetKnowledgeStats(...args),
   getVoiceDna: (...args: unknown[]) => mockGetVoiceDna(...args),
+}));
+
+vi.mock('../../src/services/content-workspace-scheduling', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-workspace-scheduling')>(
+    '../../src/services/content-workspace-scheduling',
+  )),
+  getContentCalendar: (...args: unknown[]) => mockGetContentCalendar(...args),
 }));
 
 vi.mock('../../src/services/content-intelligence', async () => {
@@ -129,6 +138,13 @@ vi.mock('../../src/services/unified-calendar', () => ({
   hasWritableCalendarForUser: (...args: unknown[]) => mockHasWritableCalendarForUser(...args),
 }));
 
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+}));
+
 import {
   readContentMeshContext,
   readCookingMeshContext,
@@ -154,6 +170,7 @@ describe('mesh context scope hardening', () => {
       mockGetActiveContentPillars,
       mockGetContentDeskItems,
       mockGetNextContentExecutionHint,
+      mockGetContentCalendar,
       mockGetRankedContentSignals,
       mockGetKnowledgeStats,
       mockGetVoiceDna,
@@ -175,7 +192,19 @@ describe('mesh context scope hardening', () => {
       mockGetLatestCompletionForPlan,
       mockGetEvents,
       mockHasWritableCalendarForUser,
+      mockGetUserTimezoneById,
     ].forEach((mock) => mock.mockReset());
+
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
+    mockGetContentCalendar.mockReturnValue({
+      entries: [],
+      hasMore: false,
+      scheduleAuthority: {
+        authority: 'secretary',
+        status: 'current',
+        unavailableEntryCount: 0,
+      },
+    });
   });
 
   it('keeps valid content reads on the explicit tenant and returns the exact owned mesh values', async () => {
@@ -203,11 +232,21 @@ describe('mesh context scope hardening', () => {
 
     expect(context).toMatchObject({
       userId: 42,
+      availability: 'available',
+      unavailableSections: [],
       upcomingTopicCount: 3,
       unreadNotifications,
       deskItems,
       monitoredPillars,
       recentSignals,
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'unplanned',
+        confirmedBlocks: [],
+        attentionCount: 0,
+      },
     });
     expect(mockGetUnreadNotifications).toHaveBeenCalledWith(42, 10, 91);
     expect(mockGetContentDeskItems).toHaveBeenCalledWith(42, 4, 91);
@@ -226,7 +265,6 @@ describe('mesh context scope hardening', () => {
     mockGetNextContentExecutionHint.mockResolvedValue(null);
     mockGetVoiceDna.mockReturnValue([]);
     mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
-
     const context = await readContentMeshContext({
       userId: 42,
       tenantId: 91,
@@ -236,12 +274,43 @@ describe('mesh context scope hardening', () => {
 
     expect(context.weekStart).toBe('2026-04-06');
     expect(context.weekEnd).toBe('2026-04-12');
-    expect(context.derivedSignals).toEqual([
-      expect.objectContaining({
-        signalType: 'publishing_commitment',
-        expiresAt: '2026-04-13T06:59:59.999Z',
-      }),
-    ]);
+    expect(context.derivedSignals).toEqual([]);
+    expect(context.deadlines).toEqual([]);
+  });
+
+  it('marks the Content work schedule partial when the bounded calendar projection truncates', async () => {
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetUnreadNotifications.mockReturnValue([]);
+    mockGetContentDeskItems.mockReturnValue([]);
+    mockGetActiveContentPillars.mockReturnValue([]);
+    mockGetRankedContentSignals.mockReturnValue([]);
+    mockGetUpcomingTopicCount.mockReturnValue(0);
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+    mockGetContentCalendar.mockReturnValue({
+      entries: [],
+      hasMore: true,
+      scheduleAuthority: {
+        authority: 'secretary',
+        status: 'current',
+        unavailableEntryCount: 0,
+      },
+    });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context.workSchedule).toMatchObject({
+      authorityStatus: 'partially_unavailable',
+      planStatus: 'partial',
+      confirmedBlocks: [],
+      confirmedBlocksComplete: false,
+    });
   });
 
   it('uses exact empty content fallbacks when tenant-owned readers throw', async () => {
@@ -263,6 +332,9 @@ describe('mesh context scope hardening', () => {
     mockGetNextContentExecutionHint.mockResolvedValue(null);
     mockGetVoiceDna.mockReturnValue([]);
     mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+    mockGetContentCalendar.mockImplementation(() => {
+      throw new Error('calendar projection failed');
+    });
 
     const context = await readContentMeshContext({
       userId: 42,
@@ -274,6 +346,307 @@ describe('mesh context scope hardening', () => {
     expect(context.deskItems).toEqual([]);
     expect(context.monitoredPillars).toEqual([]);
     expect(context.upcomingTopicCount).toBe(0);
+    expect(context.availability).toBe('partial');
+    expect(context.unavailableSections).toEqual(expect.arrayContaining([
+      'notifications',
+      'content_desk',
+      'pillars',
+      'topic_count',
+      'calendar',
+      'next_execution',
+    ]));
+    expect(mockGetNextContentExecutionHint).not.toHaveBeenCalled();
+    expect(context.workSchedule).toMatchObject({
+      authority: 'secretary',
+      authorityStatus: 'unavailable',
+      planStatus: 'unavailable',
+      confirmedBlocks: [],
+    });
+  });
+
+  it('keeps an unavailable Secretary calendar projection unavailable even when a recommendation exists', async () => {
+    mockGetFilmingRecommendation.mockResolvedValue({
+      date: '2026-04-15',
+      localizedReason: 'A possible window exists.',
+      localizedConfidenceLabel: 'Medium confidence',
+    });
+    mockGetUnreadNotifications.mockReturnValue([]);
+    mockGetContentDeskItems.mockReturnValue([]);
+    mockGetActiveContentPillars.mockReturnValue([]);
+    mockGetRankedContentSignals.mockReturnValue([]);
+    mockGetUpcomingTopicCount.mockReturnValue(0);
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+    mockGetContentCalendar.mockImplementation(() => {
+      throw new Error('calendar projection unavailable');
+    });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context.workSchedule).toMatchObject({
+      authorityStatus: 'unavailable',
+      planStatus: 'unavailable',
+      confirmedBlocks: [],
+    });
+  });
+
+  it('maps offset timestamps, ignores terminal blocks, and keeps cancellation attention unplanned', async () => {
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetUnreadNotifications.mockReturnValue([]);
+    mockGetContentDeskItems.mockReturnValue([]);
+    mockGetActiveContentPillars.mockReturnValue([]);
+    mockGetRankedContentSignals.mockReturnValue([]);
+    mockGetUpcomingTopicCount.mockReturnValue(1);
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+    mockGetContentCalendar.mockReturnValue({
+      entries: [
+        {
+          kind: 'deadline',
+          meaning: 'target_date_not_publication',
+          startsAt: '2026-04-12T23:30:00.000Z',
+          endsAt: null,
+          item: { id: 110, title: 'Monday local target', status: 'active' },
+        },
+        {
+          kind: 'work_block',
+          meaning: 'private_work_time_not_publication',
+          startsAt: '2026-04-13T09:00:00.000+01:00',
+          endsAt: '2026-04-13T10:00:00.000+01:00',
+          workKind: 'edit',
+          item: { id: 111, title: 'Completed edit', status: 'active' },
+          schedule: {
+            state: 'completed',
+            authority: 'secretary',
+            authorityStatus: 'current',
+            recoverable: false,
+            contentChangedSinceScheduling: false,
+          },
+        },
+        {
+          kind: 'work_block',
+          meaning: 'private_work_time_not_publication',
+          startsAt: '2026-04-15T09:00:00.000+01:00',
+          endsAt: '2026-04-15T10:00:00.000+01:00',
+          workKind: 'record',
+          item: { id: 113, title: 'Cancellation needs attention', status: 'active' },
+          schedule: {
+            state: 'cancel_failed',
+            authority: 'secretary',
+            authorityStatus: 'current',
+            recoverable: true,
+            contentChangedSinceScheduling: false,
+          },
+        },
+        {
+          kind: 'work_block',
+          meaning: 'private_work_time_not_publication',
+          startsAt: '2026-04-14T09:00:00.000+01:00',
+          endsAt: '2026-04-14T10:00:00.000+01:00',
+          workKind: 'review',
+          item: { id: 112, title: 'Cancelled review', status: 'active' },
+          schedule: {
+            state: 'cancelled',
+            authority: 'secretary',
+            authorityStatus: 'current',
+            recoverable: false,
+            contentChangedSinceScheduling: false,
+          },
+        },
+      ],
+      scheduleAuthority: {
+        authority: 'secretary',
+        status: 'current',
+        unavailableEntryCount: 0,
+      },
+    });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context.deadlines).toEqual([
+      expect.objectContaining({ itemId: 110, date: '2026-04-13' }),
+    ]);
+    expect(context.workSchedule).toEqual({
+      authority: 'secretary',
+      authorityStatus: 'current',
+      planStatus: 'unplanned',
+      semantics: 'private_work_session',
+      confirmedBlocks: [],
+      confirmedBlocksComplete: true,
+      attentionCount: 1,
+    });
+  });
+
+  it('keeps deadlines advisory and only projects current Secretary-confirmed private work blocks', async () => {
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetUnreadNotifications.mockReturnValue([]);
+    mockGetContentDeskItems.mockReturnValue([]);
+    mockGetActiveContentPillars.mockReturnValue([]);
+    mockGetRankedContentSignals.mockReturnValue([]);
+    mockGetUpcomingTopicCount.mockReturnValue(2);
+    mockGetTopics.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetVoiceDna.mockReturnValue([]);
+    mockGetKnowledgeStats.mockReturnValue({ categories: [], referenceChannels: 0 });
+    mockGetContentCalendar.mockReturnValue({
+      entries: [
+        {
+          kind: 'deadline',
+          meaning: 'target_date_not_publication',
+          startsAt: '2026-04-15T17:00:00.000Z',
+          endsAt: null,
+          item: { id: 101, title: 'Advisory target', status: 'approved' },
+        },
+        {
+          kind: 'work_block',
+          meaning: 'private_work_time_not_publication',
+          startsAt: '2026-04-16T09:00:00.000Z',
+          endsAt: '2026-04-16T10:30:00.000Z',
+          workKind: 'record',
+          item: {
+            id: 102,
+            title: 'Record the piece',
+            status: 'scripted',
+            nextAction: {
+              action: 'submit_for_review',
+              label: 'Submit the script for review',
+              reason: 'Approval is required before the next stage.',
+            },
+          },
+          schedule: {
+            state: 'provider_synced',
+            authority: 'secretary',
+            authorityStatus: 'current',
+            visibleTitle: 'Record the piece',
+            contentChangedSinceScheduling: false,
+          },
+        },
+        {
+          kind: 'work_block',
+          meaning: 'private_work_time_not_publication',
+          startsAt: '2026-04-18T09:00:00.000Z',
+          endsAt: '2026-04-18T10:00:00.000Z',
+          workKind: 'record',
+          item: {
+            id: 104,
+            title: 'Locally confirmed provider failure',
+            status: 'approved',
+            nextAction: {
+              action: 'prepare_scheduled_work',
+              label: 'Prepare the confirmed recording block',
+              reason: 'The item is approved and the local block remains current.',
+            },
+          },
+          schedule: {
+            state: 'sync_failed',
+            authority: 'secretary',
+            authorityStatus: 'current',
+            visibleTitle: 'Prepare the confirmed recording block',
+            recoverable: true,
+            contentChangedSinceScheduling: false,
+          },
+        },
+        {
+          kind: 'work_block',
+          meaning: 'private_work_time_not_publication',
+          startsAt: '2026-04-17T09:00:00.000Z',
+          endsAt: '2026-04-17T10:00:00.000Z',
+          workKind: 'edit',
+          item: { id: 103, title: 'Unavailable edit block', status: 'editing' },
+          schedule: {
+            state: 'sync_failed',
+            authority: 'secretary',
+            authorityStatus: 'unavailable',
+            recoverable: true,
+            contentChangedSinceScheduling: false,
+          },
+        },
+      ],
+      scheduleAuthority: {
+        authority: 'secretary',
+        status: 'partially_unavailable',
+        unavailableEntryCount: 1,
+      },
+    });
+
+    const context = await readContentMeshContext({
+      userId: 42,
+      tenantId: 91,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context.deadlines).toEqual([
+      expect.objectContaining({
+        itemId: 101,
+        date: '2026-04-15',
+        semantics: 'target_date_not_publication',
+      }),
+    ]);
+    expect(context.workSchedule).toMatchObject({
+      authorityStatus: 'partially_unavailable',
+      planStatus: 'partial',
+      confirmedBlocksComplete: true,
+      attentionCount: 2,
+      confirmedBlocks: [
+        expect.objectContaining({
+          itemId: 102,
+          state: 'provider_synced',
+          authorityStatus: 'current',
+          semantics: 'private_work_session',
+          itemStatus: 'scripted',
+          outcome: 'Planned outcome: complete a recording session for "Record the piece".',
+          estimatedEffortMinutes: 90,
+          dependency: null,
+          approvalState: 'not_required',
+        }),
+        expect.objectContaining({
+          itemId: 104,
+          state: 'sync_failed',
+          authorityStatus: 'current',
+          semantics: 'private_work_session',
+          itemStatus: 'approved',
+          outcome: 'Planned outcome: complete a recording session for "Locally confirmed provider failure".',
+          estimatedEffortMinutes: 60,
+          dependency: null,
+          approvalState: 'approved',
+        }),
+      ],
+    });
+    expect(context.derivedSignals).toEqual([]);
+  });
+
+  it('fails closed for a valid user when the Content tenant scope is missing', async () => {
+    const context = await readContentMeshContext({
+      userId: 42,
+      weekStart: '2026-04-13',
+    });
+
+    expect(context).toMatchObject({
+      userId: 42,
+      availability: 'unavailable',
+      upcomingTopicCount: 0,
+      deadlines: [],
+      workSchedule: {
+        authorityStatus: 'unavailable',
+        planStatus: 'unavailable',
+        confirmedBlocks: [],
+      },
+    });
+    expect(mockGetUnreadNotifications).not.toHaveBeenCalled();
+    expect(mockGetContentCalendar).not.toHaveBeenCalled();
+    expect(mockGetNextContentExecutionHint).not.toHaveBeenCalled();
   });
 
   it('fails closed for invalid user scope across all mesh readers and records anomalies', async () => {
@@ -322,7 +695,13 @@ describe('mesh context scope hardening', () => {
       weekStart: '2026-04-13',
       weekEnd: '2026-04-19',
       upcomingTopicCount: 0,
-      scheduledTopics: [],
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'unavailable',
+        planStatus: 'unavailable',
+        confirmedBlocks: [],
+      },
       filmingRecommendation: null,
       unreadNotifications: [],
       voiceDnaEntries: [],

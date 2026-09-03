@@ -3,14 +3,26 @@
 import { getDb } from '../../services/database';
 import type { ScriptTopicContext } from '../../services/content-engine';
 import { resolveContentWorkspaceIdentifier } from '../../services/content-workspace-read-models';
-import { parseOptionalPositiveInt } from './content-script-utils';
+import {
+  CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS,
+  CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS,
+  CONTENT_SCRIPT_MAX_NICHE_CHARS,
+  CONTENT_SCRIPT_MAX_WHY_NOW_CHARS,
+} from './content-script-utils';
+
+const CONTENT_SCRIPT_MAX_SOURCE_JOB_CHARS = 120;
 
 export function parseOptionalPositiveId(value: unknown): number | null {
-  return parseOptionalPositiveInt(value);
+  if (Number.isSafeInteger(value) && Number(value) > 0) return Number(value);
+  if (typeof value !== 'string' || !/^[1-9]\d*$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-export function parseOptionalText(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+export function parseOptionalText(value: unknown, maxChars = 1_000): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= maxChars ? normalized : null;
 }
 
 export function resolveScriptTopicContext(
@@ -20,7 +32,7 @@ export function resolveScriptTopicContext(
   tenantId?: number | null,
 ): ScriptTopicContext | null {
   const context: ScriptTopicContext = {};
-  const expectedTenantId = tenantId != null && Number.isFinite(tenantId) && tenantId > 0 ? Number(tenantId) : null;
+  const expectedTenantId = tenantId != null && Number.isSafeInteger(tenantId) && tenantId > 0 ? Number(tenantId) : null;
 
   const workspaceItemId = parseOptionalPositiveId(raw.workspaceItemId);
   const pipelineId = parseOptionalPositiveId(raw.pipelineId);
@@ -90,11 +102,11 @@ export function resolveScriptTopicContext(
     if (row) {
       topicFeedbackAuthorized = true;
       context.topicFeedbackId = row.id;
-      context.niche = row.niche || context.niche;
-      context.hookIdea = row.hook_idea || context.hookIdea;
-      context.whyNow = row.why_now || context.whyNow;
-      context.angleTag = row.angle_tag || context.angleTag;
-      context.sourceJob = row.source_job || context.sourceJob;
+      context.niche = parseOptionalText(row.niche, CONTENT_SCRIPT_MAX_NICHE_CHARS) ?? context.niche;
+      context.hookIdea = parseOptionalText(row.hook_idea, CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS) ?? context.hookIdea;
+      context.whyNow = parseOptionalText(row.why_now, CONTENT_SCRIPT_MAX_WHY_NOW_CHARS) ?? context.whyNow;
+      context.angleTag = parseOptionalText(row.angle_tag, CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS) ?? context.angleTag;
+      context.sourceJob = parseOptionalText(row.source_job, CONTENT_SCRIPT_MAX_SOURCE_JOB_CHARS) ?? context.sourceJob;
     }
   }
 
@@ -113,18 +125,18 @@ export function resolveScriptTopicContext(
     if (row) {
       ideaAuthorized = true;
       context.ideaId = row.id;
-      context.niche = row.niche || context.niche;
-      context.hookIdea = row.hook_idea || context.hookIdea;
-      context.whyNow = row.why_now || context.whyNow;
-      context.angleTag = row.angle_tag || context.angleTag;
-      context.sourceJob = row.source || context.sourceJob;
+      context.niche = parseOptionalText(row.niche, CONTENT_SCRIPT_MAX_NICHE_CHARS) ?? context.niche;
+      context.hookIdea = parseOptionalText(row.hook_idea, CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS) ?? context.hookIdea;
+      context.whyNow = parseOptionalText(row.why_now, CONTENT_SCRIPT_MAX_WHY_NOW_CHARS) ?? context.whyNow;
+      context.angleTag = parseOptionalText(row.angle_tag, CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS) ?? context.angleTag;
+      context.sourceJob = parseOptionalText(row.source, CONTENT_SCRIPT_MAX_SOURCE_JOB_CHARS) ?? context.sourceJob;
     }
   }
 
-  const explicitNiche = parseOptionalText(raw.niche);
-  const explicitHookIdea = parseOptionalText(raw.hookIdea);
-  const explicitWhyNow = parseOptionalText(raw.whyNow);
-  const explicitAngleTag = parseOptionalText(raw.angleTag);
+  const explicitNiche = parseOptionalText(raw.niche, CONTENT_SCRIPT_MAX_NICHE_CHARS);
+  const explicitHookIdea = parseOptionalText(raw.hookIdea, CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS);
+  const explicitWhyNow = parseOptionalText(raw.whyNow, CONTENT_SCRIPT_MAX_WHY_NOW_CHARS);
+  const explicitAngleTag = parseOptionalText(raw.angleTag, CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS);
 
   // The canonical item ID was already set above. A legacy pipeline ID is an
   // input compatibility alias only and must not escape as current truth.
@@ -150,14 +162,17 @@ function parseAgencyContext(
     if (document.schemaVersion !== 'content-agency-workspace-handoff-v1') return {};
     const hooks = Array.isArray(document.hooks) ? document.hooks : [];
     const firstHook = hooks[0] && typeof hooks[0] === 'object'
-      ? parseOptionalText((hooks[0] as Record<string, unknown>).hook)
+      ? parseOptionalText(
+        (hooks[0] as Record<string, unknown>).hook,
+        CONTENT_SCRIPT_MAX_HOOK_IDEA_CHARS,
+      )
       : null;
     const positioning = document.positioning && typeof document.positioning === 'object'
       ? document.positioning as Record<string, unknown>
       : null;
     return {
       hookIdea: firstHook ?? undefined,
-      angleTag: parseOptionalText(positioning?.category) ?? undefined,
+      angleTag: parseOptionalText(positioning?.category, CONTENT_SCRIPT_MAX_ANGLE_TAG_CHARS) ?? undefined,
       sourceJob: 'content_agency',
     };
   } catch {

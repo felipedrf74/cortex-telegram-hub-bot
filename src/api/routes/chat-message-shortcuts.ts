@@ -7,18 +7,28 @@ import type { DomainName } from '../../domains/types';
 import { logger } from '../../utils/logger';
 import {
   DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
+  ForwardedContentPolicyError,
   ForwardedLocalInferenceError,
   getScript,
 } from '../../services/content-engine';
 import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import {
   parseContentScriptShortcut,
+  parseContentCreativeShortcut,
+  inspectContentCreativeShortcut,
   parseContentStateShortcut,
   parseFinanceStateShortcut,
   resolveContentShortcutLanguage,
   resolveFinanceShortcutLanguage,
   resolveRequestedScriptLanguage,
+  type ContentCreativeShortcutCommand,
+  type ContentCreativeShortcutValidationReason,
 } from './chat-shortcut-parsers';
+import {
+  ContentCreativeProposalError,
+  generateContentCreativeProposal,
+  type ContentCreativeProposalResult,
+} from '../../services/content-creative-proposals';
 import {
   buildContentRefinementSystemPrompt,
   buildContentRefinementUnavailableResponse,
@@ -44,6 +54,7 @@ import {
   executeSkillInference,
   isLocalInferenceUserEnrolled,
   rejectSkillInferenceApplicationResult,
+  runWithSkillInferenceAccountAdmission,
   SkillInferencePolicyError,
 } from '../../services/skill-inference-service';
 import {
@@ -51,6 +62,8 @@ import {
   ContentOutputLanguageMismatchError,
 } from '../../services/content-output-language';
 import { getCurrentRequestId } from '../../utils/request-context';
+import { ContentResearchPolicyError } from '../../services/content-research-generation-policy';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 export type ActiveChatContext = {
   domain: DomainName;
@@ -79,6 +92,86 @@ function buildChatWarningCode(code: 'content_engine_unavailable' | 'content_refi
   return [code];
 }
 
+function buildCreativeShortcutText(result: ContentCreativeProposalResult, language: string): string {
+  const pt = language.startsWith('pt');
+  const proposal = result.proposal;
+  let lines: string[];
+  if ('hooks' in proposal) {
+    lines = proposal.hooks.map((hook, index) => `${index + 1}. ${hook.text}`);
+  } else if ('titles' in proposal) {
+    lines = proposal.titles.map((title, index) => `${index + 1}. ${title.title}`);
+  } else if ('concepts' in proposal) {
+    lines = proposal.concepts.map((concept, index) => (
+      `${index + 1}. ${concept.text_overlay.main_text} — ${concept.why_it_works}`
+    ));
+  } else if ('caption' in proposal) {
+    lines = [proposal.caption, proposal.hashtags.map((tag) => `#${tag.replace(/^#/, '')}`).join(' ')];
+  } else {
+    lines = proposal.outputs.map((output, index) => (
+      `${index + 1}. ${output.platform} · ${output.format}\n${output.content}`
+    ));
+  }
+  const degradedNotice = result.degraded
+    ? (pt
+      ? 'Alternativa degradada: a saída do fornecedor não cumpriu o contrato completo. Revisão humana obrigatória.'
+      : 'Degraded fallback: provider output did not meet the full contract. Human review is required.')
+    : null;
+  const warningLines = result.degraded
+    ? result.warnings.map((warning) => `⚠ ${warning}`)
+    : [];
+  const reviewNotice = result.research.sourceContextUsed
+    ? (pt
+      ? 'Revisão humana obrigatória: as fontes apoiam o contexto de entrada, não verificam automaticamente o texto gerado.'
+      : 'Human review required: sources support the input context; they do not automatically verify generated copy.')
+    : (pt ? 'Proposta apenas; nada foi guardado ou publicado.' : 'Proposal only; nothing was saved or published.');
+  return [degradedNotice, ...warningLines, ...lines, '', reviewNotice].filter((line): line is string => line != null)
+    .join('\n')
+    .slice(0, 12_000);
+}
+
+function creativeProposalCount(result: ContentCreativeProposalResult): number {
+  const proposal = result.proposal;
+  if ('hooks' in proposal) return proposal.hooks.length;
+  if ('titles' in proposal) return proposal.titles.length;
+  if ('concepts' in proposal) return proposal.concepts.length;
+  if ('outputs' in proposal) return proposal.outputs.length;
+  return 1;
+}
+
+function buildCreativeShortcutValidationText(
+  reason: ContentCreativeShortcutValidationReason,
+  command: ContentCreativeShortcutCommand,
+  language: string,
+): string {
+  const subjectLimit = command === 'genthumbnail' ? '1,400' : '2,000';
+  const detail = language === 'pt-PT'
+    ? {
+      message_too_long: 'O pedido completo não pode exceder 4 096 caracteres.',
+      unsupported_control_character: 'O pedido contém um carácter de controlo não suportado.',
+      subject_required: 'Indique um tema com, pelo menos, 3 caracteres.',
+      single_line_required: 'Apenas /repurpose aceita várias linhas.',
+      subject_too_long: `O tema de /${command} não pode exceder ${subjectLimit} caracteres.`,
+    }[reason]
+    : language === 'pt-BR'
+      ? {
+        message_too_long: 'A solicitação completa não pode exceder 4.096 caracteres.',
+        unsupported_control_character: 'A solicitação contém um caractere de controle não permitido.',
+        subject_required: 'Informe um assunto com pelo menos 3 caracteres.',
+        single_line_required: 'Somente /repurpose aceita várias linhas.',
+        subject_too_long: `O assunto de /${command} não pode exceder ${subjectLimit} caracteres.`,
+      }[reason]
+      : {
+        message_too_long: 'The complete request cannot exceed 4,096 characters.',
+        unsupported_control_character: 'The request contains an unsupported control character.',
+        subject_required: 'Provide a subject with at least 3 characters.',
+        single_line_required: 'Only /repurpose accepts multiple lines.',
+        subject_too_long: `The /${command} subject cannot exceed ${subjectLimit} characters.`,
+      }[reason];
+  if (language === 'pt-PT') return `O comando criativo é inválido. ${detail} Nada foi gerado, guardado ou publicado.`;
+  if (language === 'pt-BR') return `O comando criativo é inválido. ${detail} Nada foi gerado, salvo ou publicado.`;
+  return `The creative command is invalid. ${detail} Nothing was generated, saved, or published.`;
+}
+
 function isChatLocalPrimaryUserEnrolled(userId: number): boolean {
   if (!localPrimaryInferenceConfig.chatEnabled) return false;
   const control = getLocalInferenceRuntimeControl();
@@ -99,7 +192,8 @@ export function isContentModelBackedChatShortcutRequest(input: {
   normalizedText: string;
   activeContext: ActiveChatContext;
 }): boolean {
-  if (parseContentScriptShortcut(input.normalizedText)) return true;
+  if (parseContentScriptShortcut(input.normalizedText)
+      || parseContentCreativeShortcut(input.normalizedText)) return true;
   return input.activeContext?.domain === 'content'
     && isContentRefinementFollowUp(input.normalizedText)
     && Boolean(extractContentRefinementSourceText(input.activeContext.lastAssistantMessage));
@@ -115,7 +209,8 @@ export function resolveLocalPrimaryContentChatShortcutAdmission(input: {
   activeContext: ActiveChatContext;
   userId: number;
 }): LocalPrimaryContentChatShortcutAdmission | null {
-  if (parseContentScriptShortcut(input.normalizedText)) {
+  if (parseContentScriptShortcut(input.normalizedText)
+      || parseContentCreativeShortcut(input.normalizedText)) {
     return isContentLocalPrimaryUserEnrolled(input.userId) ? 'content' : null;
   }
   const refinementRequest = input.activeContext?.domain === 'content'
@@ -141,10 +236,11 @@ export async function tryBuildLocalPrimaryContentChatShortcutResponse(input: {
   localPrimaryAdmission?: LocalPrimaryContentChatShortcutAdmission;
 }): Promise<ChatShortcutRouteResult | null> {
   const scriptRequest = parseContentScriptShortcut(input.normalizedText);
+  const creativeRequest = parseContentCreativeShortcut(input.normalizedText);
   const refinementRequest = input.activeContext?.domain === 'content'
     && isContentRefinementFollowUp(input.normalizedText)
     && Boolean(extractContentRefinementSourceText(input.activeContext.lastAssistantMessage));
-  if (!scriptRequest && !refinementRequest) return null;
+  if (!scriptRequest && !creativeRequest && !refinementRequest) return null;
   const localPrimaryAdmission = input.localPrimaryAdmission
     ?? resolveLocalPrimaryContentChatShortcutAdmission(input);
   if (!localPrimaryAdmission) return null;
@@ -208,11 +304,109 @@ async function tryBuildContentShortcutResponse(input: {
     });
   }
 
+  const creativeShortcut = parseContentCreativeShortcut(normalizedText);
+  if (creativeShortcut) {
+    const requestedLanguage = resolveRequestedScriptLanguage(normalizedText, userLanguage);
+    try {
+      const result = await runWithSkillInferenceAccountAdmission({
+        userId,
+        abortSignal: input.abortSignal,
+      }, async (abortSignal) => generateContentCreativeProposal({
+        ...creativeShortcut,
+        userId,
+        tenantId,
+        language: requestedLanguage,
+        abortSignal,
+      }));
+      return buildShortcutResponse({
+        text: buildCreativeShortcutText(result, requestedLanguage),
+        domain: 'content',
+        routeMethod: 'content-creative-proposal',
+        confidence: route.confidence,
+        metadata: {
+          type: 'content_creative_proposal',
+          operation: result.operation,
+          proposalCount: creativeProposalCount(result),
+          degraded: result.degraded,
+          warnings: result.warnings,
+          authority: result.authority,
+          research: result.research,
+          sourcePackage: result.sourcePackage,
+        },
+      });
+    } catch (err) {
+      if (err instanceof ContentCreativeProposalError) {
+        if (err.code === 'CONTENT_CREATIVE_OUTPUT_UNAVAILABLE') {
+          return buildShortcutResponse({
+            text: err.message,
+            domain: 'content',
+            routeMethod: 'content-creative-proposal-unavailable',
+            confidence: route.confidence,
+            metadata: {
+              type: 'content_creative_proposal_unavailable',
+              operation: creativeShortcut.operation,
+              degraded: true,
+              warnings: Array.isArray(err.details?.warnings) ? err.details.warnings : [],
+              authority: {
+                status: 'unavailable',
+                canonicalWorkspaceMutation: false,
+                publicationExecution: 'not_performed',
+              },
+            },
+          });
+        }
+        return buildShortcutResponse({
+          text: err.message,
+          domain: 'content',
+          routeMethod: 'content-creative-proposal-blocked',
+          confidence: route.confidence,
+          metadata: {
+            type: 'content_creative_proposal_blocked',
+            operation: creativeShortcut.operation,
+            code: err.code,
+            authority: {
+              status: 'blocked',
+              canonicalWorkspaceMutation: false,
+              publicationExecution: 'not_performed',
+            },
+          },
+        });
+      }
+      rethrowAiUsageFailClosedError(err);
+      if (input.abortSignal?.aborted
+          || err instanceof SkillInferencePolicyError
+          || err instanceof ForwardedContentPolicyError
+          || err instanceof ForwardedLocalInferenceError) throw err;
+      logger.warn({
+        ...safeContentLogErrorFields(err),
+        userId,
+        operation: creativeShortcut.operation,
+      }, 'Content creative shortcut failed');
+      return buildShortcutResponse({
+        text: requestedLanguage.startsWith('pt')
+          ? 'A proposta criativa está temporariamente indisponível. Nenhuma proposta criativa foi guardada ou publicada.'
+          : 'The creative proposal is temporarily unavailable. No creative proposal was saved or published.',
+        domain: 'content',
+        routeMethod: 'content-creative-proposal-unavailable',
+        confidence: route.confidence,
+        metadata: {
+          type: 'content_creative_proposal_unavailable',
+          operation: creativeShortcut.operation,
+          degraded: true,
+          authority: {
+            canonicalWorkspaceMutation: false,
+            publicationExecution: 'not_performed',
+          },
+        },
+      });
+    }
+  }
+
   const scriptShortcut = parseContentScriptShortcut(normalizedText);
   if (scriptShortcut) {
     const requestedLanguage = resolveRequestedScriptLanguage(normalizedText, userLanguage);
     try {
-      const brandVoice = getUserBrandVoiceForChatScript(userId);
+      const brandVoice = getUserBrandVoiceForChatScript(userId, tenantId);
       const scriptResult = await getScript(
         scriptShortcut.topic,
         'general',
@@ -247,13 +441,37 @@ async function tryBuildContentShortcutResponse(input: {
         metadata: buildScriptShortcutMetadata(scriptResult, scriptShortcut.format),
       });
     } catch (err) {
+      if (err instanceof ContentResearchPolicyError) {
+        const highRisk = err.code === 'CONTENT_HIGH_RISK_REVIEW_REQUIRED';
+        return buildShortcutResponse({
+          text: requestedLanguage.startsWith('pt')
+            ? highRisk
+              ? 'Este tema exige um pacote de fontes revisto por uma pessoa antes da geração. Essa autoridade de revisão ainda não é suportada.'
+              : 'Não posso gerar conteúdo para esse pedido. Reformule com um objetivo seguro e legítimo.'
+            : err.message,
+          domain: 'content',
+          routeMethod: 'content-script-blocked',
+          confidence: route.confidence,
+          metadata: {
+            type: 'content_script_blocked',
+            format: scriptShortcut.format,
+            code: err.code,
+            authority: {
+              status: 'blocked',
+              canonicalWorkspaceMutation: false,
+              publicationExecution: 'not_performed',
+            },
+          },
+        });
+      }
       rethrowAiUsageFailClosedError(err);
       if (input.abortSignal?.aborted
           || err instanceof SkillInferencePolicyError
+          || err instanceof ForwardedContentPolicyError
           || err instanceof ForwardedLocalInferenceError) throw err;
       logger.warn(
         {
-          err,
+          ...safeContentLogErrorFields(err),
           userId,
           textLength: normalizedText.length,
           shortcutFormat: scriptShortcut.format,
@@ -328,9 +546,11 @@ async function tryBuildContentShortcutResponse(input: {
           {
             maxTokens: 1200,
             temperature: 0.5,
+            maxRetries: 0,
             userId,
             tenantId,
             abortSignal: input.abortSignal,
+            allowFallbackAfterProviderFailure: false,
           },
         );
       const refinedText = completion.text.trim();
@@ -371,10 +591,11 @@ async function tryBuildContentShortcutResponse(input: {
       rethrowAiUsageFailClosedError(err);
       if (input.abortSignal?.aborted
           || err instanceof SkillInferencePolicyError
+          || err instanceof ForwardedContentPolicyError
           || err instanceof ForwardedLocalInferenceError) throw err;
       logger.warn(
         {
-          err,
+          ...safeContentLogErrorFields(err),
           userId,
           textLength: normalizedText.length,
           sourceLength: sourceText.length,
@@ -443,6 +664,32 @@ export async function tryBuildTokenZeroChatMessageShortcutResponse(input: {
   tenantId: number;
   userLanguage: string;
 }): Promise<ChatShortcutRouteResult | null> {
+  const creativeInspection = inspectContentCreativeShortcut(input.normalizedText);
+  if (creativeInspection.status === 'invalid') {
+    const requestedLanguage = resolveRequestedScriptLanguage(input.normalizedText, input.userLanguage);
+    return buildShortcutResponse({
+      text: buildCreativeShortcutValidationText(
+        creativeInspection.reason,
+        creativeInspection.command,
+        requestedLanguage,
+      ),
+      domain: 'content',
+      routeMethod: 'content-creative-command-validation',
+      confidence: 1,
+      metadata: {
+        type: 'content_creative_command_validation',
+        code: 'CONTENT_CREATIVE_SHORTCUT_VALIDATION_FAILED',
+        command: `/${creativeInspection.command}`,
+        reason: creativeInspection.reason,
+        authority: {
+          status: 'rejected',
+          canonicalWorkspaceMutation: false,
+          publicationExecution: 'not_performed',
+        },
+      },
+    });
+  }
+
   const contentStateShortcut = parseContentStateShortcut(input.normalizedText);
   if (contentStateShortcut) {
     const requestedLanguage = resolveContentShortcutLanguage(input.normalizedText, input.userLanguage);

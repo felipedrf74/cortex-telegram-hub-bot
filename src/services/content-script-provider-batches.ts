@@ -10,6 +10,7 @@ import type {
 } from './ai-provider';
 import { logger } from '../utils/logger';
 import { contentFreeOpenAIBatchError } from './openai-batch-diagnostics';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 interface BatchRow {
   request_digest: string;
@@ -580,13 +581,13 @@ export function requestContentScriptBatchCancellationReconciliation(db: Database
               );
           } catch (error) {
             logger.warn({
-              errorName: error instanceof Error ? error.name : typeof error,
+              ...safeContentLogErrorFields(error),
             }, 'OpenAI Batch cancellation reconciliation remains pending');
           }
         }
       } catch (error) {
         logger.warn({
-          errorName: error instanceof Error ? error.name : typeof error,
+          ...safeContentLogErrorFields(error),
         }, 'OpenAI Batch cancellation reconciliation could not start');
       } finally {
         cancellationReconciliationInFlight.delete(db);
@@ -1144,7 +1145,7 @@ async function reconcileExpiredContentScriptBatchIntentPage(
     } catch (error) {
       failed += 1;
       logger.warn({
-        errorName: error instanceof Error ? error.name : typeof error,
+        ...safeContentLogErrorFields(error),
       }, 'OpenAI Batch intent retention reconciliation remains pending');
     }
   }
@@ -1336,7 +1337,7 @@ async function pruneExpiredContentScriptBatchFilePage(
         .run(row.job_id, row.tenant_id, row.owner_user_id, row.stage_key, claim);
       failed += 1;
       logger.warn({
-        errorName: error instanceof Error ? error.name : typeof error,
+        ...safeContentLogErrorFields(error),
       }, 'OpenAI Batch provider-file retention cleanup remains pending');
     }
   }

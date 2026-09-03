@@ -1902,21 +1902,33 @@ export class OpenAIProvider implements AIProvider {
       batch = await client.batches.cancel(request.providerBatchId, { maxRetries: 0 });
     }
     if (batch.output_file_id && ['completed', 'cancelled'].includes(batch.status)) {
+      let output: Awaited<ReturnType<typeof readOpenAIBatchOutput>> | null = null;
       try {
-        const output = await readOpenAIBatchOutput(client, batch.output_file_id, request.customId);
-        if (output.response) {
-          await recordOpenAIBatchUsage({
-            response: output.response,
-            requestedModel: batch.model || output.response.model,
-            category: request.category,
-            userId: request.userId,
-            tenantId: request.tenantId,
-            providerBatchId: request.providerBatchId,
-            durationMs: 0,
-          });
-        }
+        output = await readOpenAIBatchOutput(client, batch.output_file_id, request.customId);
       } catch (error) {
-        if (batch.status === 'completed') throw error;
+        const code = (error as { code?: unknown } | null)?.code;
+        if (batch.status === 'completed' || code !== 'OPENAI_BATCH_OUTPUT_IDENTITY_MISMATCH') {
+          throw error;
+        }
+        logger.info({
+          outcome: 'cancelled_without_completed_request',
+        }, 'OpenAI Batch cancellation produced no billable output for this stage');
+      }
+      if (output?.response) {
+        // A cancelled Batch can still contain a completed billable request.
+        // Usage validation and persistence are therefore fail-closed exactly
+        // like a normally completed Batch; never suppress those failures as
+        // ordinary cancellation cleanup.
+        await recordOpenAIBatchUsage({
+          response: output.response,
+          requestedModel: batch.model || output.response.model,
+          category: request.category,
+          userId: request.userId,
+          tenantId: request.tenantId,
+          providerBatchId: request.providerBatchId,
+          durationMs: 0,
+        });
+      } else if (output) {
         logger.info({
           outcome: 'cancelled_without_completed_request',
         }, 'OpenAI Batch cancellation produced no billable output for this stage');

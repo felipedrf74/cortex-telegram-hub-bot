@@ -2,7 +2,7 @@
 
 import type Database from 'better-sqlite3';
 import { getDb } from './database';
-import { settleContentScriptJobCredits } from './content-script-job-credits';
+import { releaseContentScriptJobCreditsForTerminal } from './content-script-job-credits';
 
 export interface ActiveContentScriptJobLease {
   leaseToken: string;
@@ -73,18 +73,17 @@ export function cancelContentScriptJobsForAccountDeletion(
       WHERE owner_user_id = ? AND provider_batch_id IS NOT NULL
         AND status NOT IN ('completed', 'cancelled', 'failed', 'expired')`)
       .run(timestamp, userId);
+    for (const row of rows) {
+      releaseContentScriptJobCreditsForTerminal({
+        tenantId: row.tenant_id,
+        userId,
+        jobId: row.job_id,
+      }, db);
+    }
     return { changes: result.changes, rows };
   }).immediate();
 
   for (const row of cancelled.rows) {
-    // Cancellation is a terminal transition: release each job's credit
-    // reservation so account deletion never strands held credits.
-    settleContentScriptJobCredits({
-      tenantId: row.tenant_id,
-      userId,
-      jobId: row.job_id,
-      outcome: 'released',
-    });
     const activeLease = activeContentScriptJobLeases.get(row.job_id);
     if (!activeLease || activeLease.leaseToken !== row.lease_token) continue;
     activeLease.controller.abort(Object.assign(new Error('account_deleted'), {

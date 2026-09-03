@@ -17,6 +17,7 @@ vi.mock('../../src/services/content-script-jobs', async () => {
       readonly code: string,
       message: string,
       readonly status: number,
+      readonly details?: Record<string, unknown>,
     ) {
       super(message);
     }
@@ -42,6 +43,7 @@ vi.mock('../../src/utils/logger', () => ({
 import { registerContentScriptJobRoutes } from '../../src/api/routes/content-script-job-routes';
 import { ContentScriptJobError } from '../../src/services/content-script-jobs';
 import { ContentScriptJobEncryptionError } from '../../src/services/content-script-job-encryption';
+import { ContentScriptJobCreditSettlementError } from '../../src/services/content-script-job-credits';
 
 interface MockResponse {
   statusCode: number;
@@ -150,6 +152,20 @@ describe('content script job routes', () => {
     });
   });
 
+  it('fails cancellation closed when the terminal credit release cannot commit', async () => {
+    jobMocks.cancel.mockImplementationOnce(() => {
+      throw new ContentScriptJobCreditSettlementError('release_error');
+    });
+
+    const response = await dispatch('POST', '/script-jobs/script-job-1/cancel');
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error).toEqual({
+      code: 'CONTENT_SCRIPT_CREDIT_SETTLEMENT_FAILED',
+      message: 'The script state could not be committed with its credit settlement.',
+    });
+  });
+
   it('accepts matching body/header keys and rejects ambiguous idempotency sources before service dispatch', async () => {
     const matching = await dispatch('POST', '/script-jobs', {
       topic: 'Matching source',
@@ -171,12 +187,134 @@ describe('content script job routes', () => {
     });
     expect(jobMocks.create).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { label: 'format alias', field: 'format', value: 'shorts' },
+    { label: 'mode casing', field: 'mode', value: 'DRAFT' },
+    { label: 'language alias', field: 'language', value: 'en' },
+    { label: 'render mode casing', field: 'renderMode', value: 'STRUCTURED' },
+    { label: 'script style alias', field: 'scriptStyle', value: 'outline' },
+    { label: 'legacy style field', field: 'style', value: 'outline' },
+    { label: 'string minute duration', field: 'maxDurationMinutes', value: '8' },
+    { label: 'fractional second duration', field: 'targetDurationSeconds', value: 60.5 },
+    { label: 'string force-refresh flag', field: 'forceRefresh', value: 'true' },
+    { label: 'null delivery mode', field: 'deliveryMode', value: null },
+    { label: 'empty delivery mode', field: 'deliveryMode', value: '' },
+    { label: 'unsupported delivery mode', field: 'deliveryMode', value: 'STANDARD' },
+  ])('rejects an explicit non-contract $label before service dispatch', async ({ field, value }) => {
+    const response = await dispatch('POST', '/script-jobs', {
+      topic: 'Strict async request',
+      [field]: value,
+    }, 42, 42, { 'x-idempotency-key': 'strict-async-request-001' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION',
+      details: { field },
+    });
+    expect(jobMocks.create).not.toHaveBeenCalled();
+  });
+
+  it.each([42, null, { nested: true }])(
+    'rejects a non-string body idempotency key even when the header is valid',
+    async (idempotencyKey) => {
+      const response = await dispatch('POST', '/script-jobs', {
+        topic: 'Typed idempotency source',
+        idempotencyKey,
+      }, 42, 42, { 'x-idempotency-key': 'typed-idempotency-request-001' });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.body.error).toMatchObject({
+        code: 'VALIDATION',
+        message: 'idempotencyKey must be a string.',
+        details: { field: 'idempotencyKey' },
+      });
+      expect(jobMocks.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects an explicit empty body idempotency key instead of falling through to the header', async () => {
+    const response = await dispatch('POST', '/script-jobs', {
+      topic: 'No empty key fallback',
+      idempotencyKey: '',
+    }, 42, 42, { 'x-idempotency-key': 'valid-header-request-001' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION',
+      message: 'idempotencyKey must not be empty.',
+      details: { field: 'idempotencyKey' },
+    });
+    expect(jobMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('preserves typed service validation for an explicit-null pinned-source field', async () => {
+    jobMocks.create.mockImplementationOnce(() => {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        'sources[0].title must be a string.',
+        400,
+        { field: 'sources[0].title', reason: 'invalid_type' },
+      );
+    });
+    const response = await dispatch('POST', '/script-jobs', {
+      topic: 'Typed source field',
+      sources: [{ title: null, relevance_note: 'Context' }],
+    }, 42, 42, { 'x-idempotency-key': 'typed-source-field-001' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION',
+      details: { field: 'sources[0].title', reason: 'invalid_type' },
+    });
+  });
+
+  it.each([null, [], 'not-an-object'])('rejects a non-object create body before service dispatch', async (body) => {
+    const response = await dispatch(
+      'POST',
+      '/script-jobs',
+      body,
+      42,
+      42,
+      { 'x-idempotency-key': 'typed-body-request-001' },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION',
+      details: { field: 'body' },
+    });
+    expect(jobMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized body and header idempotency keys before service dispatch', async () => {
+    const oversizedKey = 'x'.repeat(201);
+    const bodyResponse = await dispatch('POST', '/script-jobs', {
+      topic: 'Oversized body key',
+      idempotencyKey: oversizedKey,
+    });
+
+    expect(bodyResponse.statusCode).toBe(400);
+    expect(bodyResponse.body.error).toEqual({
+      code: 'VALIDATION',
+      message: 'idempotencyKey must be at most 200 characters.',
+    });
+    expect(jobMocks.create).not.toHaveBeenCalled();
+
+    const headerResponse = await dispatch('POST', '/script-jobs', {
+      topic: 'Oversized header key',
+    }, 42, 42, { 'x-idempotency-key': oversizedKey });
+
+    expect(headerResponse.statusCode).toBe(400);
+    expect(headerResponse.body.error.code).toBe('VALIDATION');
+    expect(jobMocks.create).not.toHaveBeenCalled();
+  });
 });
 
 async function dispatch(
   method: string,
   path: string,
-  body: Record<string, unknown> = {},
+  body: unknown = {},
   userId: number | undefined = 42,
   tenantId: number | undefined = 42,
   headers: Record<string, string> = {},

@@ -113,11 +113,10 @@ function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
 }
 
 function positiveInteger(value: unknown, field: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
     throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', `${field} must be a positive integer.`, 400, { field });
   }
-  return parsed;
+  return Number(value);
 }
 
 function normalizeMetadata(value: unknown): Record<string, unknown> {

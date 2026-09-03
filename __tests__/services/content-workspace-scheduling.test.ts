@@ -39,6 +39,9 @@ import {
   type ContentScheduleDependencies,
 } from '../../src/services/content-workspace-scheduling';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { setDbProvider, writeSignal } from '../../src/services/intelligence-bus';
+import { listEventsForScope } from '../../src/services/event-outbox';
+import { consumeContentScheduleSignalReconciliationEvent } from '../../src/services/content-schedule-signal-reconciliation';
 
 const OWNER: ContentWorkspaceScope = { tenantId: 501, userId: 501 };
 const OTHER: ContentWorkspaceScope = { tenantId: 777, userId: 777 };
@@ -48,9 +51,119 @@ const WINDOW = { start: '2032-07-18T09:00:00.000Z', end: '2032-07-18T11:00:00.00
 describe('canonical Content work scheduling', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
+    setDbProvider(() => testDb as any);
   });
 
-  afterEach(() => testDb.close());
+  afterEach(() => {
+    testDb.close();
+    setDbProvider(() => null as any);
+  });
+
+  it('rejects ambiguous schedule timestamps and control-bearing replay keys', () => {
+    const fixture = seedApprovedContent('strict-datetime');
+    const base = {
+      scope: OWNER,
+      itemId: fixture.item.id,
+      workKind: 'record' as const,
+      durationMinutes: 60,
+      now: NOW,
+    };
+
+    expect(() => createContentSchedulePreview({
+      ...base,
+      preferredWindows: [{ start: '2032-07-18T09:00:00', end: '2032-07-18T11:00:00' }],
+      idempotencyKey: 'schedule-strict-datetime-001',
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => createContentSchedulePreview({
+      ...base,
+      preferredWindows: [{ ...WINDOW, hard: 'yes' as unknown as boolean }],
+      idempotencyKey: 'schedule-strict-hard-001',
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => createContentSchedulePreview({
+      ...base,
+      preferredWindows: [WINDOW],
+      deadlineAt: '',
+      idempotencyKey: 'schedule-empty-deadline-001',
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => createContentSchedulePreview({
+      ...base,
+      preferredWindows: [WINDOW],
+      shareContentTitle: 'true' as unknown as boolean,
+      idempotencyKey: 'schedule-string-title-disclosure-001',
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => createContentSchedulePreview({
+      ...base,
+      preferredWindows: [WINDOW],
+      idempotencyKey: 'schedule-key\nsecond-line',
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => createContentSchedulePreview({
+      ...base,
+      itemId: Number.MAX_SAFE_INTEGER + 1,
+      preferredWindows: [WINDOW],
+      idempotencyKey: 'schedule-unsafe-item-id-001',
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    expect(() => confirmContentSchedulePreview({
+      scope: OWNER,
+      previewKey: 'csp_invalid\nkey',
+      idempotencyKey: 'schedule-preview-key-001',
+      now: NOW,
+    }, testDb)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+
+    const malformedSecretaryWindow = seedApprovedContent('strict-secretary-datetime');
+    const malformedSecretaryDependencies: ContentScheduleDependencies = {
+      preview: () => ({
+        status: 'scheduled',
+        recommendedSlot: { start: '2032-07-18T09:00:00', end: '2032-07-18T10:00:00' },
+        alternatives: [],
+        reasonCodes: [],
+        confidence: 'high',
+        wouldReflow: false,
+        wouldCompress: false,
+        reasoningTrail: [],
+        noPersist: true,
+      }),
+      submit: submitSecretarySchedulingIntent,
+      getAgenda: getSecretaryAgendaItemById,
+      cancelAgenda: cancelSecretaryAgendaItem,
+    };
+    const sanitized = createContentSchedulePreview({
+      scope: OWNER,
+      itemId: malformedSecretaryWindow.item.id,
+      workKind: 'record',
+      durationMinutes: 60,
+      preferredWindows: [WINDOW],
+      idempotencyKey: 'schedule-strict-secretary-window-001',
+      now: NOW,
+    }, testDb, malformedSecretaryDependencies);
+    expect(sanitized.value).toMatchObject({ status: 'unavailable', choices: [] });
+  });
 
   it('previews without persistence, hides the title by default, and confirms exactly once', () => {
     const fixture = seedApprovedContent('generic');
@@ -389,7 +502,18 @@ describe('canonical Content work scheduling', () => {
         recoverable: true,
         publicationExecution: 'not_performed',
       },
-      nextAction: { action: 'recover_work_schedule', label: 'Recover work block' },
+      nextAction: {
+        action: 'recover_work_schedule',
+        label: 'Recover work block',
+        reason: 'The private work block is confirmed in Secretary, but provider sync needs attention.',
+      },
+    });
+    const filmingSignalId = writeSignal({
+      source_agent: 'mesh.editorial-coordinator',
+      signal_type: 'shoot_day_locked',
+      payload: { itemId: fixture.item.id, date: '2032-07-18' },
+      user_id: OWNER.userId,
+      tenant_id: OWNER.tenantId,
     });
 
     const cancelled = cancelContentSchedule({
@@ -406,6 +530,32 @@ describe('canonical Content work scheduling', () => {
     }, testDb);
     expect(cancelled.value).toMatchObject({ state: 'cancelled', localAgendaState: 'cancelled' });
     expect(replay).toMatchObject({ replayed: true, changed: false });
+    const reconciliationEvents = testDb.prepare(`
+      SELECT status, entity_type, entity_id, payload_json
+        FROM event_outbox
+       WHERE event_type = 'content.schedule_signal_reconciliation.requested.v1'
+    `).all() as Array<{
+      status: string;
+      entity_type: string;
+      entity_id: string;
+      payload_json: string;
+    }>;
+    expect(reconciliationEvents).toHaveLength(1);
+    expect(reconciliationEvents[0]).toMatchObject({
+      status: 'pending',
+      entity_type: 'content_schedule_binding',
+      entity_id: expect.any(String),
+    });
+    expect(JSON.parse(reconciliationEvents[0]!.payload_json)).toEqual({ itemId: fixture.item.id });
+    const reconciliationEvent = listEventsForScope({
+      tenantId: OWNER.tenantId,
+      userId: OWNER.userId,
+      skill: 'content',
+    }, testDb).find((event) => event.eventType === 'content.schedule_signal_reconciliation.requested.v1');
+    expect(reconciliationEvent).toBeDefined();
+    consumeContentScheduleSignalReconciliationEvent(reconciliationEvent!, testDb);
+    expect(testDb.prepare('SELECT status FROM agent_signals WHERE id = ?').get(filmingSignalId))
+      .toEqual({ status: 'dismissed' });
     expect(getContentWorkspaceItem(OWNER, fixture.item.id, testDb)).toMatchObject({
       productionState: 'approved',
       workSchedule: null,
@@ -820,6 +970,10 @@ describe('canonical Content work scheduling', () => {
     }, testDb, failingDependencies)).toThrowError(expect.objectContaining<Partial<ContentScheduleError>>({
       code: 'CONTENT_SCHEDULE_CANCELLATION_FAILED',
     }));
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM event_outbox
+       WHERE event_type = 'content.schedule_signal_reconciliation.requested.v1'
+    `).get()).toEqual({ count: 0 });
     expect(getContentSchedule(OWNER, fixture.item.id, testDb)).toMatchObject({
       state: 'cancel_failed',
       localAgendaState: 'cancellation_pending',
@@ -839,6 +993,10 @@ describe('canonical Content work scheduling', () => {
       now: NOW,
     }, testDb);
     expect(retried.value.state).toBe('cancelled');
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count FROM event_outbox
+       WHERE event_type = 'content.schedule_signal_reconciliation.requested.v1'
+    `).get()).toEqual({ count: 1 });
   });
 
   it('enforces tenant isolation for preview, schedule reads, and cancellation', () => {

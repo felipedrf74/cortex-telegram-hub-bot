@@ -403,17 +403,18 @@ function detectChatResponseQualityIssuesWithSkipInfo(
   // pattern scan so `You said: "I scheduled it for 2:00."` doesn't
   // fire a fake-success rewrite.
   const unquoted = stripQuotedText(trimmed);
+  const successClaimText = stripExplicitNonActionDisclaimers(unquoted);
   // Phase K Codex round-9 fix (F3): include SIDE_EFFECT_SUCCESS_VERBS
   // in `claimsSuccess`. Verbs like `publiquei`/`postei`/`programei`
   // aren't in SUCCESS_CLAIM_PATTERNS, so the previous predicate left
   // them unflagged in the gate — defeating the operator's defense
   // against content workflow false-success claims.
-  const matchesSuccessClaim = SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(unquoted))
-    || textClaimsUnverifiedAction(unquoted)
-    || textHasBareAppSuccessMarker(unquoted);
-  const matchesImpliedSuccess = IMPLIED_SUCCESS_PATTERNS.some((pattern) => pattern.test(unquoted));
-  const matchesSideEffectVerb = containsSideEffectSuccessVerb(unquoted);
-  const matchesAppSideEffectClaim = matchesSideEffectVerb || textHasBareAppSuccessMarker(unquoted);
+  const matchesSuccessClaim = SUCCESS_CLAIM_PATTERNS.some((pattern) => pattern.test(successClaimText))
+    || textClaimsUnverifiedAction(successClaimText)
+    || textHasBareAppSuccessMarker(successClaimText);
+  const matchesImpliedSuccess = IMPLIED_SUCCESS_PATTERNS.some((pattern) => pattern.test(successClaimText));
+  const matchesSideEffectVerb = containsSideEffectSuccessVerb(successClaimText);
+  const matchesAppSideEffectClaim = matchesSideEffectVerb || textHasBareAppSuccessMarker(successClaimText);
   const claimsSuccess = matchesSuccessClaim || matchesImpliedSuccess || matchesSideEffectVerb;
 
   // Phase K Codex round-9 fix (F4): the live cooking contract comes
@@ -474,7 +475,7 @@ function detectChatResponseQualityIssuesWithSkipInfo(
   const isCreativeTextOwnerSkip =
     matchesAnswerOnlySuccessPattern
     && CREATIVE_TEXT_OWNERS.has(contract.ownerSkill)
-    && !containsSideEffectSuccessVerb(unquoted);
+    && !containsSideEffectSuccessVerb(successClaimText);
 
   if (matchesAnswerOnlySuccessPattern && !isCreativeTextOwnerSkip) {
     issues.add('unverified_success_claim');
@@ -545,6 +546,17 @@ function stripQuotedText(text: string): string {
     .replace(/'([^']*)'/g, stripMultiWord)                  // ASCII single, no spanning
     .replace(/[“]([^“”]*)[”]/g, stripMultiWord)             // curly double
     .replace(/[‘]([^‘’]*)[’]/g, stripMultiWord);            // curly single
+}
+
+function stripExplicitNonActionDisclaimers(text: string): string {
+  const sideEffects = '(?:save(?:d)?|publish(?:ed)?|post(?:ed)?|upload(?:ed)?|submit(?:ted)?|send|sent|schedul(?:e|ed)|add(?:ed)?|delet(?:e|ed)|remov(?:e|ed)|updat(?:e|ed))';
+  const portugueseSideEffects = '(?:guardar?|guardado|salvar?|salvo|publicar?|publicado|postar?|postado|enviar?|enviado|agendar?|agendado|apagar?|apagado|remover?|removido|atualizar?|atualizado)';
+  return text
+    .replace(new RegExp(`\\bnothing\\s+(?:was|has been)\\s+${sideEffects}(?:\\s+(?:or|and)\\s+${sideEffects})*[^.!?;\\n]*`, 'gi'), '')
+    .replace(new RegExp(`\\bno\\s+[^.!?;\\n]{1,80}\\s+(?:was|were|has been|have been)\\s+${sideEffects}(?:\\s+(?:or|and)\\s+${sideEffects})*[^.!?;\\n]*`, 'gi'), '')
+    .replace(new RegExp(`\\b(?:i|we|nexus)\\s+(?:did not|didn't|have not|haven't)\\s+${sideEffects}(?:\\s+(?:or|and)\\s+${sideEffects})*[^.!?;\\n]*`, 'gi'), '')
+    .replace(new RegExp(`\\bnada\\s+(?:foi|ficou|está)\\s+${portugueseSideEffects}(?:\\s+(?:ou|e)\\s+${portugueseSideEffects})*[^.!?;\\n]*`, 'gi'), '')
+    .replace(new RegExp(`\\bnenhum(?:a)?\\s+[^.!?;\\n]{1,80}\\s+(?:foi|ficou|está)\\s+${portugueseSideEffects}(?:\\s+(?:ou|e)\\s+${portugueseSideEffects})*[^.!?;\\n]*`, 'gi'), '');
 }
 
 function unverifiedActionRepairText(language: NexusAnswerContract['language']): string {

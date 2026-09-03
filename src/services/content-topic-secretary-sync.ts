@@ -31,6 +31,7 @@ import {
   updateEvent,
   type CalendarSource,
 } from './unified-calendar';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 type LangLike = 'pt-BR' | 'pt-PT' | 'en' | string | undefined;
 
@@ -102,7 +103,7 @@ export async function syncContentTopicSecretaryArtifacts(
     invalidateTaskCaches({ userId, listIds: [taskRef.listId], includeDerivedSurfaces: true });
   } catch (err) {
     logger.warn(
-      { err, userId, topicId: topic.id },
+      { ...safeContentLogErrorFields(err), userId, topicId: topic.id },
       'Content topic Secretary task sync failed',
     );
     updates.secretary_sync_status = 'task_failed';
@@ -126,7 +127,7 @@ export async function syncContentTopicSecretaryArtifacts(
   } catch (err) {
     const unavailable = !hasWritableCalendarForUser(userId);
     logger.warn(
-      { err, userId, topicId: topic.id, unavailable },
+      { ...safeContentLogErrorFields(err), userId, topicId: topic.id, unavailable },
       'Content topic calendar agenda sync failed',
     );
     updates.secretary_sync_status = unavailable
@@ -174,7 +175,7 @@ export async function cleanupContentTopicSecretaryArtifacts(
           includeDerivedSurfaces: true,
         });
       } catch (err) {
-        logger.warn({ err, userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
+        logger.warn({ ...safeContentLogErrorFields(err), userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
         errors.push('task_cleanup_failed');
       }
     } else {
@@ -187,7 +188,7 @@ export async function cleanupContentTopicSecretaryArtifacts(
           taskDeleted = true;
           invalidateTaskCaches({ userId, listIds: [String(topic.secretary_task_list_id)], includeDerivedSurfaces: true });
         } catch (err) {
-          logger.warn({ err, userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
+          logger.warn({ ...safeContentLogErrorFields(err), userId, topicId: topic.id }, 'Content topic Secretary task cleanup failed');
           errors.push('task_cleanup_failed');
         }
       } else {
@@ -202,7 +203,7 @@ export async function cleanupContentTopicSecretaryArtifacts(
       calendarDeleted = true;
       invalidateCalendarCaches(userId);
     } catch (err) {
-      logger.warn({ err, userId, topicId: topic.id }, 'Content topic calendar agenda cleanup failed');
+      logger.warn({ ...safeContentLogErrorFields(err), userId, topicId: topic.id }, 'Content topic calendar agenda cleanup failed');
       errors.push('calendar_cleanup_failed');
     }
   }

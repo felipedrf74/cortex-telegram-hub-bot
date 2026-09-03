@@ -7,7 +7,7 @@
  *   3. Prompt loader keeps the legacy creator config opt-in only
  *   4. Eval criteria cover script quality and hook quality
  *   5. No Telegram HTML formatting in core prompts
- *   6. SFX/EDIT library centralized in one file
+ *   6. Production markers remain optional and request-owned
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -56,33 +56,29 @@ describe('creator-config: single source of truth', () => {
     expect(config).not.toMatch(/Training\/Lifestyle.*~20%/i);
   });
 
-  it('defines SFX library', () => {
-    expect(config).toContain('SFX LIBRARY');
-    expect(config).toContain('Vine Boom');
-    expect(config).toContain('FAHHH');
-    expect(config).toContain('Metal Pipe');
+  it('does not install a meme-specific SFX identity or fixed density', () => {
+    expect(config).toContain('PRODUCTION MARKERS');
+    expect(config).toContain('optional structural tools');
+    expect(config).not.toContain('Vine Boom');
+    expect(config).not.toContain('FAHHH');
+    expect(config).not.toContain('Metal Pipe');
+    expect(config).not.toContain('2-3 SFX per minute');
   });
 
-  it('defines editing techniques', () => {
-    expect(config).toContain('EDITING TECHNIQUES');
-    expect(config).toContain('zoom punch');
-    expect(config).toContain('speed ramp');
-    expect(config).toContain('chaos layering');
-  });
-
-  it('defines density guide', () => {
-    expect(config).toContain('DENSITY GUIDE');
-    expect(config).toContain('12-15 seconds');
-    expect(config).toContain('2-3 SFX per minute');
+  it('keeps editing choices request-owned', () => {
+    expect(config).toContain('requested format');
+    expect(config).toContain('saved creator style');
+    expect(config).not.toContain('zoom punch');
+    expect(config).not.toContain('chaos layering');
   });
 
   it('defines content accuracy rules', () => {
     expect(config).toContain('CONTENT ACCURACY');
-    expect(config).toContain('NEEDS VERIFICATION');
-    expect(config).toContain('VERIFIED: source');
+    expect(config).toContain('[UNVERIFIED]');
+    expect(config).toContain('[SOURCE-BOUND: source_id]');
     // Identity-safety: the published-asset language must NOT be hardcoded
     // PT-BR. The verified-sources rule is now language-neutral.
-    expect(config).toContain('verified-sources');
+    expect(config).toContain('not automatically verified');
   });
 
   it('defines output format without HTML', () => {
@@ -289,12 +285,13 @@ describe('creator-config: eval criteria', () => {
   it('script_quality has 5 test inputs', () => {
     const target = getEvalTarget('script_quality')!;
     expect(target.testInputs).toHaveLength(5);
-    // Should cover different pillars
-    const descriptions = target.testInputs.map(t => t.description);
-    expect(descriptions.some(d => d.includes('Tech'))).toBe(true);
-    expect(descriptions.some(d => d.includes('Reaction'))).toBe(true);
-    expect(descriptions.some(d => d.includes('training'))).toBe(true);
-    expect(descriptions.some(d => d.includes('Economics'))).toBe(true);
+    expect(target.testInputs.map((input) => input.id)).toEqual([
+      'sq_tech_build',
+      'sq_reaction',
+      'sq_reel_training',
+      'sq_economics',
+      'sq_evergreen',
+    ]);
   });
 
   it('hook_quality target exists', () => {
@@ -309,7 +306,7 @@ describe('creator-config: eval criteria', () => {
     const ids = target.criteria.map(c => c.id);
     expect(ids).toContain('specificity');
     expect(ids).toContain('scroll_stop');
-    expect(ids).toContain('pt_br_natural');
+    expect(ids).toContain('profile_language');
     expect(ids).toContain('brand_voice');
   });
 
@@ -333,12 +330,12 @@ describe('creator-config: eval criteria', () => {
     expect(voiceFit!.weight).toBe(3);
   });
 
-  it('source_grounding references VERIFIED and NEEDS VERIFICATION tags', () => {
+  it('source_grounding requires exact source binding without claiming verification', () => {
     const target = getEvalTarget('script_quality')!;
     const sourceGrounding = target.criteria.find(c => c.id === 'source_grounding');
-    expect(sourceGrounding!.question).toContain('VERIFIED');
-    expect(sourceGrounding!.question).toContain('NEEDS VERIFICATION');
-    expect(sourceGrounding!.question).toContain('FONTES VERIFICADAS');
+    expect(sourceGrounding!.question).toContain('exact supplied source identifiers');
+    expect(sourceGrounding!.question).toContain('marked unverified');
+    expect(sourceGrounding!.question).not.toContain('FONTES VERIFICADAS');
   });
 });
 

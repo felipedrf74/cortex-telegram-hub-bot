@@ -67,38 +67,66 @@ HIGH_RISK_CATEGORIES = [
 ]
 
 
-def get_verification_queries(topic: str) -> list[str]:
+def get_verification_queries(topic: str, language: str | None = None) -> list[str]:
     """Generate targeted verification queries for high-risk claims in a topic."""
     queries = []
 
-    # Political keywords trigger TSE/STF verification
-    political_keywords = [
-        "bolsonaro", "lula", "eleição", "election", "candidato", "inelegível",
-        "presidente", "governador", "prefeito", "ministro", "deputado", "senador",
-        "condenado", "preso", "absolvido", "julgamento", "STF", "TSE",
-    ]
+    normalized_language = (language or "").strip().lower()
+    portuguese_language = normalized_language.startswith("pt")
     topic_lower = topic.lower()
+    brazil_markers = [
+        "bolsonaro", "lula", "brasil", "brazil", "stf", "tse", "selic", "ibge",
+        "câmara dos deputados", "senado federal",
+    ]
+    brazil_context = normalized_language.startswith("pt-br") or any(
+        marker in topic_lower for marker in brazil_markers
+    )
 
-    if any(kw in topic_lower for kw in political_keywords):
-        queries.append(f"{topic} site:tse.jus.br OR site:portal.stf.jus.br 2025 2026")
-        queries.append(f"{topic} situação atual março 2026")
+    political_keywords = [
+        "bolsonaro", "lula", "eleição", "eleições", "election", "elections", "candidate", "candidato", "inelegível",
+        "president", "presidente", "governador", "prefeito", "ministro", "deputado", "senador",
+        "condenado", "preso", "absolvido", "julgamento", "stf", "tse",
+    ]
+    if any(keyword in topic_lower for keyword in political_keywords):
+        if brazil_context:
+            queries.append(f"{topic} site:tse.jus.br OR site:portal.stf.jus.br")
+            queries.append(f"{topic} situação atual Brasil")
+        elif portuguese_language:
+            queries.append(f"{topic} autoridade eleitoral oficial situação atual")
+            queries.append(f"{topic} Reuters AP situação atual")
+        else:
+            queries.append(f"{topic} official election authority current status")
+            queries.append(f"{topic} Reuters AP current status")
 
     # Economic keywords trigger data verification
     economic_keywords = [
         "inflação", "pib", "dólar", "selic", "desemprego", "economia",
         "imposto", "dívida", "fiscal", "orçamento",
+        "inflation", "gdp", "currency", "interest rate", "unemployment", "economy",
+        "tax", "debt", "budget", "exchange rate",
     ]
     if any(kw in topic_lower for kw in economic_keywords):
-        queries.append(f"{topic} dados atualizados 2026 IBGE")
-        queries.append(f"{topic} bloomberg reuters 2026")
+        if brazil_context:
+            queries.append(f"{topic} dados atuais site:ibge.gov.br OR site:bcb.gov.br")
+        elif portuguese_language:
+            queries.append(f"{topic} dados oficiais atuais Eurostat OCDE Banco Mundial")
+        else:
+            queries.append(f"{topic} current official data OECD World Bank")
+        queries.append(f"{topic} Bloomberg Reuters current data")
 
     # Health/fitness keywords
     health_keywords = [
         "suplemento", "treino", "dieta", "estudo", "pesquisa", "saúde",
         "carnívoro", "creatina", "proteína", "corrida", "maratona",
+        "supplement", "training", "diet", "study", "research", "health",
+        "creatine", "protein", "running", "marathon", "sleep", "recovery",
     ]
     if any(kw in topic_lower for kw in health_keywords):
-        queries.append(f"{topic} systematic review pubmed 2024 2025")
-        queries.append(f"{topic} evidence-based examine.com")
+        if portuguese_language:
+            queries.append(f"{topic} revisão sistemática recente PubMed")
+            queries.append(f"{topic} evidência científica Cochrane")
+        else:
+            queries.append(f"{topic} latest systematic review PubMed")
+            queries.append(f"{topic} evidence review Cochrane")
 
     return queries

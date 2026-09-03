@@ -3,19 +3,17 @@
  *
  * Closed-beta-readiness-hardening (2026-05-03).
  *
- * `prompts/creator-config.md` is the FALLBACK creator block that the
- * Python content-engine endpoints fall back to when a request does
- * not carry an explicit per-user creator block. v4.14.118 sanitized
- * it to a neutral template; the closed-beta hardening pass
+ * `prompts/creator-config.md` is a dormant compatibility block. Current
+ * Content prompts and Python creative endpoints use authenticated request-
+ * scoped creator context instead of falling through to this file. v4.14.118
+ * sanitized it to a neutral template; the closed-beta hardening pass
  * (v4.14.126+) re-confirmed the same contract and added this unit
  * test as the trip-wire.
  *
  * The contract: this file must NOT contain any name, persona,
  * worldview, audience, dietary, ideological, or political token. If
- * it ever regains one, EVERY authenticated user using one of the
- * 7 Python content-engine endpoints that fall through to
- * `creator-config.md` would inherit that token simultaneously — the
- * exact regression that triggered the v4.14.118 P0.
+ * it ever regains one, a future or legacy caller could reintroduce a global
+ * identity default — the exact regression that triggered the v4.14.118 P0.
  *
  * If you need to add an example or section here that mentions a
  * specific name (e.g. a documentation example), add it to a

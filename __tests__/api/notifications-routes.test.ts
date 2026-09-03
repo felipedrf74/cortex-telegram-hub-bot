@@ -5,6 +5,9 @@ import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../.
 const mockGetNotifications = vi.fn();
 const mockGetUnreadCount = vi.fn();
 const mockGetUnreadCountExcludingNotificationIds = vi.fn();
+const mockMarkRead = vi.fn();
+const mockMarkAllRead = vi.fn();
+const mockResolveNotification = vi.fn();
 const mockGetRecentReports = vi.fn();
 const mockGetUnreadReportCount = vi.fn();
 const mockGetUnreadReportCountExcludingIds = vi.fn();
@@ -39,6 +42,7 @@ const mockReadGmailEmailForUser = vi.fn();
 const mockGetOutlookEvents = vi.fn();
 const mockGetGoogleEvents = vi.fn();
 const mockListTasks = vi.fn();
+const mockInvalidateContentDerivedCaches = vi.fn();
 const mockCacheStore = vi.hoisted(() => ({
   clearCacheByPrefix: vi.fn(),
 }));
@@ -65,6 +69,16 @@ vi.mock('../../src/services/content-notification-store', () => ({
   getNotifications: (...args: unknown[]) => mockGetNotifications(...args),
   getUnreadCount: (...args: unknown[]) => mockGetUnreadCount(...args),
   getUnreadCountExcludingNotificationIds: (...args: unknown[]) => mockGetUnreadCountExcludingNotificationIds(...args),
+  markRead: (...args: unknown[]) => mockMarkRead(...args),
+  markAllRead: (...args: unknown[]) => mockMarkAllRead(...args),
+  resolveNotification: (...args: unknown[]) => mockResolveNotification(...args),
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry'
+  )),
+  invalidateContentDerivedCaches: (...args: unknown[]) => mockInvalidateContentDerivedCaches(...args),
 }));
 
 vi.mock('../../src/services/report-document-store', () => ({
@@ -266,6 +280,9 @@ describe('Notification inbox routes', () => {
     mockGetNotifications.mockReset();
     mockGetUnreadCount.mockReset();
     mockGetUnreadCountExcludingNotificationIds.mockReset();
+    mockMarkRead.mockReset();
+    mockMarkAllRead.mockReset();
+    mockResolveNotification.mockReset();
     mockGetRecentReports.mockReset();
     mockGetUnreadReportCount.mockReset();
     mockGetUnreadReportCountExcludingIds.mockReset();
@@ -300,12 +317,16 @@ describe('Notification inbox routes', () => {
     mockGetOutlookEvents.mockReset();
     mockGetGoogleEvents.mockReset();
     mockListTasks.mockReset();
+    mockInvalidateContentDerivedCaches.mockReset();
     mockCacheStore.clearCacheByPrefix.mockReset();
     clearTenantScopeAnomaliesForTests();
 
     mockGetNotifications.mockReturnValue([]);
     mockGetUnreadCount.mockReturnValue(0);
     mockGetUnreadCountExcludingNotificationIds.mockImplementation((userId: number) => mockGetUnreadCount(userId));
+    mockMarkRead.mockReturnValue(false);
+    mockMarkAllRead.mockReturnValue(0);
+    mockResolveNotification.mockReturnValue(false);
     mockGetRecentReports.mockReturnValue([]);
     mockGetUnreadReportCount.mockReturnValue(0);
     mockGetUnreadReportCountExcludingIds.mockImplementation((userId: number) => mockGetUnreadReportCount(userId));
@@ -867,6 +888,36 @@ describe('Notification inbox routes', () => {
     expect(response.body.error.code).toBe('VALIDATION');
     expect(mockMarkDecisionViewed).not.toHaveBeenCalled();
     expect(mockPerformDecisionAction).not.toHaveBeenCalled();
+  });
+
+  it('invalidates Content Home and plan caches only when legacy Content desk rows change', async () => {
+    mockMarkRead.mockReturnValue(true);
+    mockMarkAllRead.mockReturnValue(2);
+    mockResolveNotification.mockReturnValue(true);
+
+    const read = await dispatch('POST', '/41/read', {}, 7, {}, {}, 17);
+    const readAll = await dispatch('POST', '/read-all', {}, 7, {}, {}, 17);
+    const resolved = await dispatch('POST', '/42/resolve', {}, 7, {}, {}, 17);
+
+    expect(read.statusCode).toBe(200);
+    expect(readAll.body.data.markedCount).toBe(2);
+    expect(resolved.statusCode).toBe(200);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledTimes(3);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenNthCalledWith(1, 7);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenNthCalledWith(2, 7);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenNthCalledWith(3, 7);
+
+    mockInvalidateContentDerivedCaches.mockClear();
+    mockCacheStore.clearCacheByPrefix.mockClear();
+    mockMarkRead.mockReturnValue(false);
+    mockMarkAllRead.mockReturnValue(0);
+    mockResolveNotification.mockReturnValue(false);
+
+    expect((await dispatch('POST', '/404/read', {}, 7, {}, {}, 17)).statusCode).toBe(404);
+    expect((await dispatch('POST', '/read-all', {}, 7, {}, {}, 17)).body.data.markedCount).toBe(0);
+    expect((await dispatch('POST', '/404/resolve', {}, 7, {}, {}, 17)).statusCode).toBe(404);
+    expect(mockInvalidateContentDerivedCaches).not.toHaveBeenCalled();
+    expect(mockCacheStore.clearCacheByPrefix).not.toHaveBeenCalled();
   });
 
   it('forwards decision notification actions through the canonical Decision API path', async () => {

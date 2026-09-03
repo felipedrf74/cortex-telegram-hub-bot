@@ -340,7 +340,7 @@ export const DAY_TO_DAY_PERSONAS: DayToDayPersona[] = [
     primaryTenantId: 506,
     userId: 7006,
     roles: ['member'],
-    contextSeeds: ['Training plan', 'meal prep', 'tax reminder', 'publishing block', 'calendar overload'],
+    contextSeeds: ['Training plan', 'meal prep', 'tax reminder', 'confirmed private Content work block', 'calendar overload'],
     privacyNotes: ['Cross-skill context must be selected and minimized.'],
   },
   {

@@ -29,6 +29,7 @@ import {
 import {
   recordContentWorkspaceProductSignal,
 } from './content-workspace-observability';
+import { invalidateContentDerivedCaches } from './cache-coherence-registry';
 import {
   assessClaimsGrounding,
   type ContentRegisteredReference,
@@ -890,7 +891,7 @@ export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): Conver
     };
   }
 
-  return db.transaction((): ConvertRadarSignalResult => {
+  const result = db.transaction((): ConvertRadarSignalResult => {
     const object = createContentWorkflowObject({
       userId: input.userId,
       tenantId: input.tenantId,
@@ -930,6 +931,8 @@ export function convertRadarSignalToIdea(input: ConvertRadarSignalInput): Conver
       reasonCodes: ['radar_signal_converted_to_canonical_idea'],
     };
   }).immediate();
+  invalidateContentDerivedCaches(input.userId);
+  return result;
 }
 
 export function listContentWorkflowEvents(input: {
@@ -1131,10 +1134,10 @@ function replacementFor(action: ContentWorkflowAction | 'source_review' | 'appro
     case 'mark_published':
       return {
         code: 'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED',
-        message: 'Publication cannot be inferred from a legacy state change. No publication was performed.',
+        message: 'Publication cannot be inferred from a legacy state change. Publication execution and tracking are not supported.',
         canonicalRoutes: { item: routes.item },
         publicationExecution: 'not_performed',
-        recovery: 'confirm_external_publication_in_a_dedicated_tracking_flow',
+        recovery: 'publication_tracking_not_supported',
       };
     case 'source_review':
       return {
@@ -1216,14 +1219,14 @@ function replacementError(code: string, message: string, status: number, replace
 }
 
 function workflowScope(userId: number, tenantId?: number): ContentWorkspaceScope {
-  if (!Number.isInteger(userId) || userId <= 0) throw new ContentEditorialCompatibilityError(
+  if (!Number.isSafeInteger(userId) || userId <= 0) throw new ContentEditorialCompatibilityError(
     'CONTENT_SCOPE_REQUIRED',
     'A valid authenticated user is required.',
     401,
     { publicationExecution: 'not_performed' },
   );
   const resolvedTenantId = resolveContentTenantId(userId, tenantId);
-  if (!Number.isInteger(resolvedTenantId) || resolvedTenantId <= 0) throw new ContentEditorialCompatibilityError(
+  if (!Number.isSafeInteger(resolvedTenantId) || resolvedTenantId <= 0) throw new ContentEditorialCompatibilityError(
     'CONTENT_SCOPE_REQUIRED',
     'A valid tenant is required.',
     401,
@@ -1243,7 +1246,10 @@ function requirePrivateCompatibilityScope(scope: ContentVisibilityScope | undefi
 }
 
 function requireCompatibilityIdempotencyKey(value: string | undefined): string {
-  if (typeof value !== 'string' || value.trim().length < 8 || value.trim().length > 200) {
+  if (typeof value !== 'string'
+    || value.trim().length < 8
+    || value.trim().length > 200
+    || /[\u0000-\u001F\u007F-\u009F]/u.test(value.trim())) {
     throw replacementError(
       'CONTENT_IDEMPOTENCY_KEY_REQUIRED',
       'An idempotency key between 8 and 200 characters is required.',
@@ -1255,10 +1261,11 @@ function requireCompatibilityIdempotencyKey(value: string | undefined): string {
 }
 
 function validConcurrency(version: number | undefined, idempotencyKey: string | undefined): boolean {
-  return Number.isInteger(version) && Number(version) > 0
+  return Number.isSafeInteger(version) && Number(version) > 0
     && typeof idempotencyKey === 'string'
     && idempotencyKey.trim().length >= 8
-    && idempotencyKey.trim().length <= 200;
+    && idempotencyKey.trim().length <= 200
+    && !/[\u0000-\u001F\u007F-\u009F]/u.test(idempotencyKey.trim());
 }
 
 function internalIdempotencyKey(prefix: string, seed: string): string {

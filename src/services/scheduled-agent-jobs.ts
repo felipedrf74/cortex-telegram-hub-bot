@@ -37,8 +37,8 @@ import {
 } from './channel-learner';
 
 const AUTORESEARCH_PROVIDER_ROUTE = 'gemini-or-openai-primary-anthropic-fallback';
-const CONTENT_PROVIDER_ROUTE = 'grounded-provider-fallback-route';
-const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
+const CONTENT_PROVIDER_ROUTE = 'grounded-provider-configuration-fallthrough-single-attempt';
+const CHANNEL_RELEARN_PROVIDER_ROUTE = 'gemini-primary-configuration-fallthrough-single-attempt';
 
 export const SHARED_GOVERNED_AGENT_JOB_IDS = [
   'autoresearch',
@@ -60,7 +60,10 @@ type ContentTopicInput = {
 type WeeklyContentInput = { missingReels: number; missingYoutube: number };
 
 function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : 'UnknownError';
+  const candidate = error instanceof Error ? error.name : 'UnknownError';
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(candidate)
+    ? candidate
+    : 'UnknownError';
 }
 
 function emptyChannelRelearnResult(synthesisDeferred = false): ChannelRelearnResult {
@@ -101,7 +104,7 @@ function channelRelearnAdapter(input: {
 }): GovernedAgentJobAdapter<typeof input, ChannelRelearnResult> {
   return {
     jobId: 'channel_relearn',
-    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    providerRouting: CHANNEL_RELEARN_PROVIDER_ROUTE,
     prepare: () => ({
       kind: 'ready',
       input,
@@ -210,6 +213,7 @@ function isValidGeneratedCandidate(candidate: {
 // output. First-time users still receive their initial governed inventory.
 function shouldGenerateContentTopicsForUser(
   userId: number,
+  tenantId: number,
   sourceJob: string,
   initialTargets: ReadonlyArray<{ format: 'reel' | 'youtube'; targetCount: number }>,
 ): boolean {
@@ -255,7 +259,7 @@ function shouldGenerateContentTopicsForUser(
              AND content_revision.created_at >= datetime('now', '-30 days')
         )
       ) AS engaged
-    `).get(userId, userId, userId, userId) as { engaged: number };
+    `).get(userId, tenantId, userId, tenantId) as { engaged: number };
     if (engaged.engaged) return true;
     const historicalCount = db.prepare(`
       SELECT COUNT(*) AS count
@@ -268,7 +272,7 @@ function shouldGenerateContentTopicsForUser(
     const initialInventoryComplete = initialTargets.every((target) => {
       const row = historicalCount.get(
         userId,
-        userId,
+        tenantId,
         sourceJob,
         target.format,
       ) as { count: number };
@@ -276,13 +280,13 @@ function shouldGenerateContentTopicsForUser(
     });
     if (!initialInventoryComplete) return true;
     logger.info(
-      { userId, sourceJob },
+      { userId, tenantId, sourceJob },
       'Scheduled Content generation skipped: no Content-surface engagement in 30 days',
     );
     return false;
   } catch (error) {
     logger.warn(
-      { errorCode: errorName(error), userId, sourceJob },
+      { errorCode: errorName(error), userId, tenantId, sourceJob },
       'Scheduled Content engagement gate failed closed',
     );
     return false;
@@ -324,7 +328,7 @@ function topicAdapter(
           fingerprintMaterial: { format, sourceJob, missingCount },
         };
       }
-      if (!shouldGenerateContentTopicsForUser(scope.userId, sourceJob, [{ format, targetCount: 5 }])) {
+      if (!shouldGenerateContentTopicsForUser(scope.userId, scope.tenantId, sourceJob, [{ format, targetCount: 5 }])) {
         return {
           kind: 'skip',
           status: 'skipped_no_work',
@@ -335,7 +339,11 @@ function topicAdapter(
       return {
         kind: 'ready',
         input: { format, sourceJob, missingCount },
-        fingerprintMaterial: { format, sourceJob, missingCount },
+        fingerprintMaterial: {
+          format,
+          sourceJob,
+          missingCount,
+        },
       };
     },
     execute: async ({ scope, input, runId, abortSignal }) => runWithContext(
@@ -357,8 +365,7 @@ function topicAdapter(
     validateOutput(output, input) {
       if (output.format !== input.format
           || output.sourceJob !== input.sourceJob
-          || output.candidates.length === 0
-          || output.candidates.length > input.missingCount
+          || output.candidates.length !== input.missingCount
           || !output.candidates.every(isValidGeneratedCandidate)) {
         throw new AgentJobOutputValidationError('Scheduled Content topic output failed validation');
       }
@@ -404,7 +411,7 @@ function weeklyContentAdapter(): GovernedAgentJobAdapter<WeeklyContentInput, Wee
           fingerprintMaterial: { missingReels, missingYoutube, sourceJob: 'friday_weekly' },
         };
       }
-      if (!shouldGenerateContentTopicsForUser(scope.userId, 'friday_weekly', [
+      if (!shouldGenerateContentTopicsForUser(scope.userId, scope.tenantId, 'friday_weekly', [
         { format: 'reel', targetCount: 4 },
         { format: 'youtube', targetCount: 2 },
       ])) {
@@ -418,7 +425,11 @@ function weeklyContentAdapter(): GovernedAgentJobAdapter<WeeklyContentInput, Wee
       return {
         kind: 'ready',
         input: { missingReels, missingYoutube },
-        fingerprintMaterial: { missingReels, missingYoutube, sourceJob: 'friday_weekly' },
+        fingerprintMaterial: {
+          missingReels,
+          missingYoutube,
+          sourceJob: 'friday_weekly',
+        },
       };
     },
     execute: async ({ scope, input, runId, abortSignal }) => runWithContext(
@@ -450,34 +461,54 @@ export async function runContentTopicCronForActiveUsers(
   format: 'reel' | 'youtube',
   sourceJob: ContentTopicJobId,
 ): Promise<void> {
-  for (const target of listActiveAgentJobTenantTargets()) {
+  const targets = listActiveAgentJobTenantTargets();
+  const failures: Array<Readonly<{ errorCode: string }>> = [];
+  for (const target of targets) {
     try {
       await runGovernedAgentJob(topicAdapter(format, sourceJob), {
         tenantId: target.tenantId,
         userId: target.userId,
       });
     } catch (error) {
+      const errorCode = errorName(error);
+      failures.push({ errorCode });
       logger.error(
-        { errorCode: errorName(error), userId: target.userId, tenantId: target.tenantId, sourceJob, format },
+        { errorCode, userId: target.userId, tenantId: target.tenantId, sourceJob, format },
         'Scheduled Content topic job failed for tenant',
       );
     }
   }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `Scheduled Content topic job failed for ${failures.length} of ${targets.length} tenant scopes`,
+    );
+  }
 }
 
 export async function runWeeklyContentPackageCronForActiveUsers(): Promise<void> {
-  for (const target of listActiveAgentJobTenantTargets()) {
+  const targets = listActiveAgentJobTenantTargets();
+  const failures: Array<Readonly<{ errorCode: string }>> = [];
+  for (const target of targets) {
     try {
       await runGovernedAgentJob(weeklyContentAdapter(), {
         tenantId: target.tenantId,
         userId: target.userId,
       });
     } catch (error) {
+      const errorCode = errorName(error);
+      failures.push({ errorCode });
       logger.error(
-        { errorCode: errorName(error), userId: target.userId, tenantId: target.tenantId },
+        { errorCode, userId: target.userId, tenantId: target.tenantId },
         'Scheduled weekly Content job failed for tenant',
       );
     }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `Scheduled weekly Content job failed for ${failures.length} of ${targets.length} tenant scopes`,
+    );
   }
 }
 

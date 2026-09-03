@@ -410,6 +410,7 @@ export function markRead(notificationId: number, userId: number, tenantId: numbe
     UPDATE content_notifications
     SET status = 'read'
     WHERE id = ?
+      AND status = 'unread'
       AND ${contentPrivateScopePredicate()}
   `).run(notificationId, ...contentPrivateScopeParams(userId, tenantId));
   return result.changes > 0;
@@ -451,6 +452,7 @@ export function resolveNotification(notificationId: number, userId: number, tena
     UPDATE content_notifications
     SET status = 'resolved', resolved_at = datetime('now')
     WHERE id = ?
+      AND status IN ('unread', 'read')
       AND ${contentPrivateScopePredicate()}
   `).run(notificationId, ...contentPrivateScopeParams(userId, tenantId));
   return result.changes > 0;

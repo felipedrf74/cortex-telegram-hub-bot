@@ -5,6 +5,9 @@ import { Router, type Request, type Response } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let testDb: Database.Database;
+const cacheMocks = vi.hoisted(() => ({
+  invalidateContentDerivedCaches: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/database')>(
@@ -33,6 +36,11 @@ vi.mock('../../src/services/user-service', async () => {
   };
 });
 
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => cacheMocks.invalidateContentDerivedCaches(...args),
+}));
+
 import { registerContentWorkspaceRoutes } from '../../src/api/routes/content-workspace-routes';
 import { ensureContentReferenceProvenanceTables } from '../../src/services/content-reference-provenance';
 
@@ -54,6 +62,7 @@ interface MockResponse {
 
 describe('content workspace routes', () => {
   beforeEach(() => {
+    cacheMocks.invalidateContentDerivedCaches.mockClear();
     testDb = new Database(':memory:');
     testDb.pragma('foreign_keys = ON');
     seedSchema(testDb);
@@ -102,6 +111,8 @@ describe('content workspace routes', () => {
     expect(replayed.statusCode).toBe(200);
     expect(replayed.body.data.mutation).toEqual({ replayed: true, created: false });
     expect(replayed.body.data.item.id).toBe(created.body.data.item.id);
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(501);
     expect(JSON.stringify(created.body.data.item)).not.toContain('next_action_json');
     expect(JSON.stringify(created.body.data.item)).not.toContain('owner_user_id');
   });
@@ -112,7 +123,11 @@ describe('content workspace routes', () => {
       format: 'YouTube',
       scriptText: '# Hook\nGenerated body.',
       sourcesUsed: [{ title: 'Research', url: 'https://example.test/research' }],
-      claimsUsed: [{ claim: 'Research supports this generated statement.', support: 'source_backed' }],
+      claimsUsed: [{
+        claim: 'Research supports this generated statement.',
+        support: 'source_backed',
+        sourceRef: 'https://example.test/research',
+      }],
       idempotencyKey: 'route-generated-capture-001',
     };
     const created = await dispatch('POST', '/workspace/generated-scripts', captureBody);
@@ -120,6 +135,8 @@ describe('content workspace routes', () => {
 
     expect(created.statusCode).toBe(201);
     expect(replay.statusCode).toBe(200);
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(501);
     expect(created.body.data).toMatchObject({
       captureSchemaVersion: 'content-workspace-capture-v1',
       artifact: {
@@ -681,6 +698,21 @@ describe('content workspace routes', () => {
     expect(relation.statusCode).toBe(201);
     expect(relation.body.data.relationship).toMatchObject({ fromItemId: project.id, toItemId: item.id, relationshipType: 'contains' });
 
+    const missingKey = await dispatch('POST', `/workspace/items/${item.id}/state`, {
+      targetState: 'active',
+      expectedWorkflowVersion: item.workflowVersion,
+    });
+    expect(missingKey.statusCode).toBe(400);
+    expect(missingKey.body.error.code).toBe('CONTENT_IDEMPOTENCY_KEY_REQUIRED');
+
+    const conflictingKeys = await dispatch('POST', `/workspace/items/${item.id}/state`, {
+      targetState: 'active',
+      expectedWorkflowVersion: item.workflowVersion,
+      idempotencyKey: 'route-state-body-001',
+    }, 501, 501, { 'x-idempotency-key': 'route-state-header-001' });
+    expect(conflictingKeys.statusCode).toBe(409);
+    expect(conflictingKeys.body.error.code).toBe('CONTENT_IDEMPOTENCY_KEY_CONFLICT');
+
     const active = await dispatch('POST', `/workspace/items/${item.id}/state`, {
       targetState: 'active',
       expectedWorkflowVersion: item.workflowVersion,
@@ -878,7 +910,7 @@ describe('content workspace routes', () => {
     const todaySummary = await dispatch('GET', '/workspace/today-summary');
     expect(todaySummary.statusCode).toBe(200);
     expect(todaySummary.body.data).toMatchObject({
-      schemaVersion: 'content-workspace-today-summary-v1',
+      schemaVersion: 'content-workspace-today-summary-v2',
       complete: false,
       itemCount: 1,
       inboxCount: 1,
@@ -887,6 +919,11 @@ describe('content workspace routes', () => {
       scheduleAuthorityStatus: 'unavailable',
       scheduleSemantics: 'private_work_session',
       publicationExecution: 'not_performed',
+      publicationTracking: {
+        availability: 'unavailable',
+        reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+        publicationExecution: 'not_supported',
+      },
     });
     const edited = await dispatch('PATCH', `/workspace/items/${item.id}`, {
       expectedWorkflowVersion: item.workflowVersion,
@@ -1081,6 +1118,7 @@ async function dispatch(
   body: Record<string, unknown> = {},
   userId: number | undefined = 501,
   tenantId: number | undefined = 501,
+  headers: Record<string, string> = {},
 ): Promise<MockResponse> {
   const router = Router();
   registerContentWorkspaceRoutes(router, (res, authenticatedUserId): authenticatedUserId is number => {
@@ -1100,7 +1138,7 @@ async function dispatch(
     body,
     userId,
     tenantId,
-    headers: {},
+    headers: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value])),
     header(name: string) {
       return (this.headers as Record<string, string>)[name.toLowerCase()];
     },

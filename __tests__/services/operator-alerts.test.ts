@@ -86,6 +86,28 @@ describe('operator alerts', () => {
     });
   });
 
+  it('persists an alert through the caller database instead of the process-global database', async () => {
+    const { recordOperatorAlert } = await import('../../src/services/operator-alerts');
+    const scopedDb = new Database(':memory:');
+    applyOperatorAlertsMigration(scopedDb);
+    try {
+      const result = recordOperatorAlert({
+        severity: 'warning',
+        source: 'ai-credit-ledger',
+        dedupeKey: 'ai_credit_capture_shortfall:scoped',
+        title: 'AI credit capture shortfall',
+      }, scopedDb);
+
+      expect(result).toMatchObject({ ok: true, action: 'created' });
+      expect(scopedDb.prepare('SELECT COUNT(*) AS count FROM operator_alerts').get())
+        .toEqual({ count: 1 });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM operator_alerts').get())
+        .toEqual({ count: 0 });
+    } finally {
+      scopedDb.close();
+    }
+  });
+
   it('dedupes repeated open alerts by dedupe key', async () => {
     const { recordOperatorAlert, listOperatorAlerts } = await import('../../src/services/operator-alerts');
 

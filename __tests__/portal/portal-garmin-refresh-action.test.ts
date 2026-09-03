@@ -179,7 +179,10 @@ vi.mock('../../src/state/conversation', () => ({
   markConversationLifecycle: vi.fn(),
 }));
 
-vi.mock('../../src/services/channel-learner', () => ({
+vi.mock('../../src/services/channel-learner', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/channel-learner')>(
+    '../../src/services/channel-learner',
+  )),
   computeChannelAnalysisFingerprint: vi.fn(),
   buildChannelLearnerExtractionPrompt: vi.fn(),
   buildChannelLearnerSynthesisPrompt: vi.fn(),

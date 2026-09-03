@@ -9,6 +9,7 @@ import {
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
 import { contentTextTokens, foldContentText } from './content-text-utils';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export interface ContentRadarPreferences {
   topics: string[];
@@ -18,6 +19,57 @@ export interface ContentRadarPreferences {
 export interface ContentRadarTopicSummary {
   name: string;
   keywordCount: number;
+}
+
+export class ContentRadarPreferencesUnavailableError extends Error {
+  readonly code = 'CONTENT_RADAR_PREFERENCES_UNAVAILABLE';
+  readonly statusCode = 503;
+  readonly retryable = true;
+
+  constructor() {
+    super('Content radar preferences are temporarily unavailable.');
+    this.name = 'ContentRadarPreferencesUnavailableError';
+  }
+}
+
+export const CONTENT_RADAR_PREFERENCES_MAX_TOPICS = 12;
+export const CONTENT_RADAR_PREFERENCE_MAX_CHARS = 120;
+
+export class ContentRadarPreferencesValidationError extends Error {
+  readonly code = 'CONTENT_RADAR_PREFERENCES_INVALID';
+  readonly statusCode = 400;
+  readonly details = {
+    maxTopics: CONTENT_RADAR_PREFERENCES_MAX_TOPICS,
+    maxTopicChars: CONTENT_RADAR_PREFERENCE_MAX_CHARS,
+  } as const;
+
+  constructor() {
+    super('topics must be an array of at most 12 non-empty, single-line strings without commas; each topic is limited to 120 characters');
+    this.name = 'ContentRadarPreferencesValidationError';
+  }
+}
+
+export function validateContentRadarPreferenceTopics(input: unknown): string[] {
+  if (!Array.isArray(input) || input.length > CONTENT_RADAR_PREFERENCES_MAX_TOPICS) {
+    throw new ContentRadarPreferencesValidationError();
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of input) {
+    if (typeof value !== 'string') throw new ContentRadarPreferencesValidationError();
+    const topic = value.replace(/\s+/gu, ' ').trim();
+    if (!topic
+      || topic.length > CONTENT_RADAR_PREFERENCE_MAX_CHARS
+      || topic.includes(',')
+      || /[\u0000-\u001F\u007F]/u.test(value)) {
+      throw new ContentRadarPreferencesValidationError();
+    }
+    const folded = foldContentText(topic);
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    normalized.push(topic);
+  }
+  return normalized;
 }
 
 function ensureTable(): void {
@@ -44,7 +96,11 @@ function ensureTable(): void {
   ensureTenantOwnerPreferenceShape(db);
 }
 
-export function getContentRadarPreferences(userId: number, tenantId?: number): ContentRadarPreferences {
+export function getContentRadarPreferences(
+  userId: number,
+  tenantId?: number,
+  options: { strict?: boolean } = {},
+): ContentRadarPreferences {
   try {
     ensureTable();
     const row = getDb().prepare(`
@@ -57,47 +113,57 @@ export function getContentRadarPreferences(userId: number, tenantId?: number): C
     `).get(...contentScopeParams(userId, tenantId).slice(0, 2)) as { topics_json: string; updated_at: string } | undefined;
 
     return {
-      topics: row ? normalizeTopics(safeJsonArray(row.topics_json)) : [],
+      topics: row ? parseStoredTopics(row.topics_json) : [],
       updatedAt: row?.updated_at ?? null,
     };
   } catch (err) {
-    logger.debug({ err, userId }, 'content radar preferences lookup failed');
+    logger.debug({ ...safeContentLogErrorFields(err), userId }, 'content radar preferences lookup failed');
+    if (options.strict) throw new ContentRadarPreferencesUnavailableError();
     return { topics: [], updatedAt: null };
   }
 }
 
 export function setContentRadarPreferences(userId: number, topics: string[], tenantId?: number): ContentRadarPreferences {
-  ensureTable();
-  const normalizedTopics = normalizeTopics(topics);
-  const scope = contentScopeForInsert(userId, tenantId);
-  getDb().prepare(`
-    INSERT INTO content_radar_preferences (
-      user_id, topics_json, updated_at, tenant_id, owner_user_id, visibility_scope,
-      lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json, created_at
-    )
-    VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(tenant_id, owner_user_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      topics_json = excluded.topics_json,
-      visibility_scope = excluded.visibility_scope,
-      lifecycle_state = excluded.lifecycle_state,
-      scope_status = excluded.scope_status,
-      updated_by = excluded.updated_by,
-      updated_at = datetime('now')
-  `).run(
-    userId,
-    JSON.stringify(normalizedTopics),
-    scope.tenantId,
-    scope.ownerUserId,
-    scope.visibilityScope,
-    scope.lifecycleState,
-    scope.scopeStatus,
-    scope.createdBy,
-    scope.updatedBy,
-    scope.auditMetadataJson,
-  );
+  const normalizedTopics = validateContentRadarPreferenceTopics(topics);
+  try {
+    ensureTable();
+    const scope = contentScopeForInsert(userId, tenantId);
+    getDb().prepare(`
+      INSERT INTO content_radar_preferences (
+        user_id, topics_json, updated_at, tenant_id, owner_user_id, visibility_scope,
+        lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json, created_at
+      )
+      VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(tenant_id, owner_user_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        topics_json = excluded.topics_json,
+        visibility_scope = excluded.visibility_scope,
+        lifecycle_state = excluded.lifecycle_state,
+        scope_status = excluded.scope_status,
+        updated_by = excluded.updated_by,
+        updated_at = datetime('now')
+    `).run(
+      userId,
+      JSON.stringify(normalizedTopics),
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.createdBy,
+      scope.updatedBy,
+      scope.auditMetadataJson,
+    );
 
-  return getContentRadarPreferences(userId, tenantId);
+    return getContentRadarPreferences(userId, tenantId, { strict: true });
+  } catch (error) {
+    logger.warn(
+      { ...safeContentLogErrorFields(error), userId },
+      'content radar preferences write failed',
+    );
+    if (error instanceof ContentRadarPreferencesUnavailableError) throw error;
+    throw new ContentRadarPreferencesUnavailableError();
+  }
 }
 
 export function filterSignalsForRadarPreferences(
@@ -151,7 +217,7 @@ function countSignalMatches(topic: string, signals: AgentSignal[]): number {
   }, 0);
 }
 
-function normalizeTopics(topics: string[]): string[] {
+function normalizeTopics(topics: string[], maxTopics = CONTENT_RADAR_PREFERENCES_MAX_TOPICS): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
   for (const raw of topics) {
@@ -162,22 +228,34 @@ function normalizeTopics(topics: string[]): string[] {
       if (seen.has(folded)) continue;
       seen.add(folded);
       ordered.push(trimmed);
-      if (ordered.length >= 12) return ordered;
+      if (ordered.length >= maxTopics) return ordered;
     }
   }
   return ordered;
 }
 
-function safeJsonArray(raw: string | null | undefined): string[] {
-  if (!raw) return [];
+function parseStoredTopics(raw: unknown): string[] {
+  if (typeof raw !== 'string') throw new Error('Stored radar topics have an invalid shape.');
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((value): value is string => typeof value === 'string')
-      : [];
+    parsed = JSON.parse(raw);
   } catch {
-    return [];
+    throw new Error('Stored radar topics have an invalid shape.');
   }
+  if (!Array.isArray(parsed)
+    || parsed.some((value) => typeof value !== 'string'
+      || !value.trim()
+      || value.length > CONTENT_RADAR_PREFERENCE_MAX_CHARS
+      || /[\u0000-\u001F\u007F]/u.test(value))) {
+    throw new Error('Stored radar topics have an invalid shape.');
+  }
+  // Preserve the legacy comma-separated read convention, but never truncate
+  // an overfilled expansion into apparently confirmed preference truth.
+  const normalized = normalizeTopics(parsed as string[], Number.POSITIVE_INFINITY);
+  if (normalized.length > CONTENT_RADAR_PREFERENCES_MAX_TOPICS) {
+    throw new Error('Stored radar topics exceed the supported preference limit.');
+  }
+  return normalized;
 }
 
 function ensureTenantOwnerPreferenceShape(db: any): void {

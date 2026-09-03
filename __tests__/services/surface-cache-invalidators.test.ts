@@ -68,7 +68,7 @@ describe('surface cache invalidators', () => {
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith('readiness:');
     expect(mockClearCache).toHaveBeenCalledWith('dashboard-readiness:42');
     expect(mockClearCache).not.toHaveBeenCalledWith('training-summary:42');
-    expect(mockClearCacheByPrefix).toHaveBeenCalledWith([
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(expect.arrayContaining([
       'training-home:',
       'training-summary:',
       'training-history:',
@@ -76,7 +76,8 @@ describe('surface cache invalidators', () => {
       'cardio-progression:',
       'strength-progression:',
       'training-activity-weekly:',
-    ]);
+      'content:home:active-content-agents.v3:u:42:',
+    ]));
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['dashboard:42:', 'dashboard-home:42:']);
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['plan:week:u:42:', 'plan:today:u:42:']);
   });
@@ -226,11 +227,14 @@ describe('surface cache invalidators', () => {
     expect(mockInvalidateExecutiveBriefCaches).not.toHaveBeenCalled();
   });
 
-  it('routes content writes through dashboard coordination surfaces', async () => {
+  it('keeps the compatibility Content invalidator in parity with the canonical registry', async () => {
     const { invalidateContentDerivedCaches } = await import('../../src/services/content-cache-invalidator');
 
     invalidateContentDerivedCaches(42);
 
-    expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('content:home:active-content-agents.v3:u:42:');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['dashboard:42:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['dashboard-home:42:']);
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith(['plan:week:u:42:', 'plan:today:u:42:']);
   });
 });

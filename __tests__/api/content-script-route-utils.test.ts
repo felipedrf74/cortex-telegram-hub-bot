@@ -44,10 +44,10 @@ describe('content script route contract utilities', () => {
     expect(resolveScriptTargetLanguage('es-ES', 12, () => 'pt-BR')).toBe('en-US');
     expect(resolveScriptTargetLanguage(undefined, 12, () => 'es-419')).toBe('en-US');
     expect(resolveScriptTargetLanguage('de-DE', 12, () => 'pt-BR')).toBe('en-US');
-    expect(resolveScriptTargetLanguage(undefined, 12, () => null)).toBe('pt-BR');
+    expect(resolveScriptTargetLanguage(undefined, 12, () => null)).toBe('en-US');
     expect(resolveScriptTargetLanguage(undefined, 12, () => {
       throw new Error('user preferences unavailable');
-    })).toBe('pt-BR');
+    })).toBe('en-US');
   });
 
   it('builds a scoped Voice DNA memory pack from the user content knowledge rows', () => {
@@ -90,6 +90,16 @@ describe('content script route contract utilities', () => {
     expect(profile).toContain('Requested niche/context: homeschooling');
   });
 
+  it('does not infer a Portuguese variant when creator-profile language is missing', () => {
+    const profile = buildScriptCreatorProfile({
+      language: '',
+      niche: 'general',
+      voiceMemory: null,
+    });
+
+    expect(profile).toContain('Primary output language: en-US');
+  });
+
   it('builds the script response contract with defensive source normalization', () => {
     vi.setSystemTime(new Date('2026-04-22T10:00:03.000Z'));
     const response = buildScriptSuccessResponse({
@@ -108,6 +118,10 @@ describe('content script route contract utilities', () => {
         ],
         estimated_duration: '8:00',
         duration_ms: 1200,
+        agent_signals_used: [
+          { type: 'hook_effectiveness', source: 'reaction-radar-agent' },
+          { type: 'invalid signal type', source: 'untrusted source' },
+        ],
       },
       format: 'YouTube',
       renderMode: 'structured',
@@ -165,13 +179,52 @@ describe('content script route contract utilities', () => {
         mode: 'deep',
         cacheHit: false,
         provider: 'content-engine',
+        providerSemantics: 'service_boundary',
         durationMs: 3000,
         researchUsed: true,
       },
       generationMode: 'deep',
       cacheHit: false,
       usageImpact: 'high',
+      agentSignalsUsed: [{ type: 'hook_effectiveness', source: 'reaction-radar-agent' }],
     });
+  });
+
+  it('publishes only the TypeScript-owned stored Voice Card version', () => {
+    const base = {
+      format: 'Reel' as const,
+      renderMode: 'structured' as const,
+      scriptStyle: 'detailed' as const,
+      generationMode: 'draft' as const,
+      startMs: Date.now() - 50,
+      cacheHit: false,
+    };
+    const result = {
+      topic: 'Creator workflow',
+      script: 'Open with one concrete constraint, show the evidence, and end with one measurable action.',
+      voice_card_version: 'python-unverified-hash',
+    };
+    const creatorVoiceCard = {
+      creatorId: 7,
+      tenantId: 70,
+      voiceCardVersion: 'voice-stored-v1',
+      tone: 'user_scoped',
+      pacing: 'direct',
+      phrasesToUse: [],
+      phrasesToAvoid: [],
+      contentPillars: [],
+      audience: 'general',
+      formatPreferences: [],
+      ctaStyle: 'single clear next action',
+      examplesCompressed: 'Direct examples.',
+      sourceHash: 'source-hash',
+      updatedAt: '2026-08-31T00:00:00.000Z',
+      promptText: 'Stored voice guidance.',
+    };
+
+    expect(buildScriptSuccessResponse({ ...base, result, creatorVoiceCard }).voiceCardVersion)
+      .toBe('voice-stored-v1');
+    expect(buildScriptSuccessResponse({ ...base, result }).voiceCardVersion).toBeNull();
   });
 
   it('treats authenticated source metadata as an input echo for durable jobs only', () => {
@@ -334,6 +387,66 @@ describe('content script route contract utilities', () => {
     expect('researchArtifactId' in response.research).toBe(false);
   });
 
+  it('does not present an in-memory research package as a stored or reused artifact', () => {
+    const sourcePackage = {
+      sourcePackageId: 'sp_generated',
+      researchArtifactId: 'ra_generated',
+      topicHash: 'topic-hash',
+      freshnessClass: 'fresh' as const,
+      language: 'en-US',
+      format: 'YouTube',
+      sources: [{
+        title: 'Primary reference',
+        url: 'https://www.w3.org/TR/WCAG22/',
+        source_type: 'article',
+        relevance_note: 'Grounds the workflow example.',
+      }],
+      sourceSummaries: ['Primary reference — Grounds the workflow example.'],
+      claims: ['The workflow follows the cited reference.'],
+      unsafeOrUnverifiedClaims: [],
+      expiresAt: '2026-04-23T10:00:00.000Z',
+      tokenEstimate: 20,
+    };
+    const build = (publicSourcePackageIds?: {
+      sourcePackageId: string;
+      researchArtifactId: string;
+    }) => buildScriptSuccessResponse({
+      result: {
+        topic: 'Research persistence truth',
+        script: 'Use the cited reference to verify the workflow before publishing.',
+        hook: 'A source package is useful only when its storage state is honest.',
+        title_options: ['Research persistence truth'],
+        sources_used: sourcePackage.sources,
+      },
+      format: 'YouTube',
+      renderMode: 'structured',
+      scriptStyle: 'detailed',
+      generationMode: 'standard',
+      startMs: Date.now() - 10,
+      cacheHit: false,
+      sourcePackage,
+      publicSourcePackageIds,
+    });
+
+    const generatedOnly = build();
+    expect(generatedOnly.reuseStatus).toBe('fresh');
+    expect(generatedOnly.artifactRefs.map((ref) => ref.type)).not.toContain('source_package');
+    expect(generatedOnly.artifactRefs.map((ref) => ref.type)).not.toContain('research_artifact');
+    expect(generatedOnly.research).not.toHaveProperty('sourcePackageId');
+    expect(generatedOnly.research).not.toHaveProperty('researchArtifactId');
+
+    const stored = build({ sourcePackageId: 'sp_stored', researchArtifactId: 'ra_stored' });
+    expect(stored.reuseStatus).toBe('reused');
+    expect(stored.research).toMatchObject({
+      sourcePackageId: 'sp_stored',
+      researchArtifactId: 'ra_stored',
+    });
+    expect(stored.artifactRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'source_package', id: 'sp_stored', source: 'stored' }),
+      expect.objectContaining({ type: 'research_artifact', id: 'ra_stored', source: 'stored' }),
+    ]));
+  });
+
   it('prefers the actual engine prompt budget over the TypeScript estimate for cache metadata', () => {
     const response = buildScriptSuccessResponse({
       result: {
@@ -451,7 +564,12 @@ describe('content script route contract utilities', () => {
         hook: '',
         title_options: ['Uma rotina de conteúdo fiável'],
         sources_used: [],
-        warnings: [],
+        warnings: [
+          'compact_research_used',
+          'script_metadata_recovered',
+          'provider_fallback_voice_dna_not_applied',
+          'provider_fallback_research_claims_withheld',
+        ],
       },
       language: 'pt-BR',
       format: 'Reel',
@@ -474,6 +592,14 @@ describe('content script route contract utilities', () => {
     );
     expect(response.nextActions.map((option: any) => option.label).join(' ')).not.toMatch(
       /\b(?:expand|hook|title|caption|refresh|thumbnail)\b/i,
+    );
+    expect(response.nextActions.map((option: any) => option.label).join(' ')).toContain('roteiro');
+    expect(response.nextActions.map((option: any) => option.label).join(' ')).not.toContain('guião');
+    expect(response.warnings.join(' ')).not.toMatch(
+      /\b(?:compact research|script metadata|fallback output|review its tone|fallback research claims)\b/i,
+    );
+    expect(response.warnings).toContain(
+      'As alegações da pesquisa alternativa foram ocultadas; revise as fontes antes de usar o roteiro.',
     );
     expect(JSON.stringify(response.scriptStructure)).not.toContain('First frame');
     expect(response.qualityWarnings.join(' ')).not.toContain('Draft needs expansion');

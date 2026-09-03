@@ -73,14 +73,14 @@ Functions needed:
   🧠 Active Memory
 
   📋 Projects
-  • active_sprint → Migrating Qlik apps to Cloud
-  • aws_project → ECS cluster setup for client X
+  • active_sprint → Migrating analytics apps to the new platform
+  • infrastructure_project → Service rollout for client X
 
   🎯 Goals
   • q1_goal → Launch YouTube channel with 10 videos
 
   📌 Context
-  • diet → Carnivore, no plants
+  • communication → Concise weekly summaries
   ```
 
 ### Context injection — THE CRITICAL PART
@@ -89,7 +89,7 @@ Functions needed:
 
 1. Import `getAllActiveMemories` from `../state/memory`
 2. In `callDomain()`, BEFORE building messages, fetch active memories
-3. Format them as a compact string: `[Memory] sprint: Migrating Qlik to Cloud | video_due: Thursday AWS tutorial | diet: Carnivore`
+3. Format them as a compact string: `[Memory] sprint: Analytics migration | video_due: Thursday tutorial | communication: Concise`
 4. Prepend this to the `contextPrefix` alongside `[Current State]`
 
 **Cost impact**: ~10 memory entries × ~15 tokens each = ~150 extra tokens per call. With prompt caching, this is negligible. The memory string goes in the user message (not system prompt) so it doesn't break cache.
@@ -140,7 +140,7 @@ Implementation:
    Recent Qlik topics: {qlik_user_messages_joined}
    {optional: "Focus on: {topic}" if user provided one}
 
-   For each idea give: Title, Hook (first 3 seconds), Format (video/reel/carousel), Key talking points (3-5 bullets).
+   For each idea give: Title, opening beat or first line (no fixed timing unless the brief supplies one), Format (video/reel/carousel), and a bounded set of evidence-supported talking points without a bullet quota.
    ```
 4. The content domain's system prompt already knows how to handle content strategy — this just feeds it real context.
 
@@ -152,7 +152,7 @@ Implementation:
 2. Also fetch active memories with category 'context' or 'goal' that relate to training (optional enrichment)
 3. Call `callDomain('content', ...)` with:
    ```
-   Based on my recent training sessions and coaching experience, suggest 2-3 content ideas for coaching/fitness content.
+   Based on my recent training sessions and coaching experience, suggest a bounded set of coaching/fitness content ideas sized to the available first-party evidence.
 
    Recent training discussions: {triathlon_user_messages_joined}
 
@@ -167,13 +167,13 @@ Implementation:
 2. Fetch active memories
 3. Call `callDomain('content', ...)` with:
    ```
-   Here's a summary of my week across all areas. Suggest 3-5 content ideas I can create next week.
+   Here's a summary of my week across all areas. Suggest a bounded set of content ideas I can review for next week, stopping early instead of padding weak ideas.
 
    Technical (AWS/Qlik): {combined_tech_messages}
    Training/Coaching: {triathlon_messages}
    Active projects: {memory_entries}
 
-   Mix of formats: 1 long YouTube, 2 Reels/Shorts, 1-2 carousel/posts. Prioritize ideas that showcase real expertise and have hook potential.
+   Propose a useful mix of long video, short video, and carousel/post formats only where the supplied work supports them; do not fill a format quota. Prioritize ideas that showcase real expertise and have a topic-specific opening hypothesis.
    ```
 
 #### `/devops-to-tutorial [topic]`

@@ -103,6 +103,27 @@ describe('dashboard-home-view-state', () => {
     expect(viewState.coordinatedDecision?.stateLabel).toBe('Define ordem');
   });
 
+  it('does not turn a generic Content block into protected filming time', () => {
+    const viewState = buildDashboardHomeViewState(
+      makeInput({
+        orchestrationSummary: {
+          headline: 'Today needs a clear execution order.',
+          detail: 'Content and training both need review.',
+          protectedLater: null,
+          impacts: [
+            { id: 'content', domain: 'content', detail: 'Confirmed Content block needs review' },
+          ],
+          watchouts: [],
+        },
+      }),
+      'en-US',
+    );
+
+    const contentOutcome = viewState.coordinatedWeek?.outcomes.find((outcome) => outcome.skillId === 'content');
+    expect(contentOutcome?.decisionTitle).toBe('Content work block');
+    expect(contentOutcome?.decisionTitle).not.toMatch(/film|preserv|protect/i);
+  });
+
   it('marks cross-skill conflict when pressure collides with recovery constraints', () => {
     const viewState = buildDashboardHomeViewState(
       makeInput({

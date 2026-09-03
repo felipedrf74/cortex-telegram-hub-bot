@@ -41,6 +41,20 @@ describe('canonical Content workspace revision lineage', () => {
 
   afterEach(() => db.close());
 
+  it('rejects control-bearing lineage replay keys instead of silently normalizing them', () => {
+    expect(() => registerContentWorkspaceSource({
+      scope: OWNER,
+      referenceType: 'link',
+      title: 'Strict lineage key',
+      url: 'https://example.com/source',
+      idempotencyKey: 'lineage-key\u0085hidden',
+    }, db)).toThrowError(expect.objectContaining<Partial<ContentWorkspaceLineageError>>({
+      code: 'CONTENT_VALIDATION_FAILED',
+      status: 400,
+    }));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM content_reference_registry').get()).toEqual({ count: 0 });
+  });
+
   it('registers private untrusted sources idempotently and strips URL credentials and client trust claims', () => {
     const input = {
       scope: OWNER,

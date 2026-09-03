@@ -9,6 +9,7 @@ import {
   resetContentCreatorProfile,
   computeContentCreatorProfileCompleteness,
   ContentCreatorProfile,
+  ContentCreatorProfileUnavailableError,
 } from '../../state/content-creator-profile';
 import {
   recordRadarFeedback,
@@ -26,7 +27,18 @@ import {
   recordContentRadarWorkspaceAction,
   type ContentRadarBriefDraft,
 } from '../../services/content-radar-workspace-actions';
+import { isPausedContentAgent } from '../../services/content-agent-lifecycle';
 import { logger } from '../../utils/logger';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
+import { markSummaryStale } from '../../services/app-summary-read-models';
+import {
+  contentLogFingerprint,
+  safeContentLogErrorFields,
+} from '../../services/content-log-safety';
+import {
+  assertContentCreatorProfilePatch,
+  ContentCreatorProfileValidationError,
+} from '../../services/content-creator-profile-validation';
 
 // CONTENT-UI-O1 (2026-05-04): unified per-tenant ContentCreatorProfile.
 // CONTENT-UI-O2 (2026-05-04): per-signal Radar feedback endpoint.
@@ -49,6 +61,23 @@ function profileEnvelope(profile: ContentCreatorProfile) {
   };
 }
 
+function invalidateCreatorProfileReadModels(userId: number, tenantId: number): void {
+  invalidateContentDerivedCaches(userId);
+  markSummaryStale({ tenantId, userId, summaryType: 'content' });
+}
+
+function rejectPausedReactionRadarWrite(res: Response): boolean {
+  if (!isPausedContentAgent('reaction_radar')) return false;
+  sendError(
+    res,
+    'CONTENT_AGENT_PAUSED',
+    'Reaction Radar is paused until discovery and signals are tenant/user scoped.',
+    409,
+    { agentId: 'reaction_radar', lifecycle: 'paused' },
+  );
+  return true;
+}
+
 export function registerContentCreatorProfileRoutes(
   router: Router,
   ensureValidContentRouteScope: EnsureValidContentRouteScope,
@@ -61,7 +90,11 @@ export function registerContentCreatorProfileRoutes(
       const profile = getContentCreatorProfile(userId, tenantId);
       sendSuccess(res, profileEnvelope(profile));
     } catch (err) {
-      logger.warn({ err, userId, tenantId },
+      if (err instanceof ContentCreatorProfileUnavailableError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId },
         'content-creator-profile.read route failed');
       sendError(res, 'INTERNAL', 'Failed to read creator profile', 500);
     }
@@ -72,15 +105,21 @@ export function registerContentCreatorProfileRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_creator_profile_write')) return;
 
-    if (!req.body || typeof req.body !== 'object') {
-      sendError(res, 'VALIDATION', 'Body must be an object', 400);
-      return;
-    }
     try {
+      assertContentCreatorProfilePatch(req.body);
       const profile = upsertContentCreatorProfile(userId, tenantId, req.body);
+      invalidateCreatorProfileReadModels(userId, tenantId);
       sendSuccess(res, profileEnvelope(profile));
     } catch (err) {
-      logger.warn({ err, userId, tenantId },
+      if (err instanceof ContentCreatorProfileValidationError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      if (err instanceof ContentCreatorProfileUnavailableError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId },
         'content-creator-profile.write route failed');
       sendError(res, 'INTERNAL', 'Failed to save creator profile', 500);
     }
@@ -92,6 +131,7 @@ export function registerContentCreatorProfileRoutes(
     if (!ensureValidContentRouteScope(res, userId, 'content_creator_profile_reset')) return;
     try {
       resetContentCreatorProfile(userId, tenantId);
+      invalidateCreatorProfileReadModels(userId, tenantId);
       sendSuccess(res, profileEnvelope({
         pillars: [], niches: [], audience: '', platforms: [],
         voiceRules: [], preferredFormats: [], dislikedTopics: [],
@@ -100,7 +140,11 @@ export function registerContentCreatorProfileRoutes(
         updatedAt: null,
       }));
     } catch (err) {
-      logger.warn({ err, userId, tenantId },
+      if (err instanceof ContentCreatorProfileUnavailableError) {
+        sendError(res, err.code, err.message, err.status, err.details);
+        return;
+      }
+      logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId },
         'content-creator-profile.reset route failed');
       sendError(res, 'INTERNAL', 'Failed to reset creator profile', 500);
     }
@@ -116,6 +160,7 @@ export function registerContentCreatorProfileRoutes(
   router.post('/radar/feedback', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_radar_feedback_write')) return;
+    if (rejectPausedReactionRadarWrite(res)) return;
 
     const body = (req.body && typeof req.body === 'object') ? req.body : {};
     const signalId = typeof body.signalId === 'string' ? body.signalId.trim() : '';
@@ -140,7 +185,13 @@ export function registerContentCreatorProfileRoutes(
       });
       sendSuccess(res, { feedback: record });
     } catch (err) {
-      logger.warn({ err, userId, tenantId, signalId, action },
+      logger.warn({
+        ...safeContentLogErrorFields(err),
+        userId,
+        tenantId,
+        signalFingerprint: contentLogFingerprint(signalId),
+        action,
+      },
         'content-radar-feedback.write failed');
       sendError(res, 'INTERNAL', 'Failed to record radar feedback', 500);
     }
@@ -154,10 +205,11 @@ export function registerContentCreatorProfileRoutes(
   router.post('/radar/workspace-actions', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_radar_workspace_action')) return;
-    if (!Number.isInteger(tenantId) || Number(tenantId) <= 0) {
+    if (!Number.isSafeInteger(tenantId) || Number(tenantId) <= 0) {
       sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
       return;
     }
+    if (rejectPausedReactionRadarWrite(res)) return;
 
     const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
       ? req.body as Record<string, unknown>
@@ -177,13 +229,14 @@ export function registerContentCreatorProfileRoutes(
         reason: body.reason as string | null | undefined,
         brief: body.brief as ContentRadarBriefDraft | null | undefined,
       });
+      if (!result.mutation.replayed) invalidateContentDerivedCaches(userId);
       sendSuccess(res, result);
     } catch (error) {
       if (error instanceof ContentWorkspaceWriteDisabledError || error instanceof ContentWorkspaceError) {
         sendError(res, error.code, error.message, error.status, error.details);
         return;
       }
-      logger.error({ err: error, userId, tenantId, action: body.action },
+      logger.error({ ...safeContentLogErrorFields(error), userId, tenantId, action: body.action },
         'content-radar-workspace-action failed');
       sendError(res, 'INTERNAL', 'Failed to save this radar action. Existing content was preserved.', 500);
     }
@@ -199,15 +252,21 @@ export function registerContentCreatorProfileRoutes(
     const actionRaw = typeof req.query.action === 'string' ? req.query.action : undefined;
     const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
 
-    const items = listRadarFeedback(userId, tenantId, {
-      signalId: signalIdRaw && signalIdRaw.trim() ? signalIdRaw.trim() : undefined,
-      action: isValidRadarFeedbackAction(actionRaw) ? actionRaw : undefined,
-      limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
-    });
-    sendSuccess(res, {
-      feedback: items,
-      aggregateBySignal: radarFeedbackAggregateBySignal(userId, tenantId),
-    });
+    try {
+      const items = listRadarFeedback(userId, tenantId, {
+        signalId: signalIdRaw && signalIdRaw.trim() ? signalIdRaw.trim() : undefined,
+        action: isValidRadarFeedbackAction(actionRaw) ? actionRaw : undefined,
+        limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+      });
+      sendSuccess(res, {
+        feedback: items,
+        aggregateBySignal: radarFeedbackAggregateBySignal(userId, tenantId),
+      });
+    } catch (err) {
+      logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId },
+        'content-radar-feedback.list route failed');
+      sendError(res, 'INTERNAL', 'Failed to read radar feedback', 500);
+    }
   }));
 
   /** DELETE /api/v1/content/radar/feedback
@@ -249,7 +308,13 @@ export function registerContentCreatorProfileRoutes(
         aggregateBySignal: radarFeedbackAggregateBySignal(userId, tenantId),
       });
     } catch (err) {
-      logger.warn({ err, userId, tenantId, signalId, action: actionRaw },
+      logger.warn({
+        ...safeContentLogErrorFields(err),
+        userId,
+        tenantId,
+        signalFingerprint: contentLogFingerprint(signalId),
+        action: actionRaw,
+      },
         'content-radar-feedback.revoke failed');
       sendError(res, 'INTERNAL', 'Failed to revoke radar feedback', 500);
     }
@@ -265,9 +330,19 @@ export function registerContentCreatorProfileRoutes(
     if (!ensureValidContentRouteScope(res, userId, 'content_lifecycle_read')) return;
     try {
       const summary = summarizeCanonicalLifecycle(userId, tenantId);
-      sendSuccess(res, { lifecycle: summary });
+      sendSuccess(res, {
+        lifecycle: summary,
+        bucketSemantics: {
+          published: 'internal_production_state_only',
+        },
+        publicationTracking: {
+          availability: 'unavailable',
+          reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+          publicationExecution: 'not_supported',
+        },
+      });
     } catch (err) {
-      logger.warn({ err, userId, tenantId },
+      logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId },
         'content-lifecycle.read route failed');
       sendError(res, 'INTERNAL', 'Failed to read lifecycle summary', 500);
     }

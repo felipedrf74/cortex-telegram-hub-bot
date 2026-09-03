@@ -70,6 +70,7 @@ const mockCompleteOneShotWithSearch = vi.fn();
 const mockBuildSimpleStateContext = vi.fn(async () => 'Scoped Nexus state for research prompt');
 const mockHandleSecretary = vi.fn(async () => ({ text: 'Quarterly planning cleanupd.', domain: 'secretary' as const }));
 const mockGetScript = vi.fn();
+const mockGenerateContentCreativeProposal = vi.fn();
 const mockGetActiveContentPillars = vi.fn(() => []);
 const mockGetContentDeskItems = vi.fn(() => []);
 const mockGetNextContentExecutionHint = vi.fn(async () => null);
@@ -78,6 +79,7 @@ const mockLocalizeFilmingRecommendation = vi.fn((value) => value);
 const mockGetFilmingRecommendation = vi.fn(async () => null);
 const mockGetUpcomingTopicCount = vi.fn(() => 0);
 const mockGetTopics = vi.fn(() => []);
+const mockGetContentWorkspaceSummaryCounts = vi.fn();
 const mockGetPerformanceSummary = vi.fn(() => ({
   count: 0,
   avgViews: 0,
@@ -374,8 +376,19 @@ vi.mock('../../src/services/content-engine', async () => {
   );
   return {
     ForwardedLocalInferenceError: errorContract.ForwardedLocalInferenceError,
+    ForwardedContentPolicyError: errorContract.ForwardedContentPolicyError,
     DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY: executionPolicy.DEFAULT_SCRIPT_GENERATION_EXECUTION_POLICY,
     getScript: (...args: unknown[]) => mockGetScript(...args),
+  };
+});
+
+vi.mock('../../src/services/content-creative-proposals', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-creative-proposals')>(
+    '../../src/services/content-creative-proposals',
+  );
+  return {
+    ...actual,
+    generateContentCreativeProposal: (...args: unknown[]) => mockGenerateContentCreativeProposal(...args),
   };
 });
 
@@ -392,6 +405,16 @@ vi.mock('../../src/services/content-scheduler', () => ({
   getUpcomingTopicCount: (...args: unknown[]) => mockGetUpcomingTopicCount(...args),
   getTopics: (...args: unknown[]) => mockGetTopics(...args),
 }));
+
+vi.mock('../../src/services/content-workspace-read-models', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/content-workspace-read-models')>(
+    '../../src/services/content-workspace-read-models',
+  );
+  return {
+    ...actual,
+    getContentWorkspaceSummaryCounts: (...args: unknown[]) => mockGetContentWorkspaceSummaryCounts(...args),
+  };
+});
 
 vi.mock('../../src/services/content-learning-store', () => ({
   getPerformanceSummary: (...args: unknown[]) => mockGetPerformanceSummary(...args),
@@ -539,6 +562,7 @@ vi.mock('../../src/utils/callback-store', () => ({
 
 import { chatRoutes } from '../../src/api/routes/chat';
 import {
+  rememberChatActiveDomain,
   resetChatMessageContextForTests,
   resolveChatActiveContext,
 } from '../../src/api/routes/chat-message-context';
@@ -772,6 +796,7 @@ describe('Chat API routes', () => {
     Settings.now = () => new Date('2026-04-15T12:00:00.000Z').valueOf();
 
     testDb = createMigratedTestDatabase();
+    resetChatMessageContextForTests();
     clearTenantScopeAnomaliesForTests();
     resetPendingChatConfirmationsForTests();
     resetPendingChatCoreV2CommandsForTests();
@@ -794,6 +819,7 @@ describe('Chat API routes', () => {
     mockBuildSimpleStateContext.mockReset();
     mockHandleSecretary.mockReset();
     mockGetScript.mockReset();
+    mockGenerateContentCreativeProposal.mockReset();
     mockGetActiveContentPillars.mockReset();
     mockGetContentDeskItems.mockReset();
     mockGetNextContentExecutionHint.mockReset();
@@ -802,6 +828,7 @@ describe('Chat API routes', () => {
     mockGetFilmingRecommendation.mockReset();
     mockGetUpcomingTopicCount.mockReset();
     mockGetTopics.mockReset();
+    mockGetContentWorkspaceSummaryCounts.mockReset();
     mockGetPerformanceSummary.mockReset();
     mockGetLearnedPatterns.mockReset();
     mockGetAllInvoiceVendors.mockReset();
@@ -882,6 +909,35 @@ describe('Chat API routes', () => {
       degraded: false,
       warnings: [],
     });
+    mockGenerateContentCreativeProposal.mockResolvedValue({
+      operation: 'hooks',
+      proposal: {
+        topic: 'A calm product launch',
+        niche: 'general',
+        hooks: [{ text: 'Start with the customer moment.', why: 'It is concrete.' }],
+        duration_ms: 10,
+      },
+      degraded: false,
+      warnings: [],
+      sourcePackage: null,
+      research: {
+        policyRoute: 'evergreen_cached',
+        reason: 'evergreen',
+        execution: 'none',
+        reuseStatus: 'none',
+        sourceContextUsed: false,
+        sourceBoundInputClaimCount: 0,
+        generatedClaimsRequireReview: false,
+      },
+      authority: {
+        status: 'proposal',
+        proposalPersisted: false,
+        canonicalWorkspaceMutation: false,
+        publicationExecution: 'not_performed',
+        humanReviewRequired: false,
+        groundingStatus: 'not_required',
+      },
+    });
     mockCompleteOneShotWithFallback.mockResolvedValue({
       text: 'Tighter revised draft.',
       provider: 'gemini',
@@ -899,6 +955,11 @@ describe('Chat API routes', () => {
     mockGetFilmingRecommendation.mockResolvedValue(null);
     mockGetUpcomingTopicCount.mockReturnValue(0);
     mockGetTopics.mockReturnValue([]);
+    mockGetContentWorkspaceSummaryCounts.mockReturnValue({
+      scheduledThisWeek: 0,
+      scheduleAttentionThisWeek: 0,
+      scheduleAuthorityStatus: 'current',
+    });
     mockGetPerformanceSummary.mockReturnValue({
       count: 0,
       avgViews: 0,
@@ -2888,6 +2949,176 @@ describe('Chat API routes', () => {
     expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7001, 'triathlon', callbackRes.body.text, 7001);
   });
 
+  it('routes an advertised creative slash command through the proposal service', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.99,
+      strippedMessage: '/hooks A calm product launch',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: '/hooks A calm product launch',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      domain: 'content',
+      routeMethod: 'content-creative-proposal',
+      metadata: {
+        type: 'content_creative_proposal',
+        operation: 'hooks',
+        proposalCount: 1,
+        degraded: false,
+        warnings: [],
+        authority: {
+          status: 'proposal',
+          proposalPersisted: false,
+          canonicalWorkspaceMutation: false,
+          publicationExecution: 'not_performed',
+        },
+      },
+    });
+    expect(messageRes.body.text).toContain('Start with the customer moment.');
+    expect(messageRes.body.text).toContain('nothing was saved or published');
+    expect(mockGenerateContentCreativeProposal).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'hooks',
+      topic: 'A calm product launch',
+      userId: 7001,
+      tenantId: 7001,
+      language: 'en-US',
+      abortSignal: expect.any(Object),
+    }));
+    expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
+  it('labels a usable degraded creative fallback and exposes bounded warnings', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.99,
+      strippedMessage: '/hooks A calm product launch',
+    });
+    mockGenerateContentCreativeProposal.mockResolvedValueOnce({
+      operation: 'hooks',
+      proposal: {
+        topic: 'A calm product launch',
+        niche: 'general',
+        hooks: [{ text: 'Start with one concrete customer moment.', why: 'Deterministic fallback.' }],
+        duration_ms: 10,
+        degraded: true,
+        warnings: ['Provider output did not match the contract; one fallback hook was emitted.'],
+      },
+      degraded: true,
+      warnings: ['Provider output did not match the contract; one fallback hook was emitted.'],
+      sourcePackage: null,
+      research: {
+        policyRoute: 'evergreen_cached',
+        reason: 'evergreen',
+        execution: 'none',
+        reuseStatus: 'none',
+        sourceContextUsed: false,
+        sourceBoundInputClaimCount: 0,
+        generatedClaimsRequireReview: false,
+      },
+      authority: {
+        status: 'proposal',
+        proposalPersisted: false,
+        canonicalWorkspaceMutation: false,
+        publicationExecution: 'not_performed',
+        humanReviewRequired: true,
+        groundingStatus: 'not_required',
+      },
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: '/hooks A calm product launch',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('content-creative-proposal');
+    expect(messageRes.body.text).toContain('Degraded fallback');
+    expect(messageRes.body.text).toContain('Human review is required');
+    expect(messageRes.body.text).toContain('Provider output did not match the contract');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'content_creative_proposal',
+      degraded: true,
+      warnings: ['Provider output did not match the contract; one fallback hook was emitted.'],
+      authority: { humanReviewRequired: true },
+    });
+  });
+
+  it('returns typed creative unavailability when degraded output is empty', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.99,
+      strippedMessage: '/titles A calm product launch',
+    });
+    const { ContentCreativeProposalError } = await import(
+      '../../src/services/content-creative-proposals'
+    );
+    mockGenerateContentCreativeProposal.mockRejectedValueOnce(new ContentCreativeProposalError(
+      'CONTENT_CREATIVE_OUTPUT_UNAVAILABLE',
+      'The creative provider did not return a usable proposal. No creative proposal was saved or published.',
+      503,
+      {
+        operation: 'titles',
+        degraded: true,
+        retryable: true,
+        warnings: ['Provider output did not match the contract; no titles were emitted.'],
+      },
+    ));
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: '/titles A calm product launch',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      routeMethod: 'content-creative-proposal-unavailable',
+      metadata: {
+        type: 'content_creative_proposal_unavailable',
+        operation: 'titles',
+        degraded: true,
+        warnings: ['Provider output did not match the contract; no titles were emitted.'],
+        authority: {
+          status: 'unavailable',
+          canonicalWorkspaceMutation: false,
+          publicationExecution: 'not_performed',
+        },
+      },
+    });
+    expect(messageRes.body.text).toContain('No creative proposal was saved or published');
+  });
+
+  it('terminates a malformed advertised creative command before routing or provider work', async () => {
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: '/hooks first line\nsecond line',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body).toMatchObject({
+      domain: 'content',
+      routeMethod: 'content-creative-command-validation',
+      metadata: {
+        type: 'content_creative_command_validation',
+        code: 'CONTENT_CREATIVE_SHORTCUT_VALIDATION_FAILED',
+        command: '/hooks',
+        reason: 'single_line_required',
+        authority: {
+          status: 'rejected',
+          canonicalWorkspaceMutation: false,
+          publicationExecution: 'not_performed',
+        },
+      },
+    });
+    expect(messageRes.body.text).toContain('Nothing was generated, saved, or published');
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockGenerateContentCreativeProposal).not.toHaveBeenCalled();
+    expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
   it('routes explicit script generation asks through the canonical content script pipeline', async () => {
     mockRouteMessage.mockResolvedValue({
       domain: 'content',
@@ -3203,6 +3434,7 @@ describe('Chat API routes', () => {
       strippedMessage: 'make it shorter',
     });
     mockGetLastAssistantMessage.mockReturnValue('A cloud-owned draft that must stop with its request.');
+    rememberChatActiveDomain(7001, 'content', Date.now(), 7001);
     let propagatedSignal: AbortSignal | undefined;
     mockCompleteOneShotWithFallback.mockImplementationOnce(
       (
@@ -3259,6 +3491,7 @@ describe('Chat API routes', () => {
     mockGetLastAssistantMessage.mockReturnValue(
       'Recovery is where adaptation happens after hard intervals. Sleep and fuel both matter.',
     );
+    rememberChatActiveDomain(7001, 'content', Date.now(), 7001);
 
     const refineRes = await dispatch('POST', '/message', 7001, {
       text: 'make it shorter',
@@ -3295,6 +3528,7 @@ describe('Chat API routes', () => {
       strippedMessage: 'make it shorter',
     });
     mockGetLastAssistantMessage.mockReturnValue('A private draft that should stay local.');
+    rememberChatActiveDomain(7001, 'content', Date.now(), 7001);
     let propagatedSignal: AbortSignal | undefined;
     localPrimaryShortcutMocks.executeSkillInference.mockImplementationOnce(
       (request: { abortSignal?: AbortSignal }) => new Promise((_resolve, reject) => {
@@ -3347,6 +3581,7 @@ describe('Chat API routes', () => {
       strippedMessage: 'make it shorter',
     });
     mockGetLastAssistantMessage.mockReturnValue('A private draft that should remain local.');
+    rememberChatActiveDomain(7001, 'content', Date.now(), 7001);
 
     const refineRes = await dispatch('POST', '/message', 7001, {
       text: 'make it shorter',
@@ -3373,6 +3608,7 @@ describe('Chat API routes', () => {
       strippedMessage: 'make it shorter',
     });
     mockGetLastAssistantMessage.mockReturnValue('An existing English draft.');
+    rememberChatActiveDomain(7001, 'content', Date.now(), 7001);
     mockCompleteOneShotWithFallback.mockResolvedValueOnce({
       text: 'Resposta revista em português.',
       provider: 'gemini',
@@ -3421,6 +3657,7 @@ describe('Chat API routes', () => {
     mockGetLastAssistantMessage.mockReturnValue(
       'You are training hard, but recovery is where adaptation happens. Sleep and fuel matter more than most athletes admit. If you ignore recovery, your next interval day will suffer.',
     );
+    rememberChatActiveDomain(7001, 'content', Date.now(), 7001);
     mockCompleteOneShotWithFallback.mockRejectedValueOnce(new Error('gemini overloaded'));
 
     const refineRes = await dispatch('POST', '/message', 7001, {
@@ -3428,7 +3665,6 @@ describe('Chat API routes', () => {
     }, {
       'x-language': 'en-US',
     });
-
     expect(refineRes.statusCode, JSON.stringify(refineRes.body)).toBe(200);
     expect(refineRes.body.routeMethod).toBe('content-refine-fallback');
     expect(refineRes.body.text).toContain('conservative shorter version');
@@ -3453,7 +3689,6 @@ describe('Chat API routes', () => {
     const messageRes = await dispatch('POST', '/message', 7001, {
       text: 'Write a short script about recovery after hard intervals in English',
     });
-
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
     expect(messageRes.body.domain).toBe('content');
     expect(messageRes.body.routeMethod).toBe('content-script-unavailable');
@@ -3465,6 +3700,41 @@ describe('Chat API routes', () => {
       warnings: ['content_engine_unavailable'],
     });
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed blocked chat response for high-risk script generation', async () => {
+    const { ContentResearchPolicyError } = await import(
+      '../../src/services/content-research-generation-policy'
+    );
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'Write a script about ibuprofen dosage advice',
+    });
+    mockGetScript.mockRejectedValueOnce(new ContentResearchPolicyError(
+      'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
+      'This topic requires a human-reviewed source package before generation.',
+      'high_risk_review',
+      'high_risk_source_grounding_required',
+    ));
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'Write a script about ibuprofen dosage advice in English',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.routeMethod).toBe('content-script-blocked');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'content_script_blocked',
+      code: 'CONTENT_HIGH_RISK_REVIEW_REQUIRED',
+      authority: {
+        status: 'blocked',
+        canonicalWorkspaceMutation: false,
+        publicationExecution: 'not_performed',
+      },
+    });
+    expect(messageRes.body.text).toContain('human-reviewed source package');
   });
 
   it('returns desk-ready content from the deterministic content shortcut', async () => {
@@ -3570,18 +3840,50 @@ describe('Chat API routes', () => {
 
     expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
     expect(messageRes.body.routeMethod).toBe('content-intelligence-shortcut');
-    expect(messageRes.body.text).toContain('Best day');
-    expect(messageRes.body.text).toContain('Suggested block: 11:00-13:00');
-    expect(messageRes.body.text).toContain('Upcoming scheduled topics: 3');
+    expect(messageRes.body.text).toContain('proposed filming window');
+    expect(messageRes.body.text).toContain('Proposed block: 11:00-13:00 (not reserved)');
+    expect(messageRes.body.text).toContain('Topic deadlines in the next 7 days: 3 (not reservations)');
     expect(messageRes.body.metadata).toMatchObject({
       type: 'content_filming_snapshot',
       upcomingCount: 3,
+      planStatus: 'proposed',
+      scheduleSemantics: 'proposal_not_calendar_reservation',
       filmingRecommendation: {
         date: '2026-04-17',
         confidence: 'high',
       },
     });
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
+  });
+
+  it('does not turn an attention-only work block into a proposed filming plan', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.93,
+      strippedMessage: 'how should i schedule filming around my week?',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+    mockGetFilmingRecommendation.mockResolvedValue(null);
+    mockGetContentWorkspaceSummaryCounts.mockReturnValue({
+      scheduledThisWeek: 0,
+      scheduleAttentionThisWeek: 1,
+      scheduleAuthorityStatus: 'current',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'how should i schedule filming around my week?',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.text).toContain('Work blocks needing sync or cancellation attention: 1');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'content_filming_snapshot',
+      filmingRecommendation: null,
+      scheduleAttentionCount: 1,
+      planStatus: 'unplanned',
+      scheduleSemantics: 'private_work_session',
+    });
   });
 
   it('returns the next publish candidate from the deterministic content shortcut', async () => {
@@ -3623,7 +3925,7 @@ describe('Chat API routes', () => {
     expect(messageRes.body.domain).toBe('content');
     expect(messageRes.body.routeMethod).toBe('content-intelligence-shortcut');
     expect(messageRes.body.text).toContain('Race-week fueling mistakes');
-    expect(messageRes.body.text).toContain('strongest next publish candidate');
+    expect(messageRes.body.text).toContain('strongest candidate to prepare for publication');
     expect(messageRes.body.metadata).toMatchObject({
       type: 'content_next_publish_snapshot',
       nextTopic: {
@@ -7000,8 +7302,12 @@ describe('Chat API routes', () => {
       expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Private draft notes');
       expect(JSON.stringify(messageRes.body.metadata)).not.toContain('Full private script body');
       expect(JSON.stringify(messageRes.body.metadata)).not.toContain('calendar_private');
-      expect(mockGetTopics).toHaveBeenCalledWith(7001, { includeTerminal: false, limit: 20 });
-      expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 5);
+      expect(mockGetTopics).toHaveBeenCalledWith(7001, {
+        includeTerminal: false,
+        limit: 20,
+        tenantId: 7001,
+      });
+      expect(mockGetContentDeskItems).toHaveBeenCalledWith(7001, 5, 7001);
       expect(mockGetRankedContentSignals).toHaveBeenCalledWith(7001, 5, 7001);
       expect(messageRes.body.metadata).toMatchObject({
         type: 'chat_core_v2_deterministic_read',

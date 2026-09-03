@@ -2,6 +2,7 @@
 
 import Database from 'better-sqlite3';
 import { logger } from '../utils/logger';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export interface ContentWorkspaceBootReadinessGate {
   load: () => (database: Database.Database) => void;
@@ -49,7 +50,7 @@ export function assertContentWorkspaceBootReadiness(
     try {
       gate.load()(database);
     } catch (err) {
-      logger.error({ err }, gate.failureMessage);
+      logger.error(safeContentLogErrorFields(err), gate.failureMessage);
       throw err;
     }
   }

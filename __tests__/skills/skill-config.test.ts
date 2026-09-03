@@ -201,6 +201,13 @@ describe('SkillConfig — content skill', () => {
     });
   });
 
+  it('does not pin Content availability to one provider key', () => {
+    expect(contentManifest.requiredApiKeys).toEqual([]);
+    expect(JSON.stringify(contentManifest.requiredApiKeys)).not.toMatch(
+      /GEMINI_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY/,
+    );
+  });
+
   it('has all 12 granular sub-skills', () => {
     const subNames = cnt.subSkills.map(s => s.name);
     expect(subNames).toContain('notes');
@@ -224,11 +231,14 @@ describe('SkillConfig — content skill', () => {
     expect(meme.enabledByDefault).toBe(false);
   });
 
-  it('all other content sub-skills are enabled by default', () => {
+  it('starts paused content agents disabled and keeps active content sub-skills enabled by default', () => {
+    const paused = new Set(['meme-scout', 'seo-tracker', 'reaction-radar', 'performance-intel']);
     for (const sub of cnt.subSkills) {
-      if (sub.name === 'meme-scout') continue;
-      expect(sub.enabledByDefault).toBe(true);
+      expect(sub.enabledByDefault).toBe(!paused.has(sub.name));
     }
+    expect(cnt.subSkills.find((sub) => sub.name === 'seo-tracker')?.description).toContain('Paused');
+    expect(cnt.subSkills.find((sub) => sub.name === 'reaction-radar')?.description).toContain('Paused');
+    expect(cnt.subSkills.find((sub) => sub.name === 'performance-intel')?.description).toContain('Paused');
   });
 
   it('agent sub-skills map to correct cron job IDs', () => {

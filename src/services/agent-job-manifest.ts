@@ -29,7 +29,7 @@ export interface AgentJobManifestEntry {
   schedule: string;
   scheduleSource?: string;
   domain: JobDomain;
-  lifecycle: 'active';
+  lifecycle: 'active' | 'paused';
   policyOwner: string;
   jobVersion: string;
   tenantScope: string;
@@ -117,6 +117,9 @@ function validateEntry(entry: AgentJobManifestEntry): void {
   ];
   if (required.some((value) => !nonEmpty(value))) {
     throw new Error(`incomplete AgentJobManifest governance: ${entry.id || 'unknown'}`);
+  }
+  if (!['active', 'paused'].includes(entry.lifecycle)) {
+    throw new Error(`invalid AgentJobManifest lifecycle: ${entry.id}`);
   }
   if (!['secretary', 'triathlon', 'content', 'invoices', 'system'].includes(entry.domain)) {
     throw new Error(`invalid AgentJobManifest domain: ${entry.id}`);

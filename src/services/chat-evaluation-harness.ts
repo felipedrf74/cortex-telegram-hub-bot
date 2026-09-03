@@ -552,7 +552,7 @@ export const CHAT_EVAL_PERSONAS: ChatEvalPersona[] = [
     tenantIds: [804],
     userId: 9004,
     roles: ['member'],
-    contextProfile: 'Content references, publishing cadence, and saved sources.',
+    contextProfile: 'Content references, production cadence, publish preparation, and saved sources.',
     safetyFocus: ['tenant-private references', 'retrieval namespace'],
   },
   {

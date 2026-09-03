@@ -19,24 +19,34 @@ import {
 } from './content-workspace-schedule-summary';
 
 export const CONTENT_WORKSPACE_OPERATIONAL_READ_MODEL_SCHEMA_VERSION =
-  'content-workspace-operational-read-model-v1' as const;
+  'content-workspace-operational-read-model-v2' as const;
 export const CONTENT_WORKSPACE_TODAY_SUMMARY_SCHEMA_VERSION =
-  'content-workspace-today-summary-v1' as const;
+  'content-workspace-today-summary-v2' as const;
 
 export type ContentWorkspacePipelineStage = 'approved' | 'scripted' | 'filming' | 'editing' | 'published';
+
+export const CONTENT_PUBLICATION_TRACKING_REASON_CODE =
+  'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED' as const;
+
+export interface ContentPublicationTrackingUnavailable {
+  availability: 'unavailable';
+  reasonCode: typeof CONTENT_PUBLICATION_TRACKING_REASON_CODE;
+  publicationExecution: 'not_supported';
+}
 
 export interface ContentWorkspacePipelineStats {
   schemaVersion: typeof CONTENT_WORKSPACE_OPERATIONAL_READ_MODEL_SCHEMA_VERSION;
   availability: 'available';
   source: 'content_workspace';
-  stages: Record<ContentWorkspacePipelineStage, number>;
+  stages: Record<ContentWorkspacePipelineStage, number | null>;
   stageTracking: Record<ContentWorkspacePipelineStage, {
     tracking: 'canonical' | 'derived' | 'not_modeled';
     source: string | null;
     reasonCode: string | null;
   }>;
   bottleneck: { stage: 'approved' | 'scripted'; count: number; avgDays: number } | null;
-  publishedThisWeek: number;
+  publishedThisWeek: null;
+  publicationTracking: ContentPublicationTrackingUnavailable;
   totalActive: number;
 }
 
@@ -44,7 +54,7 @@ export interface ContentWorkspacePipelineOperationalMetrics {
   schemaVersion: typeof CONTENT_WORKSPACE_OPERATIONAL_READ_MODEL_SCHEMA_VERSION;
   availability: 'available';
   source: 'content_workspace';
-  approvalToPublishRate: number;
+  approvalToPublishRate: null;
   approvalToScriptRate: number;
   avgDaysPerStage: Record<string, number>;
   staleInventory: Array<{
@@ -55,23 +65,24 @@ export interface ContentWorkspacePipelineOperationalMetrics {
     niche: null;
   }>;
   formatDistribution: Record<string, number>;
-  weeklyThroughput: number[];
+  weeklyThroughput: null;
   totalEverEntered: number;
-  totalPublished: number;
+  totalPublished: null;
+  publicationTracking: ContentPublicationTrackingUnavailable;
 }
 
 export interface ContentWorkspaceRecentItem {
   id: number;
   topicTitle: string;
   niche: null;
-  stage: 'approved' | 'scripted' | 'published';
+  stage: 'approved' | 'scripted';
   productionState: string;
   artifactPhase: string;
   createdAt: string;
   updatedAt: string;
   publishedUrl: null;
-  publishedAt: string | null;
-  publicationEvidence: 'canonical_workflow_event' | 'not_recorded';
+  publishedAt: null;
+  publicationEvidence: 'not_supported';
 }
 
 export interface ContentWorkspaceSummaryCounts {
@@ -80,7 +91,9 @@ export interface ContentWorkspaceSummaryCounts {
   source: 'content_workspace';
   ideasNeedingReview: number;
   scriptsInProgress: number;
+  /** Current local Secretary blocks, including provider-sync failures. */
   scheduledThisWeek: number;
+  /** Provider/unavailable/cancellation states that require separate attention. */
   scheduleAttentionThisWeek: number;
   scheduleAuthorityStatus: 'current' | 'partially_unavailable' | 'unavailable';
   pendingCount: number;
@@ -96,12 +109,13 @@ export interface ContentWorkspaceTodaySummary {
   activeCount: number;
   reviewCount: number;
   approvedCount: number;
-  publishedCount: number;
+  publishedCount: null;
   privateWorkBlockCount: number;
   scheduleAttentionCount: number;
   scheduleAuthorityStatus: 'current' | 'partially_unavailable' | 'unavailable';
   scheduleSemantics: 'private_work_session';
   publicationExecution: 'not_performed';
+  publicationTracking: ContentPublicationTrackingUnavailable;
 }
 
 export interface ContentWorkspaceRecentScript {
@@ -140,7 +154,6 @@ type WorkspaceOperationalRow = {
   updated_at: string;
   days_stuck: number;
   has_script: number;
-  published_at: string | null;
 };
 
 const ACTIVE_ITEM_SCOPE_SQL = `
@@ -165,7 +178,7 @@ export function getContentWorkspacePipelineStats(
   for (const row of rows) {
     const stage = projectPipelineStage(row);
     if (stage === null) continue;
-    stages[stage] += 1;
+    stages[stage] = (stages[stage] ?? 0) + 1;
     if ((stage === 'approved' || stage === 'scripted')
       && row.days_stuck > stageThresholdDays(stage)) {
       stuckByStage[stage].push(row.days_stuck);
@@ -191,11 +204,16 @@ export function getContentWorkspacePipelineStats(
       scripted: { tracking: 'derived', source: 'artifact_phase+script_artifact', reasonCode: null },
       filming: { tracking: 'not_modeled', source: null, reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED' },
       editing: { tracking: 'not_modeled', source: null, reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED' },
-      published: { tracking: 'canonical', source: 'production_state+content_workflow_events', reasonCode: null },
+      published: {
+        tracking: 'not_modeled',
+        source: null,
+        reasonCode: CONTENT_PUBLICATION_TRACKING_REASON_CODE,
+      },
     },
     bottleneck: bottlenecks[0] ?? null,
-    publishedThisWeek: countPublishedInWindow(scope, db, daysAgo(now, 7), now),
-    totalActive: stages.approved + stages.scripted,
+    publishedThisWeek: null,
+    publicationTracking: publicationTrackingUnavailable(),
+    totalActive: (stages.approved ?? 0) + (stages.scripted ?? 0),
   };
 }
 
@@ -207,7 +225,6 @@ export function getContentWorkspacePipelineOperationalMetrics(
   const scope = normalizeScope(scopeInput);
   const rows = readOperationalRows(scope, db, now);
   const totalEverEntered = rows.length;
-  const totalPublished = countEverPublished(scope, db);
   const totalScripted = rows.filter((row) => row.has_script === 1 || ['draft', 'final'].includes(row.artifact_phase)).length;
   const staleInventory = rows
     .flatMap((row) => {
@@ -227,30 +244,24 @@ export function getContentWorkspacePipelineOperationalMetrics(
   const formatDistribution: Record<string, number> = {};
   for (const row of rows) {
     const stage = projectPipelineStage(row);
-    if (stage === null || stage === 'published') continue;
+    if (stage === null) continue;
     const format = row.format_id?.trim() || 'unknown';
     formatDistribution[format] = (formatDistribution[format] ?? 0) + 1;
-  }
-
-  const weeklyThroughput: number[] = [];
-  for (let offset = 4; offset > 0; offset -= 1) {
-    const start = daysAgo(now, offset * 7);
-    const end = daysAgo(now, (offset - 1) * 7);
-    weeklyThroughput.push(countPublishedInWindow(scope, db, start, end));
   }
 
   return {
     schemaVersion: CONTENT_WORKSPACE_OPERATIONAL_READ_MODEL_SCHEMA_VERSION,
     availability: 'available',
     source: 'content_workspace',
-    approvalToPublishRate: percentage(totalPublished, totalEverEntered),
+    approvalToPublishRate: null,
     approvalToScriptRate: percentage(totalScripted, totalEverEntered),
     avgDaysPerStage: averageCanonicalStageDurations(scope, db),
     staleInventory,
     formatDistribution,
-    weeklyThroughput,
+    weeklyThroughput: null,
     totalEverEntered,
-    totalPublished,
+    totalPublished: null,
+    publicationTracking: publicationTrackingUnavailable(),
   };
 }
 
@@ -282,8 +293,8 @@ export function getContentWorkspaceRecentItems(
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         publishedUrl: null,
-        publishedAt: row.published_at,
-        publicationEvidence: row.published_at == null ? 'not_recorded' as const : 'canonical_workflow_event' as const,
+        publishedAt: null,
+        publicationEvidence: 'not_supported' as const,
       }];
     })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id - left.id)
@@ -359,7 +370,6 @@ export function getContentWorkspaceTodaySummary(
     active: 0,
     review: 0,
     approved: 0,
-    published: 0,
   };
   for (const row of rows) {
     if (row.production_state in counts) {
@@ -386,7 +396,7 @@ export function getContentWorkspaceTodaySummary(
         currentScheduleCount += 1;
       }
       if (summary.authorityStatus === 'current'
-        && ['scheduled', 'provider_synced'].includes(summary.state)) {
+        && ['scheduled', 'provider_synced', 'sync_failed'].includes(summary.state)) {
         privateWorkBlockCount += 1;
       }
       if (summary.recoverable) scheduleAttentionCount += 1;
@@ -409,12 +419,13 @@ export function getContentWorkspaceTodaySummary(
     activeCount: counts.active,
     reviewCount: counts.review,
     approvedCount: counts.approved,
-    publishedCount: counts.published,
+    publishedCount: null,
     privateWorkBlockCount,
     scheduleAttentionCount,
     scheduleAuthorityStatus,
     scheduleSemantics: 'private_work_session',
     publicationExecution: 'not_performed',
+    publicationTracking: publicationTrackingUnavailable(),
   };
 }
 
@@ -456,7 +467,7 @@ function summarizeSchedulesInWindow(
       if (summary.authorityStatus === 'unavailable') unavailable += 1;
       else current += 1;
       if (summary.authorityStatus === 'current'
-        && ['scheduled', 'provider_synced'].includes(summary.state)) confirmed += 1;
+        && ['scheduled', 'provider_synced', 'sync_failed'].includes(summary.state)) confirmed += 1;
       if (summary.recoverable) attention += 1;
     }
   }
@@ -662,19 +673,7 @@ function readOperationalRows(
                 AND artifact.scope_status = 'active'
                 AND artifact.artifact_type = 'script'
                 AND artifact.current_revision_id IS NOT NULL
-           ) THEN 1 ELSE 0 END AS has_script,
-           (
-             SELECT MAX(event.created_at)
-               FROM content_workflow_events event
-              WHERE event.tenant_id = item.tenant_id
-                AND event.owner_user_id = item.owner_user_id
-                AND event.visibility_scope = 'user_private'
-                AND event.scope_status = 'active'
-                AND event.object_type = 'content_item'
-                AND event.object_id = CAST(item.id AS TEXT)
-                AND event.action = 'workspace_state_changed'
-                AND event.to_state = 'published'
-           ) AS published_at
+           ) THEN 1 ELSE 0 END AS has_script
       FROM content_domain_objects item
      WHERE ${ACTIVE_ITEM_SCOPE_SQL}
      ORDER BY item.updated_at DESC, item.id DESC
@@ -709,65 +708,12 @@ function readableStructuredRevision(raw: string | null): string {
 
 function projectPipelineStage(
   row: Pick<WorkspaceOperationalRow, 'production_state' | 'artifact_phase' | 'has_script'>,
-): 'approved' | 'scripted' | 'published' | null {
-  if (row.production_state === 'published') return 'published';
-  if (row.production_state === 'archived' || row.production_state === 'rejected') return null;
+): 'approved' | 'scripted' | null {
+  if (row.production_state === 'published'
+    || row.production_state === 'archived'
+    || row.production_state === 'rejected') return null;
   if (row.has_script === 1 || row.artifact_phase === 'draft' || row.artifact_phase === 'final') return 'scripted';
   return 'approved';
-}
-
-function countEverPublished(scope: ContentWorkspaceScope, db: Database.Database): number {
-  const row = db.prepare(`
-    SELECT COUNT(DISTINCT event.object_id) AS count
-      FROM content_workflow_events event
-      JOIN content_domain_objects item
-        ON item.id = CAST(event.object_id AS INTEGER)
-       AND item.tenant_id = event.tenant_id
-       AND item.owner_user_id = event.owner_user_id
-     WHERE event.tenant_id = ?
-       AND event.owner_user_id = ?
-       AND event.visibility_scope = 'user_private'
-       AND event.scope_status = 'active'
-       AND event.object_type = 'content_item'
-       AND event.action = 'workspace_state_changed'
-       AND event.to_state = 'published'
-       AND ${ACTIVE_ITEM_SCOPE_SQL}
-  `).get(scope.tenantId, scope.userId, scope.tenantId, scope.userId) as { count: unknown } | undefined;
-  return safeCount(row?.count);
-}
-
-function countPublishedInWindow(
-  scope: ContentWorkspaceScope,
-  db: Database.Database,
-  start: Date,
-  end: Date,
-): number {
-  const row = db.prepare(`
-    SELECT COUNT(DISTINCT event.object_id) AS count
-      FROM content_workflow_events event
-      JOIN content_domain_objects item
-        ON item.id = CAST(event.object_id AS INTEGER)
-       AND item.tenant_id = event.tenant_id
-       AND item.owner_user_id = event.owner_user_id
-     WHERE event.tenant_id = ?
-       AND event.owner_user_id = ?
-       AND event.visibility_scope = 'user_private'
-       AND event.scope_status = 'active'
-       AND event.object_type = 'content_item'
-       AND event.action = 'workspace_state_changed'
-       AND event.to_state = 'published'
-       AND julianday(event.created_at) >= julianday(?)
-       AND julianday(event.created_at) < julianday(?)
-       AND ${ACTIVE_ITEM_SCOPE_SQL}
-  `).get(
-    scope.tenantId,
-    scope.userId,
-    start.toISOString(),
-    end.toISOString(),
-    scope.tenantId,
-    scope.userId,
-  ) as { count: unknown } | undefined;
-  return safeCount(row?.count);
 }
 
 function averageCanonicalStageDurations(
@@ -787,6 +733,8 @@ function averageCanonicalStageDurations(
        AND event.scope_status = 'active'
        AND event.object_type = 'content_item'
        AND event.action = 'workspace_state_changed'
+       AND COALESCE(event.from_state, '') <> 'published'
+       AND COALESCE(event.to_state, '') <> 'published'
        AND ${ACTIVE_ITEM_SCOPE_SQL}
      ORDER BY event.object_id ASC, event.created_at ASC, event.id ASC
   `).all(scope.tenantId, scope.userId, scope.tenantId, scope.userId) as Array<{
@@ -829,8 +777,16 @@ function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
   return { tenantId, userId };
 }
 
-function emptyStages(): Record<ContentWorkspacePipelineStage, number> {
-  return { approved: 0, scripted: 0, filming: 0, editing: 0, published: 0 };
+function emptyStages(): Record<ContentWorkspacePipelineStage, number | null> {
+  return { approved: 0, scripted: 0, filming: 0, editing: 0, published: null };
+}
+
+function publicationTrackingUnavailable(): ContentPublicationTrackingUnavailable {
+  return {
+    availability: 'unavailable',
+    reasonCode: CONTENT_PUBLICATION_TRACKING_REASON_CODE,
+    publicationExecution: 'not_supported',
+  };
 }
 
 function stageThresholdDays(stage: 'approved' | 'scripted'): number {
@@ -855,10 +811,6 @@ function safeCount(value: unknown): number {
 
 function roundOne(value: number): number {
   return Math.round(value * 10) / 10;
-}
-
-function daysAgo(now: Date, days: number): Date {
-  return new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
 }
 
 function sqliteTimestampMillis(value: string): number | null {

@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { clearCache, clearCacheByPrefix } from './cache-store';
+import { CONTENT_AGENT_LIFECYCLE_POLICY_VERSION } from './content-agent-lifecycle';
 import { invalidateContextCache } from './context-engine';
 import { invalidateReadinessMemoForUser } from './readiness-memo';
 import { invalidateSharedDecisionContextCache } from './shared-decision-context';
@@ -214,11 +215,17 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
       clearCacheByPrefix([
         ...(isFiniteUserId(event.userId) ? [`u:${event.userId}:calendar:`] : []),
         'calendar:',
+        isFiniteUserId(event.userId)
+          ? `content:home:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}:u:${event.userId}:`
+          : `content:home:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}:`,
       ]);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardCoordination(event.userId));
       return;
 
     case 'content.changed':
+      clearCacheByPrefix(isFiniteUserId(event.userId)
+        ? `content:home:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}:u:${event.userId}:`
+        : `content:home:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}:`);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardCoordination(event.userId));
       return;
 
@@ -390,6 +397,7 @@ export function invalidateCacheForEvent(event: CacheCoherenceEvent): void {
         'cardio-progression:',
         'strength-progression:',
         'training-activity-weekly:',
+        `content:home:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}:u:${event.userId}:`,
       ]);
       invalidateCacheForEvent(CacheCoherenceEvents.dashboardAll(event.userId));
       invalidateCacheForEvent(CacheCoherenceEvents.planningChanged(event.userId));

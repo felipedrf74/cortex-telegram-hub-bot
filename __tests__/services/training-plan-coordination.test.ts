@@ -11,6 +11,43 @@ import {
 } from '../../src/services/training-plan-volume-enforcement';
 import { buildCoachKernelTrainingPlan } from '../../src/services/training-coach-kernel-plan-generator';
 
+function confirmedRecordingContent(
+  date: string,
+  options: {
+    state?: 'scheduled' | 'provider_synced' | 'sync_failed';
+    schedule?: Record<string, unknown>;
+    block?: Record<string, unknown>;
+  } = {},
+): any {
+  const startsAt = `${date}T10:00:00.000Z`;
+  const endsAt = `${date}T12:00:00.000Z`;
+  return {
+    filmingRecommendation: null,
+    workSchedule: {
+      authority: 'secretary',
+      authorityStatus: 'current',
+      planStatus: 'confirmed',
+      semantics: 'private_work_session',
+      attentionCount: 0,
+      confirmedBlocks: [{
+        itemId: 41,
+        title: 'Record weekly update',
+        date,
+        startsAt,
+        endsAt,
+        workKind: 'record',
+        state: options.state ?? 'scheduled',
+        authority: 'secretary',
+        authorityStatus: 'current',
+        semantics: 'private_work_session',
+        contentChangedSinceScheduling: false,
+        ...options.block,
+      }],
+      ...options.schedule,
+    },
+  };
+}
+
 describe('training-plan-coordination', () => {
   it('derives real coach guardrails from cross-skill context', () => {
     const coordination = buildTrainingPlanCoordination({
@@ -58,9 +95,10 @@ describe('training-plan-coordination', () => {
         ],
       } as any,
       content: {
-        filmingRecommendation: {
-          date: '2026-04-18',
-        },
+        ...confirmedRecordingContent('2026-04-18'),
+        // The advisory recommendation deliberately points elsewhere; only the
+        // canonical Secretary-confirmed record block may affect Training.
+        filmingRecommendation: { date: '2026-04-16' },
       } as any,
     });
 
@@ -69,7 +107,7 @@ describe('training-plan-coordination', () => {
     expect(coordination.weeklySessionTarget).toBe(5);
     expect(coordination.strengthSessionTarget).toBe(2);
     expect(coordination.resolvedLongWorkoutDay).toBe('sunday');
-    expect(coordination.protectFilmingDay).toBe('saturday');
+    expect(coordination.protectConfirmedRecordingDay).toBe('saturday');
     expect(coordination.lowCostBias).toBe(true);
     expect(coordination.selectiveTrainingSpend).toBe(true);
     expect(coordination.progressionRampCapPct).toBe(4);
@@ -81,12 +119,160 @@ describe('training-plan-coordination', () => {
     expect(coordination.promptBlock).toContain('Cap truly hard sessions at 1 per week');
     expect(coordination.promptBlock).toContain('Keep week-to-week intensity jumps within 4 points');
     expect(coordination.promptBlock).toContain('Anchor the longest session on Sunday');
-    expect(coordination.promptBlock).toContain('Keep Saturday lower-fatigue');
+    expect(coordination.promptBlock).toContain('Secretary confirms a current private Content recording work session on Saturday');
     expect(coordination.promptBlock).toContain('Avoid recommending new paid equipment');
     expect(coordination.promptBlock).toContain('Keep non-key training locally executable');
     expect(coordination.promptBlock).toContain('Treat supplements as pause_new');
     expect(coordination.promptBlock).toContain('Avoid back-to-back impact-heavy run days');
     expect(coordination.promptBlock).toContain('Keep lower-body strength at least one easier day away');
+  });
+
+  it('does not move or soften Training from an advisory filming recommendation alone', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 0,
+      longWorkoutDay: 'saturday',
+      training: null,
+      cooking: null,
+      finance: null,
+      content: {
+        filmingRecommendation: { date: '2026-04-18' },
+        workSchedule: {
+          authority: 'secretary',
+          authorityStatus: 'current',
+          planStatus: 'proposed',
+          semantics: 'private_work_session',
+          confirmedBlocks: [],
+          attentionCount: 0,
+        },
+      } as any,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+    const plan: CoordinatedTrainingPlan = {
+      sport: 'running',
+      weeks: [{
+        weekNumber: 1,
+        sessions: [{
+          dayOfWeek: 'saturday',
+          sessionType: 'run',
+          title: 'Tempo Run',
+          durationMinutes: 50,
+          description: 'Keep the authored session.',
+          exercises: [],
+        }],
+      }],
+    };
+
+    const result = applyTrainingPlanCoordination(plan, coordination);
+    const authoredSession = result.weeks?.[0]?.sessions?.find((session) => session.title === 'Tempo Run');
+
+    expect(coordination.protectConfirmedRecordingDay).toBeNull();
+    expect(coordination.resolvedLongWorkoutDay).toBe('saturday');
+    expect(coordination.promptBlock).not.toContain('private Content recording work session');
+    expect(authoredSession).toMatchObject({
+      dayOfWeek: 'saturday',
+      sessionType: 'run',
+      durationMinutes: 50,
+      description: 'Keep the authored session.',
+    });
+  });
+
+  it.each([
+    [
+      'the schedule is not Secretary-owned',
+      confirmedRecordingContent('2026-04-18', { schedule: { authority: 'content' } }),
+    ],
+    [
+      'the schedule authority is unavailable',
+      confirmedRecordingContent('2026-04-18', { schedule: { authorityStatus: 'unavailable' } }),
+    ],
+    [
+      'the schedule is not confirmed',
+      confirmedRecordingContent('2026-04-18', { schedule: { planStatus: 'proposed' } }),
+    ],
+    [
+      'the schedule does not represent private work sessions',
+      confirmedRecordingContent('2026-04-18', { schedule: { semantics: 'target_date_not_publication' } }),
+    ],
+    [
+      'the work kind is not record',
+      confirmedRecordingContent('2026-04-18', { block: { workKind: 'edit' } }),
+    ],
+    [
+      'the block is not Secretary-owned',
+      confirmedRecordingContent('2026-04-18', { block: { authority: 'content' } }),
+    ],
+    [
+      'the block authority is not current',
+      confirmedRecordingContent('2026-04-18', { block: { authorityStatus: 'unavailable' } }),
+    ],
+    [
+      'the block has a pending cancellation',
+      confirmedRecordingContent('2026-04-18', { block: { state: 'cancel_pending' } }),
+    ],
+    [
+      'the block semantics are not a private work session',
+      confirmedRecordingContent('2026-04-18', { block: { semantics: 'target_date_not_publication' } }),
+    ],
+    [
+      'the canonical local date is invalid',
+      confirmedRecordingContent('2026-02-30'),
+    ],
+  ])('fails closed when %s', (_label, content) => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 0,
+      longWorkoutDay: 'saturday',
+      training: null,
+      cooking: null,
+      finance: null,
+      content,
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+
+    expect(coordination.protectConfirmedRecordingDay).toBeNull();
+    expect(coordination.resolvedLongWorkoutDay).toBe('saturday');
+  });
+
+  it('protects a current Secretary recording block while provider sync needs attention', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 0,
+      longWorkoutDay: 'saturday',
+      training: null,
+      cooking: null,
+      finance: null,
+      content: confirmedRecordingContent('2026-04-18', { state: 'sync_failed' }),
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+
+    expect(coordination.protectConfirmedRecordingDay).toBe('saturday');
+    expect(coordination.resolvedLongWorkoutDay).toBe('sunday');
+  });
+
+  it('protects an exact current record block when unrelated schedule entries are partially unavailable', () => {
+    const coordination = buildTrainingPlanCoordination({
+      sessionsPerWeek: 3,
+      strengthSessionsPerWeek: 0,
+      longWorkoutDay: 'saturday',
+      training: null,
+      cooking: null,
+      finance: null,
+      content: confirmedRecordingContent('2026-04-18', {
+        schedule: {
+          authorityStatus: 'partially_unavailable',
+          planStatus: 'partial',
+        },
+      }),
+      secretary: null,
+      sharedDecisionContext: '',
+    });
+
+    expect(coordination.protectConfirmedRecordingDay).toBe('saturday');
+    expect(coordination.resolvedLongWorkoutDay).toBe('sunday');
   });
 
   it('turns the active plan latest compressed Secretary decision into concrete plan guardrails', () => {
@@ -577,11 +763,7 @@ describe('training-plan-coordination', () => {
           },
         ],
       } as any,
-      content: {
-        filmingRecommendation: {
-          date: '2026-04-16',
-        },
-      } as any,
+      content: confirmedRecordingContent('2026-04-16', { state: 'provider_synced' }),
       sharedDecisionContext: '',
     });
 
@@ -1001,11 +1183,7 @@ describe('training-plan-coordination', () => {
       training: null,
       cooking: null,
       finance: null,
-      content: {
-        filmingRecommendation: {
-          date: '2026-04-15',
-        },
-      } as any,
+      content: confirmedRecordingContent('2026-04-15'),
       secretary: {
         focusBlock: {
           date: '2026-04-17',

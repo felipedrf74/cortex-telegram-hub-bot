@@ -3,10 +3,12 @@
 import type { ChatActionName } from '../../chat/registry';
 
 export function missingContentAgencySlots(action: ChatActionName, args: Record<string, unknown>): string[] {
-  if (action !== 'content_brief_create' && action !== 'content_script_create') return [];
+  if (action !== 'content_brief_create' && action !== 'content_script_create' && action !== 'content_rewrite') return [];
   const required = action === 'content_script_create'
     ? ['topic', 'platform']
-    : ['objective', 'platform'];
+    : action === 'content_rewrite'
+      ? ['sourceText', 'objective']
+      : ['objective', 'platform'];
   return required.filter((field) => isMissingContentSlot(field, args[field]));
 }
 

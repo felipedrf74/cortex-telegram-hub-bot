@@ -30,6 +30,7 @@ import {
   ensureContentTenantScopeColumns,
   platformOrSystemSeedContentScopePredicate,
 } from './content-tenant-scope';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 const CONTENT_DASHBOARD_SIGNAL_PRODUCER_VERSION = 'content-dashboard-service.v1';
 
@@ -180,17 +181,37 @@ export interface VoiceDnaEntry {
   updatedAt: string;
 }
 
+export class ContentKnowledgeUnavailableError extends Error {
+  readonly code = 'CONTENT_KNOWLEDGE_UNAVAILABLE';
+  readonly status = 503;
+  readonly details = { retryable: true } as const;
+
+  constructor() {
+    super('Content voice and knowledge data is temporarily unavailable.');
+    this.name = 'ContentKnowledgeUnavailableError';
+  }
+}
+
+interface ContentKnowledgeReadOptions {
+  strict?: boolean;
+}
+
 /**
  * Get voice DNA entries with human-readable labels.
  * Reads from content_knowledge table (same data as getAllKnowledge()
  * in content-references.ts) with added label mapping for the dashboard.
  */
-export function getVoiceDna(dbOverride?: any, userId?: number, tenantId?: number): VoiceDnaEntry[] {
+export function getVoiceDna(
+  dbOverride?: any,
+  userId?: number,
+  tenantId?: number,
+  options: ContentKnowledgeReadOptions = {},
+): VoiceDnaEntry[] {
+  try {
   const d = dbOverride || db();
   ensureContentTenantScopeColumns(d);
-  try {
-    const rows = userId != null
-      ? d.prepare(
+  const rows = userId != null
+    ? d.prepare(
           `SELECT id, category, synthesized_text, source_channels, version, updated_at,
                   user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
              FROM content_knowledge
@@ -207,25 +228,20 @@ export function getVoiceDna(dbOverride?: any, userId?: number, tenantId?: number
             ORDER BY updated_at DESC`,
         ).all() as any[];
 
-    const deduped = new Map<string, any>();
-    for (const row of rows) {
-      if (!deduped.has(row.category)) {
-        deduped.set(row.category, row);
-      }
+  const deduped = new Map<string, any>();
+  for (const row of rows) {
+    if (!deduped.has(row.category)) {
+      deduped.set(row.category, row);
     }
+  }
 
-    return Array.from(deduped.values()).map((k: any) => ({
-      id: k.id,
-      category: k.category,
-      label: CATEGORY_LABELS[k.category] ?? k.category,
-      text: k.synthesized_text,
-      sources: safeJsonArray(k.source_channels),
-      version: k.version ?? 1,
-      updatedAt: k.updated_at,
-    }));
-  } catch (err) {
-    logger.debug({ err }, 'getVoiceDna failed');
-    return [];
+  return Array.from(deduped.values()).map((k: any) => mapVoiceDnaRow(k, options.strict === true));
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof ContentKnowledgeUnavailableError) throw error;
+      throw new ContentKnowledgeUnavailableError();
+    }
+    throw error;
   }
 }
 
@@ -242,19 +258,24 @@ export interface KnowledgeStats {
  * Get knowledge category stats and reference channel count.
  * Used by the dashboard's bottom-bar knowledge overview.
  */
-export function getKnowledgeStats(dbOverride?: any, userId?: number, tenantId?: number): KnowledgeStats {
+export function getKnowledgeStats(
+  dbOverride?: any,
+  userId?: number,
+  tenantId?: number,
+  options: ContentKnowledgeReadOptions = {},
+): KnowledgeStats {
+  try {
   const d = dbOverride || db();
   ensureContentTenantScopeColumns(d);
-  try {
-    const voiceEntries = getVoiceDna(d, userId, tenantId);
-    const kStats = voiceEntries.map((entry) => ({
-      category: entry.category,
-      updatedAt: entry.updatedAt,
-      sources: entry.sources.length,
-    }));
+  const voiceEntries = getVoiceDna(d, userId, tenantId, options);
+  const kStats = voiceEntries.map((entry) => ({
+    category: entry.category,
+    updatedAt: entry.updatedAt,
+    sources: entry.sources.length,
+  }));
 
-    const referenceChannels = userId != null
-      ? dedupeScopedRows(
+  const referenceChannels = userId != null
+    ? dedupeScopedRows(
           d.prepare(
             `SELECT channel_url, user_id, owner_scope, tenant_id, owner_user_id, visibility_scope, scope_status
                FROM content_ref_channels
@@ -264,24 +285,27 @@ export function getKnowledgeStats(dbOverride?: any, userId?: number, tenantId?: 
           ).all(...contentPrivateScopeParams(userId, tenantId)) as any[],
           (row) => row.channel_url,
           userId,
-        ).length
-      : ((d.prepare(`
+      ).length
+    : ((d.prepare(`
           SELECT COUNT(*) as cnt
             FROM content_ref_channels
            WHERE ${platformOrSystemSeedContentScopePredicate()}
         `).get() as any)?.cnt ?? 0);
 
-    return {
-      categories: kStats.map(r => ({
-        category: r.category,
-        updatedAt: r.updatedAt,
-        sources: r.sources ?? 0,
-      })),
-      referenceChannels,
-    };
-  } catch (err) {
-    logger.debug({ err }, 'getKnowledgeStats failed');
-    return { categories: [], referenceChannels: 0 };
+  return {
+    categories: kStats.map(r => ({
+      category: r.category,
+      updatedAt: r.updatedAt,
+      sources: r.sources ?? 0,
+    })),
+    referenceChannels,
+  };
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof ContentKnowledgeUnavailableError) throw error;
+      throw new ContentKnowledgeUnavailableError();
+    }
+    throw error;
   }
 }
 
@@ -366,7 +390,7 @@ export function toggleSprintMode(): { sprint: boolean; message: string } {
     });
     return { sprint: true, message: 'Sprint mode enabled' };
   } catch (err) {
-    logger.debug({ err }, 'toggleSprintMode failed');
+    logger.debug(safeContentLogErrorFields(err), 'toggleSprintMode failed');
     return { sprint: false, message: 'Sprint mode toggle failed' };
   }
 }
@@ -379,4 +403,62 @@ function safeJsonArray(val: any): any[] {
   if (val === null || val === undefined) return [];
   if (typeof val !== 'string') return Array.isArray(val) ? val : [];
   try { const parsed = JSON.parse(val); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+}
+
+function mapVoiceDnaRow(row: any, strict: boolean): VoiceDnaEntry {
+  if (!strict) {
+    return {
+      id: row.id,
+      category: row.category,
+      label: CATEGORY_LABELS[row.category] ?? row.category,
+      text: row.synthesized_text,
+      sources: safeKnowledgeSources(row.source_channels),
+      version: row.version ?? 1,
+      updatedAt: row.updated_at,
+    };
+  }
+  if (!Number.isSafeInteger(row?.id)
+    || row.id <= 0
+    || typeof row.category !== 'string'
+    || !row.category.trim()
+    || typeof row.synthesized_text !== 'string'
+    || !Number.isSafeInteger(row.version)
+    || row.version < 1
+    || typeof row.updated_at !== 'string'
+    || !row.updated_at.trim()) {
+    throw new ContentKnowledgeUnavailableError();
+  }
+  const sources = parseStrictKnowledgeSources(row.source_channels);
+  return {
+    id: row.id,
+    category: row.category,
+    label: CATEGORY_LABELS[row.category] ?? row.category,
+    text: row.synthesized_text,
+    sources,
+    version: row.version,
+    updatedAt: row.updated_at,
+  };
+}
+
+function parseStrictKnowledgeSources(raw: unknown): string[] {
+  if (typeof raw !== 'string') throw new ContentKnowledgeUnavailableError();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ContentKnowledgeUnavailableError();
+  }
+  if (!Array.isArray(parsed)
+    || parsed.some((source) => typeof source !== 'string' || !source.trim())) {
+    throw new ContentKnowledgeUnavailableError();
+  }
+  return parsed.map((source) => (source as string).trim());
+}
+
+function safeKnowledgeSources(raw: unknown): string[] {
+  try {
+    return parseStrictKnowledgeSources(raw);
+  } catch {
+    return [];
+  }
 }

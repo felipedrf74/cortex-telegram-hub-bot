@@ -258,7 +258,10 @@ vi.mock('../../src/services/garmin-coach', () => ({
   ) => operation(new AbortController().signal)),
   runWithCoachBriefingAccountLifecycle: vi.fn(),
 }));
-vi.mock('../../src/services/content-discovery', () => ({
+vi.mock('../../src/services/content-discovery', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/content-discovery')>(
+    '../../src/services/content-discovery',
+  )),
   runContentDiscovery: vi.fn(),
 }));
 vi.mock('../../src/state/conversation', () => ({
@@ -481,6 +484,16 @@ describe('GET /health/detailed', () => {
         lastDurationMs: 500,
         lastError: 'Connection timeout',
       },
+      {
+        name: 'seo_agent',
+        label: 'SEO Tracking',
+        cronExpression: '0 6 * * 1',
+        domain: 'content',
+        lastRunAt: new Date().toISOString(),
+        lastResult: 'success',
+        lastDurationMs: 750,
+        lastError: 'historical detail must not imply an active run',
+      },
     ];
     mockRecentEvents = [
       { ts: new Date().toISOString(), type: 'error', summary: 'Test error 1' },
@@ -526,11 +539,19 @@ describe('GET /health/detailed', () => {
     // Cron statuses
     expect(body.crons).toBeDefined();
     expect(Array.isArray(body.crons)).toBe(true);
-    expect(body.crons.length).toBe(2);
+    expect(body.crons.length).toBe(3);
     expect(body.crons[0]).toHaveProperty('name', 'daily_briefing');
     expect(body.crons[0]).toHaveProperty('lastResult', 'success');
     expect(body.crons[1]).toHaveProperty('name', 'garmin_keepalive');
     expect(body.crons[1]).toHaveProperty('lastError', 'Connection timeout');
+    expect(body.crons[2]).toMatchObject({
+      name: 'seo_agent',
+      lifecycle: 'paused',
+      lastRunAt: null,
+      lastResult: 'paused',
+      lastDurationMs: null,
+      lastError: null,
+    });
 
     // Integration health
     expect(body.integrations).toBeDefined();
