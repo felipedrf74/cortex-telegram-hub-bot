@@ -7138,10 +7138,120 @@ describe('release security and operations', () => {
     ]);
   });
 
+  it('accepts a failed Compose teardown when exact resource absence settles within its bound', () => {
+    let networkListings = 0;
+    const sleeps: number[] = [];
+    const registry = createReleaseRegistry({
+      policy,
+      sleep: (milliseconds) => sleeps.push(milliseconds),
+      exec: (_bin, args) => {
+        if (args[0] === 'compose') {
+          return { status: 1, stdout: '', stderr: 'network removal is settling' };
+        }
+        if (args[0] === 'container' && args[1] === 'ls') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'network' && args[1] === 'ls') {
+          networkListings += 1;
+          return {
+            status: 0,
+            stdout: networkListings === 1 ? 'settling-network\n' : '',
+            stderr: '',
+          };
+        }
+        throw new Error(`unexpected Docker command: ${args.join(' ')}`);
+      },
+    });
+
+    const result = registry.composeDown({
+      composeFile: join(workspace, 'compose.yml'),
+      environment: 'staging',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+
+    expect(result).toMatchObject({ status: 0, alreadyAbsent: true });
+    expect(networkListings).toBe(2);
+    expect(sleeps).toEqual([500]);
+  });
+
+  it('keeps a failed Compose teardown blocked after the full bounded network-settlement window', () => {
+    const sleeps: number[] = [];
+    const registry = createReleaseRegistry({
+      policy,
+      sleep: (milliseconds) => sleeps.push(milliseconds),
+      exec: (_bin, args) => {
+        if (args[0] === 'compose') {
+          return { status: 1, stdout: '', stderr: 'network removal is settling' };
+        }
+        if (args[0] === 'container' && args[1] === 'ls') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'network' && args[1] === 'ls') {
+          return { status: 0, stdout: 'persistent-network\n', stderr: '' };
+        }
+        throw new Error(`unexpected Docker command: ${args.join(' ')}`);
+      },
+    });
+
+    const result = registry.composeDown({
+      composeFile: join(workspace, 'compose.yml'),
+      environment: 'staging',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result).not.toHaveProperty('alreadyAbsent');
+    expect(sleeps).toEqual(Array.from({ length: 10 }, () => 500));
+  });
+
+  it.each([
+    ['container', 1],
+    ['network', 1],
+  ])('keeps a failed Compose teardown blocked when exact %s enumeration is unavailable', (
+    unavailableKind,
+    unavailableStatus,
+  ) => {
+    const commands: string[][] = [];
+    const registry = createReleaseRegistry({
+      policy,
+      sleep: () => { throw new Error('unavailable enumeration must not retry'); },
+      exec: (_bin, args) => {
+        commands.push(args);
+        if (args[0] === 'compose') {
+          return { status: 1, stdout: '', stderr: 'network does not exist' };
+        }
+        if (args[0] === unavailableKind && args[1] === 'ls') {
+          return { status: unavailableStatus, stdout: '', stderr: 'daemon unavailable' };
+        }
+        if (args[0] === 'container' && args[1] === 'ls') {
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected Docker command: ${args.join(' ')}`);
+      },
+    });
+
+    const result = registry.composeDown({
+      composeFile: join(workspace, 'compose.yml'),
+      environment: 'staging',
+      images: IMAGES,
+      releaseIdentity: releaseIdentityFor(payloadFor()),
+      planDir: createRuntimePlanDir().planDir,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result).not.toHaveProperty('alreadyAbsent');
+    expect(commands[0]).toEqual(expect.arrayContaining(['compose', 'down']));
+  });
+
   it('keeps a failed Compose teardown blocked when any exact project resource remains', () => {
     const commands: string[][] = [];
     const registry = createReleaseRegistry({
       policy,
+      sleep: () => {},
       exec: (_bin, args) => {
         commands.push(args);
         if (args[0] === 'compose') {

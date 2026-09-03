@@ -48,11 +48,17 @@ export function defaultExec(command, args, options = {}) {
   };
 }
 
+function defaultSleep(milliseconds) {
+  const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  Atomics.wait(signal, 0, 0, milliseconds);
+}
+
 export function createReleaseRegistry({
   policy,
   exec = defaultExec,
   dockerBin = process.env.NEXUS_RELEASE_DOCKER_BIN || 'docker',
   environmentGate = createReleaseEnvironmentGate({ policy }),
+  sleep = defaultSleep,
 }) {
   function docker(args, options = {}) {
     const result = exec(dockerBin, args, options);
@@ -287,25 +293,30 @@ export function createReleaseRegistry({
     });
     if (result.status === 0) return result;
 
-    // `docker compose down` can return non-zero after its own work is already
-    // complete when a prior exact cleanup removed the Compose network first.
-    // Treat that result as a no-op only after independently proving both kinds
-    // of resources owned by this exact governed project are absent. A partial
-    // stack, an unknown project, or an uninspectable Docker daemon remains a
-    // teardown failure for the deployment layer to block.
+    // `docker compose down` can return non-zero while its last network removal
+    // is settling. Treat that result as a no-op only after a bounded proof that
+    // both kinds of resources owned by this exact governed project are absent.
+    // A partial stack, an unknown project, or an uninspectable Docker daemon
+    // remains a teardown failure for the deployment layer to block.
     const target = policy.environments[environment];
     if (!target) fail(`unknown release environment ${environment}`);
     const projectLabel = `label=com.docker.compose.project=${target.composeProject}`;
-    const containers = docker([
-      'container', 'ls', '--all', '--filter', projectLabel, '--format', '{{.ID}}',
-    ], { allowFailure: true });
-    if (containers.status !== 0 || containers.stdout.trim() !== '') return result;
-    const networks = docker([
-      'network', 'ls', '--filter', projectLabel, '--format', '{{.ID}}',
-    ], { allowFailure: true });
-    if (networks.status !== 0 || networks.stdout.trim() !== '') return result;
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const containers = docker([
+        'container', 'ls', '--all', '--filter', projectLabel, '--format', '{{.ID}}',
+      ], { allowFailure: true });
+      if (containers.status !== 0 || containers.stdout.trim() !== '') return result;
+      const networks = docker([
+        'network', 'ls', '--filter', projectLabel, '--format', '{{.ID}}',
+      ], { allowFailure: true });
+      if (networks.status !== 0) return result;
+      if (containers.stdout.trim() === '' && networks.stdout.trim() === '') {
+        return { ...result, status: 0, alreadyAbsent: true };
+      }
+      if (attempt < 10) sleep(500);
+    }
 
-    return { ...result, status: 0, alreadyAbsent: true };
+    return result;
   }
 
   function composeRunMigrator({
