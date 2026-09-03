@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "3695c71a7c3f947c18787ac5a1dca8875fdbc96c7d34a14f04aed9958d59bb63",
-    "baseCommit": "ebedb0dfe06782e68ad42e2d097685ce045d8c1d",
-    "baseCommitTimestamp": "2026-09-03T08:10:03+01:00",
+    "sourceDigest": "ee83086d30c48b4a4212ff05fa9a6a970a8007a726b9d4dd75c531ff4588701b",
+    "baseCommit": "1412117a3b8a110089cf48bfbca9f7199366ad41",
+    "baseCommitTimestamp": "2026-09-03T10:27:08+01:00",
     "trackedFiles": 3557,
     "sourceFiles": 1248
   },
@@ -6051,7 +6051,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 668572,
+      "bytes": 668905,
       "generated": false
     },
     {
@@ -6080,13 +6080,13 @@
       "generated": false
     },
     {
-      "path": "catalog/training/exercise-media/v1/media-localizations.json",
-      "bytes": 315882,
+      "path": "__tests__/services/decision-center.test.ts",
+      "bytes": 316177,
       "generated": false
     },
     {
-      "path": "__tests__/services/decision-center.test.ts",
-      "bytes": 315412,
+      "path": "catalog/training/exercise-media/v1/media-localizations.json",
+      "bytes": 315882,
       "generated": false
     },
     {

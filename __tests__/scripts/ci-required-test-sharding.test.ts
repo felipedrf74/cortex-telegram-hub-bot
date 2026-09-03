@@ -107,6 +107,16 @@ describe('lean required CI contracts', () => {
     expect(security).toContain('npm audit --audit-level=high --omit=dev');
   });
 
+  it('fetches retained migration history before the nightly full rehearsal', () => {
+    const migrationJob = nightly.match(
+      /  migration-rehearsal:\n(?<body>[\s\S]*?)(?=\n  [a-z_]+:|$)/,
+    )?.groups?.body ?? '';
+
+    expect(migrationJob).toContain('fetch-depth: 0');
+    expect(migrationJob.indexOf('fetch-depth: 0'))
+      .toBeLessThan(migrationJob.indexOf('node scripts/migration-safety-check.mjs'));
+  });
+
   it('classifies the complete pushed range from one exact base', () => {
     expect(workflow).toContain('PUSH_BEFORE_SHA: ${{ github.event.before }}');
     expect(workflow).toContain('BASE_REF="$(bash scripts/resolve-ci-change-base.sh)"');

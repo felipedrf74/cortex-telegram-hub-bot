@@ -57,6 +57,7 @@ import {
   evaluateDecisionApnsActionRequest,
   evaluateDecisionEligibility,
   getDecisionItem,
+  getDecisionItemForCommand,
   refreshDecisionItem,
   getDecisionGuidanceStats,
   getDecisionOverview,
@@ -3167,13 +3168,17 @@ describe('Decision Center facade', () => {
       decisionContext: {
         entityTitle: 'Schedule proposal',
         sourceState: 'pending',
-        recommendedStartAt: '2026-05-11T08:00:00.000Z',
-        recommendedEndAt: '2026-05-11T09:00:00.000Z',
+        recommendedStartAt: '2026-05-11T09:00:00+01:00',
+        recommendedEndAt: '2026-05-11T10:00:00+01:00',
         timezone: 'Europe/Lisbon',
         recipe: 'secretary_reflow_window_v1',
         normalizedAction,
       },
     }));
+    expect(created.item).toMatchObject({
+      recommendedStartAt: '2026-05-11T08:00:00.000Z',
+      recommendedEndAt: '2026-05-11T09:00:00.000Z',
+    });
 
     const revised = reviseDecisionProposal(created.item!.decisionId, 25, 25, {
       expectedVersion: created.item!.recordVersion,
@@ -3184,6 +3189,14 @@ describe('Decision Center facade', () => {
     expect(revised.recordVersion).toBe(created.item!.recordVersion + 1);
     expect(revised.decisionState).toBe('ready_for_review');
     expect(revised.contextVersion).toMatch(/^ctx_revision_/);
+    expect(revised).toMatchObject({
+      recommendedStartAt: '2026-05-11T10:00:00.000Z',
+      recommendedEndAt: '2026-05-11T11:30:00.000Z',
+    });
+    expect(getDecisionItemForCommand(created.item!.decisionId, 25, 25)).toMatchObject({
+      recommendedStartAt: revised.recommendedStartAt,
+      recommendedEndAt: revised.recommendedEndAt,
+    });
     const persisted = testDb.prepare('SELECT decision_context_json, context_version FROM notification_intents WHERE intent_id = ?').get(created.item!.intentId) as any;
     const context = JSON.parse(persisted.decision_context_json);
     expect(context.recommendedStartAt).toBe('2026-05-11T10:00:00.000Z');
@@ -3484,6 +3497,9 @@ describe('Decision Center facade', () => {
       decisionStatus: 'snoozed',
       snoozedUntil: '2026-05-11T08:00:00.000Z',
     });
+    const exactReadback = getDecisionItemForCommand(nextWeek.item!.decisionId, 35, 35);
+    expect(first.item.snoozedUntil).toBe('2026-05-11T08:00:00.000Z');
+    expect(exactReadback?.snoozedUntil).toBe(first.item.snoozedUntil);
 
     const replay = await performDecisionAction(nextWeek.item!.decisionId, 'snooze', 35, 35, {
       idempotencyKey: 'snooze-next-week-1',

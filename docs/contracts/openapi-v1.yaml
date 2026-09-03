@@ -12777,7 +12777,7 @@ paths:
             type: "string"
       responses:
         "200":
-          description: "{ item }; v2 adds schemaVersion (Standard success envelope unless noted.)"
+          description: "{ item }; v2 adds schemaVersion. Full item includes nullable canonical UTC recommendedStartAt/recommendedEndAt from the stored decision context and canonical snoozedUntil. (Standard success envelope unless noted.)"
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "404":
@@ -12913,7 +12913,7 @@ paths:
               description: "Evidenced fields: expectedVersion/recordVersion (positive integer, required); idempotencyKey?: stable string <=200; optional recommendedStartAt, recommendedEndAt (ISO strings). Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ item } (Standard success envelope unless noted.)"
+          description: "{ item } with canonical nullable recommendedStartAt/recommendedEndAt read back from the updated stored decision context. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): VALIDATION, DECISION_PROPOSAL_EDIT_FAILED."
         "401":
@@ -13020,7 +13020,7 @@ paths:
               description: "Evidenced fields: deferUntil?: absolute ISO timestamp; minutes?: positive integer retained for legacy clients; followUp?: string; expectedVersion?: positive integer; contextVersion?: string; idempotencyKey?: stable string <=200. Route validation code is authoritative for exact shapes."
       responses:
         "200":
-          description: "{ item } (Standard success envelope unless noted.)"
+          description: "{ item } with canonical snoozedUntil identical to an immediate exact GET of the decision. (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): DECISION_SNOOZE_FAILED."
         "401":
