@@ -114,6 +114,63 @@ describe('lean changed-area classification', () => {
     expect(result.flags.fullSuiteTrigger).toBe(false);
   });
 
+  it('routes external iOS Swift changes to XCTest without requiring a Vitest owner', () => {
+    const result = classify([
+      'Nexus Hub/ViewModels/DecisionCenterViewModel.swift',
+      'Nexus HubTests/NotificationDecisionCenterTests.swift',
+      'Nexus HubUITests/NotificationDecisionCenterUITests.swift',
+    ]);
+
+    expect(result.flags).toMatchObject({
+      iosSrc: true,
+      iosTest: true,
+      iosUi: true,
+    });
+    expect(result.tiers).toContain('T2');
+    expect(result.vitest).toMatchObject({
+      mode: 'skip',
+      groups: [],
+      skipReason: 'no Vitest-owned group changed',
+    });
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toEqual(expect.arrayContaining([
+      'Nexus HubUITests/*',
+      'Nexus HubTests/NotificationDecisionCenterTests',
+    ]));
+  });
+
+  it('keeps backend Vitest and external XCTest ownership in a mixed change', () => {
+    const result = classify([
+      'src/services/notification-orchestrator.ts',
+      'Nexus Hub/ViewModels/DecisionCenterViewModel.swift',
+      'Nexus HubTests/NotificationDecisionCenterTests.swift',
+      'Nexus HubUITests/NotificationDecisionCenterUITests.swift',
+    ]);
+
+    expect(result.vitest).toMatchObject({
+      mode: 'focused',
+      groups: ['tasks-notifications'],
+      skipReason: null,
+    });
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toEqual(expect.arrayContaining([
+      'Nexus HubUITests/*',
+      'Nexus HubTests/NotificationDecisionCenterTests',
+    ]));
+  });
+
+  it.each([
+    ['scripts/backend-policy-check.swift', 'release-ops'],
+    ['migrations/backend-schema-check.swift', 'migrations'],
+  ])('retains configured Vitest ownership for %s', (file, group) => {
+    const result = classify([file]);
+
+    expect(result.flags.iosSrc).toBe(true);
+    expect(result.vitest.mode).toBe('focused');
+    expect(result.vitest.groups).toContain(group);
+    expect(result.xctest.mode).toBe('focused');
+  });
+
   it('maps the protected-main intent routing rollout to chat-secretary', () => {
     const policy = JSON.parse(fs.readFileSync('config/test-groups.json', 'utf8'));
     const files = [

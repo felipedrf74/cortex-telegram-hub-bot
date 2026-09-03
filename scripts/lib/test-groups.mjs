@@ -297,7 +297,9 @@ export function classifyTestGroups(files, policy) {
   for (const file of files) {
     if (!isRelevantPath(file)) continue;
     const owners = groupsForPath(file, policy);
-    if (owners.length === 0) unmapped.push(file);
+    // Unowned Swift paths belong to the external XCTest projection. A Swift
+    // path explicitly covered by this repository's policy remains Vitest-owned.
+    if (owners.length === 0 && !file.endsWith('.swift')) unmapped.push(file);
     owners.forEach((owner) => mapped.add(owner));
   }
   return { groups: [...mapped].sort(), unmapped: [...new Set(unmapped)].sort() };
