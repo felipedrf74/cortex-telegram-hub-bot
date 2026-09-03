@@ -301,22 +301,47 @@ export function createReleaseRegistry({
     const target = policy.environments[environment];
     if (!target) fail(`unknown release environment ${environment}`);
     const projectLabel = `label=com.docker.compose.project=${target.composeProject}`;
-    for (let attempt = 0; attempt < 11; attempt += 1) {
+    const settleStartedAt = Date.now();
+    const proof = (classification, attempts) => ({
+      teardownProof: {
+        classification,
+        attempts,
+        elapsedMs: Math.max(0, Date.now() - settleStartedAt),
+      },
+    });
+    // Docker can keep the last network object visible briefly after Compose
+    // has detached its containers. Give that daemon transition a bounded
+    // thirty-second settle window, while still failing closed for any
+    // persistent or unreadable resource.
+    const settleAttempts = 61;
+    for (let attempt = 0; attempt < settleAttempts; attempt += 1) {
       const containers = docker([
         'container', 'ls', '--all', '--filter', projectLabel, '--format', '{{.ID}}',
       ], { allowFailure: true });
-      if (containers.status !== 0 || containers.stdout.trim() !== '') return result;
+      if (containers.status !== 0) {
+        return { ...result, ...proof('container_enumeration_failed', attempt + 1) };
+      }
+      if (containers.stdout.trim() !== '') {
+        return { ...result, ...proof('container_present', attempt + 1) };
+      }
       const networks = docker([
         'network', 'ls', '--filter', projectLabel, '--format', '{{.ID}}',
       ], { allowFailure: true });
-      if (networks.status !== 0) return result;
-      if (containers.stdout.trim() === '' && networks.stdout.trim() === '') {
-        return { ...result, status: 0, alreadyAbsent: true };
+      if (networks.status !== 0) {
+        return { ...result, ...proof('network_enumeration_failed', attempt + 1) };
       }
-      if (attempt < 10) sleep(500);
+      if (containers.stdout.trim() === '' && networks.stdout.trim() === '') {
+        return {
+          ...result,
+          status: 0,
+          alreadyAbsent: true,
+          ...proof('absent_after_attempts', attempt + 1),
+        };
+      }
+      if (attempt < settleAttempts - 1) sleep(500);
     }
 
-    return result;
+    return { ...result, ...proof('network_present_timeout', settleAttempts) };
   }
 
   function composeRunMigrator({
