@@ -80,16 +80,25 @@ import { addChannel, getAllChannels } from '../../src/state/content-references';
 interface MockRes {
   statusCode: number;
   body: any;
+  headers: Record<string, string | number | readonly string[]>;
   status(code: number): MockRes;
   json(body: any): MockRes;
+  getHeader(name: string): string | number | readonly string[] | undefined;
+  setHeader(name: string, value: string | number | readonly string[]): MockRes;
 }
 
 function mockRes(): MockRes {
   const response: MockRes = {
     statusCode: 200,
     body: null,
+    headers: {},
     status(code: number) { response.statusCode = code; return response; },
     json(body: any) { response.body = body; return response; },
+    getHeader(name: string) { return response.headers[name.toLowerCase()]; },
+    setHeader(name: string, value: string | number | readonly string[]) {
+      response.headers[name.toLowerCase()] = value;
+      return response;
+    },
   };
   return response;
 }
@@ -139,6 +148,17 @@ async function dispatch(
 ): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
   registerContentReferenceRoutes(router, ensureValidScope);
+  return dispatchOnRouter(router, method, path, body, userId, ensureValidScope);
+}
+
+async function dispatchOnRouter(
+  router: Router,
+  method: string,
+  path: string,
+  body: Record<string, unknown>,
+  userId: number | undefined,
+  ensureValidScope: ReturnType<typeof makeEnsureValidScope>,
+): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const req = mockReq(method, path, userId, body);
   const res = mockRes();
 
@@ -207,6 +227,22 @@ describe('content reference routes', () => {
     ], 41);
 
     expect(rows.map((row) => row.id)).toEqual([2, 3]);
+  });
+
+  it('rate-limits a standalone mutation router with the authenticated-user quota', async () => {
+    const ensureValidScope = makeEnsureValidScope();
+    const router = Router();
+    registerContentReferenceRoutes(router, ensureValidScope);
+
+    for (let requestIndex = 0; requestIndex < 60; requestIndex += 1) {
+      const { response } = await dispatchOnRouter(router, 'POST', '/books', {}, 41, ensureValidScope);
+      expect(response.statusCode).toBe(400);
+    }
+    const { response: blocked } = await dispatchOnRouter(router, 'POST', '/books', {}, 41, ensureValidScope);
+
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.headers['retry-after']).toBe('60');
+    expect(blocked.body.error.code).toBe('RATE_LIMITED');
   });
 
   it('returns scoped book references without leaking owner fields', async () => {

@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { config } from '../../config';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
@@ -16,6 +18,7 @@ import {
   contentScopeForInsert,
   ensureContentTenantScopeColumns,
 } from '../../services/content-tenant-scope';
+import { extractClientIp } from '../rate-limiter';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -126,12 +129,41 @@ export function registerContentReferenceRoutes(
   router: Router,
   ensureValidContentRouteScope: EnsureValidContentRouteScope,
 ): void {
+  const referenceRouter = Router();
+  const mutationLimit = config.ios?.rateLimit || 60;
+  const readLimit = config.ios?.readRateLimit || Math.max(mutationLimit, 300);
+  referenceRouter.use(rateLimit({
+    windowMs: 60_000,
+    limit: (req: Request) => req.method === 'GET' || req.method === 'HEAD'
+      ? readLimit
+      : mutationLimit,
+    keyGenerator: (req: Request) => {
+      const userId = (req as AuthenticatedRequest).userId;
+      return typeof userId === 'number' && userId > 0
+        ? `user:${userId}`
+        : `ip:${ipKeyGenerator(extractClientIp(req))}`;
+    },
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfter = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', String(retryAfter));
+      res.status(options.statusCode).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many requests. Slow down.',
+          retryAfter,
+        },
+      });
+    },
+  }));
+
   // ═══════════════════════════════════════════════════════════════════
   // BOOKS — per-user book library (iOS sync)
   // ═══════════════════════════════════════════════════════════════════
 
   /** GET /api/v1/content/books — authenticated user's private book library */
-  router.get('/books', asyncHandler(async (req, res: Response) => {
+  referenceRouter.get('/books', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_books_list')) return;
 
@@ -150,7 +182,7 @@ export function registerContentReferenceRoutes(
   }));
 
   /** POST /api/v1/content/books — add a book to user's library */
-  router.post('/books', asyncHandler(async (req, res: Response) => {
+  referenceRouter.post('/books', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_books_create')) return;
 
@@ -194,7 +226,7 @@ export function registerContentReferenceRoutes(
   }));
 
   /** DELETE /api/v1/content/books/:id */
-  router.delete('/books/:id', asyncHandler(async (req, res: Response) => {
+  referenceRouter.delete('/books/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const rawId = String(req.params.id);
     const id = /^[1-9]\d*$/u.test(rawId) ? Number(rawId) : Number.NaN;
@@ -217,7 +249,7 @@ export function registerContentReferenceRoutes(
   // ═══════════════════════════════════════════════════════════════════
 
   /** GET /api/v1/content/channels — authenticated user's private channels */
-  router.get('/channels', asyncHandler(async (req, res: Response) => {
+  referenceRouter.get('/channels', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_channels_list')) return;
 
@@ -226,7 +258,7 @@ export function registerContentReferenceRoutes(
   }));
 
   /** POST /api/v1/content/channels — add a channel */
-  router.post('/channels', asyncHandler(async (req, res: Response) => {
+  referenceRouter.post('/channels', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_channels_create')) return;
 
@@ -242,7 +274,7 @@ export function registerContentReferenceRoutes(
   }));
 
   /** DELETE /api/v1/content/channels/:id */
-  router.delete('/channels/:id', asyncHandler(async (req, res: Response) => {
+  referenceRouter.delete('/channels/:id', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     const rawId = String(req.params.id);
     const id = /^[1-9]\d*$/u.test(rawId) ? Number(rawId) : Number.NaN;
@@ -264,7 +296,7 @@ export function registerContentReferenceRoutes(
   // ═══════════════════════════════════════════════════════════════════
 
   /** GET /api/v1/content/voice-dna — user's voice DNA entries */
-  router.get('/voice-dna', asyncHandler(async (req, res: Response) => {
+  referenceRouter.get('/voice-dna', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_voice_dna_list')) return;
 
@@ -286,7 +318,7 @@ export function registerContentReferenceRoutes(
   }));
 
   /** POST /api/v1/content/voice-dna — upsert a voice DNA entry */
-  router.post('/voice-dna', asyncHandler(async (req, res: Response) => {
+  referenceRouter.post('/voice-dna', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_voice_dna_upsert')) return;
 
@@ -335,4 +367,6 @@ export function registerContentReferenceRoutes(
     invalidateContentDerivedCaches(userId);
     sendSuccess(res, { upserted: true });
   }));
+
+  router.use(referenceRouter);
 }

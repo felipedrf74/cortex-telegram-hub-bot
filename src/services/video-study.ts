@@ -35,6 +35,7 @@ import {
   formatTranscriptTimestamped,
   getHookSection,
   splitIntoSections,
+  stripMarkupTagsToPlainText,
   type TranscriptResult,
 } from './youtube-transcript';
 import { getDb } from './database';
@@ -855,7 +856,7 @@ export async function saveScriptAsDocx(topic: string, scriptText: string, userId
   if (!fs.existsSync(SCRIPTS_DIR)) fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
   // Parse script sections from the HTML/text response
-  const cleanText = scriptText.replace(/<[^>]*>/g, '');
+  const cleanText = stripMarkupTagsToPlainText(scriptText);
   const lines = cleanText.split('\n');
 
   const children: Paragraph[] = [

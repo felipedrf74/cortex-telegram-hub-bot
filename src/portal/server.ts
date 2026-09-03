@@ -233,6 +233,15 @@ export function createPortalServer(): http.Server {
       createAdminPreBodyGuard({ bucketName: 'admin-product-learning-ip' }),
     );
     app.use(
+      '/api/v1/admin/content',
+      createAdminPreBodyGuard({
+        // Preserve the existing /api/v1 request-size contract; this mount is
+        // here to bound work before either JSON parsing or portal-token audit.
+        bodyLimitBytes: 8 * 1024 * 1024,
+        bucketName: 'admin-content-ip',
+      }),
+    );
+    app.use(
       '/api/v1/admin/local-inference',
       createAdminPreBodyGuard({ bucketName: 'admin-local-inference-ip' }),
     );

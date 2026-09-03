@@ -217,6 +217,29 @@ describe('content admin write auth scopes', () => {
     });
   });
 
+  it('rate-limits the exported router before portal-token authorization', async () => {
+    const { contentAdminWriteRoutes } = await import('../../src/api/routes/content-admin-write');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/admin/content', contentAdminWriteRoutes());
+
+    const responses = [];
+    for (let requestIndex = 0; requestIndex <= 30; requestIndex += 1) {
+      responses.push(await fetchJson(
+        app,
+        'GET',
+        '/api/v1/admin/content/pillars?userId=1&tenantId=1',
+        undefined,
+        { Authorization: 'Bearer invalid-token' },
+      ));
+    }
+
+    expect(responses.slice(0, 30).every((response) => response.status === 401)).toBe(true);
+    expect(responses[30]?.status).toBe(429);
+    expect(responses[30]?.body.error.code).toBe('RATE_LIMITED');
+    expect(mockDbAll).not.toHaveBeenCalled();
+  });
+
   it('labels the portal lifecycle published bucket as internal state and publication tracking as unavailable', async () => {
     portalReadTokenValue = 'portal-read-token';
 

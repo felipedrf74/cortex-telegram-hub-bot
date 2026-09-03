@@ -70,6 +70,32 @@ export interface VideoStudyResult {
   reelCuts: string[];         // Suggested reel/short cut points
 }
 
+/**
+ * Convert lightweight caption/creative markup to plain text without joining
+ * the text on either side of a removed tag. Keeping a boundary prevents a
+ * nested tag such as `<scr<x>ipt>` from becoming a new tag token.
+ */
+export function stripMarkupTagsToPlainText(value: string): string {
+  const chunks: string[] = [];
+  let cursor = 0;
+  while (cursor < value.length) {
+    const opening = value.indexOf('<', cursor);
+    if (opening === -1) {
+      chunks.push(value.slice(cursor));
+      break;
+    }
+    chunks.push(value.slice(cursor, opening));
+    const closing = value.indexOf('>', opening + 1);
+    if (closing === -1) {
+      chunks.push(value.slice(opening));
+      break;
+    }
+    chunks.push(' ');
+    cursor = closing + 1;
+  }
+  return chunks.join('');
+}
+
 // ─── Video ID Extraction ─────────────────────────────────────────────
 
 /**
@@ -375,8 +401,7 @@ function parseVttCaptions(vtt: string): TranscriptSegment[] {
     const startTime = parseVttTimestamp(match[1]);
     const endTime = parseVttTimestamp(match[2]);
     // Strip VTT tags like <c>, position info, etc.
-    const text = match[3]
-      .replace(/<[^>]*>/g, '')
+    const text = stripMarkupTagsToPlainText(match[3])
       .replace(/\n/g, ' ')
       .trim();
 
@@ -412,26 +437,31 @@ function extractPlayerResponse(html: string): any | null {
   const patterns = [
     /var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;/s,
     /ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;/s,
-    // Fallback: embedded in ytcfg.set or script tags
-    /"playerResponse"\s*:\s*"(.+?)"/,
   ];
 
   for (const pattern of patterns) {
     const match = html.match(pattern);
     if (match?.[1]) {
       try {
-        // The third pattern returns escaped JSON string
-        if (pattern.source.includes('playerResponse')) {
-          const unescaped = match[1]
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\')
-            .replace(/\\n/g, '\n');
-          return JSON.parse(unescaped);
-        }
         return JSON.parse(match[1]);
       } catch {
         continue;
       }
+    }
+  }
+
+  // Fallback: a JSON-encoded playerResponse string embedded in ytcfg data.
+  // Capture the complete quoted token, let JSON.parse decode that one string
+  // layer, then parse the resulting player-response object.
+  const encodedPlayerResponse = html.match(
+    /"playerResponse"\s*:\s*("(?:\\.|[^"\\])*")/s,
+  );
+  if (encodedPlayerResponse?.[1]) {
+    try {
+      const decoded = JSON.parse(encodedPlayerResponse[1]);
+      if (typeof decoded === 'string') return JSON.parse(decoded);
+    } catch {
+      // Fall through to the narrower caption-track recovery below.
     }
   }
 
@@ -567,8 +597,7 @@ function parseXmlCaptions(xml: string): TranscriptSegment[] {
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(xml)) !== null) {
-    const text = decodeXmlEntities(match[3])
-      .replace(/<[^>]*>/g, '')   // Strip any inner HTML tags
+    const text = stripMarkupTagsToPlainText(decodeXmlEntities(match[3]))
       .replace(/\n/g, ' ')
       .trim();
 
@@ -588,15 +617,32 @@ function parseXmlCaptions(xml: string): TranscriptSegment[] {
  * Decode common XML/HTML entities.
  */
 function decodeXmlEntities(text: string): string {
-  return text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num, 10)));
+  return text.replace(
+    /&(amp|lt|gt|quot|apos|#39|#\d+);/gu,
+    (entity, token: string) => {
+      const named: Record<string, string> = {
+        amp: '&',
+        lt: '<',
+        gt: '>',
+        quot: '"',
+        apos: "'",
+        '#39': "'",
+      };
+      if (token in named) return named[token];
+      const codePoint = Number.parseInt(token.slice(1), 10);
+      return Number.isSafeInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : entity;
+    },
+  );
 }
+
+export const _youtubeTranscriptCodecsForTests = {
+  decodeXmlEntities,
+  extractPlayerResponse,
+  parseVttCaptions,
+  parseXmlCaptions,
+};
 
 // ─── Transcript Formatting ──────────────────────────────────────────
 

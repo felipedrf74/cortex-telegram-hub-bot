@@ -13,6 +13,7 @@
 // Mount: /api/v1/admin/content (sibling to /api/v1/admin/content-dashboard)
 
 import { Router, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import {
@@ -51,6 +52,7 @@ import {
 } from '../../services/skill-inference-account-lifecycle';
 import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import { bindContentRequestCancellation } from './content-request-cancellation';
+import { extractClientIp } from '../rate-limiter';
 
 const CONTENT_ADMIN_CHANNEL_URL_MAX_CHARS = 2_048;
 const CONTENT_ADMIN_CHANNEL_UNSUPPORTED_SCOPE_MESSAGE = 'Channel analysis and synthesis currently support user-default tenant only';
@@ -89,6 +91,7 @@ const CONTENT_ADMIN_VOICE_CATEGORY_MAX_CHARS = 160;
 const CONTENT_ADMIN_VOICE_LABEL_MAX_CHARS = 240;
 const CONTENT_ADMIN_SERIALIZED_TEXT_MAX_CHARS = 20_000;
 const CONTENT_ADMIN_SETUP_SAFE_LANGUAGE = 'en-US';
+const CONTENT_ADMIN_RATE_LIMIT_PER_MINUTE = 30;
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
   res.json({ ok: true, ...data });
@@ -259,6 +262,24 @@ function buildPortalHistoricalComparisonHints(decision: ReturnType<typeof assess
 
 export function contentAdminWriteRoutes(): Router {
   const router = Router();
+  router.use(rateLimit({
+    windowMs: 60_000,
+    limit: CONTENT_ADMIN_RATE_LIMIT_PER_MINUTE,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      const retryAfterSeconds = Math.max(1, Math.ceil(options.windowMs / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      sendError(
+        res,
+        'RATE_LIMITED',
+        'Too many Content admin requests from this IP. Slow down.',
+        options.statusCode,
+        { retryAfterSeconds },
+      );
+    },
+  }));
   router.use(requirePortalTokenByMethod);
   router.use((req, _res, next) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
