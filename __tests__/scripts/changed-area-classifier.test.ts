@@ -38,7 +38,7 @@ const QA3_INBOX_RETIREMENT_BASE_SHA = '98ec86210f34ad94ea250c8a1eb10ea71aee2db4'
 // Release A provider privacy boundary and explicit authorized-retry fixtures.
 const RELEASE_A_RETIREMENT_BASE_SHA = '92b722ee02242fd37453ece17d74cfc53102d961';
 // Content Creation end-to-end contract replacement and cleanup ownership.
-const CONTENT_CREATION_RETIREMENT_BASE_SHA = 'ee0b2aa431aecbc44cbe4e8693d3833dff15ff60';
+const CONTENT_CREATION_RETIREMENT_BASE_SHA = 'cece0cabbc18745fc51e8f7475870dc3bc7e1420';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
