@@ -318,6 +318,38 @@ describe('Wave 2 Secretary source-skill feedback consumers', () => {
     })]);
   });
 
+  it('refreshes an equal-version projection only for the same agenda row', () => {
+    recordSecretarySourceSkillFeedback(feedback({
+      agendaItemId: 'content-user-move-v2',
+      sourceIntentId: 'content-user-move',
+      sourceSkill: 'content',
+      agendaVersion: 2,
+      status: 'scheduled',
+    }));
+    recordSecretarySourceSkillFeedback(feedback({
+      agendaItemId: 'content-user-move-v2',
+      sourceIntentId: 'content-user-move',
+      sourceSkill: 'content',
+      agendaVersion: 2,
+      status: 'reflowed',
+      reasonCodes: ['reflowed_to_available_window'],
+      scheduledStart: '2026-05-21T15:00:00.000Z',
+      scheduledEnd: '2026-05-21T16:00:00.000Z',
+      shouldRefreshSource: true,
+    }));
+
+    expect(listSecretarySourceSkillFeedback({
+      userId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      sourceSkill: 'content',
+    })).toEqual([expect.objectContaining({
+      agendaItemId: 'content-user-move-v2',
+      agendaVersion: 2,
+      status: 'reflowed',
+      scheduledStart: '2026-05-21T15:00:00.000Z',
+    })]);
+  });
+
   it('routes the durable DB-only event and re-reads the exact authoritative agenda version', async () => {
     insertAgendaRow({
       agendaItemId: 'content-agenda-v3',

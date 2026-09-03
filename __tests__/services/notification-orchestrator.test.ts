@@ -66,6 +66,7 @@ import {
   listNotificationCenterItems,
   markNotificationCenterItemRead,
   performNotificationAction,
+  processNotificationIntentDelivery,
   recordNotificationReliabilityEvent,
   buildApnsCollapseId,
   pruneStaleDeviceTokens,
@@ -596,6 +597,34 @@ describe('Secretary Notification Orchestrator', () => {
     expect(attemptCount).toBe(0);
     // The in-app center item stays durable for push-less users.
     expect(listNotificationCenterItems(2, 2)).toHaveLength(1);
+  });
+
+  it('retries one exact transient intent concurrently without duplicating its center item or accepted push', async () => {
+    mockSendPushNotification
+      .mockResolvedValueOnce({ sent: 0, failed: 0, skipped: 0, retriable: 1, unregistered: [] })
+      .mockResolvedValue({ sent: 1, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    const initial = await createNotificationIntent(buildSkillNotificationFixtureIntent('cooking', 16, {
+      dedupeKey: 'cooking:exact-transient-retry',
+    }));
+
+    expect(initial.decisionLog.decision).toBe('apns_delivery_failed');
+    const [first, second] = await Promise.all([
+      processNotificationIntentDelivery(initial.intent.intentId, 16, 16),
+      processNotificationIntentDelivery(initial.intent.intentId, 16, 16),
+    ]);
+
+    expect(new Set([first.status, second.status])).toEqual(
+      new Set(['retry_succeeded', 'already_processed']),
+    );
+    expect(mockSendPushNotification).toHaveBeenCalledTimes(2);
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_center_items
+       WHERE intent_id = ? AND user_id = 16 AND tenant_id = 16
+    `).get(initial.intent.intentId) as { count: number }).count).toBe(1);
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS count FROM notification_delivery_attempts
+       WHERE intent_id = ? AND user_id = 16 AND tenant_id = 16 AND status = 'sent'
+    `).get(initial.intent.intentId) as { count: number }).count).toBe(1);
   });
 
   it('sanitizes delivery error codes before structured reporting', () => {

@@ -2,9 +2,10 @@
 
 import { DateTime } from 'luxon';
 import type { CalendarSource, UnifiedCalendarEvent } from './unified-calendar';
-import { getEvents, getEventsForSources } from './unified-calendar';
+import { getEventsWithDiagnostics } from './unified-calendar';
 import { getUserTimezoneById } from './user-service';
 import { getAppleHealthSleepAgendaEvents, type AppleHealthSleepAgendaEvent } from './health-sleep-agenda';
+import { readSecretaryLocalCalendarConflicts } from './secretary-local-calendar-conflicts';
 
 export interface FocusConflict {
   id: string;
@@ -92,6 +93,7 @@ export function buildPomodoroDescription(intervals: PomodoroInterval[], timezone
 
 export async function precheckFocusCalendarConflict(input: {
   userId: number;
+  tenantId?: number;
   source: CalendarSource;
   start: string;
   end: string;
@@ -118,16 +120,66 @@ export async function precheckFocusCalendarConflict(input: {
   try {
     const searchStart = start.minus({ hours: 2 }).toUTC().toISO()!;
     const searchEnd = end.plus({ hours: 12 }).toUTC().toISO()!;
-    const providerEvents = input.constrainToSource
-      ? await getEventsForSources(searchStart, searchEnd, input.userId, [input.source])
-      : await getEvents(searchStart, searchEnd, input.userId);
+    const providerSnapshot = await getEventsWithDiagnostics(
+      searchStart,
+      searchEnd,
+      input.userId,
+      input.constrainToSource ? { sources: [input.source] } : undefined,
+    );
+    const expectedSources = new Set<CalendarSource>([
+      input.source,
+      ...providerSnapshot.sources.configured,
+    ]);
+    const fulfilledSources = new Set(providerSnapshot.sources.fulfilled);
+    if (providerSnapshot.status !== 'ready'
+      || providerSnapshot.sources.failed.length > 0
+      || [...expectedSources].some((source) => !fulfilledSources.has(source))) {
+      return unavailablePrecheck({
+        input,
+        timezone,
+        start,
+        end,
+        warningCodes: [
+          'CALENDAR_CONFLICT_CHECK_UNAVAILABLE',
+          'CALENDAR_SOURCE_COVERAGE_INCOMPLETE',
+          ...providerSnapshot.warningCodes,
+        ],
+        warnings: providerSnapshot.warnings,
+      });
+    }
+    const localSnapshot = readSecretaryLocalCalendarConflicts({
+      userId: input.userId,
+      tenantId: input.tenantId ?? input.userId,
+      start: searchStart,
+      end: searchEnd,
+    });
+    if (localSnapshot.status !== 'ready') {
+      return unavailablePrecheck({
+        input,
+        timezone,
+        start,
+        end,
+        warningCodes: ['CALENDAR_CONFLICT_CHECK_UNAVAILABLE', ...localSnapshot.warningCodes],
+        warnings: ['Local agenda and protected-routine availability could not be verified.'],
+      });
+    }
     const sleepEvents = getAppleHealthSleepAgendaEvents({
       userId: input.userId,
       start: searchStart,
       end: searchEnd,
       timezone,
     });
-    const events = [...providerEvents, ...sleepEvents];
+    const events = [
+      ...providerSnapshot.events,
+      ...localSnapshot.conflicts.map((conflict) => ({
+        id: `secretary-local:${conflict.id}`,
+        summary: conflict.title,
+        start: conflict.start,
+        end: conflict.end,
+        source: conflict.providerSource,
+      })),
+      ...sleepEvents,
+    ];
     const conflicts = overlappingEvents(events, start.toUTC(), end.toUTC());
     const nextFreeSlot = conflicts.length > 0
       ? findNextFreeSlot(events, end, end.diff(start, 'minutes').minutes, timezone)
@@ -144,18 +196,31 @@ export async function precheckFocusCalendarConflict(input: {
       warnings: conflicts.length > 0 ? ['The requested focus block overlaps existing calendar events.'] : [],
     };
   } catch {
-    return {
-      status: 'unavailable',
-      start: start.toUTC().toISO()!,
-      end: end.toUTC().toISO()!,
-      timezone,
-      source: input.source,
-      conflicts: [],
-      nextFreeSlot: null,
-      warningCodes: ['CALENDAR_CONFLICT_CHECK_UNAVAILABLE'],
-      warnings: ['Calendar availability could not be checked right now.'],
-    };
+    return unavailablePrecheck({ input, timezone, start, end });
   }
+}
+
+function unavailablePrecheck(input: {
+  input: { userId: number; source: CalendarSource };
+  timezone: string;
+  start: DateTime;
+  end: DateTime;
+  warningCodes?: string[];
+  warnings?: string[];
+}): FocusConflictPrecheckResult {
+  return {
+    status: 'unavailable',
+    start: input.start.toUTC().toISO()!,
+    end: input.end.toUTC().toISO()!,
+    timezone: input.timezone,
+    source: input.input.source,
+    conflicts: [],
+    nextFreeSlot: null,
+    warningCodes: [...new Set(input.warningCodes ?? ['CALENDAR_CONFLICT_CHECK_UNAVAILABLE'])],
+    warnings: input.warnings?.length
+      ? [...new Set(input.warnings)]
+      : ['Calendar availability could not be checked right now.'],
+  };
 }
 
 function toInterval(kind: 'focus' | 'rest', index: number, start: DateTime, end: DateTime): PomodoroInterval {
@@ -168,7 +233,15 @@ function toInterval(kind: 'focus' | 'rest', index: number, start: DateTime, end:
   };
 }
 
-type BusyEvent = UnifiedCalendarEvent | AppleHealthSleepAgendaEvent;
+interface LocalBusyEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  source: CalendarSource | null;
+}
+
+type BusyEvent = UnifiedCalendarEvent | AppleHealthSleepAgendaEvent | LocalBusyEvent;
 
 function overlappingEvents(events: BusyEvent[], startUtc: DateTime, endUtc: DateTime): BusyEvent[] {
   return events.filter((event) => {

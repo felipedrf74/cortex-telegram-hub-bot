@@ -3,8 +3,8 @@ import Database from 'better-sqlite3';
 import { DateTime } from 'luxon';
 
 let testDb: Database.Database;
-const mockGetEvents = vi.fn();
-const mockGetEventsForSources = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
+const mockReadLocalCalendarConflicts = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -28,8 +28,14 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
-  getEvents: (...args: unknown[]) => mockGetEvents(...args),
-  getEventsForSources: (...args: unknown[]) => mockGetEventsForSources(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
+}));
+
+vi.mock('../../src/services/secretary-local-calendar-conflicts', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-local-calendar-conflicts')>(
+    '../../src/services/secretary-local-calendar-conflicts',
+  )),
+  readSecretaryLocalCalendarConflicts: (...args: unknown[]) => mockReadLocalCalendarConflicts(...args),
 }));
 
 import {
@@ -58,10 +64,16 @@ import {
 } from '../../src/services/provider-preferences';
 
 beforeEach(() => {
-  mockGetEvents.mockReset();
-  mockGetEvents.mockResolvedValue([]);
-  mockGetEventsForSources.mockReset();
-  mockGetEventsForSources.mockResolvedValue([]);
+  mockGetEventsWithDiagnostics.mockReset();
+  mockGetEventsWithDiagnostics.mockResolvedValue({
+    events: [],
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+  });
+  mockReadLocalCalendarConflicts.mockReset();
+  mockReadLocalCalendarConflicts.mockReturnValue({ status: 'ready', conflicts: [], warningCodes: [] });
   testDb = new Database(':memory:');
   testDb.exec(`
     CREATE TABLE apple_health_data (
@@ -601,12 +613,16 @@ describe('Home orchestration focus helpers', () => {
       timezone: 'UTC',
     });
 
-    expect(mockGetEvents).toHaveBeenCalledWith(
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledWith(
       '2026-05-17T07:30:00.000Z',
       '2026-05-17T22:00:00.000Z',
       42,
+      undefined,
     );
-    expect(mockGetEventsForSources).not.toHaveBeenCalled();
+    expect(mockReadLocalCalendarConflicts).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 42,
+    }));
     expect(result.status).toBe('conflicted');
     expect(result.conflicts[0]).toMatchObject({
       title: 'Sleep',
@@ -616,6 +632,65 @@ describe('Home orchestration focus helpers', () => {
       start: '2026-05-17T10:00:00.000Z',
       end: '2026-05-17T10:30:00.000Z',
     });
+  });
+
+  it('does not report a clean focus window from partial provider state', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'degraded',
+      warningCodes: ['OUTLOOK_CALENDAR_UNAVAILABLE'],
+      warnings: ['Outlook unavailable'],
+      sources: { configured: ['google', 'outlook'], fulfilled: ['google'], failed: ['outlook'] },
+    });
+
+    const result = await precheckFocusCalendarConflict({
+      userId: 42,
+      tenantId: 42,
+      source: 'google',
+      start: '2026-05-17T09:30:00.000Z',
+      end: '2026-05-17T10:00:00.000Z',
+      timezone: 'UTC',
+    });
+
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      conflicts: [],
+      warningCodes: expect.arrayContaining([
+        'CALENDAR_CONFLICT_CHECK_UNAVAILABLE',
+        'OUTLOOK_CALENDAR_UNAVAILABLE',
+      ]),
+    });
+    expect(mockReadLocalCalendarConflicts).not.toHaveBeenCalled();
+  });
+
+  it('includes protected routines in the focus conflict preview', async () => {
+    mockReadLocalCalendarConflicts.mockReturnValue({
+      status: 'ready',
+      warningCodes: [],
+      conflicts: [{
+        id: 'routine:protected-lunch:2026-05-17',
+        title: 'Protected lunch',
+        start: '2026-05-17T09:30:00.000Z',
+        end: '2026-05-17T10:30:00.000Z',
+        kind: 'protected_routine',
+        providerEventId: null,
+        providerSource: null,
+      }],
+    });
+
+    const result = await precheckFocusCalendarConflict({
+      userId: 42,
+      tenantId: 42,
+      source: 'google',
+      start: '2026-05-17T09:30:00.000Z',
+      end: '2026-05-17T10:00:00.000Z',
+      timezone: 'UTC',
+    });
+
+    expect(result.status).toBe('conflicted');
+    expect(result.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: 'Protected lunch', source: null }),
+    ]));
   });
 
   it('lets dashboard task summaries paint from the shared working-set snapshot', async () => {

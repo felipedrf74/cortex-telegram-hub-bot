@@ -28,7 +28,14 @@ function makeEvent(
   summary: string,
   start: string,
   source: 'google' | 'outlook',
-  opts?: { description?: string; location?: string; id?: string; htmlLink?: string },
+  opts?: {
+    description?: string;
+    location?: string;
+    id?: string;
+    htmlLink?: string;
+    providerUid?: string;
+    organizer?: string;
+  },
 ): UnifiedCalendarEvent {
   const startDate = new Date(start);
   const endDate = new Date(startDate.getTime() + 3600_000); // +1 hour
@@ -40,6 +47,8 @@ function makeEvent(
     description: opts?.description,
     location: opts?.location,
     htmlLink: opts?.htmlLink,
+    providerUid: opts?.providerUid,
+    organizer: opts?.organizer,
     source,
   };
 }
@@ -102,6 +111,28 @@ describe('eventFingerprint', () => {
 
     expect(eventFingerprint(google)).toBe(eventFingerprint(outlook));
   });
+
+  it('uses a stable provider UID before provider-specific title or time representations', () => {
+    const google = makeEvent('Google title', '2024-06-15T09:00:00Z', 'google', {
+      providerUid: 'Shared-Meeting-UID@example.com',
+    });
+    const outlook = makeEvent('Outlook title', '2024-06-15T09:05:00Z', 'outlook', {
+      providerUid: 'shared-meeting-uid@example.com',
+    });
+
+    expect(eventFingerprint(google)).toBe(eventFingerprint(outlook));
+  });
+
+  it('uses normalized organizer identity when no stable UID is available', () => {
+    const google = makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'google', {
+      organizer: ' Owner@Example.com ',
+    });
+    const outlook = makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'outlook', {
+      organizer: 'owner@example.com',
+    });
+
+    expect(eventFingerprint(google)).toBe(eventFingerprint(outlook));
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -120,6 +151,16 @@ describe('deduplicateEvents', () => {
     expect(result[0].syncedSources).toEqual(['google']);
   });
 
+  it('preserves pre-existing syncedSources when a merged event is normalized again', () => {
+    const event = makeEvent('Meeting', '2024-06-15T09:00:00Z', 'google');
+    event.syncedSources = ['outlook', 'google'];
+
+    const result = deduplicateEvents([event]);
+
+    expect(result[0].syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
+    expect(result[0].syncedSources).toHaveLength(2);
+  });
+
   it('merges duplicate events from different sources', () => {
     const events = [
       makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'google'),
@@ -130,6 +171,97 @@ describe('deduplicateEvents', () => {
     expect(result[0].summary).toBe('Team Standup');
     expect(result[0].syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
     expect(result[0].syncedSources).toHaveLength(2);
+  });
+
+  it('merges stable-UID copies and preserves both synced sources', () => {
+    const google = makeEvent('Google title', '2024-06-15T09:00:00Z', 'google', {
+      id: 'g-uid',
+      providerUid: 'meeting-uid@example.com',
+    });
+    const outlook = makeEvent('Outlook title', '2024-06-15T09:03:00Z', 'outlook', {
+      id: 'o-uid',
+      providerUid: 'meeting-uid@example.com',
+      location: 'Room 2',
+    });
+
+    const result = deduplicateEvents([google, outlook]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      providerUid: 'meeting-uid@example.com',
+      location: 'Room 2',
+      syncedSources: expect.arrayContaining(['google', 'outlook']),
+    });
+  });
+
+  it('does not cross-pair recurring occurrences that share a provider UID when one provider is missing an instance', () => {
+    const googleMonday = makeEvent('Daily standup', '2024-06-17T09:00:00Z', 'google', {
+      id: 'g-monday',
+      providerUid: 'recurring-standup@example.com',
+    });
+    const googleTuesday = makeEvent('Daily standup', '2024-06-18T09:00:00Z', 'google', {
+      id: 'g-tuesday',
+      providerUid: 'recurring-standup@example.com',
+    });
+    const outlookTuesday = makeEvent('Daily standup', '2024-06-18T09:00:00Z', 'outlook', {
+      id: 'o-tuesday',
+      providerUid: 'recurring-standup@example.com',
+    });
+
+    const result = deduplicateEvents([googleMonday, googleTuesday, outlookTuesday]);
+    const monday = result.find((event) => event.start === googleMonday.start);
+    const tuesday = result.find((event) => event.start === googleTuesday.start);
+
+    expect(result).toHaveLength(2);
+    expect(monday).toMatchObject({
+      id: 'g-monday',
+      end: googleMonday.end,
+      syncedSources: ['google'],
+    });
+    expect(tuesday?.syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
+    expect(tuesday?.syncedSources).toHaveLength(2);
+  });
+
+  it('matches a recurring all-day occurrence when Google uses a date and Graph uses UTC originalStart', () => {
+    const google: UnifiedCalendarEvent = {
+      id: 'g-all-day-occurrence',
+      source: 'google',
+      summary: 'Company holiday',
+      start: '2026-12-25',
+      end: '2026-12-26',
+      isAllDay: true,
+      providerUid: 'recurring-holiday@example.com',
+      providerOccurrenceStart: '2026-12-25',
+    };
+    const outlook: UnifiedCalendarEvent = {
+      id: 'o-all-day-occurrence',
+      source: 'outlook',
+      summary: 'Company holiday',
+      start: '2026-12-25T00:00:00.000Z',
+      end: '2026-12-26T00:00:00.000Z',
+      isAllDay: true,
+      providerUid: 'recurring-holiday@example.com',
+      providerOccurrenceStart: '2026-12-25T00:00:00Z',
+    };
+
+    const result = deduplicateEvents([google, outlook]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
+  });
+
+  it('merges organizer-fallback copies and preserves both synced sources', () => {
+    const google = makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'google', {
+      organizer: 'owner@example.com',
+    });
+    const outlook = makeEvent('Team Standup', '2024-06-15T09:00:00Z', 'outlook', {
+      organizer: 'OWNER@example.com',
+    });
+
+    const result = deduplicateEvents([google, outlook]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
   });
 
   it('keeps distinct events from the same source', () => {

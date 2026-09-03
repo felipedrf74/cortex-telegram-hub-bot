@@ -381,4 +381,19 @@ describe('readFinanceMeshContext', () => {
     expect(mockGetTaxEvents).not.toHaveBeenCalled();
     expect(mockGetAnnualTaxSummary).not.toHaveBeenCalled();
   });
+
+  it('does not label aggregate Finance fallbacks ready when every source read fails', async () => {
+    mockGetMonthlySummary.mockImplementationOnce(() => { throw new Error('monthly summary failed'); });
+    mockGetMonthlyBudgetView.mockImplementationOnce(() => { throw new Error('budget failed'); });
+    mockGetTaxEvents.mockImplementationOnce(() => { throw new Error('tax events failed'); });
+    mockGetAnnualTaxSummary.mockImplementationOnce(() => { throw new Error('annual summary failed'); });
+    mockGetSubscriptionStatus.mockImplementationOnce(() => { throw new Error('subscription failed'); });
+
+    const context = await readFinanceMeshContext({ userId: 42, weekStart: '2026-04-13' });
+
+    expect(context.sourceHealth).toEqual(expect.objectContaining({
+      status: 'unavailable',
+      warningCodes: ['FINANCE_STATE_UNAVAILABLE'],
+    }));
+  });
 });

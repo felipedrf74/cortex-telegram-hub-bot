@@ -133,19 +133,19 @@ describe('Domain Provider Router', () => {
       expect(getProviderForDomain('cooking')).toBe('anthropic');
     });
 
-    it('identifies only domains with executable domain-provider routes', () => {
-      expect(hasDomainProviderRoute('secretary')).toBe(true);
-      expect(hasDomainProviderRoute('cooking')).toBe(true);
-      expect(hasDomainProviderRoute('chat')).toBe(false);
-      expect(hasDomainProviderRoute('dynamic_custom_skill')).toBe(false);
-    });
-
     it('keeps the Secretary primary-route safeguard stronger than experiment overrides', () => {
       process.env.SECRETARY_PRIMARY_ROUTE_ENABLED = 'false';
       process.env.AI_DOMAIN_PROVIDER_OVERRIDES = 'secretary=gemini';
       initDomainRouting();
 
       expect(getProviderForDomain('secretary')).toBe('anthropic');
+    });
+
+    it('identifies only domains with executable domain-provider routes', () => {
+      expect(hasDomainProviderRoute('secretary')).toBe(true);
+      expect(hasDomainProviderRoute('cooking')).toBe(true);
+      expect(hasDomainProviderRoute('chat')).toBe(false);
+      expect(hasDomainProviderRoute('dynamic_custom_skill')).toBe(false);
     });
   });
 

@@ -12,6 +12,11 @@ import {
   getRankedContentSignals,
 } from '../content-intelligence';
 import { isValidTenantUserId } from '../tenant-scope-observability';
+import {
+  degradedPlanSource,
+  readyPlanSource,
+  unavailablePlanSource,
+} from '../secretary-planning-context';
 import type { ContentMeshContext, MeshSignalDraft } from './types';
 import { endOfDayIso, reportInvalidMeshScope, resolveWeekWindow, safely, safelyAsync } from './mesh-common';
 
@@ -39,6 +44,10 @@ export function createEmptyContentMeshContext(opts: {
       categories: [],
       referenceChannels: 0,
     },
+    sourceHealth: unavailablePlanSource(
+      'CONTENT_STATE_UNAVAILABLE',
+      'Content planning state is unavailable.',
+    ),
     derivedSignals: [],
   };
 }
@@ -56,18 +65,41 @@ export async function readContentMeshContext(opts: {
   }
 
   const window = resolveWeekWindow(opts.weekStart, opts.timezone, opts.referenceNow);
+  const readFailures = new Set<string>();
+  const recordReadFailure = (source: string) => () => { readFailures.add(source); };
 
   const [filmingResult] = await Promise.allSettled([
-    getFilmingRecommendation(opts.userId, undefined, opts.tenantId),
+    getFilmingRecommendation(opts.userId, undefined, opts.tenantId, opts.timezone),
   ]);
 
+  if (filmingResult.status === 'rejected') readFailures.add('filming');
   const filmingRecommendation = filmingResult.status === 'fulfilled' ? filmingResult.value : null;
   const tenantId = opts.tenantId ?? opts.userId;
-  const unreadNotifications = safely(() => getUnreadNotifications(opts.userId, 10, tenantId), []);
-  const deskItems = safely(() => getContentDeskItems(opts.userId, 4, tenantId), []);
-  const monitoredPillars = safely(() => getActiveContentPillars(opts.userId, tenantId), []);
-  const recentSignals = safely(() => getRankedContentSignals(opts.userId, 6, opts.tenantId), []);
-  const upcomingTopicCount = safely(() => getUpcomingTopicCount(opts.userId, 14, tenantId), 0);
+  const unreadNotifications = safely(
+    () => getUnreadNotifications(opts.userId, 10, tenantId),
+    [],
+    recordReadFailure('notifications'),
+  );
+  const deskItems = safely(
+    () => getContentDeskItems(opts.userId, 4, tenantId),
+    [],
+    recordReadFailure('desk'),
+  );
+  const monitoredPillars = safely(
+    () => getActiveContentPillars(opts.userId, tenantId),
+    [],
+    recordReadFailure('pillars'),
+  );
+  const recentSignals = safely(
+    () => getRankedContentSignals(opts.userId, 6, opts.tenantId),
+    [],
+    recordReadFailure('signals'),
+  );
+  const upcomingTopicCount = safely(
+    () => getUpcomingTopicCount(opts.userId, 14, tenantId),
+    0,
+    recordReadFailure('upcoming_topics'),
+  );
   const topics = safely(
     () => getTopics(opts.userId, {
       includeTerminal: false,
@@ -75,6 +107,7 @@ export async function readContentMeshContext(opts: {
       tenantId,
     }),
     [],
+    recordReadFailure('topics'),
   );
   const scheduledTopics = safely(
     () => topics
@@ -88,6 +121,7 @@ export async function readContentMeshContext(opts: {
       status: topic.status,
     })),
     [],
+    recordReadFailure('topic_projection'),
   );
   const nextExecution = await safelyAsync(
     () => getNextContentExecutionHint(opts.userId, {
@@ -99,12 +133,17 @@ export async function readContentMeshContext(opts: {
       pillars: monitoredPillars,
     }),
     null,
+    recordReadFailure('next_execution'),
   );
-  const voiceDnaEntries = safely(() => getVoiceDna(undefined, opts.userId, opts.tenantId), []);
+  const voiceDnaEntries = safely(
+    () => getVoiceDna(undefined, opts.userId, opts.tenantId),
+    [],
+    recordReadFailure('voice_dna'),
+  );
   const knowledgeStats = safely(() => getKnowledgeStats(undefined, opts.userId, opts.tenantId), {
     categories: [],
     referenceChannels: 0,
-  });
+  }, recordReadFailure('knowledge'));
 
   const derivedSignals: MeshSignalDraft[] = [];
   const readyTopicCount = topics.filter((topic) => topic.status === 'ready').length;
@@ -153,6 +192,27 @@ export async function readContentMeshContext(opts: {
     nextExecution,
     voiceDnaEntries,
     knowledgeStats,
+    sourceHealth: [
+      'filming',
+      'notifications',
+      'desk',
+      'pillars',
+      'signals',
+      'upcoming_topics',
+      'topics',
+      'voice_dna',
+      'knowledge',
+    ].every((source) => readFailures.has(source))
+      ? unavailablePlanSource(
+          'CONTENT_STATE_UNAVAILABLE',
+          'Content planning state is unavailable.',
+        )
+      : readFailures.size > 0
+        ? degradedPlanSource(
+            'CONTENT_STATE_DEGRADED',
+            'Some Content planning state is unavailable.',
+          )
+        : readyPlanSource(),
     derivedSignals,
   };
 }

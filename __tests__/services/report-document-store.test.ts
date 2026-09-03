@@ -40,10 +40,8 @@ vi.mock('../../src/config', () => ({
 }));
 
 const mockCreateNotificationIntent = vi.fn(async (..._args: unknown[]) => ({ deliveryAttempts: [] }));
-let hasActivePushDeviceToken = false;
 vi.mock('../../src/services/notification-orchestrator', () => ({
   createNotificationIntent: (...args: unknown[]) => mockCreateNotificationIntent(...args),
-  userHasActivePushDeviceToken: () => hasActivePushDeviceToken,
 }));
 
 
@@ -435,15 +433,14 @@ describe('report-document-store: admin view', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 7. storeAndPushReport device-token producer gate
+// 7. storeAndPushReport center-item and push-policy separation
 // ═══════════════════════════════════════════════════════════════════
 
-describe('report-document-store: storeAndPushReport device-token gate', () => {
+describe('report-document-store: storeAndPushReport delivery separation', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
     clearTenantScopeAnomaliesForTests();
     mockCreateNotificationIntent.mockClear();
-    hasActivePushDeviceToken = false;
     delete process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN;
   });
   afterEach(() => {
@@ -451,7 +448,7 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
     testDb?.close();
   });
 
-  it('default OFF: still creates the push intent for users without device tokens', async () => {
+  it('creates the canonical center intent without prechecking device tokens', async () => {
     const id = await storeAndPushReport({
       userId: 1, type: 'morning_briefing', title: 'Brief',
       summary: 'summary', documentJson: {},
@@ -461,9 +458,8 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
     expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
   });
 
-  it('flag ON + no device token: stores the durable report without minting a push intent', async () => {
+  it('legacy device-token producer flag cannot suppress the canonical center intent', async () => {
     process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN = 'true';
-    hasActivePushDeviceToken = false;
     const id = await storeAndPushReport({
       userId: 1, type: 'morning_briefing', title: 'Brief',
       summary: 'summary', documentJson: {},
@@ -471,12 +467,10 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
     expect(id).toBeGreaterThan(0);
     expect(getReportById(id, 1)).not.toBeNull();
     expect(getUnreadReportCount(1)).toBe(1);
-    expect(mockCreateNotificationIntent).not.toHaveBeenCalled();
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
   });
 
-  it('flag ON + active device token: creates the push intent with the report dedupe key', async () => {
-    process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN = 'true';
-    hasActivePushDeviceToken = true;
+  it('creates the center intent with the report dedupe key', async () => {
     const id = await storeAndPushReport({
       userId: 1, tenantId: 77, type: 'morning_briefing', title: 'Brief',
       summary: 'summary', documentJson: {},
@@ -489,6 +483,22 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
       relatedEntityId: id,
       relatedEntityType: 'report_document',
       dedupeKey: `report:morning_briefing:${id}`,
+    });
+  });
+
+  it('keeps the center item but makes delivery in-app-only when report push is disabled', async () => {
+    setPushPreference(1, 'morning_briefing', false);
+    const id = await storeAndPushReport({
+      userId: 1, type: 'morning_briefing', title: 'Brief',
+      summary: 'summary', documentJson: {},
+    });
+
+    expect(id).toBeGreaterThan(0);
+    expect(mockCreateNotificationIntent).toHaveBeenCalledTimes(1);
+    expect(mockCreateNotificationIntent.mock.calls[0][0]).toMatchObject({
+      relatedEntityId: id,
+      deliveryPolicy: 'in_app_only',
+      privacyPolicy: 'sensitive',
     });
   });
 
@@ -524,6 +534,8 @@ describe('report-document-store: storeAndPushReport device-token gate', () => {
         relatedEntityId: first,
         title: 'Brief',
         body: 'summary',
+        privacyPolicy: 'sensitive',
+        dedupeKey: `report:morning_briefing:${first}`,
       });
     }
   });

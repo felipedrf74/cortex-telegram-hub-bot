@@ -100,6 +100,7 @@ describe('chat-action-registry lint', () => {
         'connections',
         'notifications',
         'secretary',
+        'secretary_calendar_command_service',
         'decisionCenter',
         'daily_brief_orchestrator',
       ]);

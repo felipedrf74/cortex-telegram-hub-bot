@@ -456,6 +456,8 @@ function localizeFilmingRecommendationText(text: string, language: Lang): string
       return localizePTVariant(language, 'Só há treino leve planeado, por isso deve ser mais fácil filmar bem.', 'Só há treino leve planejado, por isso deve ser mais fácil filmar bem.');
     case 'Your calendar is clear, so you have room to film without collisions.':
       return localizePTVariant(language, 'O teu calendário está livre, por isso tens espaço para filmar sem conflitos.', 'O seu calendário está livre, por isso tem espaço para filmar sem conflitos.');
+    case 'The calendar could not be confirmed, so treat this filming day as provisional.':
+      return localizePTVariant(language, 'Não foi possível confirmar o calendário, por isso trata este dia de filmagem como provisório.', 'Não foi possível confirmar o calendário, por isso trate este dia de filmagem como provisório.');
     case 'Your calendar is busy that day, so filming would likely fragment or run late.':
       return localizePTVariant(language, 'O teu calendário está carregado nesse dia, por isso filmar iria fragmentar-se ou atrasar-se.', 'O seu calendário está cheio nesse dia, por isso filmar provavelmente iria fragmentar ou atrasar.');
     case 'You have a few calendar commitments, but there is still some room to film.':

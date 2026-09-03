@@ -355,6 +355,7 @@ describe('Skills API — version registry', () => {
       'content',
     ]);
     expect(res.body.data.skills.find((skill: any) => skill.skillId === 'content').currentVersion).toBe('2.0.0');
+    expect(res.body.data.skills.find((skill: any) => skill.skillId === 'secretary').currentVersion).toBe('2.2.0');
   });
 
   it('returns one skill metadata and supports the triathlon training alias', async () => {
@@ -461,7 +462,7 @@ describe('Skills API — version registry', () => {
     const canaryRes = await dispatch('GET', '/versions/secretary', callerId(1506));
     const ordinaryRes = await dispatch('GET', '/versions/secretary', callerId(1507));
     expect(canaryRes.body.data.currentVersion).toBe('2.1.0');
-    expect(ordinaryRes.body.data.currentVersion).toBe('2.0.0');
+    expect(ordinaryRes.body.data.currentVersion).toBe('2.2.0');
   });
 });
 

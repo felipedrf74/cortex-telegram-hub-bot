@@ -28,8 +28,8 @@
  */
 
 import {
-  getEvents,
-  hasConnectedCalendarForUser,
+  getEventsWithDiagnostics,
+  type UnifiedCalendarFetchResult,
 } from './unified-calendar';
 import type { TodoTask } from './microsoft-todo';
 import { getRemindersForToday } from '../state/reminders';
@@ -43,9 +43,11 @@ import { DateTime } from 'luxon';
 import { getUserLanguage, getUserTimezone } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
+import { composeWeeklyPlan } from './weekly-plan-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
 import { getDecisionSummary, listHandledByNexusItems } from './decision-center';
 import { getRecentReports, getLatestByType, type ReportType } from './report-document-store';
+import { assertSecretaryPlanningScope } from './secretary-planning-context';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -97,17 +99,22 @@ function getScopedTaskProvider(userId: number) {
 type CopyKey =
   | 'agendaHeader'
   | 'agendaEmpty'
+  | 'calendarUnavailable'
+  | 'calendarDegraded'
+  | 'nexusCommitments'
   | 'tasksHeader'
   | 'tasksPending'
   | 'tasksOverdue'
   | 'tasksDueToday'
   | 'trainingHeader'
   | 'trainingEmpty'
+  | 'trainingUnavailable'
   | 'remindersHeader'
   | 'emailsHeader'
   | 'emailsUnreadSuffix'
   | 'weekHeader'
   | 'weekFree'
+  | 'weekUnconfirmed'
   | 'pendingTasksHeader'
   | 'pendingTasksEmpty'
   | 'moreTasksSuffix'
@@ -117,6 +124,7 @@ type CopyKey =
   | 'overdueEmpty'
   | 'overdueDueLabel'
   | 'emailConfigMissing'
+  | 'emailUnavailable'
   | 'priorityHeader'
   | 'inboxClean'
   | 'emailUnreadLine'
@@ -143,17 +151,22 @@ const COPY: Partial<Record<Lang, Copy>> = {
   'pt-BR': {
     agendaHeader: 'AGENDA:',
     agendaEmpty: 'Sem eventos hoje',
+    calendarUnavailable: '⚠️ Não foi possível confirmar o calendário agora.',
+    calendarDegraded: '⚠️ Parte do calendário não pôde ser confirmada.',
+    nexusCommitments: '%COUNT% compromissos Nexus incluídos',
     tasksHeader: 'TAREFAS:',
     tasksPending: 'pendentes',
     tasksOverdue: 'atrasadas',
     tasksDueToday: 'Para hoje:',
     trainingHeader: 'TREINO:',
     trainingEmpty: 'Sem treino planeado hoje',
+    trainingUnavailable: '⚠️ Não foi possível confirmar o plano de treino agora.',
     remindersHeader: 'LEMBRETES:',
     emailsHeader: 'E-MAILS:',
     emailsUnreadSuffix: 'não lidos',
     weekHeader: 'SEMANA',
     weekFree: 'livre',
+    weekUnconfirmed: 'calendário por confirmar',
     pendingTasksHeader: 'Tarefas Pendentes',
     pendingTasksEmpty: '✅ Sem tarefas pendentes!',
     moreTasksSuffix: 'mais',
@@ -163,6 +176,7 @@ const COPY: Partial<Record<Lang, Copy>> = {
     overdueEmpty: '✅ Nenhuma tarefa atrasada!',
     overdueDueLabel: 'prazo:',
     emailConfigMissing: '⚠️ Email não configurado. Ligue Outlook ou Gmail em Ajustes > Conexões.',
+    emailUnavailable: '⚠️ Não foi possível confirmar o email agora.',
     priorityHeader: 'PRIORIDADE DE HOJE',
     inboxClean: '📧 Caixa de entrada limpa! ✨',
     emailUnreadLine: '📧 Você tem <b>%COUNT%</b> e-mail%S% não lido%S%.',
@@ -181,17 +195,22 @@ const COPY: Partial<Record<Lang, Copy>> = {
   'en-US': {
     agendaHeader: 'AGENDA:',
     agendaEmpty: 'No events today',
+    calendarUnavailable: '⚠️ Calendar could not be confirmed right now.',
+    calendarDegraded: '⚠️ Part of the calendar could not be confirmed.',
+    nexusCommitments: '%COUNT% Nexus commitments included',
     tasksHeader: 'TASKS:',
     tasksPending: 'pending',
     tasksOverdue: 'overdue',
     tasksDueToday: 'Due today:',
     trainingHeader: 'TRAINING:',
     trainingEmpty: 'No training planned today',
+    trainingUnavailable: '⚠️ Training plan could not be confirmed right now.',
     remindersHeader: 'REMINDERS:',
     emailsHeader: 'EMAILS:',
     emailsUnreadSuffix: 'unread',
     weekHeader: 'WEEK',
     weekFree: 'free',
+    weekUnconfirmed: 'calendar unconfirmed',
     pendingTasksHeader: 'Pending Tasks',
     pendingTasksEmpty: '✅ No pending tasks!',
     moreTasksSuffix: 'more',
@@ -201,6 +220,7 @@ const COPY: Partial<Record<Lang, Copy>> = {
     overdueEmpty: '✅ No overdue tasks!',
     overdueDueLabel: 'due:',
     emailConfigMissing: '⚠️ Email not configured. Connect Outlook or Gmail in Settings > Connections.',
+    emailUnavailable: '⚠️ Mail could not be confirmed right now.',
     priorityHeader: 'TODAY\'S PRIORITY',
     inboxClean: '📧 Inbox clean! ✨',
     emailUnreadLine: '📧 You have <b>%COUNT%</b> unread email%S%.',
@@ -219,17 +239,22 @@ const COPY: Partial<Record<Lang, Copy>> = {
   'pt-PT': {
     agendaHeader: 'AGENDA:',
     agendaEmpty: 'Sem eventos hoje',
+    calendarUnavailable: '⚠️ Não foi possível confirmar o calendário agora.',
+    calendarDegraded: '⚠️ Parte do calendário não pôde ser confirmada.',
+    nexusCommitments: '%COUNT% compromissos Nexus incluídos',
     tasksHeader: 'TAREFAS:',
     tasksPending: 'pendentes',
     tasksOverdue: 'atrasadas',
     tasksDueToday: 'Para hoje:',
     trainingHeader: 'TREINO:',
     trainingEmpty: 'Sem treino planeado para hoje',
+    trainingUnavailable: '⚠️ Não foi possível confirmar o plano de treino agora.',
     remindersHeader: 'LEMBRETES:',
     emailsHeader: 'E-MAILS:',
     emailsUnreadSuffix: 'por ler',
     weekHeader: 'SEMANA',
     weekFree: 'livre',
+    weekUnconfirmed: 'calendário por confirmar',
     pendingTasksHeader: 'Tarefas Pendentes',
     pendingTasksEmpty: '✅ Sem tarefas pendentes!',
     moreTasksSuffix: 'mais',
@@ -239,6 +264,7 @@ const COPY: Partial<Record<Lang, Copy>> = {
     overdueEmpty: '✅ Nenhuma tarefa atrasada!',
     overdueDueLabel: 'prazo:',
     emailConfigMissing: '⚠️ Email não configurado. Liga Outlook ou Gmail em Definições > Ligações.',
+    emailUnavailable: '⚠️ Não foi possível confirmar o email agora.',
     priorityHeader: 'PRIORIDADE DE HOJE',
     inboxClean: '📧 Caixa de entrada limpa! ✨',
     emailUnreadLine: '📧 Tens <b>%COUNT%</b> e-mail%S% por ler.',
@@ -258,6 +284,35 @@ const COPY: Partial<Record<Lang, Copy>> = {
 
 function copyForLang(lang: Lang): Copy {
   return COPY[lang] ?? COPY['en-US'] ?? COPY['pt-BR']!;
+}
+
+function unavailableCalendarResult(): UnifiedCalendarFetchResult {
+  return {
+    events: [],
+    status: 'unavailable',
+    warningCodes: ['CALENDAR_STATE_UNAVAILABLE'],
+    warnings: ['Calendar state is unavailable.'],
+    sources: { configured: [], fulfilled: [], failed: [] },
+  };
+}
+
+function combinedCalendarStatus(
+  providerStatus: 'ready' | 'degraded' | 'unavailable',
+  planningStatus?: 'ready' | 'stale' | 'degraded' | 'unavailable',
+): 'ready' | 'degraded' | 'unavailable' {
+  // Provider availability alone is not enough to call the agenda clear: the
+  // canonical plan also contains local Secretary commitments that may not yet
+  // have synchronized to a provider calendar.
+  if (!planningStatus) return 'unavailable';
+  if (providerStatus === 'unavailable' || planningStatus === 'unavailable') return 'unavailable';
+  if (providerStatus === 'degraded' || planningStatus === 'degraded' || planningStatus === 'stale') {
+    return 'degraded';
+  }
+  return 'ready';
+}
+
+function nexusCommitmentsLabel(copy: Copy, count: number): string {
+  return copy.nexusCommitments.replace('%COUNT%', String(count));
 }
 
 /**
@@ -539,21 +594,41 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       const emailOk = isSubmoduleEnabled('secretary', 'email');
       const remOk = isSubmoduleEnabled('secretary', 'reminders');
       const taskProvider = tasksOk ? getScopedTaskProvider(userId) : null;
-      const hasCalendar = calOk && !!userId && hasConnectedCalendarForUser(userId);
       const hasMail = emailOk && !!userId && isAnyMailConfiguredForUser(userId);
       const timezone = getUserTimezone(userId);
       const day = DateTime.now().setZone(timezone);
 
-      const [events, todoResult, reminders] = await Promise.all([
-        hasCalendar
-          ? getEvents(day.startOf('day').toISO()!, day.endOf('day').toISO()!, userId).catch(() => [])
-          : Promise.resolve([]),
+      const [calendarResult, todoResult, reminders, planningBrief] = await Promise.all([
+        calOk && !!userId
+          ? getEventsWithDiagnostics(day.startOf('day').toISO()!, day.endOf('day').toISO()!, userId)
+              .catch(() => unavailableCalendarResult())
+          : Promise.resolve(null),
         taskProvider
           ? taskProvider.getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
           : Promise.resolve({ success: false as const, data: [], error: 'disabled' }),
         remOk ? Promise.resolve(getRemindersForToday(userId, tenantId, timezone)) : Promise.resolve([]),
+        calOk && !!userId
+          ? composeDailyBrief({
+              userId,
+              tenantId,
+              date: day.toISODate()!,
+              language: lang,
+            }).catch(() => null)
+          : Promise.resolve(null),
       ]);
+      const events = calendarResult?.events ?? [];
+      const calendarStatus = calendarResult
+        ? combinedCalendarStatus(calendarResult.status, planningBrief?.sourceHealth?.calendar?.status)
+        : null;
+      const canonicalCalendarCount = planningBrief?.day?.secretary?.calendarEventCount;
+      const nexusCommitmentCount = typeof canonicalCalendarCount === 'number'
+        ? Math.max(0, canonicalCalendarCount - events.length)
+        : 0;
       const todayTraining = await getTodayTrainingSummary(userId, tenantId, events, timezone);
+      const taskSourceUnconfirmed = planningBrief?.sourceHealth?.tasks != null
+        && planningBrief.sourceHealth.tasks.status !== 'ready';
+      const mailSourceUnconfirmed = planningBrief?.sourceHealth?.mail != null
+        && planningBrief.sourceHealth.mail.status !== 'ready';
 
       // Date header in the user's locale. PT-BR puts day before
       // month ("terça, 09 abril 2026"); EN puts month before day
@@ -572,8 +647,17 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         for (const e of events) {
           msg += `▸ ${formatTime(e.start)}–${formatTime(e.end)}  ${escapeHtml(e.summary)}\n`;
         }
-      } else if (hasCalendar) {
+      }
+      if (nexusCommitmentCount > 0) {
+        if (events.length === 0) msg += `📋 <b>${c.agendaHeader}</b>\n`;
+        msg += `▸ ${nexusCommitmentsLabel(c, nexusCommitmentCount)}\n`;
+      } else if (events.length === 0 && calendarStatus === 'ready') {
         msg += `📋 <b>${c.agendaHeader}</b> ${c.agendaEmpty}\n`;
+      }
+      if (calendarStatus === 'degraded') {
+        msg += `📋 ${c.calendarDegraded}\n`;
+      } else if (calendarStatus === 'unavailable') {
+        msg += `📋 ${c.calendarUnavailable}\n`;
       }
 
       // Tasks block
@@ -593,12 +677,17 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
           msg += `\n`;
         }
       }
+      if (tasksOk && (!todoResult.success || taskSourceUnconfirmed)) {
+        msg += `\n📌 ${c.tasksErrorFetch}\n`;
+      }
 
       // Training block
       if (todayTraining) {
         msg += `\n🏋️ <b>${c.trainingHeader}</b>\n▸ ${todayTraining}\n`;
-      } else {
+      } else if (planningBrief?.sourceHealth?.training?.status === 'ready') {
         msg += `\n🏋️ <b>${c.trainingHeader}</b> ${c.trainingEmpty}\n`;
+      } else {
+        msg += `\n🏋️ <b>${c.trainingHeader}</b> ${c.trainingUnavailable}\n`;
       }
 
       // Reminders block
@@ -616,15 +705,84 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
           if (unread.totalUnread > 0) {
             msg += `\n📧 <b>${c.emailsHeader}</b> ${unread.totalUnread} ${c.emailsUnreadSuffix}\n`;
           }
-        } catch { /* silent */ }
+          const fulfilledProviders = [
+            unread.configuredProviders.includes('outlook') && typeof unread.outlookUnread === 'number',
+            unread.configuredProviders.includes('gmail') && typeof unread.gmailUnread === 'number',
+          ].filter(Boolean).length;
+          if (fulfilledProviders < unread.configuredProviders.length || mailSourceUnconfirmed) {
+            msg += `\n📧 ${c.emailUnavailable}\n`;
+          }
+        } catch {
+          msg += `\n📧 ${c.emailUnavailable}\n`;
+        }
+      } else if (emailOk && !!userId) {
+        msg += `\n📧 ${c.emailConfigMissing}\n`;
       }
 
       return { text: msg.trim(), domain: SECRETARY };
     },
   },
 
-  // ── Week Overview ───────────────────────────────────────────────
-  // "what's my week", "show my week", "/week", "esta semana", "minha semana"
+  // ── Canonical Plan Status ──────────────────────────────────────
+  // Reads the same daily snapshot used by REST and scheduled reports so a
+  // missing provider cannot be rendered as a healthy zero.
+  {
+    id: 'status_overview',
+    pattern: /^(?:\/status|status(?: overview)?|plan status|general status|estado geral|estado do plano)[\s?!.]*$/i,
+    handler: async (userId, _match, lang, tenantId) => {
+      const timezone = getUserTimezone(userId);
+      const day = DateTime.now().setZone(timezone);
+      const brief = await composeDailyBrief({
+        userId,
+        tenantId,
+        date: day.toISODate()!,
+        language: lang,
+      });
+      const reminders = getRemindersForToday(userId, tenantId, timezone);
+      const pt = lang.startsWith('pt');
+
+      const countOrUnconfirmed = (
+        count: number | undefined,
+        status: string,
+        readyCopy: (value: number) => string,
+      ): string => {
+        const safeCount = typeof count === 'number' ? Math.max(0, count) : 0;
+        if (status === 'ready') return readyCopy(safeCount);
+        if (safeCount > 0) {
+          return `${readyCopy(safeCount)} ${pt ? '(dados por confirmar)' : '(data unconfirmed)'}`;
+        }
+        return pt ? 'por confirmar' : 'unconfirmed';
+      };
+
+      const lines = [pt ? '<b>📊 Estado do plano</b>' : '<b>📊 Plan Status</b>'];
+      lines.push(`📋 ${pt ? 'Tarefas' : 'Tasks'}: ${countOrUnconfirmed(
+        brief.day.secretary.pendingTasks,
+        brief.sourceHealth.tasks.status,
+        (count) => pt ? `${count} pendentes` : `${count} pending`,
+      )}`);
+      lines.push(`📅 ${pt ? 'Agenda hoje' : 'Agenda today'}: ${countOrUnconfirmed(
+        brief.day.secretary.calendarEventCount,
+        brief.sourceHealth.calendar.status,
+        (count) => pt ? `${count} compromissos` : `${count} commitments`,
+      )}`);
+      lines.push(`📧 ${pt ? 'Caixa de entrada' : 'Inbox'}: ${countOrUnconfirmed(
+        brief.day.secretary.mailUnreadTotal,
+        brief.sourceHealth.mail.status,
+        (count) => pt ? `${count} por ler` : `${count} unread`,
+      )}`);
+      lines.push(`⏰ ${pt ? 'Lembretes de hoje' : "Today's reminders"}: ${reminders.length}`);
+
+      if (brief.warningCodes.length > 0) {
+        lines.push(pt
+          ? '⚠️ Uma ou mais fontes do plano precisam de confirmação.'
+          : '⚠️ One or more plan sources need confirmation.');
+      }
+
+      return { text: lines.join('\n'), domain: SECRETARY };
+    },
+  },
+
+  // ── Daily Priority ──────────────────────────────────────────────
   {
     id: 'daily_priority',
     pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|what should i focus on(?: now| today)?|what do i focus on(?: now| today)?|focus me(?: now| today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|em que devo focar(?: agora| hoje)?)[\s?!.]*$/i,
@@ -641,6 +799,18 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       const blockerLine = coordination?.blockers?.[0]?.summary ?? null;
 
       if (!topPriority && executionOrder.length === 0) {
+        const hasUnconfirmedSource = Object.values(brief.sourceHealth ?? {}).some((health) =>
+          health.status !== 'ready'
+          && !health.warningCodes.some((code) => code.endsWith('_SKILL_GATED')));
+        if (hasUnconfirmedSource) {
+          return {
+            text: escapeHtml(coordination.secretaryToday?.summary
+              ?? (lang.startsWith('pt')
+                ? 'Ainda estou a confirmar as fontes do plano antes de chamar o dia de limpo.'
+                : 'I am still confirming plan sources before calling the day clear.')),
+            domain: SECRETARY,
+          };
+        }
         return { text: c.inboxClean, domain: SECRETARY };
       }
 
@@ -697,14 +867,30 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'week_overview',
     pattern: /^(?:what(?:'s| is) my week|(?:show|mostra) (?:my |a |minha )?(?:week|semana)|(?:como|o que)(?: está)? (?:a |minha )?semana|\/week|this week|esta semana)[\s?!.]*$/i,
     requires: 'calendar',
-    handler: async (_userId, _match, lang) => {
+    handler: async (_userId, _match, lang, tenantId) => {
       const c = copyForLang(lang);
       const timezone = getUserTimezone(_userId);
       const weekStart = DateTime.now().setZone(timezone).startOf('week');
       const weekEnd = weekStart.endOf('week');
-      const events = _userId && hasConnectedCalendarForUser(_userId)
-        ? await getEvents(weekStart.toISO()!, weekEnd.toISO()!, _userId).catch(() => [])
-        : [];
+      const [calendarResult, planningWeek] = await Promise.all([
+        _userId
+          ? getEventsWithDiagnostics(weekStart.toISO()!, weekEnd.toISO()!, _userId)
+              .catch(() => unavailableCalendarResult())
+          : Promise.resolve(unavailableCalendarResult()),
+        _userId
+          ? composeWeeklyPlan({
+              userId: _userId,
+              tenantId,
+              weekStart: weekStart.toISODate()!,
+              language: lang,
+            }).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const calendarStatus = combinedCalendarStatus(
+        calendarResult.status,
+        planningWeek?.sourceHealth?.calendar?.status,
+      );
+      const events = calendarResult.events;
 
       let msg = `📅 <b>${c.weekHeader}</b>\n\n`;
 
@@ -721,6 +907,12 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         const d = weekStart.plus({ days: i });
         const dateStr = d.toFormat('yyyy-MM-dd');
         const dayEvents = byDay.get(dateStr) || [];
+        const canonicalCalendarCount = planningWeek?.days
+          ?.find((entry) => entry.date === dateStr)
+          ?.secretary?.calendarEventCount;
+        const nexusCommitmentCount = typeof canonicalCalendarCount === 'number'
+          ? Math.max(0, canonicalCalendarCount - dayEvents.length)
+          : 0;
         const dayLabel = c.dayNames[i];
         const dateLabel = d.toFormat('dd/MM');
 
@@ -729,9 +921,23 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
           for (const e of dayEvents) {
             msg += `  ▸ ${formatTime(e.start)} ${escapeHtml(e.summary)}\n`;
           }
-        } else {
+          if (nexusCommitmentCount > 0) {
+            msg += `  ▸ ${nexusCommitmentsLabel(c, nexusCommitmentCount)}\n`;
+          }
+        } else if (nexusCommitmentCount > 0) {
+          msg += `<b>${dayLabel} ${dateLabel}</b>\n`;
+          msg += `  ▸ ${nexusCommitmentsLabel(c, nexusCommitmentCount)}\n`;
+        } else if (calendarStatus === 'ready') {
           msg += `<b>${dayLabel} ${dateLabel}</b> — ${c.weekFree}\n`;
+        } else {
+          msg += `<b>${dayLabel} ${dateLabel}</b> — ⚠️ ${c.weekUnconfirmed}\n`;
         }
+      }
+
+      if (calendarStatus === 'degraded') {
+        msg += `\n${c.calendarDegraded}`;
+      } else if (calendarStatus === 'unavailable') {
+        msg += `\n${c.calendarUnavailable}`;
       }
 
       return { text: msg.trim(), domain: SECRETARY };
@@ -799,7 +1005,12 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         return { text: c.emailConfigMissing, domain: SECRETARY };
       }
       const summary = await getUnreadMailSummaryForUser(_userId);
-      if (summary.totalUnread === 0) {
+      const fulfilledProviders = [
+        summary.configuredProviders.includes('outlook') && typeof summary.outlookUnread === 'number',
+        summary.configuredProviders.includes('gmail') && typeof summary.gmailUnread === 'number',
+      ].filter(Boolean).length;
+      const complete = fulfilledProviders === summary.configuredProviders.length;
+      if (summary.totalUnread === 0 && complete) {
         return { text: c.inboxClean, domain: SECRETARY };
       }
       // The EN line doesn't need the Portuguese "email/emails" suffix
@@ -809,6 +1020,12 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       const text = c.emailUnreadLine
         .replace('%COUNT%', String(summary.totalUnread))
         .replace(/%S%/g, summary.totalUnread > 1 ? 's' : '');
+      if (!complete) {
+        return {
+          text: summary.totalUnread > 0 ? `${text}\n${c.emailUnavailable}` : c.emailUnavailable,
+          domain: SECRETARY,
+        };
+      }
       return { text, domain: SECRETARY };
     },
   },
@@ -946,6 +1163,9 @@ export async function tryFastpath(
   langOverride?: Lang,
   tenantId = userId,
 ): Promise<FastpathResult> {
+  // Validate before metrics, language/profile reads, or provider probes so a
+  // mismatched tenant causes zero user-owned I/O and zero misleading hits.
+  assertSecretaryPlanningScope(userId, tenantId);
   _metrics.totalAttempts++;
   const trimmed = message.trim();
   if (!trimmed) {

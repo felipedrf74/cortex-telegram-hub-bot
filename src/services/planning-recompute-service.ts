@@ -4,13 +4,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { getDb } from './database';
 import { composeDailyBrief, type DailyBriefResponse } from './daily-brief-orchestrator';
-import { createDecisionPlanningContext } from './decision-planning-context';
 import { invalidatePlanningCaches } from './cache-coherence-registry';
 import {
-  assertPlanningSnapshotScope,
-  createPlanningSnapshotIdentity,
-  type PlanningSnapshotIdentity,
-} from './planning-snapshot-contract';
+  assertSecretaryPlanningContextMatches,
+  resolveSecretaryPlanningContext,
+  SecretaryPlanningContextError,
+  type SecretaryPlanningContext,
+} from './secretary-planning-context';
+import { buildSecretaryDaySnapshot } from './secretary-planning-snapshot';
 import { composeWeeklyPlan, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
 
 const RECOMPUTE_LEASE_MINUTES = 5;
@@ -38,8 +39,9 @@ export class PlanningRecomputeError extends Error {
 export interface PlanningRecomputeInput {
   userId: number;
   tenantId: number;
-  timezone: string;
-  locale: string;
+  timezone?: string;
+  locale?: string;
+  context?: SecretaryPlanningContext;
   idempotencyKey: unknown;
   weekStart?: unknown;
   date?: unknown;
@@ -47,7 +49,6 @@ export interface PlanningRecomputeInput {
 }
 
 export interface PlanningRecomputeResult {
-  snapshot: PlanningSnapshotIdentity;
   week: WeeklyPlanResponse;
   today: DailyBriefResponse;
 }
@@ -74,21 +75,47 @@ interface RecomputeLeaseHeartbeat {
 export async function recomputePlanningSnapshot(
   input: PlanningRecomputeInput,
 ): Promise<PlanningRecomputeResult> {
-  const context = createDecisionPlanningContext({
-    userId: input.userId,
-    tenantId: input.tenantId,
-    timezone: input.timezone,
-    locale: input.locale,
-    ...(input.now ? { now: input.now } : {}),
-  });
-  const normalized = normalizeRequest(input, context.localDate, context.timezone, context.locale);
+  let context: SecretaryPlanningContext;
+  try {
+    context = input.context
+      ? input.context
+      : resolveSecretaryPlanningContext({
+          userId: input.userId,
+          tenantId: input.tenantId,
+          date: typeof input.date === 'string' ? input.date : undefined,
+          weekStart: typeof input.weekStart === 'string' ? input.weekStart : undefined,
+          language: input.locale,
+          ...(input.now ? { now: input.now } : {}),
+        });
+    assertSecretaryPlanningContextMatches(context, input);
+  } catch (error) {
+    if (!(error instanceof SecretaryPlanningContextError)) throw error;
+    throw new PlanningRecomputeError(
+      'PLANNING_RECOMPUTE_INVALID',
+      error.message,
+      400,
+    );
+  }
+  const normalized = normalizeRequest(
+    input,
+    context.targetDate,
+    context.timezone,
+    context.language,
+  );
+  if (context.targetDate !== normalized.date || context.weekStart !== normalized.weekStart) {
+    throw new PlanningRecomputeError(
+      'PLANNING_RECOMPUTE_INVALID',
+      'The supplied planning context does not match the requested date and week.',
+      400,
+    );
+  }
   const db = getDb();
   const existing = readReceipt(db, input.userId, input.tenantId, normalized.keyHash);
-  const replay = resolveExistingReceipt(existing, normalized.requestFingerprint, context.nowUtc);
+  const replay = resolveExistingReceipt(existing, normalized.requestFingerprint, context.capturedAt);
   if (replay) return replay;
 
   const leaseToken = randomUUID();
-  const leaseExpiresAt = DateTime.fromISO(context.nowUtc, { zone: 'utc' })
+  const leaseExpiresAt = DateTime.fromISO(context.capturedAt, { zone: 'utc' })
     .plus({ minutes: RECOMPUTE_LEASE_MINUTES })
     .toISO()!;
   const receiptId = `plan-recompute:${normalized.keyHash}`;
@@ -100,11 +127,11 @@ export async function recomputePlanningSnapshot(
     keyHash: normalized.keyHash,
     leaseToken,
     leaseExpiresAt,
-    nowUtc: context.nowUtc,
+    nowUtc: context.capturedAt,
   });
   if (!claimed) {
     const winner = readReceipt(db, input.userId, input.tenantId, normalized.keyHash);
-    const winnerReplay = resolveExistingReceipt(winner, normalized.requestFingerprint, context.nowUtc);
+    const winnerReplay = resolveExistingReceipt(winner, normalized.requestFingerprint, context.capturedAt);
     if (winnerReplay) return winnerReplay;
     throw new PlanningRecomputeError(
       'PLANNING_RECOMPUTE_IN_PROGRESS',
@@ -118,45 +145,38 @@ export async function recomputePlanningSnapshot(
     userId: input.userId,
     tenantId: input.tenantId,
     leaseToken,
-    baseNowUtc: context.nowUtc,
+    baseNowUtc: context.capturedAt,
   });
   try {
     leaseHeartbeat.renewOrThrow();
     invalidatePlanningCaches(input.userId);
-    const snapshot = createPlanningSnapshotIdentity(context, normalized.weekStart);
-    assertPlanningSnapshotScope(snapshot, {
-      userId: input.userId,
-      tenantId: input.tenantId,
-      timezone: context.timezone,
-      weekStart: normalized.weekStart,
-    });
+    const snapshotId = createInternalSnapshotId(context, normalized);
     const week = await composeWeeklyPlan({
       userId: input.userId,
       tenantId: input.tenantId,
       weekStart: normalized.weekStart,
-      timezone: context.timezone,
+      language: context.language,
+      context,
       forceRefresh: true,
       syncSignals: true,
       cacheMode: 'bypass',
-      planningContext: context,
-      planningSnapshot: snapshot,
     });
     leaseHeartbeat.renewOrThrow();
+    const daySnapshot = buildSecretaryDaySnapshot({ context, week });
     const today = await composeDailyBrief({
       userId: input.userId,
       tenantId: input.tenantId,
       date: normalized.date,
-      language: context.locale,
-      timezone: context.timezone,
+      language: context.language,
+      context,
       forceRefresh: true,
       cacheMode: 'bypass',
       weekPlan: week,
-      planningSnapshot: snapshot,
-      planningContext: context,
+      daySnapshot,
     });
     leaseHeartbeat.renewOrThrow();
-    assertCoherentResult({ snapshot, week, today }, normalized);
-    const result = { snapshot, week, today };
+    const result = { week, today };
+    assertCoherentResult(result, normalized, context);
     const completed = db.prepare(`
       UPDATE planning_recompute_receipts
          SET status = 'completed',
@@ -172,9 +192,9 @@ export async function recomputePlanningSnapshot(
          AND status = 'processing'
          AND lease_token = ?
     `).run(
-      snapshot.snapshotId,
+      snapshotId,
       JSON.stringify(result),
-      context.nowUtc,
+      context.capturedAt,
       receiptId,
       input.userId,
       input.tenantId,
@@ -182,7 +202,7 @@ export async function recomputePlanningSnapshot(
     );
     if (completed.changes !== 1) {
       const winner = readReceipt(db, input.userId, input.tenantId, normalized.keyHash);
-      const winnerReplay = resolveExistingReceipt(winner, normalized.requestFingerprint, context.nowUtc);
+      const winnerReplay = resolveExistingReceipt(winner, normalized.requestFingerprint, context.capturedAt);
       if (winnerReplay) return winnerReplay;
       throw new PlanningRecomputeError(
         'PLANNING_RECOMPUTE_IN_PROGRESS',
@@ -206,7 +226,7 @@ export async function recomputePlanningSnapshot(
          AND lease_token = ?
     `).run(
       error instanceof PlanningRecomputeError ? error.code : 'PLANNING_RECOMPUTE_FAILED',
-      context.nowUtc,
+      context.capturedAt,
       receiptId,
       input.userId,
       input.tenantId,
@@ -475,15 +495,24 @@ function claimReceipt(input: {
 function parseReceipt(responseJson: string | null): PlanningRecomputeResult {
   if (!responseJson) throw invalidReceipt();
   try {
-    const parsed = JSON.parse(responseJson) as Partial<PlanningRecomputeResult>;
+    const parsed = JSON.parse(responseJson) as Partial<PlanningRecomputeResult> & {
+      snapshot?: unknown;
+      week?: WeeklyPlanResponse & { planningSnapshot?: unknown };
+      today?: DailyBriefResponse & { planningSnapshot?: unknown };
+    };
     if (
-      !parsed.snapshot?.snapshotId
-      || parsed.week?.planningSnapshot?.snapshotId !== parsed.snapshot.snapshotId
-      || parsed.today?.planningSnapshot?.snapshotId !== parsed.snapshot.snapshotId
-      || parsed.week.generatedAt !== parsed.snapshot.generatedAt
-      || parsed.today.generatedAt !== parsed.snapshot.generatedAt
+      !parsed.week?.weekStart
+      || !parsed.today?.date
+      || !parsed.week.generatedAt
+      || parsed.today.generatedAt !== parsed.week.generatedAt
+      || parsed.today.timezone !== parsed.week.timezone
     ) throw invalidReceipt();
-    return parsed as PlanningRecomputeResult;
+    // Receipts written by the predecessor may carry an internal identity on
+    // the root and nested responses. Preserve replay compatibility while
+    // keeping those implementation IDs out of the public contract.
+    const { planningSnapshot: _weekIdentity, ...week } = parsed.week;
+    const { planningSnapshot: _todayIdentity, ...today } = parsed.today;
+    return { week, today } as PlanningRecomputeResult;
   } catch (error) {
     if (error instanceof PlanningRecomputeError) throw error;
     throw invalidReceipt();
@@ -501,13 +530,28 @@ function invalidReceipt(): PlanningRecomputeError {
 function assertCoherentResult(
   result: PlanningRecomputeResult,
   request: Pick<NormalizedRecomputeRequest, 'date' | 'weekStart'>,
+  context: SecretaryPlanningContext,
 ): void {
   if (
     result.week.weekStart !== request.weekStart
     || result.today.date !== request.date
-    || result.week.planningSnapshot?.snapshotId !== result.snapshot.snapshotId
-    || result.today.planningSnapshot?.snapshotId !== result.snapshot.snapshotId
-    || result.week.generatedAt !== result.snapshot.generatedAt
-    || result.today.generatedAt !== result.snapshot.generatedAt
+    || result.week.generatedAt !== context.capturedAt
+    || result.today.generatedAt !== context.capturedAt
+    || result.week.timezone !== context.timezone
+    || result.today.timezone !== context.timezone
   ) throw invalidReceipt();
+}
+
+function createInternalSnapshotId(
+  context: SecretaryPlanningContext,
+  request: Pick<NormalizedRecomputeRequest, 'date' | 'weekStart'>,
+): string {
+  return `plan_${createHash('sha256').update(JSON.stringify({
+    capturedAt: context.capturedAt,
+    date: request.date,
+    language: context.language,
+    scope: { tenantId: context.tenantId, userId: context.userId },
+    timezone: context.timezone,
+    weekStart: request.weekStart,
+  })).digest('hex')}`;
 }

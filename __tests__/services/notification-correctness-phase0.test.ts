@@ -681,18 +681,36 @@ describe('Phase 0 — notification correctness', () => {
       expect(digest.body).toBe('4 events, 6 tasks. First: Standup 09:00.');
     });
 
-    it('lets a composed digest body reach the lock screen unrewritten', async () => {
+    it('lets only explicitly public composed digest copy reach the lock screen unrewritten', async () => {
       const created = await createNotificationIntent({
         ...buildReminderIntent(85, { requiresUserAction: false }),
         type: 'daily_digest',
         priority: 'passive',
+        privacyPolicy: 'public',
         title: 'Your brief',
         body: '1 decision waiting · Standup 09:30',
         dedupeKey: 'secretary:digest:85',
       } as never);
-      // Digest bodies are composed from counts and clock times, never producer
-      // free text, so the fixed-string rewrite would only destroy information.
+      // Public is an explicit producer assertion that the composed copy contains
+      // no private title, amount, health fact, or other authenticated detail.
       expect(created.item!.safeBody).toContain('Standup 09:30');
+    });
+
+    it('keeps private report headlines off the lock screen', async () => {
+      const created = await createNotificationIntent({
+        ...buildReminderIntent(87, { requiresUserAction: false }),
+        type: 'daily_digest',
+        priority: 'passive',
+        privacyPolicy: 'sensitive',
+        title: 'Your brief',
+        body: 'Keep private oncology recovery run on track.',
+        sensitiveBody: 'Keep private oncology recovery run on track.',
+        dedupeKey: 'secretary:digest:87',
+      } as never);
+
+      expect(created.item!.safeBody).not.toContain('oncology');
+      expect(created.item!.safeBody).not.toContain('recovery run');
+      expect(created.item!.safeBody).toContain('open Nexus');
     });
   });
 

@@ -367,7 +367,7 @@ describe('migration inventory', () => {
     });
     const onDisk = migrationFiles
       .filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(inventory).toHaveLength(301);
+    expect(inventory).toHaveLength(302);
     expect(inventory).toHaveLength(onDisk.length);
     expect(() => assertMigrationInventoryShape(inventory)).not.toThrow();
     for (const entry of inventory) {
@@ -375,11 +375,11 @@ describe('migration inventory', () => {
       expect(typeof entry.predecessorCompatible).toBe('boolean');
     }
     expect(inventory.at(-1)).toMatchObject({
-      file: '310_retire_fossa_email_metadata.sql',
+      file: '311_activate_secretary_2_2_skill_version.sql',
       kind: 'backfill',
       predecessorCompatible: true,
     });
-    expect(inventory.slice(-8)).toMatchObject([
+    expect(inventory.slice(-9)).toMatchObject([
       {
         file: '303_training_coach_v2_contracts.sql',
         kind: 'expand',
@@ -417,6 +417,11 @@ describe('migration inventory', () => {
       },
       {
         file: '310_retire_fossa_email_metadata.sql',
+        kind: 'backfill',
+        predecessorCompatible: true,
+      },
+      {
+        file: '311_activate_secretary_2_2_skill_version.sql',
         kind: 'backfill',
         predecessorCompatible: true,
       },
@@ -511,7 +516,7 @@ describe('migration inventory', () => {
     // still-green zero-unknown assertion. Deliberate policy changes update this
     // exact snapshot together.
     const compatible = inventory.filter((entry) => entry.predecessorCompatible).length;
-    expect(compatible).toBe(173);
+    expect(compatible).toBe(174);
   });
 });
 
@@ -661,7 +666,8 @@ describe('cdEligibility aggregation', () => {
     '308_secretary_calendar_command_receipts.sql',
     '309_secretary_calendar_mutation_receipts.sql',
     '310_retire_fossa_email_metadata.sql',
-  ])('keeps Secretary precursor migration %s eligible for predecessor-compatible CD', (file) => {
+    '311_activate_secretary_2_2_skill_version.sql',
+  ])('keeps Secretary migration %s eligible for predecessor-compatible CD', (file) => {
     const sql = readFileSync(join(root, 'migrations', file), 'utf8');
     const result = evaluateMigrationCdEligibility({
       changedMigrations: [{ file: `migrations/${file}`, sql }],
@@ -766,7 +772,7 @@ describe('second-round adversarial probes', () => {
     // block every release for a classifier gap rather than a real risk.
     const dir = join(process.cwd(), 'migrations');
     const files = readdirSync(dir).filter((file) => /^\d{3}_.*\.sql$/.test(file));
-    expect(files.length).toBe(301);
+    expect(files.length).toBe(302);
     const unknown = files.filter(
       (file) => classifyMigrationSql(readFileSync(join(dir, file), 'utf8')).kind === 'unknown',
     );

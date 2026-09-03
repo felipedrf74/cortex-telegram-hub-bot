@@ -230,33 +230,24 @@ describe('plan routes', () => {
         crossSkillImpacts: [],
       },
     });
-    const planningSnapshot = {
-      snapshotId: 'plan_route_snapshot',
-      generatedAt: '2026-04-14T10:00:00.000Z',
-      userId: 12,
-      tenantId: 12,
-      timezone: 'Europe/Lisbon',
-      locale: 'pt-BR',
-      localDate: '2026-04-14',
-      weekStart: '2026-04-13',
-      isoWeek: '2026-W16',
-    };
     mockRecomputePlanningSnapshot.mockResolvedValue({
-      snapshot: planningSnapshot,
       week: {
         weekStart: '2026-04-13',
         weekEnd: '2026-04-19',
-        generatedAt: planningSnapshot.generatedAt,
-        planningSnapshot,
+        generatedAt: '2026-04-14T10:00:00.000Z',
         days: [],
       },
       today: {
         date: '2026-04-14',
-        generatedAt: planningSnapshot.generatedAt,
-        planningSnapshot,
+        generatedAt: '2026-04-14T10:00:00.000Z',
       },
     });
-    mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'pt-BR',
+      timezone: 'Europe/Lisbon',
+    });
     mockGetUserLanguageById.mockReturnValue('pt-BR');
     mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
     mockGetCachedSWR.mockReturnValue(null);
@@ -273,6 +264,10 @@ describe('plan routes', () => {
     expect(response.body.ok).toBe(true);
     expect(response.body.data.weekStart).toBe('2026-04-13');
     expect(response.headers['Server-Timing']).toEqual(expect.stringContaining('weekly_plan;dur='));
+    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      forceRefresh: true,
+      cacheMode: 'bypass',
+    }));
   });
 
   it('returns the daily plan route with stable coordination data and honors If-None-Match', async () => {
@@ -288,12 +283,21 @@ describe('plan routes', () => {
     expect(first.headers.ETag).toBeTruthy();
     expect(first.headers['Server-Timing']).toEqual(expect.stringContaining('daily_brief;dur='));
     expect(second.statusCode).toBe(304);
+    expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
+      forceRefresh: true,
+      cacheMode: 'bypass',
+    }));
   });
 
   it('keys implicit daily and weekly route caches in the authenticated user timezone', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-04-13T01:00:00.000Z'));
-    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'pt-BR',
+      timezone: 'Pacific/Honolulu',
+    });
 
     await dispatch('GET', '/today');
     await dispatch('GET', '/week');
@@ -305,32 +309,36 @@ describe('plan routes', () => {
       'plan:week:u:12:tenant:12:2026-04-06:tz:Pacific/Honolulu:route:pt-br',
     );
     expect(mockComposeDailyBrief).toHaveBeenCalledWith(expect.objectContaining({
-      timezone: 'Pacific/Honolulu',
-      cacheMode: 'bypass',
+      context: expect.objectContaining({ timezone: 'Pacific/Honolulu' }),
     }));
     expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
-      timezone: 'Pacific/Honolulu',
-      cacheMode: 'bypass',
+      context: expect.objectContaining({ timezone: 'Pacific/Honolulu' }),
     }));
   });
 
   it('never shares a daily plan cache entry across authenticated user or tenant scope', async () => {
-    await dispatch('GET', '/today?date=2026-04-14', { userId: 12, tenantId: 34 });
-    await dispatch('GET', '/today?date=2026-04-14', { userId: 13, tenantId: 35 });
+    mockGetUserById.mockImplementation((userId: number) => ({
+      id: userId,
+      tier: 'max',
+      language: 'pt-BR',
+      timezone: 'Europe/Lisbon',
+    }));
+    await dispatch('GET', '/today?date=2026-04-14', { userId: 12, tenantId: 12 });
+    await dispatch('GET', '/today?date=2026-04-14', { userId: 13, tenantId: 13 });
 
     expect(mockGetCachedSWR).toHaveBeenCalledWith(
-      'plan:today:u:12:tenant:34:2026-04-14:tz:Europe/Lisbon:route:pt-br',
+      'plan:today:u:12:tenant:12:2026-04-14:tz:Europe/Lisbon:route:pt-br',
     );
     expect(mockGetCachedSWR).toHaveBeenCalledWith(
-      'plan:today:u:13:tenant:35:2026-04-14:tz:Europe/Lisbon:route:pt-br',
+      'plan:today:u:13:tenant:13:2026-04-14:tz:Europe/Lisbon:route:pt-br',
     );
     expect(mockComposeDailyBrief).toHaveBeenNthCalledWith(1, expect.objectContaining({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
     }));
     expect(mockComposeDailyBrief).toHaveBeenNthCalledWith(2, expect.objectContaining({
       userId: 13,
-      tenantId: 35,
+      tenantId: 13,
     }));
   });
 
@@ -338,15 +346,13 @@ describe('plan routes', () => {
     const malformed = await dispatch('GET', '/today?date=2026-04-14T10%3A00%3A00Z');
     expect(malformed.statusCode).toBe(400);
     expect(malformed.body.error).toMatchObject({
-      code: 'PLAN_DATE_INVALID',
-      details: { field: 'date', reason: 'invalid_iso_date' },
+      code: 'INVALID_INPUT',
     });
 
     const impossible = await dispatch('GET', '/today?date=2026-02-30');
     expect(impossible.statusCode).toBe(400);
     expect(impossible.body.error).toMatchObject({
-      code: 'PLAN_DATE_INVALID',
-      details: { field: 'date', reason: 'invalid_calendar_date' },
+      code: 'INVALID_INPUT',
     });
     expect(mockGetCachedSWR).not.toHaveBeenCalled();
     expect(mockComposeDailyBrief).not.toHaveBeenCalled();
@@ -357,8 +363,7 @@ describe('plan routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.body.error).toMatchObject({
-      code: 'PLAN_WEEK_START_INVALID',
-      details: { field: 'weekStart', reason: 'monday_required' },
+      code: 'INVALID_INPUT',
     });
     expect(mockGetCachedSWR).not.toHaveBeenCalled();
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
@@ -369,8 +374,7 @@ describe('plan routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.body.error).toMatchObject({
-      code: 'PLAN_WEEK_START_INVALID',
-      details: { field: 'weekStart', reason: 'invalid_iso_date' },
+      code: 'INVALID_INPUT',
     });
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
   });
@@ -441,7 +445,7 @@ describe('plan routes', () => {
     expect(response.body.data.explanation).toContain('planning sources or generation gates were unavailable');
     expect(response.body.data.explanation).not.toContain('daily AI cap');
     expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
-      timezone: 'Europe/Lisbon',
+      context: expect.objectContaining({ timezone: 'Europe/Lisbon' }),
     }));
   });
 
@@ -465,6 +469,12 @@ describe('plan routes', () => {
         degraded: false,
         gated: { skills: [] },
         garmin_stale: false,
+        timezone: 'Europe/Lisbon',
+        warningCodes: [],
+        warnings: [],
+        sourceHealth: {
+          calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        },
         conflicts: [],
         creativeCopy: { headline: 'Cached', note: 'Cached note' },
         day: {
@@ -504,6 +514,12 @@ describe('plan routes', () => {
         degraded: false,
         gated: { skills: [] },
         garmin_stale: false,
+        timezone: 'Europe/Lisbon',
+        warningCodes: [],
+        warnings: [],
+        sourceHealth: {
+          calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        },
         conflicts: [],
         creativeCopy: { headline: 'Stale', note: 'Stale note' },
         summary: { sessionCount: 1, mealCount: 1, activeConflictCount: 0 },
@@ -517,18 +533,18 @@ describe('plan routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.cached).toBe(true);
     expect(response.body.data.creativeCopy.headline).toBe('Stale');
+    expect(response.body.data.sourceHealth.calendar.status).toBe('stale');
+    expect(response.body.data.warningCodes).toContain('PLAN_CACHE_STALE');
     expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
       userId: 12,
       tenantId: 12,
       weekStart: '2026-04-13',
-      timezone: 'Europe/Lisbon',
-      forceRefresh: true,
-      cacheMode: 'bypass',
-      planningContext: expect.objectContaining({
+      language: 'pt-BR',
+      context: expect.objectContaining({
         userId: 12,
         tenantId: 12,
         timezone: 'Europe/Lisbon',
-        locale: 'pt-BR',
+        language: 'pt-BR',
       }),
     }));
     expect(mockSetCacheSWR).toHaveBeenCalledWith(
@@ -539,30 +555,14 @@ describe('plan routes', () => {
     );
   });
 
-  it('passes tenant scope into weekly plan routes', async () => {
+  it('rejects an authenticated tenant mismatch before planning reads', async () => {
     const response = await dispatch('GET', '/week?weekStart=2026-04-13', { tenantId: 34 });
 
-    expect(response.statusCode).toBe(200);
-    expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
-      userId: 12,
-      tenantId: 34,
-      weekStart: '2026-04-13',
-      timezone: 'Europe/Lisbon',
-      forceRefresh: true,
-      cacheMode: 'bypass',
-      planningContext: expect.objectContaining({
-        userId: 12,
-        tenantId: 34,
-        timezone: 'Europe/Lisbon',
-        locale: 'pt-BR',
-      }),
-    }));
-    expect(mockSetCacheSWR).toHaveBeenCalledWith(
-      'plan:week:u:12:tenant:34:2026-04-13:tz:Europe/Lisbon:route:pt-br',
-      expect.objectContaining({ weekStart: '2026-04-13' }),
-      120,
-      600,
-    );
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_INPUT');
+    expect(mockGetUserById).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(mockSetCacheSWR).not.toHaveBeenCalled();
   });
 
   it('returns a client-safe error when the daily plan build throws unexpectedly', async () => {
@@ -585,14 +585,18 @@ describe('plan routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
-    expect(response.body.data.snapshot.snapshotId).toBe('plan_route_snapshot');
+    expect(response.body.data).not.toHaveProperty('snapshot');
     expect(response.body.data.week.weekStart).toBe('2026-04-13');
     expect(response.body.data.today.date).toBe('2026-04-14');
     expect(mockRecomputePlanningSnapshot).toHaveBeenCalledWith({
       userId: 12,
       tenantId: 12,
-      timezone: 'Europe/Lisbon',
-      locale: 'pt-BR',
+      context: expect.objectContaining({
+        userId: 12,
+        tenantId: 12,
+        timezone: 'Europe/Lisbon',
+        language: 'pt-BR',
+      }),
       idempotencyKey: 'plan-route-recompute-1',
       weekStart: '2026-04-13',
       date: '2026-04-14',
@@ -604,11 +608,79 @@ describe('plan routes', () => {
       body: null as unknown as Record<string, unknown>,
     });
     expect(headerReplay.statusCode).toBe(200);
-    expect(mockRecomputePlanningSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+    const replayInput = mockRecomputePlanningSnapshot.mock.calls[0]?.[0];
+    expect(replayInput).toEqual(expect.objectContaining({
       idempotencyKey: 'plan-route-header-recompute-1',
-      weekStart: undefined,
-      date: undefined,
     }));
+    expect(replayInput.date).toBe(replayInput.context.targetDate);
+    expect(replayInput.weekStart).toBe(replayInput.context.weekStart);
+  });
+
+  it('returns INVALID_INPUT for a malformed date before planner or profile reads', async () => {
+    const response = await dispatch('GET', '/today?date=2026-02-30');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_INPUT');
+    expect(mockGetUserById).not.toHaveBeenCalled();
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-string recompute dates instead of silently defaulting them', async () => {
+    const response = await dispatch('POST', '/recompute', {
+      body: { weekStart: 20260413, date: ['2026-04-14'] },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_INPUT');
+    expect(mockGetUserById).not.toHaveBeenCalled();
+    expect(mockClearCacheByPrefix).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+  });
+
+  it('rejects recompute inputs whose requested date is outside the requested week', async () => {
+    const response = await dispatch('POST', '/recompute', {
+      body: { weekStart: '2026-04-13', date: '2026-04-21' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('INVALID_INPUT');
+    expect(mockClearCacheByPrefix).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+  });
+
+  it('separates route cache identity by the saved timezone', async () => {
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'pt-PT',
+      timezone: 'America/New_York',
+    });
+
+    await dispatch('GET', '/week?weekStart=2026-04-13');
+
+    expect(mockGetCachedSWR).toHaveBeenCalledWith(
+      'plan:week:u:12:tenant:12:2026-04-13:tz:America/New_York:route:pt',
+    );
+  });
+
+  it('separates English, Brazilian Portuguese, and European Portuguese route caches', async () => {
+    await dispatch('GET', '/week?weekStart=2026-04-13', {
+      headers: { 'x-language': 'en-US' },
+    });
+    await dispatch('GET', '/week?weekStart=2026-04-13', {
+      headers: { 'x-language': 'pt-BR' },
+    });
+    await dispatch('GET', '/week?weekStart=2026-04-13', {
+      headers: { 'x-language': 'pt-PT' },
+    });
+
+    expect(mockGetCachedSWR.mock.calls.map(([key]) => key)).toEqual([
+      'plan:week:u:12:tenant:12:2026-04-13:tz:Europe/Lisbon:route:en-us',
+      'plan:week:u:12:tenant:12:2026-04-13:tz:Europe/Lisbon:route:pt-br',
+      'plan:week:u:12:tenant:12:2026-04-13:tz:Europe/Lisbon:route:pt',
+    ]);
   });
 
   it('returns typed validation and idempotency-conflict errors from recompute', async () => {
@@ -640,8 +712,7 @@ describe('plan routes', () => {
     });
     expect(invalidWeek.statusCode).toBe(400);
     expect(invalidWeek.body.error).toMatchObject({
-      code: 'PLAN_WEEK_START_INVALID',
-      details: { field: 'weekStart', reason: 'monday_required' },
+      code: 'INVALID_INPUT',
     });
 
     const invalidDate = await dispatch('POST', '/recompute', {
@@ -649,8 +720,7 @@ describe('plan routes', () => {
     });
     expect(invalidDate.statusCode).toBe(400);
     expect(invalidDate.body.error).toMatchObject({
-      code: 'PLAN_DATE_INVALID',
-      details: { field: 'date', reason: 'invalid_calendar_date' },
+      code: 'INVALID_INPUT',
     });
     expect(mockRecomputePlanningSnapshot).not.toHaveBeenCalled();
   });

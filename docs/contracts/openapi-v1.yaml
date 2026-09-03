@@ -4310,11 +4310,11 @@ paths:
         - "calendar"
       summary: "List calendar events in a date range across all connected providers (Google + Outlook, deduplicated), with Apple Health sleep agenda events merged in; SWR-cached."
       description: |-
-        Source: src/api/routes/calendar.ts:80
+        Source: src/api/routes/calendar.ts:110
 
-        Notes: Module-level tenant-scope middleware (calendar.ts:66) returns 401 UNAUTHORIZED on invalid tenant scope for every calendar route. EventDTO: { id, title, description, start, end, location, source, category?, categories, color, isAllDay }.
+        Notes: Module-level tenant-scope middleware (calendar.ts:66) returns 401 UNAUTHORIZED on invalid tenant scope for every calendar route. EventDTO: { id, title, description, start, end, location, source, syncedSources?, category?, categories, color, isAllDay }. `syncedSources` preserves every provider represented by a deduplicated event and is omitted for legacy/single-source payloads that do not carry membership metadata.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:80"
+      x-source: "src/api/routes/calendar.ts:110"
       parameters:
         - name: "start"
           in: "query"
@@ -4357,29 +4357,47 @@ paths:
       operationId: "postCalendarEvents"
       tags:
         - "calendar"
-      summary: "Token-zero 'smart blocking' event creation directly on the user's Google or Outlook calendar; invalidates calendar caches."
+      summary: "Idempotent Secretary calendar command backed by the agenda ledger and provider-sync reconciliation state machine."
       description: |-
-        Source: src/api/routes/calendar.ts:141
+        Source: src/api/routes/calendar.ts:171
 
-        Request body (evidenced fields): title (string, required, non-empty), start (ISO 8601, required), end (ISO 8601, required, > start, duration <= 24h), description? (string), location? (string), attendees? (string[] of emails; invalid entries silently dropped), source? ('google'|'outlook'; defaults via per-user write preference), recurrence? (passthrough), nexusCategory? (string), categories? (string[]; allowed values focus|pomodoro|training|meal|meeting)
+        Request body (evidenced fields): title (string, required, 1-300 characters), start (ISO 8601, required), end (ISO 8601, required, > start, duration <= 24h), description? (string, <=10000 characters), location? (string, <=500 characters), attendees? (up to 100 email strings, each <=320 characters), source? ('google'|'outlook'; defaults via per-user write preference), recurrence? (bounded JSON object), nexusCategory? (string), categories? (up to 20 strings, each <=100 characters; Nexus values focus|pomodoro|training|meal|meeting)
+
+        New clients send a stable visible-character `Idempotency-Key`. The same key and canonical body replays without another provider write; reuse with different content fails with 409. The missing-key path remains available for one installed-app compatibility release and is metered as deprecated. The durable command payload is limited to 32 KiB. Provider availability must be fully known before any write. Overlaps create Decision Center review work and return 409 without writing the provider calendar. Cache invalidation occurs only after durable review creation or a reconciled provider mutation; rejected and unknown-state commands do not invalidate plans.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:141"
+      x-source: "src/api/routes/calendar.ts:171"
+      parameters:
+        - name: "Idempotency-Key"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            maxLength: 200
+          description: "Required for new clients; temporarily optional for installed-app compatibility."
       requestBody:
         required: true
         content:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: title (string, required, non-empty), start (ISO 8601, required), end (ISO 8601, required, > start, duration <= 24h), description? (string), location? (string), attendees? (string[] of emails; invalid entries silently dropped), source? ('google'|'outlook'; defaults via per-user write preference), recurrence? (passthrough), nexusCategory? (string), categories? (string[]; allowed values focus|pomodoro|training|meal|meeting). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: title (string, required, 1-300 characters), start (ISO 8601, required), end (ISO 8601, required, > start, duration <= 24h), description? (string, <=10000 characters), location? (string, <=500 characters), attendees? (up to 100 valid email strings), source? ('google'|'outlook'; defaults via per-user write preference), recurrence? (bounded JSON object), nexusCategory? (string), categories? (up to 20 strings; Nexus values focus|pomodoro|training|meal|meeting). Aggregate durable payload is limited to 32 KiB."
       responses:
         "200":
-          description: "{ event: EventDTO, providerPreferenceWarning: { code, message, requested } | null } (Standard success envelope unless noted.)"
+          description: "{ event: EventDTO, replayed: boolean, providerPreferenceWarning: { code, message, requested } | null } (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION."
+          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION, INVALID_INPUT."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "403":
+          description: "Error envelope. Stable code(s): TENANT_SCOPE_MISMATCH."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_KEY_REUSED, CALENDAR_CONFLICT_STATE_UNKNOWN, CALENDAR_CONFLICT_REVIEW_REQUIRED, CALENDAR_SYNC_PENDING. No blind provider retry is issued."
         "500":
           description: "Error envelope. Stable code(s): CALENDAR_CREATE_FAILED."
+        "502":
+          description: "Error envelope. Stable code(s): CALENDAR_PROVIDER_WRITE_FAILED."
+        "503":
+          description: "Error envelope. Stable code(s): CALENDAR_DECISION_REVIEW_PENDING when detected conflict work could not be durably created. No provider write occurs."
         "4XX":
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
@@ -4389,33 +4407,52 @@ paths:
       operationId: "patchCalendarEventsByEventId"
       tags:
         - "calendar"
-      summary: "Token-zero partial update of a calendar event (title/start/end) on the specified provider; invalidates calendar caches."
+      summary: "Idempotent Secretary update command for an existing provider calendar event."
       description: |-
-        Source: src/api/routes/calendar.ts:443
+        Source: src/api/routes/calendar.ts:564
 
-        Request body (evidenced fields): source ('google'|'outlook', required), plus at least one of: title (non-empty string), start (ISO 8601), end (ISO 8601; must be after start when both given)
+        Request body (evidenced fields): source ('google'|'outlook', required), plus at least one of title (non-empty string), description (string), or a complete start/end pair (ISO 8601, end > start, duration <= 24h). New clients persist Idempotency-Key; the same key/body replays without a second provider write and different content returns 409. A move reads every configured calendar source first; unknown source coverage blocks the write, while an overlap creates Decision Center review work and returns 409. Events owned by a Secretary agenda row stage the desired placement in that scoped ledger and execute through its provider-sync state machine so a later drift repair cannot revert the confirmed change. Non-Secretary skills retain ownership of event titles and descriptions; Secretary may change only aggregate time placement. The missing-key route remains for one installed-app compatibility release, emits a deprecation metric, and uses a generated one-use key through the same deterministic mutation service.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:443"
+      x-source: "src/api/routes/calendar.ts:564"
       parameters:
         - name: "eventId"
           in: "path"
           required: true
           schema:
             type: "string"
+        - name: "Idempotency-Key"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            maxLength: 200
+          description: "Required for new clients; temporarily optional for installed-app compatibility."
       requestBody:
         required: true
         content:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: source ('google'|'outlook', required), plus at least one of: title (non-empty string), start (ISO 8601), end (ISO 8601; must be after start when both given). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: source ('google'|'outlook', required), plus title?, description?, or start+end together. New keyed commands require the stricter durable-service bounds; the temporary missing-key route preserves the predecessor-compatible installed-client shape."
       responses:
         "200":
-          description: "{ event: EventDTO } (Standard success envelope unless noted.)"
+          description: "{ event: EventDTO, replayed: boolean } (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION."
+          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION, INVALID_INPUT."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "403":
+          description: "Error envelope. Stable code(s): TENANT_SCOPE_MISMATCH."
+        "404":
+          description: "Error envelope. Stable code(s): CALENDAR_EVENT_NOT_FOUND."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_KEY_REUSED, CALENDAR_CONFLICT_STATE_UNKNOWN, CALENDAR_CONFLICT_REVIEW_REQUIRED, CALENDAR_SYNC_PENDING."
+        "422":
+          description: "Error envelope. Stable code: INVALID_INPUT with CALENDAR_TITLE_SOURCE_OWNED or CALENDAR_DESCRIPTION_SOURCE_OWNED when a command attempts to replace another skill's canonical event shape."
+        "502":
+          description: "Error envelope. Stable code(s): CALENDAR_PROVIDER_WRITE_FAILED."
+        "503":
+          description: "Error envelope. Stable code(s): CALENDAR_DECISION_REVIEW_PENDING."
         "500":
           description: "Error envelope. Stable code(s): CALENDAR_UPDATE_FAILED."
         "4XX":
@@ -4426,10 +4463,10 @@ paths:
       operationId: "deleteCalendarEventsByEventId"
       tags:
         - "calendar"
-      summary: "Delete an event directly from the connected calendar provider; invalidates calendar caches."
-      description: "Source: src/api/routes/calendar.ts:526"
+      summary: "Idempotent Secretary delete command for an existing provider calendar event."
+      description: "Source: src/api/routes/calendar.ts:713. New clients send source in the JSON body plus a stable Idempotency-Key. Terminal replay and an already-absent event return success without another provider write. A mapped Secretary agenda item is canceled and cleaned through the provider-sync state machine before its provider identity is cleared. The legacy source query and missing-key delete remain for one installed-app compatibility release, emit a deprecation metric, and use a generated one-use key through the same deterministic mutation service."
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:526"
+      x-source: "src/api/routes/calendar.ts:713"
       parameters:
         - name: "eventId"
           in: "path"
@@ -4438,17 +4475,37 @@ paths:
             type: "string"
         - name: "source"
           in: "query"
-          required: true
+          required: false
           schema:
             type: "string"
-          description: "'google' | 'outlook'; 400 VALIDATION if missing/other"
+          description: "Legacy compatibility input: 'google' | 'outlook'. New clients send source in the JSON body."
+        - name: "Idempotency-Key"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            maxLength: 200
+          description: "Required for new clients; temporarily optional for installed-app compatibility."
+      requestBody:
+        required: false
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "New-client shape: source ('google'|'outlook', required)."
       responses:
         "200":
-          description: "{ deleted: true, eventId, source } (Standard success envelope unless noted.)"
+          description: "{ deleted: true, eventId, source, replayed: boolean } (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION."
+          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION, INVALID_INPUT."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "403":
+          description: "Error envelope. Stable code(s): TENANT_SCOPE_MISMATCH."
+        "409":
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_KEY_REUSED, CALENDAR_CONFLICT_STATE_UNKNOWN, CALENDAR_SYNC_PENDING."
+        "502":
+          description: "Error envelope. Stable code(s): CALENDAR_PROVIDER_WRITE_FAILED."
         "500":
           description: "Error envelope. Stable code(s): CALENDAR_DELETE_FAILED."
         "4XX":
@@ -4460,35 +4517,45 @@ paths:
       operationId: "postCalendarFocusBlocks"
       tags:
         - "calendar"
-      summary: "Create a conflict-checked focus block or grouped Pomodoro blocker on the user's calendar, with in-flight idempotency guard against double-taps."
+      summary: "Create an idempotent focus block or grouped Pomodoro blocker through the durable Secretary calendar command service."
       description: |-
-        Source: src/api/routes/calendar.ts:329
+        Source: src/api/routes/calendar.ts:422
 
-        Request body (evidenced fields): mode? ('focus'|'pomodoro', default 'focus'), start? (ISO 8601; defaults to now, rounded up to next quarter-hour), durationMinutes? (int, default 30, clamped 5-480; ignored for pomodoro), pomodoroBlocks? (int, default 1, clamped 1-8), title? (string; focus mode only, default 'Focus time'), description? (string; focus mode only), source? ('google'|'outlook')
+        Request body (evidenced fields): mode? ('focus'|'pomodoro', default 'focus'), start (ISO 8601 and required when Idempotency-Key is present; the temporary missing-key compatibility path may default to now; rounded up to next quarter-hour), durationMinutes? (int, default 30, clamped 5-480; ignored for pomodoro), pomodoroBlocks? (int, default 1, clamped 1-8), title? (string; focus mode only, default 'Focus time'), description? (string; focus mode only), source? ('google'|'outlook')
 
-        Notes: Same isHomeFocusPillV1Enabled feature-flag gate as focus-conflict-check (403 when off; route always registered).
+        Notes: Same isHomeFocusPillV1Enabled feature-flag gate as focus-conflict-check (403 when off; route always registered). New clients persist a visible-character `Idempotency-Key`; the missing-key path remains for one installed-app compatibility release and emits the same deprecation metric as POST /calendar/events. Terminal replays perform no conflict or provider read. Provider and Apple Health commitments are routed into Decision Center review; unknown source state blocks the write. Provider effects use the Secretary agenda ledger and provider-sync reconciler.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:329"
+      x-source: "src/api/routes/calendar.ts:422"
+      parameters:
+        - name: "Idempotency-Key"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            maxLength: 200
+          description: "Required for new clients; temporarily optional for installed-app compatibility."
       requestBody:
         required: true
         content:
           "application/json":
             schema:
               type: "object"
-              description: "Evidenced fields: mode? ('focus'|'pomodoro', default 'focus'), start? (ISO 8601; defaults to now, rounded up to next quarter-hour), durationMinutes? (int, default 30, clamped 5-480; ignored for pomodoro), pomodoroBlocks? (int, default 1, clamped 1-8), title? (string; focus mode only, default 'Focus time'), description? (string; focus mode only), source? ('google'|'outlook'). Route validation code is authoritative for exact shapes."
+              description: "Evidenced fields: mode? ('focus'|'pomodoro', default 'focus'), start (ISO 8601 and required for keyed clients; only the temporary missing-key compatibility path defaults to now; rounded up to next quarter-hour), durationMinutes? (int, default 30, clamped 5-480; ignored for pomodoro), pomodoroBlocks? (int, default 1, clamped 1-8), title? (string; focus mode only, default 'Focus time'), description? (string; focus mode only), source? ('google'|'outlook'). Route validation code is authoritative for exact shapes."
       responses:
         "201":
-          description: "{ event: EventDTO, mode, pomodoroIntervals: Interval[], providerPreferenceWarning: object|null } (Standard success envelope unless noted.)"
+          description: "{ event: EventDTO, mode, pomodoroIntervals: Interval[], replayed: boolean, providerPreferenceWarning: object|null } (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, VALIDATION."
+          description: "Error envelope. Stable code(s): CALENDAR_NOT_CONFIGURED, INVALID_INPUT, VALIDATION."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "403":
-          description: "Error envelope. Stable code(s): FEATURE_DISABLED."
+          description: "Error envelope. Stable code(s): FEATURE_DISABLED, TENANT_SCOPE_MISMATCH."
         "409":
-          description: "Error envelope. Stable code(s): FOCUS_BLOCK_DUPLICATE, FOCUS_SLOT_CONFLICT, FOCUS_SLOT_UNAVAILABLE."
+          description: "Error envelope. Stable code(s): IDEMPOTENCY_KEY_REUSED, CALENDAR_CONFLICT_STATE_UNKNOWN, CALENDAR_CONFLICT_REVIEW_REQUIRED, CALENDAR_SYNC_PENDING. Conflict review and unknown source state never write a provider event."
         "502":
-          description: "Error envelope. Stable code(s): CALENDAR_CREATE_FAILED."
+          description: "Error envelope. Stable code(s): CALENDAR_PROVIDER_WRITE_FAILED."
+        "503":
+          description: "Error envelope. Stable code(s): CALENDAR_DECISION_REVIEW_PENDING."
         "4XX":
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
@@ -4500,13 +4567,13 @@ paths:
         - "calendar"
       summary: "Pre-write calendar conflict check for the Home focus/Pomodoro quick action (returns rounded start, effective duration, and conflict precheck)."
       description: |-
-        Source: src/api/routes/calendar.ts:268
+        Source: src/api/routes/calendar.ts:355
 
         Request body (evidenced fields): start? (ISO 8601; defaults to next quarter-hour), durationMinutes? (int, default 30, clamped 5-480), pomodoroBlocks? (int, default 1, clamped 1-8), mode? ('focus'|'pomodoro', default 'focus'), source? ('google'|'outlook')
 
         Notes: Gated at runtime by isHomeFocusPillV1Enabled(process.env, { userId, tenantId }) feature flag — returns 403 FEATURE_DISABLED when off (route always registered).
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:268"
+      x-source: "src/api/routes/calendar.ts:355"
       requestBody:
         required: true
         content:
@@ -4522,7 +4589,7 @@ paths:
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "403":
-          description: "Error envelope. Stable code(s): FEATURE_DISABLED."
+          description: "Error envelope. Stable code(s): FEATURE_DISABLED, TENANT_SCOPE_MISMATCH."
         "4XX":
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
@@ -4534,11 +4601,11 @@ paths:
         - "calendar"
       summary: "Cross-skill token-zero focus-block recommendation from calendar availability, readiness/recovery, and planned training load (no AI pipeline)."
       description: |-
-        Source: src/api/routes/calendar.ts:612
+        Source: src/api/routes/calendar.ts:853
 
         Notes: File header and route comment explicitly state token-zero / no AI pipeline.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:612"
+      x-source: "src/api/routes/calendar.ts:853"
       parameters:
         - name: "durationMinutes"
           in: "query"
@@ -4569,9 +4636,9 @@ paths:
       tags:
         - "calendar"
       summary: "Shortcut for today's events in the user's timezone (fetches a widened window, filters to today, merges sleep agenda); SWR-cached."
-      description: "Source: src/api/routes/calendar.ts:560"
+      description: "Source: src/api/routes/calendar.ts:801"
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/calendar.ts:560"
+      x-source: "src/api/routes/calendar.ts:801"
       parameters:
         - name: "refresh"
           in: "query"
@@ -11599,21 +11666,28 @@ paths:
         - "plan"
       summary: "Idempotently recompute one coherent weekly plan and daily brief snapshot"
       description: |-
-        Source: src/api/routes/plan.ts:85 (mounted src/api/router.ts:405)
+        Source: src/api/routes/plan.ts:104 (mounted src/api/router.ts:405)
 
-        Request body: { idempotencyKey: string, weekStart?: string, date?: string }. Dates must be exact YYYY-MM-DD values; weekStart must be a Monday and date must fall within that week. Omitted dates resolve from one captured clock in the authenticated user's timezone, with the app timezone used only as a fallback. The Idempotency-Key header is accepted as a compatibility fallback when the body field is absent.
+        Input accepts { idempotencyKey?: string, weekStart?: string, date?: string } in the JSON body and an optional Idempotency-Key header. At least one idempotency key is required; when both are present, the body field is authoritative. Dates must be exact YYYY-MM-DD values; weekStart must be a Monday and date must fall within that week. Omitted dates resolve from one captured clock in the authenticated user's canonical IANA timezone.
 
-        Notes: A scoped leased receipt makes exact retries return the stored result without invalidation or orchestration. Reusing a key for a different normalized request returns 409. First execution invalidates the user's planning caches, composes the week once with signal sync, and projects today from that exact week. snapshot, week.planningSnapshot, and today.planningSnapshot share one snapshotId and generatedAt. No AI budget gate — recompute is token-zero.
+        Notes: A scoped leased receipt makes exact retries return the stored result without invalidation or orchestration. Reusing a key for a different normalized request returns 409. The first execution invalidates the user's planning caches, composes the week once with signal sync, and projects today from that exact week. Week and Today share one captured generatedAt and include timezone, warnings, warningCodes, and sourceHealth. Internal snapshot and receipt identities are not exposed. Recompute is deterministic; AI-copy quota may suppress creative copy but does not make otherwise healthy source state degraded.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:85 (mounted src/api/router.ts:405)"
+      x-source: "src/api/routes/plan.ts:104 (mounted src/api/router.ts:405)"
+      parameters:
+        - name: "Idempotency-Key"
+          in: "header"
+          required: false
+          schema:
+            type: "string"
+            minLength: 1
+            maxLength: 200
+          description: "Compatibility alternative to body idempotencyKey. At least one of the header or body field is required."
       requestBody:
-        required: true
+        required: false
         content:
           "application/json":
             schema:
               type: "object"
-              required:
-                - "idempotencyKey"
               properties:
                 idempotencyKey:
                   type: "string"
@@ -11629,9 +11703,9 @@ paths:
                   description: "Daily projection date; must fall within weekStart when both are supplied."
       responses:
         "200":
-          description: "apiSuccess { snapshot: PlanningSnapshotIdentity, week: WeeklyPlanResponse, today: DailyBrief }. All three identities share snapshotId/generatedAt; today is projected from the returned week."
+          description: "apiSuccess { week: WeeklyPlanResponse, today: DailyBrief }. Both share one generatedAt and today is projected from the returned week. Week and Today include timezone, warningCodes, warnings, and sourceHealth. Week source keys are calendar, tasks, mail, focus, training, cooking, content, finance; Today adds decision_center. Each source status is ready, stale, degraded, or unavailable."
         "400":
-          description: "Error envelope. Stable code(s): PLAN_DATE_INVALID, PLAN_WEEK_START_INVALID, PLANNING_RECOMPUTE_INVALID, PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED."
+          description: "Error envelope. Stable code(s): INVALID_INPUT, PLANNING_RECOMPUTE_INVALID, PLANNING_RECOMPUTE_IDEMPOTENCY_REQUIRED."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "409":
@@ -11649,11 +11723,11 @@ paths:
         - "plan"
       summary: "Daily brief/plan for a given date, derived from the weekly mesh plan plus decision-center overview"
       description: |-
-        Source: src/api/routes/plan.ts:56 (mounted src/api/router.ts:405)
+        Source: src/api/routes/plan.ts:70 (mounted src/api/router.ts:405)
 
-        Notes: Route-owned SWR cache TTL 60s/stale 300s; the underlying composer cache is bypassed for route fills so there is one cache owner. Language comes from x-language header else stored preference. Implicit date selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. day.cooking distinguishes ready, empty, degraded, unavailable, and gated state through status/headline/warningCodes so missing or unsafe Cooking context is never rendered as an ordinary empty plan. Unconditionally registered.
+        Notes: Resolves the canonical planning context once and derives the requested day from the exact weekly composition used by reports and chat reads. Route-owned SWR cache TTL 60s/stale 300s; cache identity includes user, tenant, date, timezone, and normalized language. A stale response retains cached data while marking ready sources stale. Language comes from x-language or stored preference. Only calendar status ready authorizes all-clear calendar copy. day.cooking distinguishes ready, empty, degraded, unavailable, and gated state through status/headline/warningCodes so missing or unsafe Cooking context is never rendered as an ordinary empty plan. Unconditionally registered.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:56 (mounted src/api/router.ts:405)"
+      x-source: "src/api/routes/plan.ts:70 (mounted src/api/router.ts:405)"
       parameters:
         - name: "date"
           in: "query"
@@ -11661,12 +11735,12 @@ paths:
           schema:
             type: "string"
             format: "date"
-          description: "Exact real YYYY-MM-DD calendar date; defaults to today in the authenticated user's timezone (app timezone is fallback only). Malformed or impossible dates return PLAN_DATE_INVALID (400)."
+          description: "Exact real YYYY-MM-DD calendar date; defaults to today in the authenticated user's timezone. Malformed or impossible dates return INVALID_INPUT (400)."
       responses:
         "200":
-          description: "apiSuccess with DailyBriefResponse: date, generatedAt, optional planningSnapshot, degraded, gated, garmin_stale, conflicts, creativeCopy, day, coordination. day.cooking exposes {status: ready|empty|degraded|unavailable|gated, headline, warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
+          description: "apiSuccess with DailyBriefResponse: date, generatedAt, timezone, warningCodes, warnings, sourceHealth, degraded, gated, garmin_stale, conflicts, creativeCopy, day, coordination. sourceHealth keys are calendar, tasks, mail, focus, training, cooking, content, finance, and decision_center; each status is ready, stale, degraded, or unavailable. day.cooking exposes {status: ready|empty|degraded|unavailable|gated, headline, warningCodes[]}. ETag/304 supported."
         "400":
-          description: "Error envelope. Stable code(s): PLAN_DATE_INVALID."
+          description: "Error envelope. Stable code(s): INVALID_INPUT."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11682,11 +11756,11 @@ paths:
         - "plan"
       summary: "Multiskill-mesh weekly plan (training/secretary/cooking/content/finance) composed from cross-agent signals"
       description: |-
-        Source: src/api/routes/plan.ts:27 (mounted src/api/router.ts:405)
+        Source: src/api/routes/plan.ts:36 (mounted src/api/router.ts:405)
 
-        Notes: Mount is unconditional (router.ts:135). Skills the user is not entitled to appear as gated sections in the payload rather than a route-level 403. Token-zero: creativeCopy is template strings (weekly-plan-orchestrator.ts:1969); degraded=true suppresses copy when the user is over the daily AI cap or when required source health is degraded, but no model call happens either way. Implicit week selection and the route cache key use the authenticated user's timezone, with the app timezone only as a fallback. Every day carries a Cooking status/headline/warningCodes projection; unsafe or unverifiable meals are withheld rather than treated as safe. Route-owned SWR cache TTL 120s/stale 600s; the underlying composer cache is bypassed for route fills so there is one cache owner. x-language header respected.
+        Notes: Mount is unconditional. Skills the user is not entitled to appear as gated sections rather than a route-level entitlement error. The response is deterministic; AI-copy quota can suppress creative copy and add a warning without marking otherwise healthy source state degraded. Implicit week selection and the route cache key use the authenticated user's timezone. Every day carries a Cooking status/headline/warningCodes projection; unsafe or unverifiable meals are withheld rather than treated as safe. Route-owned SWR cache TTL 120s/stale 600s; cache identity includes user, tenant, week, timezone, and normalized language. A stale response retains cached data while marking ready sources stale. x-language is respected.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:27 (mounted src/api/router.ts:405)"
+      x-source: "src/api/routes/plan.ts:36 (mounted src/api/router.ts:405)"
       parameters:
         - name: "weekStart"
           in: "query"
@@ -11694,12 +11768,12 @@ paths:
           schema:
             type: "string"
             format: "date"
-          description: "Exact real YYYY-MM-DD Monday starting the requested ISO week. Malformed, impossible, or non-Monday values return PLAN_WEEK_START_INVALID (400)."
+          description: "Exact real YYYY-MM-DD Monday starting the requested ISO week. Malformed, impossible, or non-Monday values return INVALID_INPUT (400)."
       responses:
         "200":
-          description: "apiSuccess with WeeklyPlanResponse: weekStart, weekEnd, generatedAt, optional planningSnapshot, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], creativeCopy, summary:{sessionCount,mealCount,activeConflictCount}, days[]. Each day includes cooking:{status:ready|empty|degraded|unavailable|gated,headline,warningCodes[]}. ETag/304 supported. (Standard success envelope unless noted.)"
+          description: "apiSuccess with WeeklyPlanResponse: weekStart, weekEnd, generatedAt, timezone, warningCodes, warnings, sourceHealth, variant, degraded, gated:{skills[]}, garmin_stale, conflicts[], creativeCopy, summary, and days[]. sourceHealth keys are calendar, tasks, mail, focus, training, cooking, content, and finance; each status is ready, stale, degraded, or unavailable. Each day includes cooking:{status:ready|empty|degraded|unavailable|gated,headline,warningCodes[]}. ETag/304 supported."
         "400":
-          description: "Error envelope. Stable code(s): PLAN_WEEK_START_INVALID."
+          description: "Error envelope. Stable code(s): INVALID_INPUT."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "500":
@@ -11715,13 +11789,13 @@ paths:
         - "plan"
       summary: "Plain-text explanation of the weekly plan decisions (Max-tier debugging/insight view)"
       description: |-
-        Source: src/api/routes/plan.ts:107 (mounted src/api/router.ts:405)
+        Source: src/api/routes/plan.ts:132 (mounted src/api/router.ts:405)
 
         Entitlement: requires the `max-or-owner skill tier (in-route check via entitlementPlanToSkillTier)` skill entitlement (mount-level requireEntitlement; non-entitled plans receive 403 TIER_REQUIRED, or 403 AI_PLAN_REQUIRED when paid-AI cost-controls enforcement is active).
 
         Notes: 403 FORBIDDEN 'Max tier required for explanation view' with details {plan} unless effective tier is max or owner (plan.ts:111-116). Registered after GET /week so path literal /week/explain wins (distinct path, no conflict). Explanation text is built deterministically from plan decisions.
       x-nexus-kind: "deterministic"
-      x-source: "src/api/routes/plan.ts:107 (mounted src/api/router.ts:405)"
+      x-source: "src/api/routes/plan.ts:132 (mounted src/api/router.ts:405)"
       x-entitlement: "max-or-owner skill tier (in-route check via entitlementPlanToSkillTier)"
       parameters:
         - name: "weekStart"
@@ -11730,12 +11804,12 @@ paths:
           schema:
             type: "string"
             format: "date"
-          description: "Exact real YYYY-MM-DD Monday; defaults to the current week. Malformed, impossible, or non-Monday values return PLAN_WEEK_START_INVALID (400)."
+          description: "Exact real YYYY-MM-DD Monday; defaults to the current week. Malformed, impossible, or non-Monday values return INVALID_INPUT (400)."
       responses:
         "200":
           description: "apiSuccess { explanation: string, degraded, gated, garmin_stale, conflicts } (Standard success envelope unless noted.)"
         "400":
-          description: "Error envelope. Stable code(s): PLAN_WEEK_START_INVALID."
+          description: "Error envelope. Stable code(s): INVALID_INPUT."
         "401":
           description: "Error envelope. Stable code(s): UNAUTHORIZED."
         "403":
@@ -13054,7 +13128,7 @@ paths:
       description: |-
         Source: src/api/routes/reports.ts:81 (mounted src/api/router.ts:419)
 
-        Notes: Route serves documents already stored in report_documents; no model call at request time. 500 INTERNAL via asyncHandler for unexpected throws.
+        Notes: Route serves documents already persisted by the tenant-aware report-document store; no model call occurs at request time. Storage table names are internal and are not part of the public contract. 500 INTERNAL via asyncHandler for unexpected throws.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/reports.ts:81 (mounted src/api/router.ts:419)"
       parameters:
@@ -13719,6 +13793,77 @@ paths:
           "$ref": "#/components/responses/ErrorEnvelope"
         "5XX":
           "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/settings/secretary-routine":
+    get:
+      operationId: "getSettingsSecretaryRoutine"
+      tags:
+        - "settings"
+      summary: "Get the explicit Secretary routine profile"
+      description: |-
+        Returns the authenticated user's canonical IANA timezone and saved routine profile. An account with no saved profile returns status `unconfigured`, version `0`, empty arrays, and `updatedAt: null`. This read performs no writes and never infers working hours or protected routines.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/settings.ts"
+      responses:
+        "200":
+          description: "The configured or explicitly unconfigured Secretary routine profile."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/SecretaryRoutineProfileSuccess"
+        "400":
+          description: "Error envelope. Stable code(s): INVALID_INPUT."
+        "401":
+          description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "500":
+          description: "Error envelope. Stable code(s): INTERNAL."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+    put:
+      operationId: "putSettingsSecretaryRoutine"
+      tags:
+        - "settings"
+      summary: "Replace the explicit Secretary routine profile"
+      description: |-
+        Full-replacement, compare-and-set mutation. `idempotencyKey` must match the required `X-Idempotency-Key` header. Receipts are scoped to the authenticated user and tenant and retained for 30 days. Replaying the same key and canonical request returns the original profile; reusing it for another request fails. A semantically unchanged replacement preserves version and `updatedAt`. Saving does not write any provider calendar or authorize automatic reflow.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/settings.ts"
+      parameters:
+        - name: "X-Idempotency-Key"
+          in: "header"
+          required: true
+          schema:
+            type: "string"
+            minLength: 8
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/SecretaryRoutineProfilePut"
+      responses:
+        "200":
+          description: "Saved profile or exact successful replay."
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/SecretaryRoutineProfileSuccess"
+        "400":
+          description: "Error envelope. Stable code(s): INVALID_INPUT. Includes malformed concurrency/idempotency input or a body over 32 KiB."
+        "401":
+          description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "409":
+          description: "Error envelope. Stable code(s): SECRETARY_ROUTINE_VERSION_CONFLICT (details.current contains the authoritative profile), IDEMPOTENCY_KEY_REUSED."
+        "422":
+          description: "Error envelope. Stable code(s): ROUTINE_PROFILE_INVALID."
+        "500":
+          description: "Error envelope. Stable code(s): INTERNAL."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
   "/api/v1/settings/status":
     get:
       operationId: "getSettingsStatus"
@@ -13780,6 +13925,162 @@ components:
       bearerFormat: "JWT"
       description: "App JWT issued by POST /api/v1/auth/register/* or POST /api/v1/auth/refresh. req.userId === req.tenantId by contract."
   schemas:
+    SecretaryRoutineWindow:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "id"
+        - "weekdays"
+        - "start"
+        - "end"
+      properties:
+        id:
+          type: "string"
+          format: "uuid"
+        weekdays:
+          type: "array"
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items:
+            type: "integer"
+            minimum: 1
+            maximum: 7
+          description: "ISO weekdays, Monday=1 through Sunday=7."
+        start:
+          type: "string"
+          pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+        end:
+          type: "string"
+          pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+          description: "Same-day end strictly later than start."
+    SecretaryProtectedRoutine:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "id"
+        - "weekdays"
+        - "start"
+        - "end"
+        - "label"
+        - "kind"
+      properties:
+        id:
+          type: "string"
+          format: "uuid"
+        weekdays:
+          type: "array"
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items:
+            type: "integer"
+            minimum: 1
+            maximum: 7
+        start:
+          type: "string"
+          pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+        end:
+          type: "string"
+          pattern: "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+        label:
+          type: "string"
+          minLength: 1
+          maxLength: 80
+        kind:
+          type: "string"
+          enum:
+            - "focus"
+            - "training"
+            - "meal"
+            - "recovery"
+            - "personal"
+            - "travel"
+    SecretaryRoutineProfile:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "status"
+        - "version"
+        - "timezone"
+        - "workingWindows"
+        - "preferredFocusWindows"
+        - "protectedRoutines"
+        - "updatedAt"
+      properties:
+        status:
+          type: "string"
+          enum:
+            - "unconfigured"
+            - "configured"
+        version:
+          type: "integer"
+          minimum: 0
+        timezone:
+          type: "string"
+          description: "Canonical users.timezone IANA identifier."
+        workingWindows:
+          type: "array"
+          maxItems: 14
+          items:
+            "$ref": "#/components/schemas/SecretaryRoutineWindow"
+        preferredFocusWindows:
+          type: "array"
+          maxItems: 14
+          items:
+            "$ref": "#/components/schemas/SecretaryRoutineWindow"
+        protectedRoutines:
+          type: "array"
+          maxItems: 28
+          items:
+            "$ref": "#/components/schemas/SecretaryProtectedRoutine"
+        updatedAt:
+          type:
+            - "string"
+            - "null"
+          format: "date-time"
+    SecretaryRoutineProfilePut:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "expectedVersion"
+        - "idempotencyKey"
+        - "timezone"
+        - "workingWindows"
+        - "preferredFocusWindows"
+        - "protectedRoutines"
+      properties:
+        expectedVersion:
+          type: "integer"
+          minimum: 0
+        idempotencyKey:
+          type: "string"
+          minLength: 8
+          maxLength: 200
+        timezone:
+          type: "string"
+        workingWindows:
+          type: "array"
+          maxItems: 14
+          items:
+            "$ref": "#/components/schemas/SecretaryRoutineWindow"
+        preferredFocusWindows:
+          type: "array"
+          maxItems: 14
+          items:
+            "$ref": "#/components/schemas/SecretaryRoutineWindow"
+        protectedRoutines:
+          type: "array"
+          maxItems: 28
+          items:
+            "$ref": "#/components/schemas/SecretaryProtectedRoutine"
+    SecretaryRoutineProfileSuccess:
+      allOf:
+        - "$ref": "#/components/schemas/ApiSuccess"
+        - type: "object"
+          properties:
+            data:
+              "$ref": "#/components/schemas/SecretaryRoutineProfile"
     ApiSuccess:
       type: "object"
       description: "Standard success envelope (src/api/response-helpers.ts)."

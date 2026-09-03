@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DateTime } from 'luxon';
 
-const mockGetEvents = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockCalculateReadiness = vi.fn();
 const mockReadTrainingContextAll = vi.fn();
 const mockReadScheduledTrainingSessions = vi.fn();
@@ -10,7 +10,7 @@ const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
 
 vi.mock('../../src/services/unified-calendar', () => ({
-  getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
 }));
 
 vi.mock('../../src/services/readiness-scorer', () => ({
@@ -54,7 +54,7 @@ import { getFocusBlockRecommendation } from '../../src/services/focus-planner';
 
 describe('focus-planner', () => {
   beforeEach(() => {
-    mockGetEvents.mockReset();
+    mockGetEventsWithDiagnostics.mockReset();
     mockCalculateReadiness.mockReset();
     mockReadTrainingContextAll.mockReset();
     mockReadScheduledTrainingSessions.mockReset();
@@ -118,7 +118,7 @@ describe('focus-planner', () => {
       },
     ]);
 
-    mockGetEvents.mockResolvedValue([
+    mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([
       {
         summary: 'Today blocked',
         start: today.set({ hour: 8, minute: 0 }).toUTC().toISO(),
@@ -129,7 +129,7 @@ describe('focus-planner', () => {
         start: tomorrow.set({ hour: 13, minute: 0 }).toUTC().toISO(),
         end: tomorrow.set({ hour: 13, minute: 30 }).toUTC().toISO(),
       },
-    ]);
+    ]));
 
     const recommendation = await getFocusBlockRecommendation(7, { tenantId: 70, durationMinutes: 90, horizonDays: 4 });
 
@@ -147,7 +147,7 @@ describe('focus-planner', () => {
     const dayAfter = today.plus({ days: 2 });
 
     mockGetActivePlans.mockReturnValue([]);
-    mockGetEvents.mockResolvedValue([
+    mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([
       {
         summary: 'Today blocked',
         start: today.set({ hour: 8, minute: 0 }).toUTC().toISO(),
@@ -173,7 +173,7 @@ describe('focus-planner', () => {
         start: tomorrow.set({ hour: 15, minute: 0 }).toUTC().toISO(),
         end: tomorrow.set({ hour: 16, minute: 0 }).toUTC().toISO(),
       },
-    ]);
+    ]));
 
     const recommendation = await getFocusBlockRecommendation(7, { tenantId: 70, durationMinutes: 90, horizonDays: 4 });
 
@@ -187,13 +187,13 @@ describe('focus-planner', () => {
     const target = DateTime.now().setZone(zone).plus({ days: 1 }).startOf('day');
 
     mockGetActivePlans.mockReturnValue([]);
-    mockGetEvents.mockResolvedValue([
+    mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([
       {
         summary: 'Focus Time',
         start: target.set({ hour: 8, minute: 0 }).toUTC().toISO(),
         end: target.set({ hour: 12, minute: 0 }).toUTC().toISO(),
       },
-    ]);
+    ]));
 
     const recommendation = await getFocusBlockRecommendation(7, {
       tenantId: 70,
@@ -206,4 +206,51 @@ describe('focus-planner', () => {
     expect(recommendation?.calendarLoad).toBe('light');
     expect(DateTime.fromISO(recommendation!.start, { zone: 'utc' }).setZone(zone).hour).toBeGreaterThanOrEqual(12);
   });
+
+  it('does not invent a free focus window when the calendar read fails', async () => {
+    mockGetActivePlans.mockReturnValue([]);
+    mockGetEventsWithDiagnostics.mockRejectedValue(new Error('calendar unavailable'));
+    mockCalculateReadiness.mockResolvedValue({ score: 88 });
+
+    await expect(getFocusBlockRecommendation(7, {
+      tenantId: 70,
+      durationMinutes: 90,
+      horizonDays: 4,
+    })).rejects.toThrow('calendar unavailable');
+  });
+
+  it('does not invent a free focus window from a partial multi-provider read', async () => {
+    mockGetActivePlans.mockReturnValue([]);
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'degraded',
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.'],
+      sources: {
+        configured: ['google', 'outlook'],
+        fulfilled: ['outlook'],
+        failed: ['google'],
+      },
+    });
+
+    await expect(getFocusBlockRecommendation(7, {
+      tenantId: 70,
+      durationMinutes: 90,
+      horizonDays: 4,
+    })).rejects.toThrow('Google Calendar is unavailable right now.');
+  });
 });
+
+function readyCalendarResult(events: unknown[]) {
+  return {
+    events,
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: {
+      configured: ['outlook'],
+      fulfilled: ['outlook'],
+      failed: [],
+    },
+  };
+}

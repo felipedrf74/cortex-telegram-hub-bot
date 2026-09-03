@@ -543,10 +543,13 @@ describe('ChatActionPlanner', () => {
         },
       });
 
-      expect(result?.status).toBe('failed');
-      expect(result?.response.metadata.type).toBe('chat_action_failed');
+      // A write timeout is an ambiguous provider outcome. The durable agenda
+      // reconciliation fence must report partial success and prevent a blind
+      // second create rather than claiming that nothing happened.
+      expect(result?.status).toBe('partial_success');
+      expect(result?.response.metadata.type).toBe('chat_action_partial_success');
       expect(result?.response.text).not.toMatch(/\bcriei\b/i);
-      expect(result?.response.text).toMatch(/Nada foi confirmado/i);
+      expect(result?.response.text).toMatch(/verific/i);
     } finally {
       if (previousTimeout === undefined) delete process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS;
       else process.env.CHAT_PROVIDER_WRITE_TIMEOUT_MS = previousTimeout;

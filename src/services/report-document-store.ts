@@ -193,31 +193,17 @@ export async function storeAndPushReport(opts: {
     return -1;
   }
 
-  // Check push preferences before sending
   const stored = getReportById(id, opts.userId, tenantId);
   if (!stored) throw new Error('REPORT_DOCUMENT_READBACK_MISSING');
-  if (!isPushEnabled(opts.userId, opts.pushCategory || stored.type)) {
-    logger.debug({ userId: opts.userId, type: opts.type }, 'Push suppressed by user preference');
-    return id;
-  }
+  // Report visibility and push eligibility are separate contracts. Every
+  // report gets one canonical Notification Center item; an explicit legacy
+  // report-category preference can only downgrade that intent to in-app-only.
+  // The orchestrator independently applies the current device-token, global
+  // push, quiet-hours, suppression, and retry policy before APNs acceptance.
+  const reportPushEnabled = isPushEnabled(opts.userId, opts.pushCategory || stored.type);
 
   try {
-    const { createNotificationIntent, userHasActivePushDeviceToken } = await import('./notification-orchestrator');
-
-    // Optional producer gate (default OFF): with
-    // NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN=true, push-less users keep the
-    // durable report but no push intent is minted — it could only ever end as
-    // a blocked_missing_device_token decision.
-    if (
-      process.env.NOTIFICATION_DIGEST_REQUIRE_DEVICE_TOKEN === 'true'
-      && !userHasActivePushDeviceToken(opts.userId)
-    ) {
-      logger.debug(
-        { userId: opts.userId, reportId: id, type: opts.type },
-        'Report stored without notification intent: no active device token',
-      );
-      return id;
-    }
+    const { createNotificationIntent } = await import('./notification-orchestrator');
 
     await createNotificationIntent({
       ...(opts.dispatchKey ? {
@@ -241,8 +227,14 @@ export async function storeAndPushReport(opts: {
       actionButtons: [{ id: 'open_detail', label: 'Open', style: 'primary' }],
       deeplink: `nexus://notifications/report-${id}`,
       dedupeKey: `report:${stored.type}:${id}`,
-      deliveryPolicy: stored.type === 'weekly_review' ? 'digest_only' : 'auto',
-      privacyPolicy: stored.type === 'coach_briefing' || stored.type === 'coach_phase' ? 'health' : 'standard',
+      deliveryPolicy: reportPushEnabled
+        ? stored.type === 'weekly_review' ? 'digest_only' : 'auto'
+        : 'in_app_only',
+      // Report summaries stay available inside the authenticated document, but
+      // Secretary/Decision report copy is not a public lock-screen contract.
+      // The orchestrator rewrites sensitive digest bodies before immediate,
+      // retry, quiet-hours, and assembled digest APNs delivery.
+      privacyPolicy: stored.type === 'coach_briefing' || stored.type === 'coach_phase' ? 'health' : 'sensitive',
     });
   } catch (err) {
     if (opts.requireNotificationIntent) throw err;

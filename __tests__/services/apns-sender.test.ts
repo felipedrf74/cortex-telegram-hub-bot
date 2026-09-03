@@ -632,6 +632,24 @@ describe('sendPushNotification (error handling)', () => {
     expect(result.retriable).toBe(1);
   });
 
+  it.each([
+    ['429', { status: 429, body: '{"reason":"TooManyRequests"}' }],
+    ['5xx', { status: 503, body: '{"reason":"ServiceUnavailable"}' }],
+    ['network', { status: 0, networkError: 'ECONNRESET' }],
+  ] as const)('keeps a %s failure retriable while retiring a 410 companion token', async (_kind, transientResponse) => {
+    mockPushTokensForUser[1] = ['dead-token', 'transient-token'];
+    mockHttp2Responses = [
+      { status: 410, body: '{"reason":"Unregistered"}' },
+      transientResponse,
+    ];
+
+    const result = await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(result).toMatchObject({ sent: 0, failed: 0, skipped: 0, retriable: 1 });
+    expect(result.unregistered).toEqual(['dead-token']);
+    expect(mockPushTokenDeletions).toEqual(['dead-token']);
+  });
+
   it('retries against the alternate APNs environment on token mismatch', async () => {
     mockPushTokensForUser[1] = ['environment-mismatch-token'];
     mockedApnsConfig.environment = 'sandbox';

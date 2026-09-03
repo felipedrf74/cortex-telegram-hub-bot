@@ -3,6 +3,7 @@
 import {
   createEvent,
   getEventsForSources,
+  getEventsWithDiagnostics,
 } from '../unified-calendar';
 import { isGoogleCalendarConfigured } from '../google-calendar';
 import { isOutlookCalendarConfigured } from '../outlook-calendar';
@@ -13,6 +14,7 @@ const DEFAULT_CHAT_ACTION_DEPS: Required<ChatActionPlannerDeps> = {
   calendar: {
     createEvent,
     getEventsForSources,
+    getEventsWithDiagnostics,
     hasGoogle: isGoogleCalendarConfigured,
     hasOutlook: isOutlookCalendarConfigured,
   },

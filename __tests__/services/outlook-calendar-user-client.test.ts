@@ -121,6 +121,8 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
           bodyPreview: 'truncated',
           body: { content: 'Full training body [NEXUS_TRAINING_IDENTITY session=1]' },
           categories: [],
+          iCalUId: 'series@example.com',
+          originalStart: '2026-04-16T08:00:00Z',
         }],
       })
       .mockResolvedValueOnce({ value: [] });
@@ -130,6 +132,9 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(mocks.userRequest.query).toHaveBeenCalledWith(expect.objectContaining({
       $select: expect.stringContaining('body'),
     }));
+    expect(mocks.userRequest.query).toHaveBeenCalledWith(expect.objectContaining({
+      $select: expect.stringContaining('originalStart'),
+    }));
     expect(mocks.userRequest.header).toHaveBeenCalledWith(
       'Prefer',
       'outlook.timezone="Europe/Lisbon", IdType="ImmutableId"',
@@ -137,6 +142,8 @@ describe('OutlookCalendar — per-user Graph client for writes', () => {
     expect(events[0]).toMatchObject({
       id: 'evt-read',
       description: 'Full training body [NEXUS_TRAINING_IDENTITY session=1]',
+      providerUid: 'series@example.com',
+      providerOccurrenceStart: '2026-04-16T08:00:00Z',
     });
   });
 

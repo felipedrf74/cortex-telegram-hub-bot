@@ -28,9 +28,17 @@ vi.mock('../../src/services/microsoft-todo', () => ({
 }));
 
 const mockGetTaskProviderForUser = vi.fn();
+const mockTrySecretaryFastpath = vi.fn();
 vi.mock('../../src/services/task-store/task-router', () => ({
   resolveTaskProvider: vi.fn(() => 'nexus'),
   getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
+}));
+
+vi.mock('../../src/services/secretary-fastpath', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/secretary-fastpath')>(
+    '../../src/services/secretary-fastpath',
+  )),
+  tryFastpath: (...args: unknown[]) => mockTrySecretaryFastpath(...args),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -54,14 +62,23 @@ vi.mock('../../src/state/reminders', () => ({
 
 import { tryDeterministicChatCommand } from '../../src/api/routes/chat-fastpath';
 import * as msTodo from '../../src/services/microsoft-todo';
-import { getActiveReminders } from '../../src/state/reminders';
-import { getEvents, hasConnectedCalendarForUser } from '../../src/services/unified-calendar';
-import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../src/services/unified-mail-pressure';
 
 describe('Chat Fast-Path Command Interceptor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetTaskProviderForUser.mockReset();
+    mockTrySecretaryFastpath.mockImplementation(async (_userId: number, command: string) => ({
+      matched: true,
+      patternId: command === '/week' ? 'week_overview' : command === '/status' ? 'status_overview' : 'day_overview',
+      response: {
+        domain: 'secretary',
+        text: command === '/week'
+          ? '<b>Week</b>'
+          : command === '/status'
+            ? '<b>Plan Status</b>'
+            : '<b>Day</b>\nToday task',
+      },
+    }));
   });
 
   it('returns null for non-slash messages (free-form questions)', async () => {
@@ -132,22 +149,32 @@ describe('Chat Fast-Path Command Interceptor', () => {
   });
 
   it('handles /day overview', async () => {
-    const result = await tryDeterministicChatCommand('/day');
+    const result = await tryDeterministicChatCommand('/day', 42, 42);
     expect(result).not.toBeNull();
     expect(result?.text).toContain('Today task');
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(42, '/day', undefined, 42);
   });
 
   it('handles /week overview', async () => {
-    const result = await tryDeterministicChatCommand('/week');
+    const result = await tryDeterministicChatCommand('/week', 42, 42);
     expect(result).not.toBeNull();
     expect(result?.text).toContain('Week');
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(42, '/week', undefined, 42);
   });
 
   it('handles /status overview', async () => {
-    const result = await tryDeterministicChatCommand('/status');
+    const result = await tryDeterministicChatCommand('/status', 42, 42);
     expect(result).not.toBeNull();
-    expect(result?.text).toContain('Status');
-    expect(result?.text).toContain('Microsoft To Do');
+    expect(result?.text).toContain('Plan Status');
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(42, '/status', undefined, 42);
+  });
+
+  it('fails closed for an anonymous overview instead of reporting an empty plan', async () => {
+    const result = await tryDeterministicChatCommand('/day');
+
+    expect(result?.text).toContain('could not be confirmed');
+    expect(result?.text).not.toContain('No events');
+    expect(mockTrySecretaryFastpath).not.toHaveBeenCalled();
   });
 
   it('is case-insensitive for slash commands', async () => {
@@ -184,67 +211,30 @@ describe('Chat Fast-Path Command Interceptor', () => {
     expect(result?.text).toContain('Native task');
   });
 
-  it('uses scoped reminders and calendar data for authenticated /status', async () => {
-    const provider = {
-      getDefaultList: vi.fn(),
-      getTasks: vi.fn(),
-      getLists: vi.fn(),
-      getAllPendingTasks: vi.fn(async () => ({
-        success: true,
-        data: [
-          { id: 't1', title: 'Scoped task', listName: 'Inbox', listId: 'list-1', status: 'notStarted', importance: 'high' },
-        ],
-      })),
-      getTasksDueInRange: vi.fn(),
-    };
-    mockGetTaskProviderForUser.mockReturnValue(provider);
-    vi.mocked(hasConnectedCalendarForUser).mockReturnValue(true);
-    vi.mocked(getEvents).mockResolvedValue([
-      {
-        id: 'e1',
-        summary: 'Scoped meeting',
-        start: new Date().toISOString(),
-        end: new Date().toISOString(),
-        source: 'google',
-      } as any,
-    ]);
-    vi.mocked(getActiveReminders).mockReturnValue([
-      { id: 1, user_id: 42, message: 'Scoped reminder', remind_at: new Date().toISOString(), status: 'active' } as any,
-    ]);
+  it('uses the canonical Secretary reader for authenticated status callbacks', async () => {
+    mockTrySecretaryFastpath.mockResolvedValueOnce({
+      matched: true,
+      patternId: 'status_overview',
+      response: {
+        domain: 'secretary',
+        text: '<b>Plan Status</b>\n📅 Agenda today: 2 commitments\n📧 Inbox: 9 unread',
+      },
+    });
 
     const result = await tryDeterministicChatCommand('/status', 42, 42);
 
-    expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(42);
-    expect(getActiveReminders).toHaveBeenCalledWith(42, 42);
-    expect(hasConnectedCalendarForUser).toHaveBeenCalledWith(42);
-    expect(getEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
-    expect(result?.text).toContain('Active reminders: 1');
-    expect(result?.text).toContain('Events today: 1');
+    expect(mockTrySecretaryFastpath).toHaveBeenCalledWith(42, '/status', undefined, 42);
+    expect(mockGetTaskProviderForUser).not.toHaveBeenCalled();
+    expect(result?.text).toContain('2 commitments');
+    expect(result?.text).toContain('9 unread');
   });
 
-  it('uses unified Gmail and Outlook unread pressure for authenticated /status', async () => {
-    const provider = {
-      getDefaultList: vi.fn(),
-      getTasks: vi.fn(),
-      getLists: vi.fn(),
-      getAllPendingTasks: vi.fn(async () => ({ success: true, data: [] })),
-      getTasksDueInRange: vi.fn(),
-    };
-    mockGetTaskProviderForUser.mockReturnValue(provider);
-    vi.mocked(isAnyMailConfiguredForUser).mockReturnValue(true);
-    vi.mocked(getUnreadMailSummaryForUser).mockResolvedValue({
-      totalUnread: 9,
-      outlookUnread: 4,
-      gmailUnread: 5,
-      configuredProviders: ['outlook', 'gmail'],
+  it('rejects a mismatched callback scope before planner or provider reads', async () => {
+    await expect(tryDeterministicChatCommand('/status', 42, 43)).rejects.toMatchObject({
+      code: 'TENANT_SCOPE_MISMATCH',
     });
 
-    const result = await tryDeterministicChatCommand('/status', 42);
-
-    expect(isAnyMailConfiguredForUser).toHaveBeenCalledWith(42);
-    expect(getUnreadMailSummaryForUser).toHaveBeenCalledWith(42);
-    expect(result?.text).toContain('Inbox unread: 9');
-    expect(result?.text).toContain('Outlook 4');
-    expect(result?.text).toContain('Gmail 5');
+    expect(mockTrySecretaryFastpath).not.toHaveBeenCalled();
+    expect(mockGetTaskProviderForUser).not.toHaveBeenCalled();
   });
 });

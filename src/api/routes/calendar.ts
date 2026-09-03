@@ -3,7 +3,9 @@
 /**
  * Calendar routes — token-zero data lookups for Google + Outlook calendars.
  *
- * All endpoints call `unified-calendar` directly. NO AI involvement.
+ * Reads use `unified-calendar` directly. Mutations use the deterministic
+ * Secretary command services, which own idempotency, conflict review, the
+ * local agenda ledger, and provider reconciliation. NO AI involvement.
  * The unified calendar layer handles parallel fetch + deduplication of events
  * that exist on both providers (e.g. an Outlook meeting that's also synced to
  * Google via the user's calendar sync).
@@ -13,6 +15,7 @@
  * their calendar without going through the AI pipeline ($0.00/call).
  */
 
+import { randomUUID } from 'node:crypto';
 import { Router, Response } from 'express';
 import { DateTime } from 'luxon';
 import { AuthenticatedRequest } from '../auth-middleware';
@@ -20,15 +23,11 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import {
   getEventsWithDiagnostics,
-  createEvent,
-  updateEvent,
-  deleteEvent,
   isAnyCalendarConfigured,
   hasConnectedCalendarForUser,
   hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
-import { invalidateCalendarCaches } from '../../services/cache-coherence-registry';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
 import {
@@ -47,17 +46,48 @@ import { handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-
 import { getUserTimezoneById } from '../../services/user-service';
 import { getAppleHealthSleepAgendaEvents } from '../../services/health-sleep-agenda';
 import { requireTenantIdParam } from '../../services/tenant-scope';
+import {
+  executeSecretaryCalendarCommand,
+  executeSecretaryCalendarMutation,
+  inspectSecretaryCalendarCommandReplay,
+  inspectSecretaryCalendarMutationReplay,
+  noteLegacySecretaryCalendarMutationWithoutKey,
+  resolveSecretaryCalendarIdempotencyKey,
+  SecretaryCalendarCommandError,
+  SecretaryCalendarMutationError,
+} from '../../services/secretary-calendar-command-service';
+import { recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
 const TODAY_SWR_STALE = 300;
 const RANGE_SWR_STALE = 300;
 
-// Phase 17 hostile-QA fix (2026-05-18): in-flight idempotency for
-// POST /focus-blocks to stop duplicate writes from rapid double-taps.
-const focusBlockInFlight = new Set<string>();
-function focusBlockIdempotencyKey(userId: number, tenantId: number, startIso: string, mode: string): string {
-  return `${userId}:${tenantId}:${startIso}:${mode}`;
+function requireSecretaryCalendarRouteScope(
+  req: AuthenticatedRequest,
+  res: Response,
+  operation: string,
+): { userId: number; tenantId: number } | null {
+  const userId = req.userId;
+  const tenantId = Number(req.tenantId);
+  if (typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0
+    && Number.isSafeInteger(tenantId) && tenantId > 0
+    && tenantId === userId) {
+    return { userId, tenantId };
+  }
+  recordTenantScopeAnomaly({
+    layer: 'delivery',
+    operation,
+    reason: 'tenant_mismatch',
+    userId: typeof userId === 'number' && Number.isSafeInteger(userId) ? userId : null,
+  });
+  sendError(
+    res,
+    'TENANT_SCOPE_MISMATCH',
+    'The active tenant does not match the authenticated user.',
+    403,
+  );
+  return null;
 }
 
 export function calendarRoutes(): Router {
@@ -139,12 +169,13 @@ export function calendarRoutes(): Router {
    * mutation without waiting for TTL expiry.
    */
   router.post('/events', asyncHandler(async (req, res: Response) => {
-    const userId = (req as AuthenticatedRequest).userId;
-    if (!hasWritableCalendarForUser(userId)) {
-      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
-      return;
-    }
-
+    const scope = requireSecretaryCalendarRouteScope(
+      req as AuthenticatedRequest,
+      res,
+      'secretary_calendar_create',
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
     const body = req.body as {
       title?: string;
       start?: string;
@@ -162,19 +193,23 @@ export function calendarRoutes(): Router {
       sendError(res, 'VALIDATION', 'title is required', 400);
       return;
     }
-    if (!body.start || !body.end) {
+    if (typeof body.start !== 'string' || typeof body.end !== 'string'
+      || !body.start || !body.end) {
       sendError(res, 'VALIDATION', 'start and end (ISO 8601) are required', 400);
       return;
     }
 
     // Parse and validate the datetimes to avoid passing garbage through
     // to Google/Outlook which return cryptic 400s.
-    const start = new Date(body.start);
-    const end = new Date(body.end);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    const startDateTime = DateTime.fromISO(body.start, { setZone: true });
+    const endDateTime = DateTime.fromISO(body.end, { setZone: true });
+    if (!body.start.includes('T') || !body.end.includes('T')
+      || !startDateTime.isValid || !endDateTime.isValid) {
       sendError(res, 'VALIDATION', 'start and end must be valid ISO 8601 timestamps', 400);
       return;
     }
+    const start = startDateTime.toJSDate();
+    const end = endDateTime.toJSDate();
     if (end.getTime() <= start.getTime()) {
       sendError(res, 'VALIDATION', 'end must be after start', 400);
       return;
@@ -189,6 +224,11 @@ export function calendarRoutes(): Router {
 
     // Optional explicit source — validated against the known sources
     const allowedSources: CalendarSource[] = ['google', 'outlook'];
+    if (body.source !== undefined
+      && (typeof body.source !== 'string' || !allowedSources.includes(body.source as CalendarSource))) {
+      sendError(res, 'VALIDATION', 'source must be google or outlook', 400);
+      return;
+    }
     const source = body.source && allowedSources.includes(body.source as CalendarSource)
       ? (body.source as CalendarSource)
       : undefined;
@@ -196,53 +236,100 @@ export function calendarRoutes(): Router {
     // so cross-tenant users (tenantId != userId) read their persisted preference
     // instead of falling back to the (userId, userId) default which silently
     // reverts to 'auto'.
-    const tenantId = (req as AuthenticatedRequest).tenantId;
     const preferenceResolution = source ? null : resolveCalendarWritePreference(userId, tenantId);
-    const resolvedSource = source ?? preferenceResolution?.source ?? undefined;
-    if (!resolvedSource) {
-      sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400, {
-        warningCodes: preferenceResolution?.warningCode ? [preferenceResolution.warningCode] : ['CALENDAR_INTEGRATION_MISSING'],
-      });
-      return;
-    }
+    let resolvedSource = source ?? preferenceResolution?.source ?? undefined;
 
     try {
       const categories = normalizeNexusCategories(body.nexusCategory, body.categories);
-      const event = await createEvent(
-        {
-          title: body.title.trim(),
-          start: start.toISOString(),
-          end: end.toISOString(),
-          description: withNexusCategoryDescription(body.description?.trim() || undefined, categories),
-          location: body.location?.trim() || undefined,
-          categories,
-          attendees: Array.isArray(body.attendees)
-            ? body.attendees
-                .map((value: unknown) => typeof value === 'string' ? value.trim() : '')
-                .filter((value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
-            : undefined,
-          recurrence: body.recurrence,
-        },
-        resolvedSource,
-        userId,
+      const { idempotencyKey, legacyMissingKey } = resolveSecretaryCalendarIdempotencyKey(
+        req.header('idempotency-key'),
       );
+      const commandInput = {
+        userId,
+        tenantId,
+        idempotencyKey,
+        title: body.title.trim(),
+        start: body.start,
+        end: body.end,
+        timezone: calendarUserTimezone(userId),
+        description: typeof body.description === 'string'
+          ? withNexusCategoryDescription(body.description.trim() || undefined, categories)
+          : body.description,
+        location: typeof body.location === 'string' ? body.location.trim() || undefined : body.location,
+        categories,
+        attendees: Array.isArray(body.attendees)
+          ? body.attendees.filter((value): value is string => typeof value === 'string')
+          : undefined,
+        recurrence: body.recurrence,
+        channel: 'ios' as const,
+      };
+      const replayProbe = inspectSecretaryCalendarCommandReplay({
+        ...commandInput,
+        ...(source ? { source } : {}),
+      });
+      resolvedSource = replayProbe?.source ?? resolvedSource;
+      // A durable receipt may be nonterminal because the process stopped
+      // after the provider write but before command read-back/terminalization.
+      // Let that same-key recovery reach the deterministic service even when
+      // the provider connection has since disappeared; the service resumes a
+      // confirmed agenda mapping or fails closed before issuing a fresh
+      // provider write. Only a genuinely new command needs the route-level
+      // write-capability gate.
+      if (!replayProbe && !hasWritableCalendarForUser(userId)) {
+        sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
+        return;
+      }
+      if (!resolvedSource) {
+        sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400, {
+          warningCodes: preferenceResolution?.warningCode ? [preferenceResolution.warningCode] : ['CALENDAR_INTEGRATION_MISSING'],
+        });
+        return;
+      }
+      const command = replayProbe?.result ?? await executeSecretaryCalendarCommand({
+        ...commandInput,
+        source: resolvedSource,
+      });
 
-      invalidateCalendarCaches(userId);
+      if (command.status === 'review_required') {
+        sendError(
+          res,
+          'CALENDAR_CONFLICT_REVIEW_REQUIRED',
+          'The requested time needs Decision Center review. Nothing was written to the provider calendar.',
+          409,
+          { warningCodes: command.warningCodes },
+        );
+        return;
+      }
+      const event = command.event!;
 
       logger.info(
-        { userId: (req as AuthenticatedRequest).userId, eventId: event.id, source: event.source, categories },
+        {
+          userId: (req as AuthenticatedRequest).userId,
+          eventId: event.id,
+          source: event.source,
+          categories,
+          replayed: command.replayed,
+          legacyMissingKey,
+        },
         'iOS calendar event created',
       );
 
       sendSuccess(res, {
         event: formatEvent(event),
-        providerPreferenceWarning: preferenceResolution?.warningCode ? {
+        replayed: command.replayed,
+        providerPreferenceWarning: !command.replayed && preferenceResolution?.warningCode ? {
           code: preferenceResolution.warningCode,
           message: preferenceResolution.warning,
           requested: preferenceResolution.requested,
         } : null,
       });
     } catch (err: any) {
+      if (err instanceof SecretaryCalendarCommandError) {
+        sendError(res, err.code, err.message, err.status, {
+          warningCodes: err.warningCodes,
+        });
+        return;
+      }
       logger.error(
         {
           err,
@@ -266,8 +353,13 @@ export function calendarRoutes(): Router {
    * Direct pre-write conflict check for Home's focus/Pomodoro quick action.
    */
   router.post('/focus-conflict-check', asyncHandler(async (req, res: Response) => {
-    const userId = (req as AuthenticatedRequest).userId;
-    const tenantId = (req as AuthenticatedRequest).tenantId;
+    const scope = requireSecretaryCalendarRouteScope(
+      req as AuthenticatedRequest,
+      res,
+      'secretary_calendar_focus_conflict_check',
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
     // Phase 17 hostile-QA fix (2026-05-18): 403 (not 404) when the feature
     // flag is off — 404 means "the resource doesn't exist"; the endpoint
     // exists, the feature is just disabled. iOS may interpret 404 as
@@ -302,6 +394,7 @@ export function calendarRoutes(): Router {
     const end = new Date(roundedStart.getTime() + actualDuration * 60_000);
     const precheck = await precheckFocusCalendarConflict({
       userId,
+      tenantId,
       source,
       start: roundedStart.toISOString(),
       end: end.toISOString(),
@@ -327,28 +420,43 @@ export function calendarRoutes(): Router {
    * Creates a conflict-checked focus or grouped Pomodoro blocker.
    */
   router.post('/focus-blocks', asyncHandler(async (req, res: Response) => {
-    const userId = (req as AuthenticatedRequest).userId;
-    const tenantId = (req as AuthenticatedRequest).tenantId;
+    const scope = requireSecretaryCalendarRouteScope(
+      req as AuthenticatedRequest,
+      res,
+      'secretary_calendar_focus_create',
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
     // Phase 17 hostile-QA fix (2026-05-18): 403 for disabled feature, real
     // tenantId in flag scope, tenantId in preference resolver (see GET).
     if (!isHomeFocusPillV1Enabled(process.env, { userId, tenantId })) {
       sendError(res, 'FEATURE_DISABLED', 'Focus quick actions are not enabled for this account.', 403);
       return;
     }
-    if (!hasWritableCalendarForUser(userId)) {
-      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
-      return;
-    }
     const timezone = calendarUserTimezone(userId);
     const mode = String(req.body?.mode || 'focus') === 'pomodoro' ? 'pomodoro' : 'focus';
     const requestedSource = parseCalendarSource(req.body?.source);
     const preferenceResolution = requestedSource ? null : resolveCalendarWritePreference(userId, tenantId);
-    const source = requestedSource ?? preferenceResolution?.source;
-    if (!source) {
-      sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400);
+    const preferredSource = requestedSource ?? preferenceResolution?.source;
+    const { idempotencyKey, legacyMissingKey } = resolveSecretaryCalendarIdempotencyKey(
+      req.header('idempotency-key'),
+    );
+    const rawStart = typeof req.body?.start === 'string' ? req.body.start : null;
+    // The legacy missing-key shape may retain its historical "start now"
+    // default for one compatibility release. A durable key, however, must bind
+    // to an explicit instant: recomputing "now" on a delayed replay would turn
+    // the same key into different calendar content and make safe recovery
+    // impossible.
+    if (!rawStart && !legacyMissingKey) {
+      sendError(
+        res,
+        'INVALID_INPUT',
+        'start is required when Idempotency-Key is provided',
+        400,
+      );
       return;
     }
-    const requestedStart = typeof req.body?.start === 'string' ? new Date(req.body.start) : new Date();
+    const requestedStart = rawStart ? new Date(rawStart) : new Date();
     if (Number.isNaN(requestedStart.getTime())) {
       sendError(res, 'VALIDATION', 'start must be a valid ISO timestamp', 400);
       return;
@@ -358,31 +466,7 @@ export function calendarRoutes(): Router {
     const blocks = clampInt(String(req.body?.pomodoroBlocks || ''), 1, 1, 8);
     const actualDuration = mode === 'pomodoro' ? pomodoroDurationMinutes(blocks) : durationMinutes;
     const end = new Date(start.getTime() + actualDuration * 60_000);
-
-    // Phase 17 hostile-QA fix (2026-05-18): per-user, per-slot idempotency
-    // guard. Two rapid double-taps on the iOS Focus pill would otherwise
-    // race the precheck and create two events with identical start/end.
-    const idempotencyKey = focusBlockIdempotencyKey(userId, tenantId, start.toISOString(), mode);
-    if (focusBlockInFlight.has(idempotencyKey)) {
-      sendError(res, 'FOCUS_BLOCK_DUPLICATE', 'A focus block for this slot is already being created.', 409);
-      return;
-    }
-    focusBlockInFlight.add(idempotencyKey);
     try {
-      const precheck = await precheckFocusCalendarConflict({
-        userId,
-        source,
-        start: start.toISOString(),
-        end: end.toISOString(),
-        timezone,
-        constrainToSource: Boolean(requestedSource),
-      });
-      if (precheck.status !== 'clean') {
-        sendError(res, precheck.status === 'conflicted' ? 'FOCUS_SLOT_CONFLICT' : 'FOCUS_SLOT_UNAVAILABLE', precheck.warnings[0] || 'Focus block cannot be created for this slot.', 409, {
-          precheck,
-        });
-        return;
-      }
       const intervals = mode === 'pomodoro'
         ? buildPomodoroIntervals({ start, blocks, timezone })
         : [];
@@ -393,43 +477,80 @@ export function calendarRoutes(): Router {
       const description = mode === 'pomodoro'
         ? buildPomodoroDescription(intervals, timezone)
         : withNexusCategoryDescription(typeof req.body?.description === 'string' ? req.body.description.trim() : undefined, categories);
-      // Phase 17 hostile-QA fix (2026-05-18): wrap createEvent in try/catch
-      // so a provider 401/403/5xx maps to typed CALENDAR_CREATE_FAILED
-      // instead of a generic 500. Matches POST /events at line 229.
-      let event;
-      try {
-        event = await createEvent(
-          {
-            title,
-            start: start.toISOString(),
-            end: end.toISOString(),
-            description,
-            categories,
-          },
-          source,
-          userId,
-        );
-      } catch (createErr: unknown) {
-        logger.warn(
-          { err: createErr, userId, tenantId, source, mode, start: start.toISOString(), end: end.toISOString() },
-          'Focus block calendar provider write failed',
-        );
-        sendError(res, 'CALENDAR_CREATE_FAILED', 'Calendar provider failed to create the focus block.', 502);
+      const commandInput = {
+        userId,
+        tenantId,
+        idempotencyKey,
+        title,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        timezone,
+        description,
+        categories,
+        channel: 'ios' as const,
+      };
+      const replayProbe = inspectSecretaryCalendarCommandReplay({
+        ...commandInput,
+        ...(requestedSource ? { source: requestedSource } : {}),
+      });
+      const source = replayProbe?.source ?? preferredSource;
+      if (!replayProbe && !hasWritableCalendarForUser(userId)) {
+        sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
         return;
       }
-      invalidateCalendarCaches(userId);
+      if (!source) {
+        sendError(res, 'CALENDAR_NOT_CONFIGURED', preferenceResolution?.warning || 'No calendar provider is connected', 400);
+        return;
+      }
+      // The deterministic command service owns the only provider conflict
+      // snapshot for this write. Apple Health sleep is an independent local
+      // commitment, so project it directly on every nonterminal attempt; a
+      // retry must not lose sleep conflicts merely because a receipt exists.
+      const sleepConflicts = replayProbe?.result ? [] : getAppleHealthSleepAgendaEvents({
+        userId,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        timezone,
+      });
+      const command = replayProbe?.result ?? await executeSecretaryCalendarCommand({
+        ...commandInput,
+        source,
+      }, {
+        additionalConflicts: sleepConflicts.map((conflict) => ({
+          id: conflict.id,
+          title: conflict.summary,
+          start: conflict.start,
+          end: conflict.end,
+          sourceLabel: conflict.source,
+        })),
+      });
+      if (command.status === 'review_required') {
+        sendError(
+          res,
+          'CALENDAR_CONFLICT_REVIEW_REQUIRED',
+          'The focus window needs Decision Center review. Nothing was written to the provider calendar.',
+          409,
+          { warningCodes: command.warningCodes },
+        );
+        return;
+      }
       sendSuccess(res, {
-        event: formatEvent(event),
+        event: formatEvent(command.event!),
         mode,
         pomodoroIntervals: intervals,
-        providerPreferenceWarning: preferenceResolution?.warningCode ? {
+        replayed: command.replayed,
+        providerPreferenceWarning: !command.replayed && preferenceResolution?.warningCode ? {
           code: preferenceResolution.warningCode,
           message: preferenceResolution.warning,
           requested: preferenceResolution.requested,
         } : null,
       }, { status: 201 });
-    } finally {
-      focusBlockInFlight.delete(idempotencyKey);
+    } catch (err: unknown) {
+      if (err instanceof SecretaryCalendarCommandError) {
+        sendError(res, err.code, err.message, err.status, { warningCodes: err.warningCodes });
+        return;
+      }
+      throw err;
     }
   }));
 
@@ -437,15 +558,17 @@ export function calendarRoutes(): Router {
    * PATCH /api/v1/calendar/events/:eventId
    *
    * Token-zero event update for secretary-style calendar mutation
-   * from the iOS dashboard. Keeps the route thin and delegates to
-   * unified-calendar so provider logic stays shared.
+   * from the iOS dashboard. New clients use the durable Secretary command
+   * service; one release of missing-key direct compatibility is retained.
    */
   router.patch('/events/:eventId', asyncHandler(async (req, res: Response) => {
-    const userId = (req as AuthenticatedRequest).userId;
-    if (!hasWritableCalendarForUser(userId)) {
-      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
-      return;
-    }
+    const scope = requireSecretaryCalendarRouteScope(
+      req as AuthenticatedRequest,
+      res,
+      'secretary_calendar_update',
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
 
     const eventId = String(req.params.eventId || '').trim();
     if (!eventId) {
@@ -457,6 +580,7 @@ export function calendarRoutes(): Router {
       title?: string;
       start?: string;
       end?: string;
+      description?: string;
       source?: string;
     };
 
@@ -469,8 +593,9 @@ export function calendarRoutes(): Router {
     const hasTitle = typeof body.title === 'string';
     const hasStart = typeof body.start === 'string';
     const hasEnd = typeof body.end === 'string';
-    if (!hasTitle && !hasStart && !hasEnd) {
-      sendError(res, 'VALIDATION', 'at least one of title, start, or end is required', 400);
+    const hasDescription = typeof body.description === 'string';
+    if (!hasTitle && !hasStart && !hasEnd && !hasDescription) {
+      sendError(res, 'VALIDATION', 'at least one of title, description, start, or end is required', 400);
       return;
     }
 
@@ -495,23 +620,84 @@ export function calendarRoutes(): Router {
       return;
     }
 
+    const idempotencyKey = req.header('idempotency-key')?.trim() ?? '';
     try {
-      const event = await updateEvent(
-        {
-          event_id: eventId,
-          new_title: trimmedTitle,
-          new_start: parsedStart?.toISOString(),
-          new_end: parsedEnd?.toISOString(),
-        },
-        source,
+      if (idempotencyKey) {
+        const mutationInput = {
+          userId,
+          tenantId,
+          idempotencyKey,
+          operation: 'update' as const,
+          source,
+          eventId,
+          title: hasTitle ? body.title : undefined,
+          description: hasDescription ? body.description : undefined,
+          start: body.start,
+          end: body.end,
+          timezone: calendarUserTimezone(userId),
+          channel: 'ios' as const,
+        };
+        const replayProbe = inspectSecretaryCalendarMutationReplay(mutationInput);
+        if (!replayProbe && !hasWritableCalendarForUser(userId)) {
+          sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No writable calendar provider is connected', 400);
+          return;
+        }
+        const command = replayProbe?.result ?? await executeSecretaryCalendarMutation(mutationInput);
+        if (command.status === 'review_required') {
+          sendError(
+            res,
+            'CALENDAR_CONFLICT_REVIEW_REQUIRED',
+            'The requested move needs Decision Center review. Nothing was written to the provider calendar.',
+            409,
+            { warningCodes: command.warningCodes },
+          );
+          return;
+        }
+        logger.info({ userId, eventId, source, replayed: command.replayed }, 'iOS calendar event updated');
+        sendSuccess(res, { event: formatEvent(command.event!), replayed: command.replayed });
+        return;
+      }
+
+      // One-release compatibility for installed clients that do not yet
+      // persist mutation keys. A one-use key preserves the legacy retry
+      // contract while keeping conflict checks, receipts, and provider writes
+      // inside the same deterministic service as new clients.
+      if (!hasWritableCalendarForUser(userId)) {
+        sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No writable calendar provider is connected', 400);
+        return;
+      }
+      noteLegacySecretaryCalendarMutationWithoutKey('update');
+      const command = await executeSecretaryCalendarMutation({
         userId,
-      );
-
-      invalidateCalendarCaches(userId);
-
+        tenantId,
+        idempotencyKey: `legacy-${randomUUID()}`,
+        operation: 'update',
+        source,
+        eventId,
+        title: hasTitle ? body.title : undefined,
+        description: hasDescription ? body.description : undefined,
+        start: body.start,
+        end: body.end,
+        timezone: calendarUserTimezone(userId),
+        channel: 'ios',
+      });
+      if (command.status === 'review_required') {
+        sendError(
+          res,
+          'CALENDAR_CONFLICT_REVIEW_REQUIRED',
+          'The requested move needs Decision Center review. Nothing was written to the provider calendar.',
+          409,
+          { warningCodes: command.warningCodes },
+        );
+        return;
+      }
       logger.info({ userId, eventId, source }, 'iOS calendar event updated');
-      sendSuccess(res, { event: formatEvent(event) });
+      sendSuccess(res, { event: formatEvent(command.event!), replayed: false });
     } catch (err: any) {
+      if (err instanceof SecretaryCalendarMutationError) {
+        sendError(res, err.code, err.message, err.status, { warningCodes: err.warningCodes });
+        return;
+      }
       logger.error({ err, eventId, source }, 'iOS calendar event update failed');
       sendInternalError(res, 'Failed to update event', { code: 'CALENDAR_UPDATE_FAILED' });
     }
@@ -520,15 +706,18 @@ export function calendarRoutes(): Router {
   /**
    * DELETE /api/v1/calendar/events/:eventId?source=google|outlook
    *
-   * Removes an event directly from the connected calendar provider
-   * without involving the AI pipeline.
+   * Removes an event without involving the AI pipeline. New clients use the
+   * durable Secretary command service; the query-only legacy shape remains
+   * for one installed-app compatibility release.
    */
   router.delete('/events/:eventId', asyncHandler(async (req, res: Response) => {
-    const userId = (req as AuthenticatedRequest).userId;
-    if (!hasWritableCalendarForUser(userId)) {
-      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
-      return;
-    }
+    const scope = requireSecretaryCalendarRouteScope(
+      req as AuthenticatedRequest,
+      res,
+      'secretary_calendar_delete',
+    );
+    if (!scope) return;
+    const { userId, tenantId } = scope;
 
     const eventId = String(req.params.eventId || '').trim();
     if (!eventId) {
@@ -536,18 +725,70 @@ export function calendarRoutes(): Router {
       return;
     }
 
-    const source = parseCalendarSource(req.query.source as string | undefined);
+    const deleteBody = req.body as { source?: string } | undefined;
+    const source = parseCalendarSource(
+      deleteBody?.source ?? (req.query.source as string | undefined),
+    );
     if (!source) {
       sendError(res, 'VALIDATION', 'source must be google or outlook', 400);
       return;
     }
 
+    const idempotencyKey = req.header('idempotency-key')?.trim() ?? '';
     try {
-      await deleteEvent(eventId, source, userId);
-      invalidateCalendarCaches(userId);
+      if (idempotencyKey) {
+        const mutationInput = {
+          userId,
+          tenantId,
+          idempotencyKey,
+          operation: 'delete' as const,
+          source,
+          eventId,
+          timezone: calendarUserTimezone(userId),
+          channel: 'ios' as const,
+        };
+        const replayProbe = inspectSecretaryCalendarMutationReplay(mutationInput);
+        if (!replayProbe && !hasWritableCalendarForUser(userId)) {
+          sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No writable calendar provider is connected', 400);
+          return;
+        }
+        const command = replayProbe?.result ?? await executeSecretaryCalendarMutation(mutationInput);
+        sendSuccess(res, {
+          deleted: command.deleted === true,
+          eventId,
+          source,
+          replayed: command.replayed,
+        });
+        return;
+      }
+
+      if (!hasWritableCalendarForUser(userId)) {
+        sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No writable calendar provider is connected', 400);
+        return;
+      }
+      noteLegacySecretaryCalendarMutationWithoutKey('delete');
+      const command = await executeSecretaryCalendarMutation({
+        userId,
+        tenantId,
+        idempotencyKey: `legacy-${randomUUID()}`,
+        operation: 'delete',
+        source,
+        eventId,
+        timezone: calendarUserTimezone(userId),
+        channel: 'ios',
+      });
       logger.info({ userId, eventId, source }, 'iOS calendar event deleted');
-      sendSuccess(res, { deleted: true, eventId, source });
+      sendSuccess(res, {
+        deleted: command.deleted === true,
+        eventId,
+        source,
+        replayed: false,
+      });
     } catch (err: any) {
+      if (err instanceof SecretaryCalendarMutationError) {
+        sendError(res, err.code, err.message, err.status, { warningCodes: err.warningCodes });
+        return;
+      }
       logger.error({ err, eventId, source }, 'iOS calendar event delete failed');
       sendInternalError(res, 'Failed to delete event', { code: 'CALENDAR_DELETE_FAILED' });
     }
@@ -612,13 +853,15 @@ export function calendarRoutes(): Router {
   router.get('/focus-recommendation', asyncHandler(async (req, res: Response) => {
     const durationMinutes = clampInt(req.query.durationMinutes as string | undefined, 90, 30, 180);
     const horizonDays = clampInt(req.query.horizonDays as string | undefined, 4, 1, 7);
+    const scope = requireSecretaryCalendarRouteScope(
+      req as AuthenticatedRequest,
+      res,
+      'secretary_focus_recommendation',
+    );
+    if (!scope) return;
 
     try {
-      const userId = (req as AuthenticatedRequest).userId;
-      const tenantId = requireTenantIdParam(
-        (req as AuthenticatedRequest).tenantId,
-        'calendar.focus-recommendation',
-      );
+      const { userId, tenantId } = scope;
       const focusRecommendation = await getFocusBlockRecommendation(userId, {
         tenantId,
         durationMinutes,
@@ -789,6 +1032,11 @@ function formatEvent(e: any) {
     : rawTitle == null
       ? '(No title)'
       : String(rawTitle);
+  const syncedSources = Array.isArray(e.syncedSources)
+    ? [...new Set(e.syncedSources
+        .map((source: unknown) => parseCalendarSource(typeof source === 'string' ? source : undefined))
+        .filter((source: CalendarSource | null): source is CalendarSource => source !== null))]
+    : [];
   return {
     id: typeof e.id === 'string' ? e.id : '',
     title,
@@ -802,6 +1050,7 @@ function formatEvent(e: any) {
     categories: Array.isArray(e.categories) ? e.categories : null,
     color: typeof e.color === 'string' ? e.color : null,
     isAllDay: !!e.isAllDay,
+    ...(syncedSources.length > 0 ? { syncedSources } : {}),
   };
 }
 
@@ -814,13 +1063,29 @@ function parseCalendarSource(value?: string): CalendarSource | null {
 
 function normalizeNexusCategories(nexusCategory: unknown, categories: unknown): string[] | undefined {
   const allowed = new Set(['focus', 'pomodoro', 'training', 'meal', 'meeting']);
+  if (categories != null && !Array.isArray(categories)) {
+    throw new SecretaryCalendarCommandError('INVALID_INPUT', 'categories must be an array.', 400);
+  }
+  if (nexusCategory != null && typeof nexusCategory !== 'string') {
+    throw new SecretaryCalendarCommandError('INVALID_INPUT', 'nexusCategory must be a string.', 400);
+  }
+  if (Array.isArray(categories) && categories.some((value) => typeof value !== 'string')) {
+    throw new SecretaryCalendarCommandError('INVALID_INPUT', 'categories must contain only strings.', 400);
+  }
   const values = [
     ...(Array.isArray(categories) ? categories : []),
     nexusCategory,
   ];
   const normalized = values
     .map((value) => typeof value === 'string' ? value.trim().toLowerCase() : '')
-    .filter((value) => allowed.has(value));
+    .filter(Boolean);
+  if (normalized.some((value) => !allowed.has(value))) {
+    throw new SecretaryCalendarCommandError(
+      'INVALID_INPUT',
+      'categories must contain only focus, pomodoro, training, meal, or meeting.',
+      400,
+    );
+  }
   const unique = [...new Set(normalized)];
   return unique.length > 0 ? unique : undefined;
 }

@@ -13,14 +13,11 @@
  */
 
 import * as msTodo from '../../services/microsoft-todo';
-import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from '../../services/unified-calendar';
-import { getActiveReminders } from '../../state/reminders';
 import { getTaskProviderForUser } from '../../services/task-store/task-router';
 import {
   getProviderAwarePendingTodoTasks,
   getProviderAwareTodoTasksDueInRange,
 } from '../../services/task-store/provider-aware-read-model';
-import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../services/unified-mail-pressure';
 import {
   formatMsTodoLists,
   formatMsTodoTasks,
@@ -30,12 +27,8 @@ import {
   escapeHtml,
 } from '../../utils/chat-html-formatter';
 import {
-  startOfDay,
-  endOfDay,
   startOfWeek,
   endOfWeek,
-  now,
-  formatTime,
   formatDate,
   formatDateTime,
 } from '../../utils/date-parser';
@@ -43,6 +36,8 @@ import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { getCached, setCache } from '../../services/cache-store';
 import { getUserLanguageById } from '../../services/user-service';
+import { tryFastpath as trySecretaryFastpath } from '../../services/secretary-fastpath';
+import { assertSecretaryPlanningScope } from '../../services/secretary-planning-context';
 import type { InlineButton } from '../../adapters/message-adapter';
 import {
   buildListSelectionButtons,
@@ -180,6 +175,9 @@ export async function tryDeterministicChatCommand(
 ): Promise<FastPathResult | null> {
   const trimmed = text.trim();
   if (!trimmed.startsWith('/')) return null;
+  if (userId != null) {
+    assertSecretaryPlanningScope(userId, tenantId ?? userId);
+  }
   const labels = getFastPathLabels(userId);
 
   // Split into command + remainder
@@ -221,13 +219,13 @@ export async function tryDeterministicChatCommand(
 
       case '/day':
       case '/today':
-        return await handleDayOverview(labels, userId, tenantId);
+        return await handleCanonicalOverview('/day', labels, userId, tenantId);
 
       case '/week':
-        return await handleWeekOverview(labels, userId, tenantId);
+        return await handleCanonicalOverview('/week', labels, userId, tenantId);
 
       case '/status':
-        return await handleStatus(labels, userId, tenantId);
+        return await handleCanonicalOverview('/status', labels, userId, tenantId);
 
       default:
         return null;
@@ -424,157 +422,30 @@ async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, u
   };
 }
 
-async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult> {
+async function handleCanonicalOverview(
+  command: '/day' | '/week' | '/status',
+  labels: ReturnType<typeof labelsForLanguage>,
+  userId?: number,
+  tenantId?: number,
+): Promise<FastPathResult> {
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
-  let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
-
-  // Calendar events today
-  if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfDay(), endOfDay(), userId);
-      if (events.length === 0) {
-        msg += `${copy('Sem eventos agendados para hoje.', 'No events scheduled today.')}\n`;
-      } else {
-        for (const e of events) {
-          const src = (e as any).source === 'outlook' ? ' 📧' : '';
-          msg += `${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'fast-path day overview: calendar fetch failed');
-      msg += `${copy('Calendário indisponível.', 'Calendar unavailable.')}\n`;
-    }
-  }
-
-  // MS Todo — due today (timezone-aware)
-  const taskProvider = getFastPathTaskProvider(userId);
-  if (taskProvider) {
-    try {
-      const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
-      if (pendingResult.success) {
-        const todayStr = nowDateInTimezone();
-        const dueToday = pendingResult.data.filter((t) => dueDateInTimezone(t.dueDateTime) === todayStr);
-        if (dueToday.length > 0) {
-          msg += `\n${copy(`📋 Para hoje (${dueToday.length}):`, `📋 Due today (${dueToday.length}):`)}\n`;
-          for (const t of dueToday) {
-            msg += `- ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'fast-path day overview: todo fetch failed');
+  if (userId != null) {
+    const canonical = await trySecretaryFastpath(userId, command, undefined, tenantId ?? userId);
+    if (canonical.matched && canonical.response) {
+      return {
+        text: canonical.response.text,
+        domain: 'secretary',
+        buttons: buildSecretaryQuickActionButtons(labels),
+      };
     }
   }
 
   return {
-    text: msg.trim(),
-    domain: 'secretary',
-    buttons: buildSecretaryQuickActionButtons(labels),
-  };
-}
-
-async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult> {
-  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
-  let msg = `${copy('<b>📅 Vista da semana</b>', '<b>📅 Week Overview</b>')}\n`;
-  msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
-
-  if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfWeek(), endOfWeek(), userId);
-      if (events.length === 0) {
-        msg += `${copy('Sem eventos esta semana.', 'No events this week.')}\n`;
-      } else {
-        let currentDay = '';
-        for (const e of events) {
-          const day = formatDateTime(e.start).split(',')[0];
-          if (day !== currentDay) {
-            currentDay = day;
-            msg += `\n<b>${day}</b>\n`;
-          }
-          const src = (e as any).source === 'outlook' ? ' 📧' : '';
-          msg += `  ${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'fast-path week overview: calendar fetch failed');
-      msg += `${copy('Calendário indisponível.', 'Calendar unavailable.')}\n`;
-    }
-  }
-
-  const taskProvider = getFastPathTaskProvider(userId);
-  if (taskProvider) {
-    try {
-      const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
-      if (pendingResult.success && pendingResult.data.length > 0) {
-        msg += `\n${copy(`📋 Tarefas pendentes: ${pendingResult.data.length}`, `📋 Pending tasks: ${pendingResult.data.length}`)}\n`;
-      }
-    } catch (err) {
-      logger.warn({ err }, 'fast-path week overview: todo fetch failed');
-    }
-  }
-
-  return {
-    text: msg.trim(),
-    domain: 'secretary',
-    buttons: buildSecretaryQuickActionButtons(labels),
-  };
-}
-
-async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult> {
-  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
-  let msg = `${copy('<b>📊 Estado geral</b>', '<b>📊 Status Overview</b>')}\n\n`;
-
-  // Microsoft To Do
-  const taskProvider = getFastPathTaskProvider(userId);
-  if (taskProvider) {
-    try {
-      const pendingResult = await getPendingTasksCached(taskProvider, userId, tenantId);
-      if (pendingResult.success) {
-        const highPriority = pendingResult.data.filter((t) => t.importance === 'high');
-        msg += `📋 Microsoft To Do: ${copy(`${pendingResult.data.length} tarefas pendentes`, `${pendingResult.data.length} pending tasks`)}\n`;
-        if (highPriority.length > 0) {
-          msg += `${copy(`🔴 Alta prioridade: ${highPriority.length}`, `🔴 High priority: ${highPriority.length}`)}\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'fast-path status: todo fetch failed');
-      msg += `${copy('📋 Microsoft To Do: indisponível', '📋 Microsoft To Do: unavailable')}\n`;
-    }
-  } else {
-    msg += `${copy('📋 Microsoft To Do: não configurado', '📋 Microsoft To Do: not configured')}\n`;
-  }
-
-  const reminders = userId != null ? getActiveReminders(userId, tenantId) : [];
-  msg += `${copy(`⏰ Lembretes ativos: ${reminders.length}`, `⏰ Active reminders: ${reminders.length}`)}\n`;
-
-  if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfDay(), endOfDay(), userId);
-      msg += `${copy(`📅 Eventos hoje: ${events.length}`, `📅 Events today: ${events.length}`)}\n`;
-    } catch (err) {
-      logger.warn({ err }, 'fast-path status: calendar fetch failed');
-      msg += `${copy('📅 Calendário: indisponível', '📅 Calendar: unavailable')}\n`;
-    }
-  } else {
-    msg += `${copy('📅 Calendário: não configurado', '📅 Calendar: not configured')}\n`;
-  }
-
-  if (userId != null && isAnyMailConfiguredForUser(userId)) {
-    try {
-      const unread = await getUnreadMailSummaryForUser(userId);
-      const providerBreakdown = [
-        unread.outlookUnread != null ? `Outlook ${unread.outlookUnread}` : null,
-        unread.gmailUnread != null ? `Gmail ${unread.gmailUnread}` : null,
-      ].filter(Boolean).join(' | ');
-      msg += `${copy(`📧 Inbox por ler: ${unread.totalUnread}`, `📧 Inbox unread: ${unread.totalUnread}`)}${providerBreakdown ? ` (${providerBreakdown})` : ''}\n`;
-    } catch (err) {
-      logger.warn({ err }, 'fast-path status: unified mail unread failed');
-      msg += `${copy('📧 Inbox: indisponível', '📧 Inbox: unavailable')}\n`;
-    }
-  }
-
-  return {
-    text: msg.trim(),
+    text: command === '/week'
+      ? copy('⚠️ Não foi possível confirmar o plano desta semana.', '⚠️ This week\'s plan could not be confirmed.')
+      : command === '/status'
+        ? copy('⚠️ Não foi possível confirmar o estado do plano.', '⚠️ Plan status could not be confirmed.')
+        : copy('⚠️ Não foi possível confirmar o plano de hoje.', '⚠️ Today\'s plan could not be confirmed.'),
     domain: 'secretary',
     buttons: buildSecretaryQuickActionButtons(labels),
   };

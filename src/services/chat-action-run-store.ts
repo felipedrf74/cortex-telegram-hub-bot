@@ -120,6 +120,46 @@ export function claimChatActionRunForExecution(input: ClaimChatActionRunInput): 
   })();
 }
 
+/**
+ * Re-enters a previously projected terminal chat run only when its stored
+ * service error is explicitly retryable. The compare-and-swap keeps duplicate
+ * confirmations from executing the same recovery concurrently.
+ */
+export function reclaimChatActionRunForExecution(input: {
+  id: string;
+  retryableErrorMessages: readonly string[];
+  nowIso?: string;
+}): { acquired: boolean; row: ChatActionRunRow } | null {
+  const db = getDb();
+  return db.transaction(() => {
+    const current = getChatActionRun(input.id);
+    if (!current) return null;
+    if (!['partial_success', 'verified_pending', 'blocked'].includes(current.status)) {
+      return { acquired: false, row: current };
+    }
+    const errorMessage = parseChatActionRunErrorMessage(current.error_json);
+    if (!errorMessage || !input.retryableErrorMessages.includes(errorMessage)) {
+      return { acquired: false, row: current };
+    }
+    const now = input.nowIso ?? new Date().toISOString();
+    const updated = db.prepare(`
+      UPDATE chat_action_runs
+         SET status = 'executing',
+             error_json = NULL,
+             verification_json = NULL,
+             completed_at = NULL,
+             updated_at = ?
+       WHERE id = ?
+         AND status = ?
+         AND error_json = ?
+    `).run(now, current.id, current.status, current.error_json);
+    return {
+      acquired: Number(updated.changes ?? 0) === 1,
+      row: getChatActionRun(current.id) ?? current,
+    };
+  })();
+}
+
 export function updateChatActionRun(
   id: string,
   status: ChatActionRunStatus,
@@ -205,6 +245,16 @@ export function updateChatActionRun(
     return null;
   }
   return getChatActionRun(id);
+}
+
+function parseChatActionRunErrorMessage(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as { message?: unknown };
+    return typeof parsed?.message === 'string' ? parsed.message : null;
+  } catch {
+    return null;
+  }
 }
 
 export function getChatActionRun(id: string): ChatActionRunRow | null {

@@ -18,7 +18,7 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
       providerDependencies: ['google_calendar', 'outlook_calendar'],
       risk: 'safe_write',
       confirmationPolicy: 'none',
-      executor: 'unified_calendar.createEvent',
+      executor: 'secretary_calendar_command_service.executeSecretaryCalendarCommand',
       // M16: declared result entities for cross-step $ref chaining
       // ("schedule X and then move IT"). Paths match the calendar executor's
       // verified result shape ({ event: { id, title, ... } }).
@@ -144,7 +144,7 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
       providerDependencies: ['google_calendar', 'outlook_calendar'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',
-      executor: 'unified_calendar.updateEvent',
+      executor: 'secretary_calendar_command_service.executeSecretaryCalendarMutation',
       verifier: 'provider_read_back',
       // Phase 14 batch 72 (2026-05-16): typed extractor surfaces event reference.
       typedSlotExtractors: [calendarMutationSlotExtractor],
@@ -208,7 +208,7 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
       providerDependencies: ['google_calendar', 'outlook_calendar'],
       risk: 'safe_write',
       confirmationPolicy: 'confirm',
-      executor: 'unified_calendar.updateEvent',
+      executor: 'secretary_calendar_command_service.executeSecretaryCalendarMutation',
       verifier: 'provider_read_back',
       // Phase 14 batch 72: shares the calendar mutation extractor with
       // update_event / delete_event.
@@ -267,7 +267,7 @@ export const SECRETARY_CALENDAR_ACTIONS: ChatActionDefinition[] = [
         tool: 'delete_calendar_event',
         argumentField: 'eventId',
       },
-      executor: 'unified_calendar.deleteEvent',
+      executor: 'secretary_calendar_command_service.executeSecretaryCalendarMutation',
       verifier: 'provider_read_back',
       // Phase 13 batch 67 (2026-05-16): typed extractor surfaces the event
       // reference phrase for recent-entity resolution. eventId itself comes

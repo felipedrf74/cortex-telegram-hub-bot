@@ -339,15 +339,23 @@ export async function deleteEvent(eventId: string, source: CalendarSource, userI
  * Two events from different calendars with the same fingerprint are considered duplicates.
  */
 export function eventFingerprint(event: UnifiedCalendarEvent): string {
+  const providerUid = normalizeProviderIdentity(event.providerUid);
+  if (providerUid) return `uid:${providerUid}`;
   const subject = (event.summary || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const organizer = normalizeProviderIdentity(event.organizer);
   const allDayDate = normalizeAllDayStartDate(event);
   if (allDayDate) {
-    return `${subject}|all-day:${allDayDate}`;
+    return `${organizer ? `organizer:${organizer}|` : ''}${subject}|all-day:${allDayDate}`;
   }
   // Round start time to the nearest minute to handle timezone conversion differences
   const startMs = new Date(event.start).getTime();
   const startMinute = Math.round(startMs / 60_000);
-  return `${subject}|${startMinute}`;
+  return `${organizer ? `organizer:${organizer}|` : ''}${subject}|${startMinute}`;
+}
+
+function normalizeProviderIdentity(value: string | null | undefined): string | null {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized || null;
 }
 
 function normalizeAllDayStartDate(event: UnifiedCalendarEvent): string | null {
@@ -380,9 +388,12 @@ function normalizeAllDayStartDate(event: UnifiedCalendarEvent): string | null {
  */
 export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalendarEvent[] {
   if (events.length === 0) return events;
-  if (events.length === 1) return [{ ...events[0], syncedSources: [events[0].source] }];
+  if (events.length === 1) {
+    return [{ ...events[0], syncedSources: normalizedSyncedSources(events[0]) }];
+  }
 
   const fingerMap = new Map<string, UnifiedCalendarEvent[]>();
+  const repeatedProviderUids = repeatedProviderUidFingerprints(events);
   let dupsFound = 0;
 
   for (const event of events) {
@@ -390,11 +401,12 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
     const bucket = fingerMap.get(fp) ?? [];
     const existingIndex = bucket.findIndex((candidate) => {
       const sources = new Set(candidate.syncedSources || [candidate.source]);
-      return !sources.has(event.source);
+      return !sources.has(event.source)
+        && providerCopiesShareOccurrence(candidate, event, repeatedProviderUids.has(fp));
     });
 
     if (existingIndex < 0) {
-      bucket.push({ ...event, syncedSources: [event.source] });
+      bucket.push({ ...event, syncedSources: normalizedSyncedSources(event) });
       fingerMap.set(fp, bucket);
       continue;
     }
@@ -404,6 +416,7 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
     dupsFound++;
     const sources = new Set(existing.syncedSources || [existing.source]);
     sources.add(event.source);
+    for (const source of event.syncedSources ?? []) sources.add(source);
 
     // Keep whichever has more complete data
     const existingScore = dataRichness(existing);
@@ -419,6 +432,11 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
       end: conservativeBoundary(existing.end, event.end, 'latest'),
       isAllDay: Boolean(existing.isAllDay || event.isAllDay),
       timeZone: richer.timeZone ?? existing.timeZone ?? event.timeZone,
+      providerUid: richer.providerUid ?? existing.providerUid ?? event.providerUid,
+      providerOccurrenceStart: richer.providerOccurrenceStart
+        ?? existing.providerOccurrenceStart
+        ?? event.providerOccurrenceStart,
+      organizer: richer.organizer ?? existing.organizer ?? event.organizer,
       // A provider copy that is busy must win over a duplicate marked free.
       // Missing intent is treated as busy for backwards-compatible safety.
       blocksTime: (existing.blocksTime ?? true) || (event.blocksTime ?? true),
@@ -432,6 +450,77 @@ export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalend
   }
 
   return deduped;
+}
+
+function normalizedSyncedSources(event: UnifiedCalendarEvent): CalendarSource[] {
+  return [...new Set([event.source, ...(event.syncedSources ?? [])])];
+}
+
+function repeatedProviderUidFingerprints(events: UnifiedCalendarEvent[]): Set<string> {
+  const counts = new Map<string, Map<CalendarSource, number>>();
+  for (const event of events) {
+    const uid = normalizeProviderIdentity(event.providerUid);
+    if (!uid) continue;
+    const fingerprint = `uid:${uid}`;
+    const bySource = counts.get(fingerprint) ?? new Map<CalendarSource, number>();
+    bySource.set(event.source, (bySource.get(event.source) ?? 0) + 1);
+    counts.set(fingerprint, bySource);
+  }
+  return new Set([...counts.entries()]
+    .filter(([, bySource]) => [...bySource.values()].some((count) => count > 1))
+    .map(([fingerprint]) => fingerprint));
+}
+
+function providerCopiesShareOccurrence(
+  left: UnifiedCalendarEvent,
+  right: UnifiedCalendarEvent,
+  repeatedUidInWindow: boolean,
+): boolean {
+  const uid = normalizeProviderIdentity(left.providerUid);
+  if (!uid || uid !== normalizeProviderIdentity(right.providerUid)) return true;
+
+  const leftOccurrence = normalizeOccurrenceIdentity(left.providerOccurrenceStart, left);
+  const rightOccurrence = normalizeOccurrenceIdentity(right.providerOccurrenceStart, right);
+  if (leftOccurrence || rightOccurrence) {
+    // If one provider omitted recurrence metadata, compare its visible start to
+    // the immutable occurrence identity from the other provider. Never match
+    // two different immutable occurrence starts.
+    return (leftOccurrence ?? normalizeOccurrenceIdentity(left.start, left))
+      === (rightOccurrence ?? normalizeOccurrenceIdentity(right.start, right));
+  }
+
+  const leftAllDay = normalizeAllDayStartDate(left);
+  const rightAllDay = normalizeAllDayStartDate(right);
+  if (leftAllDay || rightAllDay) return leftAllDay != null && leftAllDay === rightAllDay;
+
+  const leftStart = Date.parse(left.start);
+  const rightStart = Date.parse(right.start);
+  if (!Number.isFinite(leftStart) || !Number.isFinite(rightStart)) return false;
+  if (repeatedUidInWindow) {
+    // Without immutable occurrence metadata, repeated series instances are
+    // paired only at the exact minute. This prevents a missing occurrence on
+    // one provider from shifting every later pair.
+    return Math.round(leftStart / 60_000) === Math.round(rightStart / 60_000);
+  }
+  // A single cross-provider copy can differ slightly while one provider is
+  // converging after a move. Keep this narrow; wider drift is safer as two
+  // visible events than as a fabricated union interval.
+  return Math.abs(leftStart - rightStart) <= 15 * 60_000;
+}
+
+function normalizeOccurrenceIdentity(
+  value: string | null | undefined,
+  event: UnifiedCalendarEvent,
+): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (event.isAllDay || /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const date = normalizeAllDayStartDate({ ...event, start: raw, isAllDay: true });
+    return date ? `date:${date}` : null;
+  }
+  const timestamp = Date.parse(raw);
+  if (!Number.isFinite(timestamp)) return null;
+  return `minute:${Math.round(timestamp / 60_000)}`;
 }
 
 function conservativeBoundary(

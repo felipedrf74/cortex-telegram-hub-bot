@@ -22,7 +22,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mocks (set up BEFORE imports) ──────────────────────────────────
 
 vi.mock('../../src/services/unified-calendar', () => ({
-  getEvents: vi.fn(),
+  getEventsWithDiagnostics: vi.fn(),
   hasConnectedCalendarForUser: vi.fn(() => true),
   isAnyCalendarConfigured: vi.fn(() => true),
 }));
@@ -143,7 +143,13 @@ beforeEach(() => {
   mockEnsureActiveProvider.mockReset();
 
   // Default fixtures so the AI path doesn't error out
-  vi.mocked(calendar.getEvents).mockResolvedValue([]);
+  vi.mocked(calendar.getEventsWithDiagnostics).mockResolvedValue({
+    events: [],
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+  });
   vi.mocked(calendar.hasConnectedCalendarForUser).mockReturnValue(true);
   vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
   vi.mocked(mailPressure.isAnyMailConfiguredForUser).mockReturnValue(true);
@@ -207,7 +213,7 @@ describe('Layer 2: smart context — lazy data fetching', () => {
     await handleSecretary('show me all my tasks for the marathon project', UID);
 
     expect(todo.getAllPendingTasks).toHaveBeenCalled();
-    expect(calendar.getEvents).not.toHaveBeenCalled();
+    expect(calendar.getEventsWithDiagnostics).not.toHaveBeenCalled();
     expect(mailPressure.getUnreadMailSummaryForUser).not.toHaveBeenCalled();
     expect(garmin.getActivitiesByDateForUser).not.toHaveBeenCalled();
     expect(garmin.getBodyBatteryEventsForUser).not.toHaveBeenCalled();
@@ -218,7 +224,7 @@ describe('Layer 2: smart context — lazy data fetching', () => {
   it('"plan my Tuesday" → fetches calendar (and reminders, paired with calendar)', async () => {
     await handleSecretary('plan my Tuesday around the deadlines', UID);
 
-    expect(calendar.getEvents).toHaveBeenCalled();
+    expect(calendar.getEventsWithDiagnostics).toHaveBeenCalled();
     // "deadlines" doesn't trigger task keyword, "Tuesday" triggers calendar
     expect(mailPressure.getUnreadMailSummaryForUser).not.toHaveBeenCalled();
     expect(garmin.getActivitiesByDateForUser).not.toHaveBeenCalled();
@@ -232,7 +238,7 @@ describe('Layer 2: smart context — lazy data fetching', () => {
     await handleSecretary('send an email to John about the project meeting next week', UID);
 
     expect(mailPressure.getUnreadMailSummaryForUser).toHaveBeenCalled();
-    expect(calendar.getEvents).toHaveBeenCalled(); // "meeting" pulls in calendar
+    expect(calendar.getEventsWithDiagnostics).toHaveBeenCalled(); // "meeting" pulls in calendar
     expect(todo.getAllPendingTasks).not.toHaveBeenCalled();
     expect(garmin.getActivitiesByDateForUser).not.toHaveBeenCalled();
   });
@@ -260,7 +266,7 @@ describe('Layer 2: smart context — lazy data fetching', () => {
     await handleSecretary('ok go ahead', UID);
 
     expect(todo.getAllPendingTasks).toHaveBeenCalled();
-    expect(calendar.getEvents).toHaveBeenCalled();
+    expect(calendar.getEventsWithDiagnostics).toHaveBeenCalled();
     expect(mailPressure.getUnreadMailSummaryForUser).toHaveBeenCalled();
     expect(garmin.getActivitiesByDateForUser).toHaveBeenCalled();
   });
@@ -269,7 +275,7 @@ describe('Layer 2: smart context — lazy data fetching', () => {
     await handleSecretary('what do you think about my situation overall', UID);
 
     expect(todo.getAllPendingTasks).toHaveBeenCalled();
-    expect(calendar.getEvents).toHaveBeenCalled();
+    expect(calendar.getEventsWithDiagnostics).toHaveBeenCalled();
     expect(mailPressure.getUnreadMailSummaryForUser).toHaveBeenCalled();
     expect(garmin.getActivitiesByDateForUser).toHaveBeenCalled();
   });
@@ -314,13 +320,13 @@ describe('Layer 2: cache shape invalidation', () => {
     // First call: only tasks
     await handleSecretary('show me all my tasks for the project', UID);
     expect(todo.getAllPendingTasks).toHaveBeenCalledTimes(1);
-    expect(calendar.getEvents).not.toHaveBeenCalled();
+    expect(calendar.getEventsWithDiagnostics).not.toHaveBeenCalled();
 
     // Second call: only calendar — should NOT hit the cache (different shape)
     // and should re-fetch calendar (but not tasks again, since the second
     // intent doesn't need tasks)
     await handleSecretary('show me my agenda for tuesday', UID);
-    expect(calendar.getEvents).toHaveBeenCalledTimes(1);
+    expect(calendar.getEventsWithDiagnostics).toHaveBeenCalledTimes(1);
   });
 
   it('same shape within TTL hits the cache (no duplicate fetches)', async () => {

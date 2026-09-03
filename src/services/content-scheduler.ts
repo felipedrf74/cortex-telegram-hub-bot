@@ -42,7 +42,8 @@ import {
   type TrainingWeek,
 } from './training-plans';
 import { resolveTrainingPlanTimezone } from './training-date-utils';
-import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from './unified-calendar';
+import { getEventsWithDiagnostics, hasWritableCalendarForUser, type UnifiedCalendarEvent } from './unified-calendar';
+import { getUserTimezone } from './user-service';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import {
   countUpcomingContentTopicCompatibility,
@@ -247,6 +248,7 @@ export async function getFilmingRecommendation(
   userId: number,
   topics: ContentTopic[] | undefined = undefined,
   tenantId?: number,
+  timezone?: string,
 ): Promise<ContentFilmingRecommendation | null> {
   const resolvedTenantId = tenantId ?? userId;
   if (
@@ -269,17 +271,19 @@ export async function getFilmingRecommendation(
     limit: 100,
     tenantId: resolvedTenantId,
   });
-  const zone = config.app.timezone;
+  const zone = timezone ?? getUserTimezone(userId) ?? config.app.timezone;
   const today = DateTime.now().setZone(zone).startOf('day');
   const windowDays = 7;
   const rangeEnd = today.plus({ days: windowDays - 1 }).endOf('day');
 
   const [calendarResult, readinessResult] = await Promise.allSettled([
-    getEvents(today.toUTC().toISO()!, rangeEnd.toUTC().toISO()!, userId),
+    getEventsWithDiagnostics(today.toUTC().toISO()!, rangeEnd.toUTC().toISO()!, userId),
     readBestReadiness(userId, tenantId),
   ]);
 
-  const calendarEvents = calendarResult.status === 'fulfilled' ? calendarResult.value : [];
+  const calendarSnapshot = calendarResult.status === 'fulfilled' ? calendarResult.value : null;
+  const calendarEvents = calendarSnapshot?.events ?? [];
+  const calendarConfirmed = calendarSnapshot?.status === 'ready';
   const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
   const trainingContext = readTrainingContextAll({ userId, tenantId });
   const trainingSchedule = buildTrainingSchedule(userId, resolvedTenantId, today, windowDays);
@@ -313,16 +317,23 @@ export async function getFilmingRecommendation(
         ? 'No hard training is scheduled today.'
         : 'No hard training is planned for this day.'],
     };
-    const calendar = summarizeCalendarLoad(calendarEvents, iso, zone);
+    const calendar = summarizeCalendarLoad(
+      calendarEvents,
+      iso,
+      zone,
+      calendarConfirmed,
+    );
 
     let score = 100;
     const reasons: string[] = [];
 
-    score -= training.scorePenalty;
-    reasons.push(...training.reasons);
-
     score -= calendar.scorePenalty;
-    reasons.push(...calendar.reasons);
+    if (calendar.load === 'unknown') {
+      reasons.push(...calendar.reasons, ...training.reasons);
+    } else {
+      reasons.push(...training.reasons, ...calendar.reasons);
+    }
+    score -= training.scorePenalty;
 
     if (activeTopicDates.has(iso)) {
       score -= 8;
@@ -356,17 +367,19 @@ export async function getFilmingRecommendation(
   if (!best) return null;
 
   const recommendation = buildRecommendation(best, {
-    hadCalendarData: calendarResult.status === 'fulfilled',
+    hadCalendarData: calendarConfirmed,
     hadReadinessData: readiness?.score != null,
     hadTrainingData: trainingSchedule.size > 0 || trainingContext.signals.length > 0,
   });
 
-  const suggestedBlock = tenantId == null
+  const suggestedBlock = tenantId == null || !calendarConfirmed
     ? null
     : await getFocusBlockRecommendation(userId, {
       tenantId,
       durationMinutes: 120,
       preferredDate: recommendation.date,
+      timezone: zone,
+      calendarEvents,
     });
 
   if (suggestedBlock?.date === recommendation.date) {
@@ -591,7 +604,16 @@ function summarizeCalendarLoad(
   events: UnifiedCalendarEvent[],
   isoDate: string,
   zone: string,
+  calendarConfirmed: boolean,
 ): { load: CalendarLoad; scorePenalty: number; reasons: string[] } {
+  if (!calendarConfirmed) {
+    return {
+      load: 'unknown',
+      scorePenalty: 20,
+      reasons: ['The calendar could not be confirmed, so treat this filming day as provisional.'],
+    };
+  }
+
   const dayEvents = events.filter((event) => {
     const localDay = DateTime.fromISO(event.start, { zone: 'utc' }).setZone(zone).toISODate();
     return localDay === isoDate && !looksLikeTrainingEvent(event.summary || '');

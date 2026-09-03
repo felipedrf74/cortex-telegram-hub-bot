@@ -13,8 +13,10 @@ const mocks = vi.hoisted(() => ({
   isGarminConfiguredForUser: vi.fn(),
   getLatestReadinessEvent: vi.fn(),
   getUserTimezone: vi.fn(),
+  getUserById: vi.fn(),
   isSubmoduleEnabled: vi.fn(),
   composeDailyBrief: vi.fn(),
+  composeWeeklyPlan: vi.fn(),
 }));
 
 vi.mock('../../src/services/task-store/task-router', async () => {
@@ -61,13 +63,18 @@ vi.mock('../../src/services/user-service', async () => {
   const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
     '../../src/services/user-service',
   );
-  return { ...actual, getUserTimezone: mocks.getUserTimezone };
+  return {
+    ...actual,
+    getUserTimezone: mocks.getUserTimezone,
+    getUserById: mocks.getUserById,
+  };
 });
 vi.mock('../../src/skills/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/skills/registry')>('../../src/skills/registry');
   return { ...actual, isSubmoduleEnabled: mocks.isSubmoduleEnabled };
 });
 vi.mock('../../src/services/daily-brief-orchestrator', () => ({ composeDailyBrief: mocks.composeDailyBrief }));
+vi.mock('../../src/services/weekly-plan-orchestrator', () => ({ composeWeeklyPlan: mocks.composeWeeklyPlan }));
 
 import { collectSecretaryOperationalContext } from '../../src/services/chat-core-v2/secretary-operational-context';
 
@@ -76,6 +83,7 @@ describe('secretary operational context', () => {
     vi.clearAllMocks();
     mocks.getTaskProviderForUser.mockReturnValue({ getAllPendingTasks: mocks.getAllPendingTasks });
     mocks.getUserTimezone.mockReturnValue('UTC');
+    mocks.getUserById.mockReturnValue({ id: 7, timezone: 'UTC', language: 'en-US' });
     mocks.isSubmoduleEnabled.mockReturnValue(true);
     mocks.getAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     mocks.getEventsWithDiagnostics.mockResolvedValue({
@@ -95,10 +103,53 @@ describe('secretary operational context', () => {
       generatedAt: '2026-07-10T12:00:00.000Z',
       degraded: false,
       gated: { skills: [] },
+      day: {
+        secretary: {
+          calendarEventCount: 1,
+          pendingTasks: 1,
+          tasksDueOnDate: 1,
+          overdueTasks: 0,
+          mailUnreadTotal: 3,
+          writableCalendar: true,
+        },
+      },
       coordination: {
         topPriority: 'Review launch plan', executionOrder: ['Review launch plan'], watchouts: [], handoffs: [],
         blockers: [], suggestedMoves: [], protectedBlocks: [], nextBestAction: null, confidence: 'high',
+        secretaryToday: { summary: 'Review launch plan first.' },
       },
+    });
+    mocks.composeWeeklyPlan.mockResolvedValue({
+      weekStart: '2026-07-06',
+      weekEnd: '2026-07-12',
+      generatedAt: '2026-07-10T12:00:00.000Z',
+      timezone: 'UTC',
+      warningCodes: [],
+      warnings: [],
+      sourceHealth: {
+        calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        tasks: { status: 'ready', warningCodes: [], warnings: [] },
+        mail: { status: 'ready', warningCodes: [], warnings: [] },
+        focus: { status: 'ready', warningCodes: [], warnings: [] },
+        training: { status: 'ready', warningCodes: [], warnings: [] },
+        cooking: { status: 'ready', warningCodes: [], warnings: [] },
+        content: { status: 'ready', warningCodes: [], warnings: [] },
+        finance: { status: 'ready', warningCodes: [], warnings: [] },
+      },
+      days: [{
+        date: '2026-07-10',
+        secretary: {
+          calendarEventCount: 1,
+          pendingTasks: 1,
+          tasksDueOnDate: 1,
+          overdueTasks: 0,
+          mailUnreadTotal: 3,
+          writableCalendar: true,
+        },
+      }],
+      conflicts: [],
+      degraded: false,
+      gated: { skills: [] },
     });
   });
 
@@ -140,7 +191,9 @@ describe('secretary operational context', () => {
     expect(mocks.isGarminConfiguredForUser).not.toHaveBeenCalled();
     expect(mocks.getActivitiesByDateForUser).not.toHaveBeenCalled();
     expect(mocks.getUserTimezone).not.toHaveBeenCalled();
+    expect(mocks.getUserById).not.toHaveBeenCalled();
     expect(mocks.composeDailyBrief).not.toHaveBeenCalled();
+    expect(mocks.composeWeeklyPlan).not.toHaveBeenCalled();
   });
 
   it('collects bounded live evidence without provider bodies or raw health metrics', async () => {
@@ -200,6 +253,26 @@ describe('secretary operational context', () => {
     expect(evidence).not.toContain('SECRET ACTIVITY NAME');
     expect(evidence).not.toContain('180');
     expect(evidence).not.toContain('4.2');
+    expect(mocks.composeWeeklyPlan).toHaveBeenCalledTimes(1);
+    expect(mocks.composeDailyBrief).toHaveBeenCalledTimes(1);
+    expect(mocks.composeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
+      forceRefresh: true,
+      cacheMode: 'bypass',
+    }));
+    const canonicalWeek = await mocks.composeWeeklyPlan.mock.results[0]?.value;
+    const dailyInput = mocks.composeDailyBrief.mock.calls[0]?.[0] as {
+      weekPlan?: unknown;
+      daySnapshot?: { week?: unknown };
+      forceRefresh?: boolean;
+      cacheMode?: string;
+    };
+    expect(dailyInput.weekPlan).toBe(canonicalWeek);
+    expect(dailyInput.daySnapshot?.week).toBe(canonicalWeek);
+    expect(dailyInput.forceRefresh).toBe(true);
+    expect(dailyInput.cacheMode).toBe('bypass');
+    expect(mocks.getAllPendingTasks).not.toHaveBeenCalled();
+    expect(mocks.getEventsWithDiagnostics).not.toHaveBeenCalled();
+    expect(mocks.getUnreadMailSummaryForUser).not.toHaveBeenCalled();
     expect(mocks.getRemindersForWindow).toHaveBeenCalledWith(
       7, 7, '2026-07-10T00:00:00.000Z', '2026-07-10T23:59:59.999Z', 'UTC',
     );
@@ -267,6 +340,24 @@ describe('secretary operational context', () => {
     mocks.getLatestReadinessEvent.mockImplementation(() => { throw new Error('read failed'); });
     mocks.isAnyMailConfiguredForUser.mockReturnValue(false);
     mocks.isGarminConfiguredForUser.mockReturnValue(false);
+    mocks.composeWeeklyPlan.mockResolvedValueOnce({
+      ...(await mocks.composeWeeklyPlan()),
+      degraded: true,
+      sourceHealth: {
+        calendar: { status: 'unavailable', warningCodes: ['CALENDAR_SOURCE_UNAVAILABLE'], warnings: ['Calendar unavailable'] },
+        tasks: { status: 'unavailable', warningCodes: ['TASK_SOURCE_UNAVAILABLE'], warnings: ['Tasks unavailable'] },
+        mail: { status: 'unavailable', warningCodes: ['MAIL_SOURCE_UNAVAILABLE'], warnings: ['Mail unavailable'] },
+        focus: { status: 'unavailable', warningCodes: ['FOCUS_SOURCE_UNAVAILABLE'], warnings: ['Focus unavailable'] },
+        training: { status: 'ready', warningCodes: [], warnings: [] },
+        cooking: { status: 'ready', warningCodes: [], warnings: [] },
+        content: { status: 'ready', warningCodes: [], warnings: [] },
+        finance: { status: 'ready', warningCodes: [], warnings: [] },
+      },
+    });
+    mocks.composeDailyBrief.mockResolvedValueOnce({
+      ...(await mocks.composeDailyBrief()),
+      degraded: true,
+    });
 
     const result = await collectSecretaryOperationalContext({
       message: 'Plan my day', userId: 7, tenantId: 7, planning: true,
@@ -274,8 +365,8 @@ describe('secretary operational context', () => {
     });
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: 'tasks', status: 'failed' }),
-      expect.objectContaining({ source: 'calendar', status: 'permission_denied', reasonCode: 'secretary_calendar_disabled' }),
-      expect.objectContaining({ source: 'mail', status: 'permission_denied', reasonCode: 'mail_integration_not_connected' }),
+      expect.objectContaining({ source: 'calendar', status: 'failed', reasonCode: 'CALENDAR_SOURCE_UNAVAILABLE' }),
+      expect.objectContaining({ source: 'mail', status: 'failed', reasonCode: 'MAIL_SOURCE_UNAVAILABLE' }),
       expect.objectContaining({ source: 'reminders', status: 'failed' }),
       expect.objectContaining({ source: 'readiness', status: 'failed' }),
       expect.objectContaining({ source: 'garmin', status: 'permission_denied' }),

@@ -9,6 +9,18 @@ async function getTenantScopeModule() {
 
 let testDb: Database.Database;
 
+const emptySecretaryRoutineProfileInput = (
+  expectedVersion: number,
+  idempotencyKey: string,
+) => ({
+  expectedVersion,
+  idempotencyKey,
+  timezone: 'Europe/Lisbon',
+  workingWindows: [],
+  preferredFocusWindows: [],
+  protectedRoutines: [],
+});
+
 async function seedCanonicalContentItem(input: {
   tenantId: number;
   userId: number;
@@ -50,13 +62,21 @@ function mockRes(): MockRes {
   return res;
 }
 
-function mockReq(userId: number, body: any): Request {
+function mockReq(
+  userId: number,
+  body: any,
+  options: { tenantId?: number; headers?: Record<string, string> } = {},
+): Request {
+  const headers = Object.fromEntries(
+    Object.entries(options.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value]),
+  );
   return {
     userId,
+    tenantId: options.tenantId ?? userId,
     deviceId: 'test-device-id',
     body,
-    headers: {},
-    header() { return undefined; },
+    headers,
+    header(name: string) { return headers[name.toLowerCase()]; },
   } as any;
 }
 
@@ -248,6 +268,38 @@ async function dispatchTimezone(userId: number, timezone: unknown): Promise<Mock
   return res;
 }
 
+async function dispatchSecretaryRoutine(
+  method: 'GET' | 'PUT',
+  userId: number,
+  body: unknown = {},
+  options: { tenantId?: number; idempotencyKey?: string } = {},
+): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, body, {
+    tenantId: options.tenantId,
+    headers: options.idempotencyKey
+      ? { 'x-idempotency-key': options.idempotencyKey }
+      : {},
+  });
+  (req as any).method = method;
+  (req as any).url = '/secretary-routine';
+  (req as any).originalUrl = '/secretary-routine';
+  (req as any).baseUrl = '';
+  (req as any).path = '/secretary-routine';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
 describe('Settings language route', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
@@ -269,6 +321,9 @@ describe('Settings language route', () => {
         trace: vi.fn(),
         child: vi.fn().mockReturnThis(),
       },
+    }));
+    vi.doMock('../../src/services/cache-coherence-registry', () => ({
+      invalidatePlanningCaches: vi.fn(),
     }));
     vi.doMock('../../src/services/user-service', () => ({
       setUserLanguage: (userId: number, language: string) => {
@@ -296,6 +351,41 @@ describe('Settings language route', () => {
       expect(res.body.data.timezone).toBe('America/Sao_Paulo');
       const row = testDb.prepare('SELECT timezone FROM users WHERE id = 1').get() as { timezone: string };
       expect(row.timezone).toBe('America/Sao_Paulo');
+      const cacheCoherence = await import('../../src/services/cache-coherence-registry');
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledOnce();
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledWith(1);
+    });
+
+    it('returns and persists the canonical identifier for a valid IANA alias', async () => {
+      const res = await dispatchTimezone(1, 'Etc/UTC');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toEqual({ timezone: 'UTC' });
+      expect(testDb.prepare('SELECT timezone FROM users WHERE id = 1').get())
+        .toEqual({ timezone: 'UTC' });
+    });
+
+    it('does not invalidate plan caches when the saved timezone is unchanged', async () => {
+      const before = (testDb.prepare('SELECT timezone FROM users WHERE id = 1').get() as { timezone: string }).timezone;
+      const res = await dispatchTimezone(1, before);
+
+      expect(res.statusCode).toBe(200);
+      const cacheCoherence = await import('../../src/services/cache-coherence-registry');
+      expect(cacheCoherence.invalidatePlanningCaches).not.toHaveBeenCalled();
+    });
+
+    it('repairs an invalid legacy timezone and invalidates the planning caches', async () => {
+      testDb.prepare("UPDATE users SET timezone = 'legacy-invalid-zone' WHERE id = 1").run();
+
+      const res = await dispatchTimezone(1, 'Asia/Tokyo');
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toEqual({ timezone: 'Asia/Tokyo' });
+      expect(testDb.prepare('SELECT timezone FROM users WHERE id = 1').get())
+        .toEqual({ timezone: 'Asia/Tokyo' });
+      const cacheCoherence = await import('../../src/services/cache-coherence-registry');
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledOnce();
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledWith(1);
     });
 
     it('rejects a non-IANA zone without touching the stored value', async () => {
@@ -315,6 +405,283 @@ describe('Settings language route', () => {
     it('rejects fixed-offset shorthand that is not a real IANA zone', async () => {
       const res = await dispatchTimezone(1, 'UTC+3');
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('Secretary routine profile', () => {
+    const emptyProfileInput = emptySecretaryRoutineProfileInput;
+
+    it('returns the explicit unconfigured shape without creating a row', async () => {
+      const res = await dispatchSecretaryRoutine('GET', 1);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toEqual({
+        status: 'unconfigured',
+        version: 0,
+        timezone: 'Europe/Lisbon',
+        workingWindows: [],
+        preferredFocusWindows: [],
+        protectedRoutines: [],
+        updatedAt: null,
+      });
+      expect(testDb.prepare('SELECT COUNT(*) AS count FROM secretary_routine_profiles').get())
+        .toEqual({ count: 0 });
+    });
+
+    it('saves a full replacement and returns stable public fields', async () => {
+      const body = emptyProfileInput(0, 'settings-routine-0001');
+      const res = await dispatchSecretaryRoutine('PUT', 1, body, {
+        idempotencyKey: body.idempotencyKey,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body.data).toMatchObject({
+        status: 'configured',
+        version: 1,
+        timezone: 'Europe/Lisbon',
+        workingWindows: [],
+        preferredFocusWindows: [],
+        protectedRoutines: [],
+      });
+      expect(Object.keys(res.body.data).sort()).toEqual([
+        'preferredFocusWindows',
+        'protectedRoutines',
+        'status',
+        'timezone',
+        'updatedAt',
+        'version',
+        'workingWindows',
+      ]);
+    });
+
+    it('maps idempotency, semantic validation, CAS, and scope failures to stable envelopes', async () => {
+      const body = emptyProfileInput(0, 'settings-routine-0002');
+      const mismatchedKey = await dispatchSecretaryRoutine('PUT', 1, body, {
+        idempotencyKey: 'settings-routine-different',
+      });
+      expect(mismatchedKey.statusCode).toBe(400);
+      expect(mismatchedKey.body.error.code).toBe('INVALID_INPUT');
+
+      const badZoneBody = { ...body, timezone: 'Mars/Olympus_Mons' };
+      const invalidProfile = await dispatchSecretaryRoutine('PUT', 1, badZoneBody, {
+        idempotencyKey: body.idempotencyKey,
+      });
+      expect(invalidProfile.statusCode).toBe(422);
+      expect(invalidProfile.body.error.code).toBe('ROUTINE_PROFILE_INVALID');
+
+      const saved = await dispatchSecretaryRoutine('PUT', 1, body, {
+        idempotencyKey: body.idempotencyKey,
+      });
+      expect(saved.statusCode).toBe(200);
+      const conflictBody = emptyProfileInput(0, 'settings-routine-0003');
+      const conflict = await dispatchSecretaryRoutine('PUT', 1, conflictBody, {
+        idempotencyKey: conflictBody.idempotencyKey,
+      });
+      expect(conflict.statusCode).toBe(409);
+      expect(conflict.body.error.code).toBe('SECRETARY_ROUTINE_VERSION_CONFLICT');
+      expect(conflict.body.error.details.current).toMatchObject({ version: 1 });
+
+      const mismatchedScopeBody = emptyProfileInput(0, 'settings-routine-0004');
+      const mismatchedScope = await dispatchSecretaryRoutine('PUT', 1, mismatchedScopeBody, {
+        tenantId: 2,
+        idempotencyKey: mismatchedScopeBody.idempotencyKey,
+      });
+      expect(mismatchedScope.statusCode).toBe(400);
+      expect(mismatchedScope.body.error.code).toBe('INVALID_INPUT');
+    });
+
+    it('invalidates plan caches only after a semantic change', async () => {
+      const first = emptyProfileInput(0, 'settings-routine-invalidate-0001');
+      await dispatchSecretaryRoutine('PUT', 1, first, { idempotencyKey: first.idempotencyKey });
+      const cacheCoherence = await import('../../src/services/cache-coherence-registry');
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledTimes(1);
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenLastCalledWith(1);
+
+      await dispatchSecretaryRoutine('PUT', 1, first, { idempotencyKey: first.idempotencyKey });
+      // A successful replay must finish invalidation if the original process
+      // committed its receipt and crashed before reaching this route hook.
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledTimes(2);
+      const noOp = emptyProfileInput(1, 'settings-routine-invalidate-0002');
+      await dispatchSecretaryRoutine('PUT', 1, noOp, { idempotencyKey: noOp.idempotencyKey });
+      const conflict = emptyProfileInput(0, 'settings-routine-invalidate-0003');
+      await dispatchSecretaryRoutine('PUT', 1, conflict, { idempotencyKey: conflict.idempotencyKey });
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledTimes(2);
+
+      const changed = {
+        ...emptyProfileInput(1, 'settings-routine-invalidate-0004'),
+        timezone: 'Asia/Tokyo',
+      };
+      await dispatchSecretaryRoutine('PUT', 1, changed, { idempotencyKey: changed.idempotencyKey });
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenCalledTimes(3);
+      expect(cacheCoherence.invalidatePlanningCaches).toHaveBeenLastCalledWith(1);
+    });
+
+    it('includes the routine profile and sanitized receipts in the settings export', async () => {
+      const body = emptyProfileInput(0, 'settings-routine-export-0001');
+      await dispatchSecretaryRoutine('PUT', 1, body, { idempotencyKey: body.idempotencyKey });
+      testDb.prepare(`
+        INSERT INTO secretary_calendar_mutation_receipts (
+          user_id, tenant_id, idempotency_key, request_hash, operation,
+          provider_source, provider_event_id, command_json, state,
+          response_json, processing_lease_token, processing_lease_expires_at,
+          created_at, updated_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        1,
+        '1',
+        'settings-calendar-export-0001',
+        'a'.repeat(64),
+        'update',
+        'google',
+        'provider-event-1',
+        JSON.stringify({ title: 'Private appointment' }),
+        'succeeded',
+        JSON.stringify({ status: 'updated' }),
+        null,
+        null,
+        '2026-08-30T08:00:00.000Z',
+        '2026-08-30T08:01:00.000Z',
+        '2026-09-29T08:00:00.000Z',
+      );
+      testDb.prepare(`
+        INSERT INTO report_documents_scoped (
+          id, tenant_id, user_id, type, title, document_json,
+          source_job, dispatch_key, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        92,
+        1,
+        1,
+        'morning_briefing',
+        'Private morning plan',
+        JSON.stringify({ private: true }),
+        'daily_briefing',
+        'morning_briefing:2026-08-30',
+        '2026-08-30T07:00:00.000Z',
+      );
+      testDb.prepare(`
+        INSERT INTO report_document_dispatch_receipts (
+          tenant_id, user_id, report_type, dispatch_key, report_document_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(1, 1, 'morning_briefing', 'morning_briefing:2026-08-30', 92, '2026-08-30T07:00:00.000Z');
+      testDb.prepare(`
+        INSERT INTO scheduled_report_completion_receipts (
+          receipt_id, job_id, user_id, tenant_id, report_job, local_date,
+          attempts, completed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'scheduled-report-receipt:export-1',
+        'scheduled-report-job-export-1',
+        1,
+        1,
+        'morning_briefing',
+        '2026-08-30',
+        2,
+        '2026-08-30T07:01:00.000Z',
+        '2026-08-30T07:01:00.000Z',
+      );
+      testDb.prepare(`
+        INSERT INTO planning_recompute_receipts (
+          receipt_id, user_id, tenant_id, idempotency_key_hash,
+          request_fingerprint, status, snapshot_id, response_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'plan-recompute-export-1',
+        1,
+        1,
+        'b'.repeat(64),
+        'c'.repeat(64),
+        'completed',
+        'snapshot-export-1',
+        JSON.stringify({ week: { timezone: 'Europe/Lisbon' } }),
+        '2026-08-30T07:00:00.000Z',
+        '2026-08-30T07:01:00.000Z',
+      );
+      testDb.prepare(`
+        INSERT INTO scheduled_job_execution_state (
+          job_name, scope_key, lease_owner, lease_token, lease_expires_at,
+          last_started_at, last_completed_at, last_succeeded_at, last_result, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'report:daily_briefing',
+        'tenant:1:user:1:local-date:2026-08-30',
+        'worker-secret',
+        'lease-secret',
+        '2026-08-30T07:05:00.000Z',
+        '2026-08-30T07:00:00.000Z',
+        '2026-08-30T07:01:00.000Z',
+        '2026-08-30T07:01:00.000Z',
+        'success',
+        '2026-08-30T07:01:00.000Z',
+      );
+
+      const exported = await dispatchAccountExport(1);
+
+      expect(exported.statusCode).toBe(200);
+      expect(exported.body.data.secretaryRoutineProfile).toEqual([
+        expect.objectContaining({
+          status: 'configured',
+          version: 1,
+          timezone: 'Europe/Lisbon',
+          workingWindows: [],
+        }),
+      ]);
+      expect(exported.body.data.secretaryRoutineIdempotencyReceipts).toEqual([
+        expect.objectContaining({
+          idempotencyKey: body.idempotencyKey,
+          response: expect.objectContaining({
+            changed: true,
+            profile: expect.objectContaining({ version: 1 }),
+          }),
+        }),
+      ]);
+      expect(JSON.stringify(exported.body.data.secretaryRoutineIdempotencyReceipts))
+        .not.toContain('request_hash');
+      expect(exported.body.data.secretaryCalendarMutationReceipts).toEqual([
+        expect.objectContaining({
+          idempotencyKey: 'settings-calendar-export-0001',
+          operation: 'update',
+          command: { title: 'Private appointment' },
+          response: { status: 'updated' },
+        }),
+      ]);
+      expect(JSON.stringify(exported.body.data.secretaryCalendarMutationReceipts))
+        .not.toContain('request_hash');
+      expect(exported.body.data.reportDocumentDispatchReceipts).toEqual([
+        expect.objectContaining({
+          reportType: 'morning_briefing',
+          dispatchKey: 'morning_briefing:2026-08-30',
+          reportDocumentId: 92,
+        }),
+      ]);
+      expect(exported.body.data.scheduledReportCompletionReceipts).toEqual([
+        expect.objectContaining({
+          jobId: 'scheduled-report-job-export-1',
+          reportJob: 'morning_briefing',
+          localDate: '2026-08-30',
+          attempts: 2,
+        }),
+      ]);
+      expect(exported.body.data.planningRecomputeReceipts).toEqual([
+        expect.objectContaining({
+          idempotencyKeyHash: 'b'.repeat(64),
+          requestFingerprint: 'c'.repeat(64),
+          status: 'completed',
+          response: { week: { timezone: 'Europe/Lisbon' } },
+        }),
+      ]);
+      expect(JSON.stringify(exported.body.data.planningRecomputeReceipts))
+        .not.toMatch(/leaseToken|leaseExpiresAt/);
+      expect(exported.body.data.reportScheduleExecutionState).toEqual([
+        expect.objectContaining({
+          jobName: 'report:daily_briefing',
+          scopeKey: 'tenant:1:user:1:local-date:2026-08-30',
+          lastResult: 'success',
+        }),
+      ]);
+      expect(JSON.stringify(exported.body.data.reportScheduleExecutionState))
+        .not.toMatch(/leaseOwner|leaseToken|leaseExpiresAt|worker-secret|lease-secret/);
     });
   });
 
@@ -630,6 +997,194 @@ describe('Settings language route', () => {
     expect(audit).toBeTruthy();
     expect(audit.ip_address).toBe('203.0.113.10');
     expect(JSON.parse(audit.details).tableCounts).toBeDefined();
+  });
+
+  it('deletes Secretary routine, calendar receipt, report identity, and execution-lease data without crossing tenant scope', async () => {
+    testDb.prepare(`
+      INSERT INTO users (id, first_name, language, status, auth_provider)
+      VALUES (2, 'Other Tester', 'en', 'active', 'invite_code')
+    `).run();
+
+    for (const userId of [1, 2]) {
+      const routine = emptySecretaryRoutineProfileInput(
+        0,
+        `settings-routine-delete-000${userId}`,
+      );
+      const saved = await dispatchSecretaryRoutine('PUT', userId, routine, {
+        idempotencyKey: routine.idempotencyKey,
+      });
+      expect(saved.statusCode).toBe(200);
+
+      const agendaItemId = `agenda-delete-${userId}`;
+      const now = '2026-08-30T08:00:00.000Z';
+      const expiresAt = '2026-09-29T08:00:00.000Z';
+      testDb.prepare(`
+        INSERT INTO secretary_calendar_command_receipts (
+          user_id, tenant_id, idempotency_key, command_instance_id,
+          request_hash, provider_source, command_json, state,
+          agenda_item_id, decision_item_id, response_json,
+          processing_lease_token, processing_lease_expires_at,
+          created_at, updated_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        userId,
+        String(userId),
+        `calendar-create-delete-${userId}`,
+        `calendar-command-delete-${userId}`,
+        String(userId).repeat(64),
+        'google',
+        JSON.stringify({ title: `Private event ${userId}` }),
+        'succeeded',
+        agendaItemId,
+        null,
+        JSON.stringify({ status: 'created' }),
+        null,
+        null,
+        now,
+        now,
+        expiresAt,
+      );
+      testDb.prepare(`
+        INSERT INTO secretary_calendar_command_payloads (
+          agenda_item_id, user_id, tenant_id, command_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        agendaItemId,
+        userId,
+        String(userId),
+        JSON.stringify({ title: `Private event ${userId}` }),
+        now,
+        now,
+      );
+      testDb.prepare(`
+        INSERT INTO secretary_calendar_mutation_receipts (
+          user_id, tenant_id, idempotency_key, request_hash, operation,
+          provider_source, provider_event_id, command_json, state,
+          response_json, processing_lease_token, processing_lease_expires_at,
+          created_at, updated_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        userId,
+        String(userId),
+        `calendar-update-delete-${userId}`,
+        String(userId).repeat(64),
+        'update',
+        'google',
+        `provider-event-delete-${userId}`,
+        JSON.stringify({ title: `Updated private event ${userId}` }),
+        'succeeded',
+        JSON.stringify({ status: 'updated' }),
+        null,
+        null,
+        now,
+        now,
+        expiresAt,
+      );
+      const scopedReportId = 80 + userId;
+      const dispatchKey = `morning_briefing:2026-08-30:user:${userId}`;
+      testDb.prepare(`
+        INSERT INTO report_documents_scoped (
+          id, tenant_id, user_id, type, title, document_json,
+          source_job, dispatch_key, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        scopedReportId,
+        userId,
+        userId,
+        'morning_briefing',
+        `Private report ${userId}`,
+        JSON.stringify({ owner: userId }),
+        'daily_briefing',
+        dispatchKey,
+        now,
+      );
+      testDb.prepare(`
+        INSERT INTO report_document_dispatch_receipts (
+          tenant_id, user_id, report_type, dispatch_key, report_document_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(userId, userId, 'morning_briefing', dispatchKey, scopedReportId, now);
+      testDb.prepare(`
+        INSERT INTO scheduled_report_completion_receipts (
+          receipt_id, job_id, user_id, tenant_id, report_job, local_date,
+          attempts, completed_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        `scheduled-report-receipt:delete-${userId}`,
+        `scheduled-report-job-delete-${userId}`,
+        userId,
+        userId,
+        'morning_briefing',
+        '2026-08-30',
+        1,
+        now,
+        now,
+      );
+      testDb.prepare(`
+        INSERT INTO planning_recompute_receipts (
+          receipt_id, user_id, tenant_id, idempotency_key_hash,
+          request_fingerprint, status, snapshot_id, response_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        `plan-recompute-delete-${userId}`,
+        userId,
+        userId,
+        String(userId).repeat(64),
+        String(userId + 2).repeat(64),
+        'completed',
+        `snapshot-delete-${userId}`,
+        JSON.stringify({ owner: userId }),
+        now,
+        now,
+      );
+      testDb.prepare(`
+        INSERT INTO scheduled_job_execution_state (
+          job_name, scope_key, lease_owner, lease_token, lease_expires_at,
+          last_started_at, last_completed_at, last_succeeded_at, last_result, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'report:morning_briefing',
+        `tenant:${userId}:user:${userId}:local-date:2026-08-30`,
+        `worker-${userId}`,
+        `lease-${userId}`,
+        expiresAt,
+        now,
+        now,
+        now,
+        'success',
+        now,
+      );
+    }
+
+    const res = await dispatchAccountDelete(1);
+
+    expect(res.statusCode).toBe(200);
+    for (const table of [
+      'secretary_routine_profiles',
+      'secretary_routine_idempotency_receipts',
+      'secretary_calendar_command_receipts',
+      'secretary_calendar_command_payloads',
+      'secretary_calendar_mutation_receipts',
+      'report_document_dispatch_receipts',
+      'scheduled_report_completion_receipts',
+      'planning_recompute_receipts',
+      'report_documents_scoped',
+    ]) {
+      expect((testDb.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = 1`).get() as { count: number }).count)
+        .toBe(0);
+      expect((testDb.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE user_id = 2`).get() as { count: number }).count)
+        .toBe(1);
+    }
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM scheduled_job_execution_state
+       WHERE scope_key = 'tenant:1:user:1:local-date:2026-08-30'
+    `).get() as { count: number }).count).toBe(0);
+    expect((testDb.prepare(`
+      SELECT COUNT(*) AS count
+        FROM scheduled_job_execution_state
+       WHERE scope_key = 'tenant:2:user:2:local-date:2026-08-30'
+    `).get() as { count: number }).count).toBe(1);
   });
 
   it('returns store-subscription guidance alongside the deletion result', async () => {

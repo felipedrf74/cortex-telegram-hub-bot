@@ -1048,13 +1048,13 @@ describe('external migrations mode', () => {
     }
   });
 
-  it('counts 301 executable up migrations and 68 down files', () => {
+  it('counts 302 executable up migrations and 69 down files', () => {
     // The plan requires these numbers to be measured, not quoted. The up count is
     // what the runner applies; the down files are not wired to any runner.
-    expect(migrationFileCount()).toBe(301);
+    expect(migrationFileCount()).toBe(302);
     const downFiles = readdirSync(join(process.cwd(), 'migrations/down'))
       .filter((file) => file.endsWith('.sql'));
-    expect(downFiles.length).toBe(68);
+    expect(downFiles.length).toBe(69);
   });
 
   it('mounts the same signed plan read-only into migrator and backend', () => {

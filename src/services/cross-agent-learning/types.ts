@@ -32,6 +32,7 @@ import type {
 } from '../training-plans';
 import type { UnifiedCalendarEvent, UnifiedCalendarFetchStatus } from '../unified-calendar';
 import type { UserMailPressureSummary } from '../unified-mail-pressure';
+import type { PlanSourceHealth } from '../secretary-planning-context';
 
 /** Cooking distinguishes an optional, unconfigured calendar from a failed read. */
 export type CookingCalendarStatus = UnifiedCalendarFetchStatus | 'not_configured';
@@ -130,6 +131,8 @@ export interface TrainingMeshContext {
    *  a coach phase memory written yet; consumers fall back to
    *  stateless interpretation in that case. */
   coachPhaseMemory: CoachPhaseMemoryForContext | null;
+  /** Internal read health used by aggregate planners; never exposes source IDs. */
+  sourceHealth?: PlanSourceHealth;
   derivedSignals: MeshSignalDraft[];
 }
 
@@ -225,6 +228,8 @@ export interface ContentMeshContext {
   nextExecution: ContentExecutionHint | null;
   voiceDnaEntries: ReturnType<typeof getVoiceDna>;
   knowledgeStats: ReturnType<typeof getKnowledgeStats>;
+  /** Internal read health used by aggregate planners; never exposes source IDs. */
+  sourceHealth?: PlanSourceHealth;
   derivedSignals: MeshSignalDraft[];
 }
 
@@ -240,7 +245,28 @@ export interface SecretaryMeshContext {
   pending: NormalizedTask[];
   writableCalendar: boolean;
   mailPressure?: UserMailPressureSummary | null;
+  /** Nexus-owned commitments that are not already represented by a matching
+   * provider event. These remain internal to orchestration and never expose
+   * agenda ledger identifiers through the public plan contract. */
+  localAgendaItems?: SecretaryMeshAgendaItem[];
+  sourceHealth?: {
+    calendar: PlanSourceHealth;
+    tasks: PlanSourceHealth;
+    mail: PlanSourceHealth;
+    focus: PlanSourceHealth;
+  };
+  warningCodes?: string[];
+  warnings?: string[];
   derivedSignals: MeshSignalDraft[];
+}
+
+export interface SecretaryMeshAgendaItem {
+  title: string;
+  startAt: string;
+  endAt: string;
+  providerEventId: string | null;
+  providerSource: 'google' | 'outlook' | null;
+  routineKind?: 'focus' | 'training' | 'meal' | 'recovery' | 'personal' | 'travel';
 }
 
 export interface FinanceMeshContext {
@@ -253,5 +279,7 @@ export interface FinanceMeshContext {
   taxEvents: TaxEvent[];
   annualSummary: AnnualTaxSummary;
   subscription: SubscriptionStatus;
+  /** Internal read health used by aggregate planners; never exposes source IDs. */
+  sourceHealth?: PlanSourceHealth;
   derivedSignals: MeshSignalDraft[];
 }

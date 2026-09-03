@@ -51,6 +51,11 @@ describe('skill-version-registry', () => {
       'content',
     ]);
     expect(skills.every((skill) => skill.status === 'active')).toBe(true);
+    expect(getSkillMetadata('secretary')).toMatchObject({
+      currentVersion: '2.2.0',
+      qualityGateStatus: 'pass',
+      rolloutScope: 'global',
+    });
     expect(getSkillMetadata('triathlon')).toMatchObject({
       skillId: 'training',
       lifecycle: 'active',
@@ -143,7 +148,7 @@ describe('skill-version-registry', () => {
       releaseTitle: 'Tenant canary schedule repair',
       releaseSummary: 'Canary schedule repair rollout for one tenant.',
       capabilitiesAdded: ['schedule repair canary'],
-      rollbackNotes: 'Remove tenant rollout to fall back to secretary@2.0.0.',
+      rollbackNotes: 'Remove tenant rollout to fall back to secretary@2.2.0.',
       status: 'candidate',
       rolloutScope: 'tenant',
     });
@@ -155,7 +160,7 @@ describe('skill-version-registry', () => {
     });
 
     expect(getActiveSkillVersion('secretary', { tenantId: 42 })?.version).toBe('2.1.0');
-    expect(getActiveSkillVersion('secretary', { tenantId: 43 })?.version).toBe('2.0.0');
+    expect(getActiveSkillVersion('secretary', { tenantId: 43 })?.version).toBe('2.2.0');
   });
 
   it('transitions version status to rolled_back without deleting release history', () => {

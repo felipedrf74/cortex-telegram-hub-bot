@@ -183,6 +183,13 @@ export interface SecretarySchedulingIntent {
   reason?: string | null;
   context?: string | null;
   /**
+   * Optional private payload identity for a durable command whose provider
+   * payload lives outside the agenda ledger (for example attendees/location
+   * on an idempotent calendar command). It participates in source-shape
+   * replay detection but is never returned through public plan contracts.
+   */
+  idempotencyPayloadHash?: string | null;
+  /**
    * Optional goal-phase signal for dynamic priority weighting (C3 workstream).
    * When set, Secretary up-weights or down-weights the source skill's base
    * priority during arbitration:
@@ -822,6 +829,56 @@ export function cancelSecretaryAgendaItem(scope: {
   cancel();
   cancelRemindersForAgendaItem(scope.ownerUserId, scope.agendaItemId, scope.tenantId);
   return getSecretaryAgendaItemById(scope);
+}
+
+/**
+ * Publish a fresh source-skill projection for an existing agenda version after
+ * a user-confirmed provider mutation. The provider effect must already be
+ * verified before callers invoke this helper. A mutation-specific suffix lets
+ * the outbox replay safely without colliding with the row's original
+ * scheduling-decision event.
+ */
+export function emitSecretaryAgendaMutationFeedback(input: {
+  agendaItemId: string;
+  ownerUserId: number;
+  tenantId: string | number;
+  idempotencySuffix: string;
+}): void {
+  const agendaItem = getSecretaryAgendaItemById(input);
+  if (!agendaItem || agendaItem.sourceSkill === 'secretary') return;
+  const suffix = input.idempotencySuffix.trim();
+  if (!suffix) throw new Error('SECRETARY_AGENDA_MUTATION_FEEDBACK_KEY_REQUIRED');
+  const common = {
+    tenantId: agendaItem.ownerUserId,
+    userId: agendaItem.ownerUserId,
+    sourceSkill: 'secretary' as const,
+    entityType: 'secretary_agenda_item',
+    entityId: agendaItem.agendaItemId,
+    entityVersion: agendaItem.version,
+    payload: { agendaTenantId: agendaItem.tenantId },
+  };
+  if (agendaItem.sourceSkill === 'training') {
+    emitDomainEvent({
+      ...common,
+      eventType: TRAINING_SECRETARY_FEEDBACK_EVENT_TYPE,
+      schemaVersion: TRAINING_SECRETARY_FEEDBACK_SCHEMA_VERSION,
+      privacyClassification: 'health',
+      idempotencyKey: `secretary.training_feedback.requested:${agendaItem.agendaItemId}:${agendaItem.version}:calendar-mutation:${suffix}`,
+    });
+    return;
+  }
+  emitDomainEvent({
+    ...common,
+    eventType: SECRETARY_SOURCE_SKILL_FEEDBACK_EVENT_TYPE,
+    eventVersion: SECRETARY_SOURCE_SKILL_FEEDBACK_EVENT_VERSION,
+    schemaVersion: SECRETARY_SOURCE_SKILL_FEEDBACK_SCHEMA_VERSION,
+    privacyClassification: agendaItem.sourceSkill === 'finance'
+      ? 'financial'
+      : agendaItem.sourceSkill === 'content'
+        ? 'private_content'
+        : 'internal',
+    idempotencyKey: `secretary.source_feedback.requested:${agendaItem.agendaItemId}:${agendaItem.version}:calendar-mutation:${suffix}`,
+  });
 }
 
 function scheduleOne(
@@ -2641,6 +2698,7 @@ function computeSourceShapeHash(intent: SecretarySchedulingIntent): string {
     dependencies: intent.dependencies ?? [],
     energyCost: intent.energyCost ?? null,
     providerTarget: intent.providerTarget ?? null,
+    idempotencyPayloadHash: intent.idempotencyPayloadHash ?? null,
   })).slice(0, 32);
 }
 

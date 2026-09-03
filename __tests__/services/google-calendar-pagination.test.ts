@@ -44,7 +44,14 @@ describe('google calendar pagination', () => {
       .mockResolvedValueOnce({
         data: {
           items: [
-            { id: 'evt-1', summary: 'First', start: { dateTime: '2026-06-22T12:00:00+01:00' }, end: { dateTime: '2026-06-22T12:45:00+01:00' } },
+            {
+              id: 'evt-1',
+              summary: 'First',
+              iCalUID: 'series@example.com',
+              originalStartTime: { dateTime: '2026-06-22T12:00:00+01:00' },
+              start: { dateTime: '2026-06-22T12:00:00+01:00' },
+              end: { dateTime: '2026-06-22T12:45:00+01:00' },
+            },
           ],
           nextPageToken: 'page-2',
         },
@@ -61,6 +68,10 @@ describe('google calendar pagination', () => {
     const events = await getEvents('2026-06-22', '2026-06-24', 42);
 
     expect(events.map((event) => event.id)).toEqual(['evt-1', 'evt-2']);
+    expect(events[0]).toMatchObject({
+      providerUid: 'series@example.com',
+      providerOccurrenceStart: '2026-06-22T12:00:00+01:00',
+    });
     expect(mocks.list).toHaveBeenCalledTimes(2);
     expect(mocks.list).toHaveBeenNthCalledWith(1, expect.objectContaining({
       maxResults: 2500,

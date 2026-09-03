@@ -103,6 +103,12 @@ export interface CalendarEvent {
   timeZone?: string;
   /** Explicit provider free/busy intent. Undefined remains conservatively busy. */
   blocksTime?: boolean;
+  /** Provider-stable cross-calendar meeting identity (Google iCalUID / Graph iCalUId). */
+  providerUid?: string;
+  /** Immutable recurrence-instance start used with providerUid to identify one occurrence. */
+  providerOccurrenceStart?: string;
+  /** Normalized organizer address used only when a stable UID is unavailable. */
+  organizer?: string;
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
@@ -147,6 +153,11 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         isAllDay: !event.start?.dateTime && !!event.start?.date,
         timeZone: event.start?.timeZone || event.end?.timeZone || calendarTimeZone,
         blocksTime: event.transparency !== 'transparent',
+        providerUid: event.iCalUID || undefined,
+        providerOccurrenceStart: event.originalStartTime?.dateTime
+          || event.originalStartTime?.date
+          || undefined,
+        organizer: event.organizer?.email?.trim().toLowerCase() || undefined,
       }));
   } catch (err) {
     throw logAndWrapGoogleCalendarError(err, 'Failed to fetch calendar events');
@@ -176,6 +187,11 @@ export async function getEventById(eventId: string, userId?: number): Promise<Ca
       isAllDay: !event.start?.dateTime && !!event.start?.date,
       timeZone: event.start?.timeZone || event.end?.timeZone || undefined,
       blocksTime: event.transparency !== 'transparent',
+      providerUid: event.iCalUID || undefined,
+      providerOccurrenceStart: event.originalStartTime?.dateTime
+        || event.originalStartTime?.date
+        || undefined,
+      organizer: event.organizer?.email?.trim().toLowerCase() || undefined,
     };
   } catch (err) {
     if (isProviderEventNotFoundError(err)) return null;
@@ -226,6 +242,11 @@ export async function createEvent(data: {
       categories: data.categories,
       htmlLink: response.data.htmlLink || undefined,
       isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
+      providerUid: response.data.iCalUID || undefined,
+      providerOccurrenceStart: response.data.originalStartTime?.dateTime
+        || response.data.originalStartTime?.date
+        || undefined,
+      organizer: response.data.organizer?.email?.trim().toLowerCase() || undefined,
     };
   } catch (err) {
     throw logAndWrapGoogleCalendarError(err, 'Failed to create calendar event');

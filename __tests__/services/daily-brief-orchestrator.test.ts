@@ -4,9 +4,12 @@ import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../.
 const mockGetCached = vi.fn(() => null);
 const mockSetCache = vi.fn();
 const mockComposeWeeklyPlan = vi.fn();
-const mockGetDecisionOverview = vi.fn(() => ({ items: [], handled: [] }));
-const mockGetUserTimezoneById = vi.fn(() => 'Europe/Lisbon');
-const mockGetUserLanguageById = vi.fn(() => 'en');
+const mockGetDecisionOverview = vi.fn(() => ({
+  items: [],
+  handled: [],
+  partial: { items: true, handled: true, summary: true },
+}));
+const mockGetUserById = vi.fn();
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
@@ -21,16 +24,64 @@ vi.mock('../../src/services/decision-center', () => ({
   getDecisionOverview: (...args: unknown[]) => mockGetDecisionOverview(...args),
 }));
 
-vi.mock('../../src/services/user-service', async () => {
-  const actual = await vi.importActual<typeof import('../../src/services/user-service')>(
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
     '../../src/services/user-service',
-  );
+  )),
+  getUserById: (...args: unknown[]) => mockGetUserById(...args),
+}));
+
+function minimalWeekWithCalendarStatus(status: 'ready' | 'unavailable') {
+  const ready = { status: 'ready', warningCodes: [], warnings: [] };
   return {
-    ...actual,
-    getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
-    getUserLanguageById: (...args: unknown[]) => mockGetUserLanguageById(...args),
+    weekStart: '2026-04-13',
+    weekEnd: '2026-04-19',
+    generatedAt: '2026-04-15T08:00:00.000Z',
+    timezone: 'Europe/Lisbon',
+    warningCodes: status === 'ready' ? [] : ['CALENDAR_STATE_UNAVAILABLE'],
+    warnings: status === 'ready' ? [] : ['Calendar state is unavailable.'],
+    sourceHealth: {
+      calendar: status === 'ready'
+        ? ready
+        : { status: 'unavailable', warningCodes: ['CALENDAR_STATE_UNAVAILABLE'], warnings: ['Calendar state is unavailable.'] },
+      tasks: ready,
+      mail: ready,
+      focus: status === 'ready'
+        ? ready
+        : { status: 'unavailable', warningCodes: ['FOCUS_BLOCKED_BY_CALENDAR_STATE'], warnings: ['Focus-window state is unavailable.'] },
+      training: ready,
+      cooking: ready,
+      content: ready,
+      finance: ready,
+    },
+    degraded: status !== 'ready',
+    gated: { skills: [] },
+    garmin_stale: false,
+    creativeCopy: { headline: '', note: '' },
+    conflicts: [],
+    days: [{
+      date: '2026-04-15',
+      weekday: 'Wednesday',
+      headline: 'A calm operational day.',
+      training: { title: 'Rest', type: 'rest', status: 'rest', durationMinutes: null, intensity: null, reason: 'No session planned.', decisions: [] },
+      meals: [],
+      content: null,
+      secretary: {
+        focusBlock: null,
+        pendingTasks: 0,
+        overdueTasks: 0,
+        travel: false,
+        busy: false,
+        writableCalendar: false,
+        priorityNote: null,
+        sequence: [],
+        tradeoffNote: null,
+        decisions: [],
+      },
+      finance: null,
+    }],
   };
-});
+}
 
 describe('daily-brief-orchestrator', () => {
   afterEach(() => {
@@ -43,11 +94,18 @@ describe('daily-brief-orchestrator', () => {
     mockSetCache.mockReset();
     mockComposeWeeklyPlan.mockReset();
     mockGetDecisionOverview.mockReset();
-    mockGetDecisionOverview.mockReturnValue({ items: [], handled: [] });
-    mockGetUserTimezoneById.mockReset();
-    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
-    mockGetUserLanguageById.mockReset();
-    mockGetUserLanguageById.mockReturnValue('en');
+    mockGetUserById.mockReset();
+    mockGetDecisionOverview.mockReturnValue({
+      items: [],
+      handled: [],
+      partial: { items: true, handled: true, summary: true },
+    });
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'en-US',
+      timezone: 'Europe/Lisbon',
+    });
   });
 
   it('builds event-driven coordination from the selected day', async () => {
@@ -170,7 +228,7 @@ describe('daily-brief-orchestrator', () => {
     );
   });
 
-  it('reads Secretary Today decision signals with the authenticated tenant scope', async () => {
+  it('reads Secretary Today decision signals with the exact authenticated tenant scope', async () => {
     mockComposeWeeklyPlan.mockResolvedValue({
       degraded: false,
       gated: { skills: [] },
@@ -210,13 +268,13 @@ describe('daily-brief-orchestrator', () => {
     });
 
     const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
-    await composeDailyBrief({ userId: 12, tenantId: 34, date: '2026-04-15', forceRefresh: true });
+    await composeDailyBrief({ userId: 12, tenantId: 12, date: '2026-04-15', forceRefresh: true });
 
     expect(mockComposeWeeklyPlan).toHaveBeenCalledWith(expect.objectContaining({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
     }));
-    expect(mockGetDecisionOverview).toHaveBeenCalledWith(12, 34, {
+    expect(mockGetDecisionOverview).toHaveBeenCalledWith(12, 12, {
       limit: 30,
       handledLimit: 10,
     });
@@ -225,7 +283,12 @@ describe('daily-brief-orchestrator', () => {
   it('uses the user timezone for an implicit today and propagates it to the weekly plan', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
-    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'en-US',
+      timezone: 'Pacific/Honolulu',
+    });
     mockComposeWeeklyPlan.mockResolvedValue({
       degraded: false,
       gated: { skills: [] },
@@ -243,69 +306,138 @@ describe('daily-brief-orchestrator', () => {
       userId: 12,
       tenantId: 12,
       weekStart: '2026-04-06',
-      timezone: 'Pacific/Honolulu',
+      context: expect.objectContaining({ timezone: 'Pacific/Honolulu' }),
     }));
   });
 
-  it('fails closed in Portuguese and records an anomaly when tenant scope is invalid', async () => {
+  it('rejects a tenant mismatch before user, week, or Decision Center reads', async () => {
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    await expect(composeDailyBrief({
+      userId: 12,
+      tenantId: 34,
+      date: '2026-04-15',
+      forceRefresh: true,
+    })).rejects.toMatchObject({ code: 'TENANT_SCOPE_MISMATCH' });
+
+    expect(mockGetUserById).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      operation: 'compose_daily_brief_tenant_scope',
+      reason: 'tenant_mismatch',
+    });
+  });
+
+  it('never reports agenda or conflict checks as clear when calendar state is unavailable', async () => {
+    mockComposeWeeklyPlan.mockResolvedValueOnce(minimalWeekWithCalendarStatus('unavailable'));
     const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
     const result = await composeDailyBrief({
-      userId: 0,
+      userId: 12,
+      tenantId: 12,
       date: '2026-04-15',
-      language: 'pt-PT',
+      language: 'en-US',
+      forceRefresh: true,
+    });
+
+    expect(result.coordination.secretaryToday.checked.map((entry) => entry.id))
+      .not.toEqual(expect.arrayContaining(['agenda-sync', 'conflict-scan']));
+    expect(result.coordination.secretaryToday.waitingOnSource.map((entry) => entry.id))
+      .toContain('source-health-calendar');
+    expect(result.coordination.dayOrchestration.title).toBe('Today’s plan needs calendar confirmation.');
+    expect(result.coordination.dayOrchestration.mainThing).toBeNull();
+  });
+
+  it('marks Decision Center degraded when its overview is only partially available', async () => {
+    mockComposeWeeklyPlan.mockResolvedValueOnce(minimalWeekWithCalendarStatus('ready'));
+    mockGetDecisionOverview.mockReturnValueOnce({
+      items: [],
+      handled: [],
+      partial: { items: false, handled: true, summary: false },
+    });
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 12,
+      tenantId: 12,
+      date: '2026-04-15',
+      language: 'en-US',
       forceRefresh: true,
     });
 
     expect(result.degraded).toBe(true);
-    expect(result.date).toBe('2026-04-15');
-    expect(result.day.date).toBe('2026-04-15');
-    expect(result.day.weekday.toLowerCase()).toContain('quarta');
-    expect(result.day.headline).toContain('contexto desta conta não é válido');
-    expect(result.coordination).toEqual({
-      topPriority: null,
-      executionOrder: [],
-      watchouts: [],
-      handoffs: [],
-      confidence: 'low',
-      dayOrchestration: {
-        posture: 'stable_day',
-        title: 'Orquestração diária indisponível.',
-        summary: 'Não foi possível montar uma postura de agenda fiável para este pedido.',
-        confidence: 'low',
-        mainThing: null,
-        reasons: [],
-        affectedSkills: ['secretary'],
-      },
-      secretaryToday: {
-        title: 'Secretary hoje',
-        summary: 'A orquestração diária ainda não tem estado operacional fiável para mostrar.',
-        checked: [],
-        handled: [],
-        needsUser: [],
-        waitingOnSource: [],
-        nextBestMove: null,
-        counts: {
-          checked: 0,
-          handled: 0,
-          needsUser: 0,
-          waitingOnSource: 0,
-        },
-      },
-      weekOrchestration: {
-        posture: 'stable',
-        title: 'Orquestração semanal indisponível.',
-        summary: 'Não foi possível montar uma postura semanal fiável para este pedido.',
-        confidence: 'low',
-        reasons: [],
-        affectedSkills: ['secretary'],
-      },
-      nextBestAction: null,
-      blockers: [],
-      suggestedMoves: [],
-      protectedBlocks: [],
-      risks: [],
-      crossSkillImpacts: [],
+    expect(result.sourceHealth.decision_center).toMatchObject({
+      status: 'degraded',
+      warningCodes: ['DECISION_CENTER_PARTIAL'],
     });
+  });
+
+  it('derives today from a supplied weekly snapshot without a second weekly composition', async () => {
+    const weekPlan = minimalWeekWithCalendarStatus('ready') as any;
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 12,
+      tenantId: 12,
+      date: '2026-04-15',
+      language: 'en-US',
+      weekPlan,
+      forceRefresh: true,
+    });
+
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(result.generatedAt).toBe(weekPlan.generatedAt);
+    expect(result.day).toBe(weekPlan.days[0]);
+  });
+
+  it('rejects a mismatched supplied day snapshot instead of degrading it', async () => {
+    const weekPlan = minimalWeekWithCalendarStatus('ready') as any;
+    const context = {
+      userId: 12,
+      tenantId: 12,
+      timezone: 'Europe/Lisbon',
+      language: 'en-US',
+      targetDate: '2026-04-15',
+      weekStart: '2026-04-13',
+      weekEnd: '2026-04-19',
+      user: { id: 12 },
+      warningCodes: [],
+      warnings: [],
+    } as any;
+    const daySnapshot = {
+      context: { ...context, userId: 34, tenantId: 34 },
+      week: weekPlan,
+      date: context.targetDate,
+      day: weekPlan.days[0],
+      conflicts: [],
+      timezone: context.timezone,
+      warningCodes: [],
+      warnings: [],
+      sourceHealth: weekPlan.sourceHealth,
+    } as any;
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    await expect(composeDailyBrief({
+      userId: 12,
+      tenantId: 12,
+      date: context.targetDate,
+      language: context.language,
+      context,
+      weekPlan,
+      daySnapshot,
+      forceRefresh: true,
+    })).rejects.toMatchObject({ code: 'TENANT_SCOPE_MISMATCH' });
+
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(mockGetDecisionOverview).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid user scope before composition and records an anomaly', async () => {
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    await expect(composeDailyBrief({
+      userId: 0,
+      date: '2026-04-15',
+      language: 'pt-PT',
+      forceRefresh: true,
+    })).rejects.toMatchObject({ code: 'INVALID_SCOPE' });
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies()[0]).toMatchObject({
       layer: 'orchestration',
@@ -314,45 +446,6 @@ describe('daily-brief-orchestrator', () => {
       userId: 0,
       details: { date: '2026-04-15' },
     });
-  });
-
-  it('fails closed before cache or user-owned reads for an explicitly invalid tenant', async () => {
-    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
-    const result = await composeDailyBrief({
-      userId: 12,
-      tenantId: 0,
-      date: '2026-04-15',
-      language: 'en-US',
-      forceRefresh: true,
-    });
-
-    expect(result.degraded).toBe(true);
-    expect(result.day.headline).toContain('tenant scope is invalid');
-    expect(mockGetCached).not.toHaveBeenCalled();
-    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
-    expect(mockGetUserTimezoneById).not.toHaveBeenCalled();
-    expect(mockGetUserLanguageById).not.toHaveBeenCalled();
-    expect(getTenantScopeAnomalies()[0]).toMatchObject({
-      operation: 'compose_daily_brief_tenant_scope',
-      userId: 12,
-      details: { tenantId: 0, date: '2026-04-15' },
-    });
-  });
-
-  it('fails closed in English when no Portuguese language bucket is requested', async () => {
-    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
-    const result = await composeDailyBrief({
-      userId: 0,
-      date: '2026-04-15',
-      language: 'en-US',
-      forceRefresh: true,
-    });
-
-    expect(result.degraded).toBe(true);
-    expect(result.day.weekday).toBe('Wednesday');
-    expect(result.day.headline).toContain('tenant scope is invalid');
-    expect(result.coordination.dayOrchestration.title).toBe('Daily orchestration unavailable.');
-    expect(result.coordination.weekOrchestration.title).toBe('Weekly orchestration unavailable.');
   });
 
   it('returns cached daily briefs without recomputing the weekly plan', async () => {
@@ -401,7 +494,53 @@ describe('daily-brief-orchestrator', () => {
     const result = await composeDailyBrief({ userId: 12, date: '2026-04-15' });
 
     expect(result.coordination.topPriority).toBe('cached');
+    expect(result.timezone).toBe('Europe/Lisbon');
+    expect(result.degraded).toBe(true);
+    expect(result.warningCodes).toContain('PLANNING_SOURCE_HEALTH_UNAVAILABLE');
+    expect(result.sourceHealth.calendar.status).toBe('unavailable');
+    expect(result.sourceHealth.decision_center.status).toBe('unavailable');
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+  });
+
+  it('treats a caller-supplied canonical week as authoritative over the Today cache', async () => {
+    mockGetCached.mockReturnValue({
+      day: { date: '2026-04-15', headline: 'Stale cached day.' },
+    });
+    const suppliedWeek = minimalWeekWithCalendarStatus('ready');
+    suppliedWeek.days[0].headline = 'Fresh day from the supplied canonical week.';
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 12,
+      date: '2026-04-15',
+      weekPlan: suppliedWeek,
+    });
+
+    expect(mockGetCached).not.toHaveBeenCalled();
+    expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
+    expect(result.day).toBe(suppliedWeek.days[0]);
+    expect(result.day.headline).toBe('Fresh day from the supplied canonical week.');
+  });
+
+  it('keeps English, PT-BR, PT-PT, and adjacent date cache identities distinct', async () => {
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const weekPlan = minimalWeekWithCalendarStatus('ready') as NonNullable<
+      Parameters<typeof composeDailyBrief>[0]['weekPlan']
+    >;
+    mockComposeWeeklyPlan.mockResolvedValue(weekPlan);
+    await composeDailyBrief({ userId: 12, date: '2026-04-15', language: 'en-US' });
+    await composeDailyBrief({ userId: 12, date: '2026-04-15', language: 'pt-BR' });
+    await composeDailyBrief({ userId: 12, date: '2026-04-15', language: 'pt-PT' });
+    await composeDailyBrief({ userId: 12, date: '2026-04-16', language: 'en-US' });
+
+    const keys = mockGetCached.mock.calls.map(([key]) => String(key));
+    expect(keys).toEqual(expect.arrayContaining([
+      expect.stringContaining(':t:12:2026-04-15:tz:Europe/Lisbon:lang:en-US'),
+      expect.stringContaining(':t:12:2026-04-15:tz:Europe/Lisbon:lang:pt-BR'),
+      expect.stringContaining(':t:12:2026-04-15:tz:Europe/Lisbon:lang:pt-PT'),
+      expect.stringContaining(':t:12:2026-04-16:tz:Europe/Lisbon:lang:en-US'),
+    ]));
+    expect(new Set(keys).size).toBe(4);
   });
 
   it('returns a degraded runtime fallback when weekly-plan composition fails', async () => {

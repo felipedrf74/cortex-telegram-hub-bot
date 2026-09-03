@@ -273,6 +273,7 @@ function buildBaseContexts() {
         avgSoreness: 3,
       },
       derivedSignals: [],
+      sourceHealth: { status: 'ready', warningCodes: [], warnings: [] },
     },
     secretary: {
       userId: 12,
@@ -311,6 +312,12 @@ function buildBaseContexts() {
           payload: { dates: ['2026-04-14'] },
         },
       ],
+      sourceHealth: {
+        calendar: { status: 'ready', warningCodes: [], warnings: [] },
+        tasks: { status: 'ready', warningCodes: [], warnings: [] },
+        mail: { status: 'ready', warningCodes: [], warnings: [] },
+        focus: { status: 'ready', warningCodes: [], warnings: [] },
+      },
     },
     cooking: {
       userId: 12,
@@ -376,6 +383,7 @@ function buildBaseContexts() {
       voiceDnaEntries: [],
       knowledgeStats: { categories: [], referenceChannels: 0 },
       derivedSignals: [],
+      sourceHealth: { status: 'ready', warningCodes: [], warnings: [] },
     },
     finance: {
       userId: 12,
@@ -433,6 +441,7 @@ function buildBaseContexts() {
         isPro: true,
       },
       derivedSignals: [],
+      sourceHealth: { status: 'ready', warningCodes: [], warnings: [] },
     },
   };
 }
@@ -485,7 +494,7 @@ describe('weekly-plan-orchestrator', () => {
       ],
     });
     mockIsUserOverDailyCap.mockReturnValue({ over: false });
-    mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
+    mockGetUserById.mockReturnValue({ id: 12, tier: 'max', language: 'en-US', timezone: 'Europe/Lisbon' });
     mockEffectivePlan = 'max';
     mockGetWeeksForPlan.mockReturnValue([
       { id: 7, week_number: 2 },
@@ -515,16 +524,8 @@ describe('weekly-plan-orchestrator', () => {
 
   it('fails closed and records an anomaly when tenant scope is invalid', async () => {
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
-    const result = await composeWeeklyPlan({ userId: 0, weekStart: '2026-04-13', forceRefresh: true });
-
-    expect(result.degraded).toBe(true);
-    expect(result.days).toHaveLength(7);
-    expect(result.summary).toEqual({
-      sessionCount: 0,
-      mealCount: 0,
-      activeConflictCount: 0,
-    });
-    expect(result.days[0].headline).toContain('tenant scope is invalid');
+    await expect(composeWeeklyPlan({ userId: 0, weekStart: '2026-04-13', forceRefresh: true }))
+      .rejects.toMatchObject({ code: 'INVALID_SCOPE' });
     expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
     expect(mockReadSecretaryMeshContext).not.toHaveBeenCalled();
     expect(mockReadCookingMeshContext).not.toHaveBeenCalled();
@@ -540,28 +541,54 @@ describe('weekly-plan-orchestrator', () => {
     });
   });
 
-  it('fails closed before cache or mesh reads when an explicit tenant is invalid', async () => {
+  it('rejects a supplied tenant mismatch before user or mesh reads', async () => {
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
-    const result = await composeWeeklyPlan({
+    await expect(composeWeeklyPlan({
       userId: 12,
-      tenantId: 0,
+      tenantId: 34,
       weekStart: '2026-04-13',
       forceRefresh: true,
-    });
+    })).rejects.toMatchObject({ code: 'TENANT_SCOPE_MISMATCH' });
 
-    expect(result.degraded).toBe(true);
-    expect(mockGetCached).not.toHaveBeenCalled();
-    expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
-    expect(mockReadSecretaryMeshContext).not.toHaveBeenCalled();
     expect(mockGetUserById).not.toHaveBeenCalled();
-    expect(mockGetUserTimezoneById).not.toHaveBeenCalled();
+    expect(mockReadSecretaryMeshContext).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies()[0]).toMatchObject({
       operation: 'compose_weekly_plan_tenant_scope',
+      reason: 'tenant_mismatch',
       userId: 12,
-      details: { tenantId: 0, weekStart: '2026-04-13' },
     });
   });
 
+  it('passes one canonical user timezone to aggregate mesh projections', async () => {
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'en-US',
+      timezone: 'America/New_York',
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-11-02',
+      forceRefresh: true,
+    });
+
+    for (const reader of [
+      mockReadSecretaryMeshContext,
+      mockReadCookingMeshContext,
+      mockReadContentMeshContext,
+      mockReadFinanceMeshContext,
+    ]) {
+      expect(reader).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 12,
+        tenantId: 12,
+        weekStart: '2026-11-02',
+        timezone: 'America/New_York',
+      }));
+    }
+  });
   it('does not persist or dismiss mesh signals in read-only weekly plan mode', async () => {
     const base = buildBaseContexts();
     base.finance.derivedSignals = [
@@ -608,7 +635,7 @@ describe('weekly-plan-orchestrator', () => {
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     const result = await composeWeeklyPlan({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       weekStart: '2026-04-13',
       forceRefresh: true,
       syncSignals: true,
@@ -640,11 +667,11 @@ describe('weekly-plan-orchestrator', () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce(base.finance);
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
-    await composeWeeklyPlan({ userId: 12, tenantId: 34, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
+    await composeWeeklyPlan({ userId: 12, tenantId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
 
     expect(writtenSignals.length).toBeGreaterThan(0);
-    expect(writtenSignals.every((signal) => signal.user_id === 12 && signal.tenant_id === 34)).toBe(true);
-    expect(mockSetCache).toHaveBeenCalledWith(expect.stringContaining('plan:week:u:12:t:34:'), expect.anything(), 1800);
+    expect(writtenSignals.every((signal) => signal.user_id === 12 && signal.tenant_id === 12)).toBe(true);
+    expect(mockSetCache).toHaveBeenCalledWith(expect.stringContaining('plan:week:u:12:t:12:'), expect.anything(), 1800);
   });
 
   it('keeps the weekly plan available but fails paid skill context closed when the user record is missing', async () => {
@@ -668,14 +695,15 @@ describe('weekly-plan-orchestrator', () => {
     expect(result.gated.skills).toEqual(['cooking', 'content', 'finance']);
   });
 
-  it('marks the plan degraded and blanks creative copy when the user is over cap', async () => {
+  it('blanks only creative copy without degrading deterministic planning when the user is over cap', async () => {
     mockIsUserOverDailyCap.mockReturnValue({ over: true });
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
 
-    expect(result.degraded).toBe(true);
+    expect(result.degraded).toBe(false);
     expect(result.creativeCopy).toEqual({ headline: '', note: '' });
+    expect(result.warningCodes).toContain('AI_COPY_QUOTA_REACHED');
   });
 
   it('degrades safely when a mesh context reader fails instead of crashing the whole weekly plan', async () => {
@@ -691,6 +719,198 @@ describe('weekly-plan-orchestrator', () => {
     const trainingDay = result.days.find((day) => day.date === '2026-04-15');
     expect(trainingDay?.training.decisions).toEqual([]);
     expect(trainingDay?.training.reason.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('preserves explicit projection read health instead of treating fallback data as ready', async () => {
+    const base = buildBaseContexts();
+    (base.training as any).sourceHealth = {
+      status: 'degraded',
+      warningCodes: ['TRAINING_STATE_DEGRADED'],
+      warnings: ['Some Training planning state is unavailable.'],
+    };
+    (base.cooking as any).sourceHealth = {
+      status: 'unavailable',
+      warningCodes: ['COOKING_STATE_UNAVAILABLE'],
+      warnings: ['Cooking planning state is unavailable.'],
+    };
+    (base.content as any).sourceHealth = {
+      status: 'degraded',
+      warningCodes: ['CONTENT_STATE_DEGRADED'],
+      warnings: ['Some Content planning state is unavailable.'],
+    };
+    (base.finance as any).sourceHealth = {
+      status: 'degraded',
+      warningCodes: ['FINANCE_STATE_DEGRADED'],
+      warnings: ['Some Finance planning state is unavailable.'],
+    };
+    mockReadTrainingMeshContext.mockResolvedValueOnce(base.training);
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+    mockReadContentMeshContext.mockResolvedValueOnce(base.content);
+    mockReadFinanceMeshContext.mockResolvedValueOnce(base.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.sourceHealth.training.status).toBe('degraded');
+    expect(result.sourceHealth.cooking.status).toBe('unavailable');
+    expect(result.sourceHealth.content.status).toBe('degraded');
+    expect(result.sourceHealth.finance.status).toBe('degraded');
+    expect(result.warningCodes).toEqual(expect.arrayContaining([
+      'TRAINING_STATE_DEGRADED',
+      'COOKING_STATE_UNAVAILABLE',
+      'CONTENT_STATE_DEGRADED',
+      'FINANCE_STATE_DEGRADED',
+    ]));
+    expect(result.creativeCopy.headline).toContain('confirmed commitments');
+    expect(result.creativeCopy.note).not.toContain('align cleanly');
+    expect(result.creativeCopy.note).not.toContain('constraints in mind');
+  });
+
+  it('normalizes Cooking per-source health without discarding sibling safety evidence', async () => {
+    const base = buildBaseContexts();
+    (base.cooking as any).sourceHealth = {
+      mealPlan: { status: 'ready', warningCodes: [] },
+      shoppingList: { status: 'ready', warningCodes: [] },
+      recipes: { status: 'degraded', warningCodes: ['COOKING_RECIPE_READ_FAILED'] },
+      focus: { status: 'ready', warningCodes: [] },
+      safety: {
+        status: 'ready',
+        warningCodes: [],
+        excludedMealCount: 0,
+        excludedMealDates: [],
+      },
+    };
+    (base.cooking as any).calendar = { status: 'ready', warningCodes: [] };
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.sourceHealth.cooking).toMatchObject({
+      status: 'degraded',
+      warningCodes: ['COOKING_RECIPE_READ_FAILED'],
+    });
+  });
+
+  it('does not claim calendar alignment when calendar source health is unavailable', async () => {
+    const base = buildBaseContexts();
+    base.secretary.sourceHealth.calendar = {
+      status: 'unavailable',
+      warningCodes: ['CALENDAR_STATE_UNAVAILABLE'],
+      warnings: ['Calendar planning state is unavailable.'],
+    };
+    mockReadSecretaryMeshContext.mockResolvedValueOnce(base.secretary);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const renderedCopy = JSON.stringify({
+      creativeCopy: result.creativeCopy,
+      headlines: result.days.map((day) => day.headline),
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.sourceHealth.calendar.status).toBe('unavailable');
+    expect(renderedCopy).not.toContain('calendar line up');
+    expect(renderedCopy).not.toContain('align cleanly');
+    expect(result.creativeCopy.note).toContain('not treated as clear');
+  });
+
+  it('fails sibling projections closed when their source-health contract is absent', async () => {
+    const base = buildBaseContexts();
+    delete (base.training as any).sourceHealth;
+    delete (base.cooking as any).sourceHealth;
+    delete (base.content as any).sourceHealth;
+    delete (base.finance as any).sourceHealth;
+    mockReadTrainingMeshContext.mockResolvedValueOnce(base.training);
+    mockReadCookingMeshContext.mockResolvedValueOnce(base.cooking);
+    mockReadContentMeshContext.mockResolvedValueOnce(base.content);
+    mockReadFinanceMeshContext.mockResolvedValueOnce(base.finance);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.sourceHealth.training).toEqual(expect.objectContaining({
+      status: 'unavailable',
+      warningCodes: ['TRAINING_STATE_UNKNOWN'],
+    }));
+    expect(result.sourceHealth.cooking.warningCodes).toEqual(['COOKING_STATE_UNKNOWN']);
+    expect(result.sourceHealth.content.warningCodes).toEqual(['CONTENT_STATE_UNKNOWN']);
+    expect(result.sourceHealth.finance.warningCodes).toEqual(['FINANCE_STATE_UNKNOWN']);
+  });
+
+  it('counts unsynced local agenda commitments without exposing ledger identity', async () => {
+    const base = buildBaseContexts();
+    base.secretary.events = [];
+    (base.secretary as any).localAgendaItems = [{
+      title: 'Client preparation block',
+      startAt: '2026-04-15T09:00:00.000Z',
+      endAt: '2026-04-15T10:00:00.000Z',
+      providerEventId: null,
+      providerSource: null,
+    }];
+    mockReadSecretaryMeshContext.mockResolvedValueOnce(base.secretary);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const day = result.days.find((entry) => entry.date === '2026-04-15');
+
+    expect(day?.secretary.calendarEventCount).toBe(1);
+    expect(JSON.stringify(result)).not.toContain('agendaItemId');
+  });
+
+  it('fails legacy cached plans closed when source-health metadata is absent', async () => {
+    mockGetCached.mockReturnValueOnce({
+      weekStart: '2026-04-13',
+      weekEnd: '2026-04-19',
+      generatedAt: '2026-04-13T07:00:00.000Z',
+      variant: 'steady',
+      degraded: false,
+      gated: { skills: [] },
+      garmin_stale: false,
+      conflicts: [],
+      creativeCopy: { headline: '', note: '' },
+      summary: { sessionCount: 0, mealCount: 0, activeConflictCount: 0 },
+      days: [],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13' });
+
+    expect(result.timezone).toBe('Europe/Lisbon');
+    expect(result.degraded).toBe(true);
+    expect(result.warningCodes).toContain('PLANNING_SOURCE_HEALTH_UNAVAILABLE');
+    expect(result.sourceHealth.calendar.status).toBe('unavailable');
+    expect(mockReadSecretaryMeshContext).not.toHaveBeenCalled();
+  });
+
+  it('separates internal cache identity by language and timezone', async () => {
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', language: 'en-US' });
+    mockGetUserById.mockReturnValueOnce({ id: 12, tier: 'max', language: 'pt-PT', timezone: 'America/New_York' });
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', language: 'pt-PT' });
+
+    expect(mockGetCached).toHaveBeenCalledWith(expect.stringContaining(':tz:Europe/Lisbon:lang:en-US:'));
+    expect(mockGetCached).toHaveBeenCalledWith(expect.stringContaining(':tz:America/New_York:lang:pt-PT:'));
+  });
+
+  it('keeps English, PT-BR, PT-PT, and adjacent week cache identities distinct', async () => {
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', language: 'en-US' });
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', language: 'pt-BR' });
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', language: 'pt-PT' });
+    await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-20', language: 'en-US' });
+
+    const keys = mockGetCached.mock.calls.map(([key]) => String(key));
+    expect(keys).toEqual(expect.arrayContaining([
+      expect.stringContaining(':t:12:2026-04-13:tz:Europe/Lisbon:lang:en-US:'),
+      expect.stringContaining(':t:12:2026-04-13:tz:Europe/Lisbon:lang:pt-BR:'),
+      expect.stringContaining(':t:12:2026-04-13:tz:Europe/Lisbon:lang:pt-PT:'),
+      expect.stringContaining(':t:12:2026-04-20:tz:Europe/Lisbon:lang:en-US:'),
+    ]));
+    expect(new Set(keys).size).toBe(4);
   });
 
   it('returns garmin_stale and falls back to conservative mode when Garmin needs reauth', async () => {
@@ -1186,7 +1406,12 @@ describe('weekly-plan-orchestrator', () => {
   it('propagates one timezone and captured clock to Content and Finance planning reads', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-13T00:30:00.000Z'));
-    mockGetUserTimezoneById.mockReturnValue('Pacific/Honolulu');
+    mockGetUserById.mockReturnValue({
+      id: 12,
+      tier: 'max',
+      language: 'en-US',
+      timezone: 'Pacific/Honolulu',
+    });
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     const result = await composeWeeklyPlan({ userId: 12, forceRefresh: true });
@@ -1420,7 +1645,7 @@ describe('weekly-plan-orchestrator', () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce(first.finance);
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
-    await composeWeeklyPlan({ userId: 12, tenantId: 34, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
+    await composeWeeklyPlan({ userId: 12, tenantId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
 
     const second = buildBaseContexts();
     second.finance.derivedSignals = [
@@ -1438,11 +1663,11 @@ describe('weekly-plan-orchestrator', () => {
     ];
     mockReadFinanceMeshContext.mockResolvedValueOnce(second.finance);
 
-    const refreshed = await composeWeeklyPlan({ userId: 12, tenantId: 34, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
+    const refreshed = await composeWeeklyPlan({ userId: 12, tenantId: 12, weekStart: '2026-04-13', forceRefresh: true, syncSignals: true });
     const activeBudgetSignals = writtenSignals.filter((signal) =>
       signal.status === 'active'
       && signal.user_id === 12
-      && signal.tenant_id === 34
+      && signal.tenant_id === 12
       && signal.source_agent === 'mesh.finance-context'
       && signal.signal_type === 'budget_remaining',
     );
@@ -1450,7 +1675,7 @@ describe('weekly-plan-orchestrator', () => {
     expect(mockReconcileGovernedSignalSet).toHaveBeenCalledWith({
       sourceAgent: 'mesh.finance-context',
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       keepSignalIds: [expect.any(Number)],
     });
     expect(activeBudgetSignals).toHaveLength(1);
@@ -1478,7 +1703,7 @@ describe('weekly-plan-orchestrator', () => {
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     await composeWeeklyPlan({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       weekStart: '2026-04-13',
       forceRefresh: true,
       syncSignals: true,
@@ -1489,7 +1714,7 @@ describe('weekly-plan-orchestrator', () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce(second.finance);
     await composeWeeklyPlan({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       weekStart: '2026-04-13',
       forceRefresh: true,
       syncSignals: true,
@@ -1498,14 +1723,14 @@ describe('weekly-plan-orchestrator', () => {
     expect(mockReconcileGovernedSignalSet).toHaveBeenCalledWith({
       sourceAgent: 'mesh.finance-context',
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       keepSignalIds: [],
     });
     expect(writtenSignals.filter((signal) =>
       signal.status === 'active'
       && signal.source_agent === 'mesh.finance-context'
       && signal.user_id === 12
-      && signal.tenant_id === 34,
+      && signal.tenant_id === 12,
     )).toEqual([]);
   });
 
@@ -1525,7 +1750,7 @@ describe('weekly-plan-orchestrator', () => {
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     await composeWeeklyPlan({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       weekStart: '2026-04-13',
       forceRefresh: true,
       syncSignals: true,
@@ -1535,7 +1760,7 @@ describe('weekly-plan-orchestrator', () => {
 
     const degraded = await composeWeeklyPlan({
       userId: 12,
-      tenantId: 34,
+      tenantId: 12,
       weekStart: '2026-04-13',
       forceRefresh: true,
       syncSignals: true,
@@ -1549,7 +1774,7 @@ describe('weekly-plan-orchestrator', () => {
       signal.status === 'active'
       && signal.source_agent === 'mesh.finance-context'
       && signal.user_id === 12
-      && signal.tenant_id === 34,
+      && signal.tenant_id === 12,
     )).toHaveLength(1);
   });
 });

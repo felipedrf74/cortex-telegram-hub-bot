@@ -12,10 +12,7 @@ import { processPendingEvents, type EventHandler } from './event-outbox';
 import { projectSummaryReadModelsForUser } from './app-summary-read-models';
 import { recordProductDecision } from './product-decision-log';
 import { syncContentTopicSecretaryArtifactsById } from './content-topic-secretary-sync';
-import {
-  releaseDueNotificationDeliveries,
-  resumeNotificationIntentDelivery,
-} from './notification-orchestrator';
+import { processNotificationIntentDelivery } from './notification-orchestrator';
 import { recordTrainingLearningObservation } from './product-learning';
 import { logger } from '../utils/logger';
 import {
@@ -319,34 +316,25 @@ export const defaultJobHandlers: JobHandler[] = [
     async handle(job) {
       const intentId = typeof job.payload?.intentId === 'string' ? job.payload.intentId.trim() : '';
       if (!job.userId || !intentId) {
-        throw new Error('deliver_notification job requires scoped userId and intentId');
+        throw new Error('deliver_notification requires scoped userId and intentId');
       }
-      const exact = await resumeNotificationIntentDelivery(intentId, job.userId, job.tenantId);
-      const sweep = await releaseDueNotificationDeliveries();
-      // Spread: the sweep summary is a named interface without an index
-      // signature, and recordProductDecision takes Record<string, unknown>.
-      const result = { exact, ...sweep };
-      if (job.userId) {
-        recordProductDecision({
-          tenantId: job.tenantId,
-          userId: job.userId,
-          sourceSkill: 'system',
-          entityType: 'notification_delivery_job',
-          entityId: String(job.payload?.intentId ?? job.jobId),
-          decisionType: 'notification_delivery_release',
-          inputsSummary: {
-            jobType: job.jobType,
-            intentId: job.payload?.intentId ?? null,
-          },
-          decision: result,
-          explanationCode: 'notification_delivery_job_released_due_items',
-          correlationId: job.correlationId,
-          eventId: job.causationEventId,
-        });
-      }
-      if (sweep.failed > 0) {
-        throw new Error(`notification delivery release: ${sweep.failed} delivery operation(s) failed`);
-      }
+      const result = await processNotificationIntentDelivery(intentId, job.userId, job.tenantId);
+      recordProductDecision({
+        tenantId: job.tenantId,
+        userId: job.userId,
+        sourceSkill: 'system',
+        entityType: 'notification_delivery_job',
+        entityId: intentId,
+        decisionType: 'notification_delivery_release',
+        inputsSummary: {
+          jobType: job.jobType,
+          intentId,
+        },
+        decision: { ...result },
+        explanationCode: 'notification_delivery_job_processed_exact_intent',
+        correlationId: job.correlationId,
+        eventId: job.causationEventId,
+      });
     },
   },
   {
