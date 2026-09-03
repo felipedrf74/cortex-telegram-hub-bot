@@ -54,9 +54,57 @@ function createLegacyDatabase(
       plan_id TEXT PRIMARY KEY,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE content_ref_channels (user_id INTEGER, channel_url TEXT);
+    CREATE TABLE content_ref_channels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      channel_url TEXT,
+      channel_name TEXT,
+      channel_id TEXT,
+      owner_scope TEXT,
+      tenant_id INTEGER,
+      owner_user_id INTEGER,
+      visibility_scope TEXT,
+      lifecycle_state TEXT,
+      scope_status TEXT,
+      audit_metadata_json TEXT DEFAULT '{}'
+    );
     CREATE UNIQUE INDEX idx_content_ref_channels_user_url
       ON content_ref_channels(user_id, channel_url);
+    CREATE TABLE content_knowledge (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      owner_scope TEXT,
+      tenant_id INTEGER,
+      owner_user_id INTEGER,
+      visibility_scope TEXT,
+      lifecycle_state TEXT,
+      scope_status TEXT,
+      audit_metadata_json TEXT DEFAULT '{}'
+    );
+    CREATE TABLE content_patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel_id INTEGER,
+      user_id INTEGER,
+      tenant_id INTEGER,
+      owner_user_id INTEGER,
+      visibility_scope TEXT,
+      lifecycle_state TEXT,
+      scope_status TEXT,
+      audit_metadata_json TEXT DEFAULT '{}'
+    );
+    CREATE TABLE book_library (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      author TEXT NOT NULL,
+      user_id INTEGER,
+      owner_scope TEXT,
+      tenant_id INTEGER,
+      owner_user_id INTEGER,
+      visibility_scope TEXT,
+      lifecycle_state TEXT,
+      scope_status TEXT,
+      audit_metadata_json TEXT DEFAULT '{}'
+    );
     CREATE TABLE invoice_vendors (user_id INTEGER, sender_pattern TEXT);
     CREATE UNIQUE INDEX idx_invoice_vendors_user_sender
       ON invoice_vendors(user_id, sender_pattern);
@@ -220,8 +268,13 @@ function createLegacyDatabase(
     );
   `);
   // The fixture records the pre-283 migration ledger without replaying the
-  // full prefix. Materialize migration 087's registry schema because later
-  // additive skill-version releases legitimately write to those tables.
+  // full prefix. Materialize the legacy Content seed tables because migration
+  // 312 neutralizes their exact rows, plus migration 087's registry schema
+  // because later additive skill-version releases write to those tables.
+  database.exec(readFileSync(
+    join(repositoryRoot, 'migrations/055_config_seeds.sql'),
+    'utf8',
+  ));
   database.exec(readFileSync(
     join(repositoryRoot, 'migrations/087_skill_version_registry.sql'),
     'utf8',
@@ -458,6 +511,7 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '309_secretary_calendar_mutation_receipts.sql' }),
         expect.objectContaining({ file: '310_retire_fossa_email_metadata.sql' }),
         expect.objectContaining({ file: '311_activate_secretary_2_2_skill_version.sql' }),
+        expect.objectContaining({ file: '312_content_neutral_legacy_defaults.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

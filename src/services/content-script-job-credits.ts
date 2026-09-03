@@ -19,14 +19,14 @@
  *   can raise its own ContentScriptJobError without a module cycle.
  */
 
-import { logger } from '../utils/logger';
+import type Database from 'better-sqlite3';
+import { getDb } from './database';
 import type { BillingPlan } from './plan-quotas';
 import { isAiCreditAdmissionEnabled } from './ai-credit-admission';
 import type { AiCreditReservation } from './ai-credit-ledger';
 import {
   captureAiCreditReservation,
   listAiCreditReservationsForRequest,
-  releaseAiCreditReservation,
   reserveAiCredits,
 } from './ai-credit-ledger';
 
@@ -45,7 +45,7 @@ export function reserveContentScriptJobCredits(input: {
   longForm: boolean;
   deliveryMode?: 'standard' | 'scheduled' | 'priority';
   now?: Date;
-}): ReserveContentScriptJobCreditsResult {
+}, database: Database.Database = getDb()): ReserveContentScriptJobCreditsResult {
   if (!isAiCreditAdmissionEnabled()) return { kind: 'disabled' };
 
   const tenantScope = String(input.tenantId);
@@ -54,7 +54,7 @@ export function reserveContentScriptJobCredits(input: {
     userId: input.userId,
     workload: CONTENT_SCRIPT_JOB_CREDITS_WORKLOAD,
     requestHash: input.jobId,
-  });
+  }, database);
   const latest = prior[prior.length - 1];
   if (latest && latest.state === 'reserved') {
     // An in-flight attempt already holds this job's reservation; continue
@@ -84,7 +84,7 @@ export function reserveContentScriptJobCredits(input: {
       clientOperationId: `${input.jobId}#a${prior.length + 1}`,
     },
     now: input.now,
-  });
+  }, database);
 
   if (admitted.kind === 'reserved') {
     return { kind: 'reserved', reservation: admitted.reservation };
@@ -124,51 +124,129 @@ export function reserveContentScriptJobCredits(input: {
   };
 }
 
-export type SettleContentScriptJobCreditsResult =
-  | { kind: 'no_reservation' }
-  | { kind: 'already_settled' }
-  | { kind: 'captured' }
-  | { kind: 'released' }
-  | { kind: 'error' };
+export class ContentScriptJobCreditSettlementError extends Error {
+  readonly code = 'CONTENT_SCRIPT_CREDIT_SETTLEMENT_FAILED';
+  readonly status = 503;
+
+  constructor(readonly settlementState: string) {
+    super('The script state could not be committed with its credit settlement.');
+    this.name = 'ContentScriptJobCreditSettlementError';
+  }
+}
+
+export type ReleaseContentScriptJobCreditsForTerminalResult =
+  | 'released'
+  | 'already_settled'
+  | 'no_reservation';
+
+function hasAiCreditReservationStore(database: Database.Database): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1 AS present
+      FROM sqlite_master
+     WHERE type = 'table' AND name = 'ai_credit_reservations'
+  `).get());
+}
 
 /**
- * Settle the newest open reservation for a job. Never throws: job state is
- * the source of truth, and a settlement fault must not break the job
- * transition — it is logged and left for the stale-reservation sweeper.
+ * Release the newest open reservation as part of the caller's terminal job
+ * transaction. Unlike the legacy best-effort settlement helper, this path
+ * fails closed: cancellation/failure state and its credit release either both
+ * commit or both roll back. Supplying the caller database also preserves that
+ * invariant in scoped tests and one-shot maintenance processes.
  */
-export function settleContentScriptJobCredits(input: {
+export function releaseContentScriptJobCreditsForTerminal(
+  input: {
+    tenantId: number;
+    userId: number;
+    jobId: string;
+    now?: Date;
+  },
+  database: Database.Database = getDb(),
+): ReleaseContentScriptJobCreditsForTerminalResult {
+  const release = (): ReleaseContentScriptJobCreditsForTerminalResult => {
+    if (!hasAiCreditReservationStore(database)) {
+      if (!isAiCreditAdmissionEnabled()) return 'no_reservation';
+      throw new ContentScriptJobCreditSettlementError('reservation_store_missing');
+    }
+    const reservations = database.prepare(`
+      SELECT id, state
+        FROM ai_credit_reservations
+       WHERE tenant_scope = ?
+         AND user_id = ?
+         AND workload = ?
+         AND request_hash = ?
+       ORDER BY id ASC
+    `).all(
+      String(input.tenantId),
+      input.userId,
+      CONTENT_SCRIPT_JOB_CREDITS_WORKLOAD,
+      input.jobId,
+    ) as Array<{ id: number; state: string }>;
+    const open = [...reservations].reverse().find((entry) => entry.state === 'reserved');
+    if (!open) return reservations.length > 0 ? 'already_settled' : 'no_reservation';
+
+    const result = database.prepare(`
+      UPDATE ai_credit_reservations
+         SET state = 'released', settled_at = ?
+       WHERE id = ? AND state = 'reserved'
+    `).run((input.now ?? new Date()).toISOString(), open.id);
+    if (result.changes !== 1) {
+      throw new ContentScriptJobCreditSettlementError('release_conflict');
+    }
+    const readback = database.prepare(`
+      SELECT state FROM ai_credit_reservations WHERE id = ?
+    `).get(open.id) as { state?: string } | undefined;
+    if (readback?.state !== 'released') {
+      throw new ContentScriptJobCreditSettlementError(readback?.state ?? 'release_readback_missing');
+    }
+    return 'released';
+  };
+
+  try {
+    return database.inTransaction
+      ? release()
+      : database.transaction(release).immediate();
+  } catch (error) {
+    if (error instanceof ContentScriptJobCreditSettlementError) throw error;
+    throw new ContentScriptJobCreditSettlementError('release_error');
+  }
+}
+
+/**
+ * Capture the reservation as part of the caller's durable completion
+ * transaction. Any existing reservation that cannot be captured aborts the
+ * caller transaction, so a delivered result and its charge cannot diverge.
+ */
+export function captureContentScriptJobCreditsForCompletion(input: {
   tenantId: number;
   userId: number;
   jobId: string;
-  outcome: 'captured' | 'released';
   now?: Date;
-}): SettleContentScriptJobCreditsResult {
-  try {
-    const reservations = listAiCreditReservationsForRequest({
-      tenantScope: String(input.tenantId),
-      userId: input.userId,
-      workload: CONTENT_SCRIPT_JOB_CREDITS_WORKLOAD,
-      requestHash: input.jobId,
-    });
-    const open = [...reservations].reverse().find((entry) => entry.state === 'reserved');
-    if (!open) {
-      return { kind: reservations.length > 0 ? 'already_settled' : 'no_reservation' };
-    }
-    if (input.outcome === 'captured') {
-      const result = captureAiCreditReservation({
-        reservationId: open.id,
-        resultRef: input.jobId,
-        now: input.now,
-      });
-      return { kind: result.kind === 'captured' ? 'captured' : 'already_settled' };
-    }
-    const result = releaseAiCreditReservation({ reservationId: open.id, now: input.now });
-    return { kind: result.kind === 'released' ? 'released' : 'already_settled' };
-  } catch (error) {
-    logger.error(
-      { jobId: input.jobId, outcome: input.outcome, err: error },
-      'content-script-job-credits: settlement failed; reservation left for the sweeper',
-    );
-    return { kind: 'error' };
+}, database: Database.Database = getDb()): 'captured' | 'already_captured' | 'no_reservation' {
+  if (!hasAiCreditReservationStore(database)) {
+    if (!isAiCreditAdmissionEnabled()) return 'no_reservation';
+    throw new ContentScriptJobCreditSettlementError('reservation_store_missing');
   }
+  const reservations = listAiCreditReservationsForRequest({
+    tenantScope: String(input.tenantId),
+    userId: input.userId,
+    workload: CONTENT_SCRIPT_JOB_CREDITS_WORKLOAD,
+    requestHash: input.jobId,
+  }, database);
+  const open = [...reservations].reverse().find((entry) => entry.state === 'reserved');
+  if (open) {
+    const result = captureAiCreditReservation({
+      reservationId: open.id,
+      resultRef: input.jobId,
+      now: input.now,
+    }, database);
+    if (result.kind !== 'captured') {
+      throw new ContentScriptJobCreditSettlementError(result.kind);
+    }
+    return 'captured';
+  }
+  if (reservations.length === 0) return 'no_reservation';
+  const latest = reservations[reservations.length - 1];
+  if (latest?.state === 'captured') return 'already_captured';
+  throw new ContentScriptJobCreditSettlementError(latest?.state ?? 'unknown');
 }

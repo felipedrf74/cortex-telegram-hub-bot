@@ -65,6 +65,12 @@ export function buildTargetedClarificationQuestion(input: ChatPlannerInput, step
   if (!step) return defaultClarification(input);
   const missing = missingRequiredFieldsForStep(step);
   const pt = input.locale?.startsWith('pt');
+  if (step.action === 'content_rewrite'
+    && (missing.includes('sourceText') || missing.includes('objective'))) {
+    return pt
+      ? 'Envia o texto original e o objetivo juntos, por exemplo: “Reescreve para ficar mais direto: <texto original>”.'
+      : 'Send the source copy and rewrite goal together, for example: “Rewrite to be punchier: <source copy>”.';
+  }
   if (step.action === 'complete_task' && (missing.includes('taskId') || missing.includes('listId'))) {
     return pt ? 'Qual tarefa devo concluir?' : 'Which task should I mark done?';
   }
@@ -111,7 +117,11 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
       case 'sessionId':
         return 'Qual é a sessão de treino?';
       case 'objective':
-        return 'Qual é o objetivo principal do plano de treino?';
+        return step.skill === 'content'
+          ? 'Qual é o objetivo da reescrita?'
+          : 'Qual é o objetivo principal do plano de treino?';
+      case 'sourceText':
+        return 'Que texto queres reescrever?';
       case 'durationWeeks':
         return 'Quantas semanas deve durar o plano?';
       case 'sessionsPerWeek':
@@ -155,7 +165,11 @@ function targetedFieldQuestion(step: ChatPlanStep, field: string, pt?: boolean):
     case 'sessionId':
       return 'Which training session should I use?';
     case 'objective':
-      return 'What is the main goal for the training plan?';
+      return step.skill === 'content'
+        ? 'What should the rewrite achieve?'
+        : 'What is the main goal for the training plan?';
+    case 'sourceText':
+      return 'What source copy should I rewrite?';
     case 'durationWeeks':
       return 'How many weeks should the plan last?';
     case 'sessionsPerWeek':
@@ -192,6 +206,7 @@ function fieldLabel(field: string, pt?: boolean): string {
     decisionId: ['decisão', 'decision'],
     sessionId: ['sessão de treino', 'training session'],
     objective: ['objetivo', 'objective'],
+    sourceText: ['texto original', 'source copy'],
     durationWeeks: ['duração em semanas', 'duration in weeks'],
     sessionsPerWeek: ['dias de treino por semana', 'training days per week'],
     startPolicy: ['política de início', 'start policy'],

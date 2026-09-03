@@ -14,6 +14,7 @@ import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.base import ResearchSourceUnavailable, resolve_search_locale
 from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.news")
@@ -28,27 +29,35 @@ def _query_fingerprint(query: str) -> str:
 class NewsSearcher:
     name = "news"
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        language: str | None = None,
+    ) -> list[SearchResult]:
         if getattr(cfg, "fixture_mode", False):
             logger.debug("Content-engine fixture mode — returning synthetic news results")
             return self._mock(query, max_results)
         if getattr(cfg, "research_network_disabled", False):
             logger.info("News search disabled for this isolated runtime")
-            return []
+            raise ResearchSourceUnavailable(self.name, "network_disabled")
         if not cfg.newsapi_key:
             logger.info("News search unavailable because NEWSAPI_API_KEY is not configured")
-            return []
+            raise ResearchSourceUnavailable(self.name, "credentials_missing")
 
-        # Search last 48 hours, Portuguese + English
+        # Search the last 48 hours using the caller's locale when NewsAPI
+        # supports that language. No creator locale is assumed when absent.
         from_date = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%S")
-        params = {
+        language_code, _ = resolve_search_locale(language)
+        params: dict[str, str | int] = {
             "q": query,
             "from": from_date,
             "sortBy": "publishedAt",
             "pageSize": max_results,
-            "language": "pt",          # Portuguese first
             "apiKey": cfg.newsapi_key,
         }
+        if language_code in {"ar", "de", "en", "es", "fr", "he", "it", "nl", "no", "pt", "ru", "sv", "ud", "zh"}:
+            params["language"] = language_code
 
         async with httpx.AsyncClient(timeout=cfg.searcher_timeout) as client:
             resp = await client.get(NEWSAPI_ENDPOINT, params=params)
@@ -122,7 +131,7 @@ class NewsSearcher:
         return [
             mock_search_result(
                 query=query,
-                title=f"[Mock] Breaking: {query} shakes Brazil",
+                title=f"[Mock] Breaking: {query} changes the conversation",
                 url=f"https://example.com/news/{slug}",
                 snippet=f"Mock news result for '{query}'. Set NEWSAPI_API_KEY for real results.",
                 source="news",
@@ -133,7 +142,7 @@ class NewsSearcher:
                 query=query,
                 title=f"[Mock] {query}: experts weigh in",
                 url=f"https://example.com/news/experts-{slug}",
-                snippet=f"Experts react to {query} — implications for Brazil.",
+                snippet=f"Experts react to {query} and explain the wider implications.",
                 source="news",
                 hours_ago=3,
                 metadata={"publisher": "Mock Herald", "category": "analysis"},

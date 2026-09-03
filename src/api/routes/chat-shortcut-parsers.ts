@@ -13,6 +13,29 @@ export type ContentScriptShortcut = {
   maxDurationMinutes: number;
 };
 
+export type ContentCreativeShortcut =
+  | { operation: 'hooks' | 'titles' | 'caption'; topic: string }
+  | { operation: 'thumbnail'; topic: string; title: string }
+  | { operation: 'repurpose'; topic: string; sourceContent: string };
+
+export type ContentCreativeShortcutCommand = 'hooks' | 'titles' | 'genthumbnail' | 'gencaption' | 'repurpose';
+
+export type ContentCreativeShortcutValidationReason =
+  | 'message_too_long'
+  | 'unsupported_control_character'
+  | 'subject_required'
+  | 'single_line_required'
+  | 'subject_too_long';
+
+export type ContentCreativeShortcutInspection =
+  | { status: 'not_recognized' }
+  | {
+    status: 'invalid';
+    command: ContentCreativeShortcutCommand;
+    reason: ContentCreativeShortcutValidationReason;
+  }
+  | { status: 'valid'; shortcut: ContentCreativeShortcut };
+
 export type ContentStateShortcut = 'desk' | 'pillars' | 'filming' | 'next_publish' | 'performance' | 'learning';
 
 export type FinanceStateShortcut =
@@ -105,6 +128,66 @@ export function parseContentScriptShortcut(message: string): ContentScriptShortc
     mode,
     maxDurationMinutes,
   };
+}
+
+/**
+ * Distinguish unrelated text from a recognized-but-invalid creative command.
+ * Callers use the invalid state to terminate at the deterministic chat
+ * boundary instead of leaking malformed commands into generic routing.
+ */
+export function inspectContentCreativeShortcut(message: string): ContentCreativeShortcutInspection {
+  const commandMatch = message.trimStart().match(
+    /^\/(hooks|titles|genthumbnail|gencaption|repurpose)(?=\s|$)/i,
+  );
+  if (!commandMatch) return { status: 'not_recognized' };
+  const command = commandMatch[1].toLowerCase() as ContentCreativeShortcutCommand;
+  if (message.length > MAX_SHORTCUT_PARSE_CHARS) {
+    return { status: 'invalid', command, reason: 'message_too_long' };
+  }
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u.test(message)) {
+    return { status: 'invalid', command, reason: 'unsupported_control_character' };
+  }
+  if (command !== 'repurpose' && /[\t\r\n]/u.test(message)) {
+    return { status: 'invalid', command, reason: 'single_line_required' };
+  }
+  const match = message.trim().match(
+    /^\/(hooks|titles|genthumbnail|gencaption|repurpose)(?=\s|$)\s*(.*)$/is,
+  );
+  if (!match) return { status: 'invalid', command, reason: 'subject_required' };
+  const subject = stripTrailingLanguageQualifier(match[2]).trim();
+  if (subject.length < 3) return { status: 'invalid', command, reason: 'subject_required' };
+  if (command === 'genthumbnail') {
+    if (subject.length > 1_400) return { status: 'invalid', command, reason: 'subject_too_long' };
+    return { status: 'valid', shortcut: { operation: 'thumbnail', topic: subject, title: subject } };
+  }
+  if (command === 'gencaption') {
+    if (subject.length > 2_000) return { status: 'invalid', command, reason: 'subject_too_long' };
+    return { status: 'valid', shortcut: { operation: 'caption', topic: subject } };
+  }
+  if (command === 'repurpose') {
+    const topic = subject
+      .replace(/[\t\r\n]+/gu, ' ')
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .slice(0, 240)
+      .trim();
+    return {
+      status: 'valid',
+      shortcut: {
+        operation: 'repurpose',
+        topic,
+        sourceContent: subject,
+      },
+    };
+  }
+  if (subject.length > 2_000) return { status: 'invalid', command, reason: 'subject_too_long' };
+  return { status: 'valid', shortcut: { operation: command, topic: subject } };
+}
+
+/** Parse only valid explicit creative slash commands; natural language keeps normal routing. */
+export function parseContentCreativeShortcut(message: string): ContentCreativeShortcut | null {
+  const inspected = inspectContentCreativeShortcut(message);
+  return inspected.status === 'valid' ? inspected.shortcut : null;
 }
 
 export function parseContentStateShortcut(message: string): ContentStateShortcut | null {

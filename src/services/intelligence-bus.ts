@@ -16,6 +16,35 @@ export type SignalPriority = 'urgent' | 'normal' | 'background';
 export type SignalStatus = 'active' | 'consumed' | 'dismissed' | 'expired';
 export type MeshPriority = 1 | 2 | 3 | 4;
 
+export class IntelligenceBusReadUnavailableError extends Error {
+  readonly code = 'INTELLIGENCE_BUS_READ_UNAVAILABLE';
+  readonly statusCode = 503;
+  readonly retryable = true;
+
+  constructor(
+    readonly operation:
+      | 'read_signals'
+      | 'read_scoped_signals'
+      | 'read_ranked_signals'
+      | 'active_signal_count'
+      | 'agent_stats',
+  ) {
+    super('The intelligence signal store is temporarily unavailable.');
+    this.name = 'IntelligenceBusReadUnavailableError';
+  }
+}
+
+export class IntelligenceBusMutationUnavailableError extends Error {
+  readonly code = 'INTELLIGENCE_BUS_MUTATION_UNAVAILABLE';
+  readonly statusCode = 503;
+  readonly retryable = true;
+
+  constructor(readonly operation: 'dismiss_signal') {
+    super('The intelligence signal store could not persist the requested mutation.');
+    this.name = 'IntelligenceBusMutationUnavailableError';
+  }
+}
+
 export interface SignalProvenance {
   producerVersion: string;
   source: 'runtime' | 'user-feedback' | 'measured-outcome' | 'trusted-external' | 'human-approved';
@@ -54,7 +83,9 @@ export type GovernedSignalWriteInput = Omit<SignalWriteInput, 'provenance'> & {
 };
 
 export type GovernedSignalWriteErrorCode =
+  | 'invalid_signal_type'
   | 'invalid_provenance'
+  | 'paused_source_agent'
   | 'invalid_confidence'
   | 'invalid_tenant_scope'
   | 'missing_user_scope'
@@ -106,8 +137,7 @@ export type SignalType =
   | 'pipeline_capacity'
   | 'content_sprint_mode'
   | 'reaction_opportunity'
-  | 'content_published'
-  // Cross-agent learning signals (v2)
+  // Cross-agent learning signals (versioned producer contract)
   // Platform-wide synthesis of global-only inputs. Creator-specific digests
   // use creator_learning_digest so private voice data can never be persisted
   // into a row visible to every user in a tenant.
@@ -184,6 +214,27 @@ export type SignalType =
   | 'subscription_renewal_due'
   | 'expense_anomaly';
 
+/**
+ * Signal families consumed by cached Content Home or Content planning reads.
+ * Keep this union as the mutation-side policy boundary so signal producers do
+ * not each need to understand the downstream cache graph.
+ */
+export const CONTENT_DERIVED_CACHE_SIGNAL_TYPES = [
+  'reaction_opportunity',
+  'trending_spike',
+  'competitor_upload',
+  'hook_effectiveness',
+  'pillar_performance',
+  'learning_digest',
+  'creator_learning_digest',
+  'content_formula',
+  'pipeline_bottleneck',
+] as const satisfies readonly SignalType[];
+
+const CONTENT_DERIVED_CACHE_SIGNAL_TYPE_SET = new Set<SignalType>(
+  CONTENT_DERIVED_CACHE_SIGNAL_TYPES,
+);
+
 export interface AgentSignal {
   id: number;
   source_agent: string;
@@ -213,6 +264,14 @@ export interface AgentSignal {
   /** Stage 2 mesh coordination priority. Optional for backward compatibility. */
   meshPriority?: MeshPriority;
 }
+
+/**
+ * Current eligibility contract for synthesized Content learning digests.
+ * Readers reject older digests because they cannot prove that paused agent
+ * output was excluded from their inputs.
+ */
+export const CONTENT_LEARNING_DIGEST_PRODUCER_VERSION = 'cross-agent-learning.v3';
+export const CONTENT_LEARNING_DIGEST_INPUT_POLICY_VERSION = 'active-content-agent-sources.v1';
 
 /** A ranked signal with a computed relevance score. */
 export interface RankedSignal extends AgentSignal {
@@ -263,8 +322,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   pipeline_capacity: 7 * 24,
   content_sprint_mode: 7 * 24,      // default, can be overridden
   reaction_opportunity: 48,          // 48 hours — reactions lose value fast
-  content_published: 30 * 24,        // 30 days — for performance tracking
-  // Cross-agent learning signals (v2)
+  // Cross-agent learning signals (versioned producer contract)
   learning_digest: 7 * 24,           // 7 days — weekly digest cycle
   creator_learning_digest: 7 * 24,   // 7 days — private creator digest cycle
   content_formula: 90 * 24,          // 90 days — validated formulas are durable
@@ -336,6 +394,13 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   expense_anomaly:            7 * 24,
 };
 
+const ACTIVE_SIGNAL_TYPES = Object.freeze(Object.keys(EXPIRY_HOURS) as SignalType[]);
+const ACTIVE_SIGNAL_TYPE_SET = new Set<string>(ACTIVE_SIGNAL_TYPES);
+
+function isActiveSignalType(value: unknown): value is SignalType {
+  return typeof value === 'string' && ACTIVE_SIGNAL_TYPE_SET.has(value);
+}
+
 const ALLOWED_SIGNAL_SOURCE_AGENTS = new Set([
   'book-extractor',
   'channel-learner',
@@ -370,6 +435,40 @@ const ALLOWED_SIGNAL_SOURCE_AGENTS = new Set([
   'test-agent',
 ]);
 
+// Keep these identities in the syntactic allowlist so the legacy compatibility
+// writer can seed historical imports and focused fixtures. Governed runtime
+// persistence rejects them until their tenant-user scoped implementations run.
+const PAUSED_GOVERNED_SIGNAL_SOURCE_AGENTS = new Set([
+  'performance_agent',
+  'reaction_radar',
+  'seo_agent',
+]);
+
+function normalizeSignalSourceAgent(sourceAgent: string): string {
+  const normalized = sourceAgent.trim().toLowerCase().replaceAll('-', '_');
+  // Historical reaction-radar producers used both the job name and the
+  // canonical signal identity. Treat both spellings as the same paused
+  // producer so an alias cannot bypass the governed persistence gate.
+  return normalized === 'reaction_radar_agent' ? 'reaction_radar' : normalized;
+}
+
+function normalizeSignalSourceAgentList(sourceAgents: readonly string[]): string[] {
+  return [...new Set(sourceAgents.flatMap((sourceAgent) => {
+    const normalized = normalizeSignalSourceAgent(sourceAgent);
+    if (!normalized) return [];
+    // SQL compares normalized stored text directly. Include the historical
+    // runtime alias alongside its canonical identity so it is excluded before
+    // ordering and LIMIT, rather than occupying a result slot later discarded.
+    return normalized === 'reaction_radar'
+      ? ['reaction_radar', 'reaction_radar_agent']
+      : [normalized];
+  }))];
+}
+
+function isPausedGovernedSignalSourceAgent(sourceAgent: string): boolean {
+  return PAUSED_GOVERNED_SIGNAL_SOURCE_AGENTS.has(normalizeSignalSourceAgent(sourceAgent));
+}
+
 const ALLOWED_SIGNAL_SOURCE_PREFIXES = [
   'mesh.',
   'triathlon.',
@@ -391,7 +490,7 @@ export function isAllowedSignalSourceAgent(sourceAgent: string): boolean {
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
 
-interface DbLike {
+export interface IntelligenceBusDatabase {
   prepare(sql: string): {
     run(...args: any[]): any;
     get(...args: any[]): any;
@@ -399,10 +498,14 @@ interface DbLike {
   };
 }
 
-type DbProvider = () => DbLike;
+type DbLike = IntelligenceBusDatabase;
+
+type DbProvider = () => IntelligenceBusDatabase;
 let _getDb: DbProvider | null = null;
 type PlanningInvalidator = (userId?: number) => void;
 let _invalidatePlanningCaches: PlanningInvalidator | null = null;
+type ContentDerivedInvalidator = (userId?: number) => void;
+let _invalidateContentDerivedCaches: ContentDerivedInvalidator | null = null;
 let _reportScopeAnomaly: ((report: ScopeAnomalyReport) => void) | null = null;
 
 export function setDbProvider(fn: DbProvider): void {
@@ -411,6 +514,10 @@ export function setDbProvider(fn: DbProvider): void {
 
 export function setPlanningInvalidator(fn: PlanningInvalidator): void {
   _invalidatePlanningCaches = fn;
+}
+
+export function setContentDerivedInvalidator(fn: ContentDerivedInvalidator): void {
+  _invalidateContentDerivedCaches = fn;
 }
 
 export function setScopeAnomalyReporter(fn: ((report: ScopeAnomalyReport) => void) | null): void {
@@ -477,7 +584,7 @@ export function reconcileGovernedSignalSet(input: GovernedSignalSetReconcileInpu
   return (result as any).changes ?? 0;
 }
 
-function db(): DbLike | null {
+function db(): IntelligenceBusDatabase | null {
   if (!_getDb) return null;
   try { return _getDb(); } catch { return null; }
 }
@@ -498,18 +605,17 @@ const GLOBAL_SIGNAL_TYPES = new Set<SignalType>([
   // into a platform-global signal.
   'content_sprint_mode',
   'reaction_opportunity',
-  'content_published',
   'learning_digest',
   'content_formula',
   'audience_insight',
 ]);
 
 function hasValidScopedUserId(userId: number | undefined): userId is number {
-  return typeof userId === 'number' && Number.isFinite(userId) && userId > 0;
+  return typeof userId === 'number' && Number.isSafeInteger(userId) && userId > 0;
 }
 
 function hasValidTenantId(tenantId: number | undefined | null): tenantId is number {
-  return typeof tenantId === 'number' && Number.isFinite(tenantId) && tenantId > 0;
+  return typeof tenantId === 'number' && Number.isSafeInteger(tenantId) && tenantId > 0;
 }
 
 function resolveSignalTenantId(userId?: number, tenantId?: number | null): number | undefined {
@@ -518,7 +624,7 @@ function resolveSignalTenantId(userId?: number, tenantId?: number | null): numbe
   return undefined;
 }
 
-function tableHasColumn(d: DbLike, table: string, column: string): boolean {
+function tableHasColumn(d: IntelligenceBusDatabase, table: string, column: string): boolean {
   try {
     return d.prepare(`PRAGMA table_info(${table})`).all().some((row: any) => row?.name === column);
   } catch {
@@ -528,6 +634,102 @@ function tableHasColumn(d: DbLike, table: string, column: string): boolean {
 
 function signalRequiresUserScope(signalType: SignalType): boolean {
   return !GLOBAL_SIGNAL_TYPES.has(signalType);
+}
+
+interface ContentSignalCacheMetadata {
+  signal_type: SignalType;
+  tenant_id: number | null;
+  user_id: number | null;
+  mesh_priority: number | null;
+}
+
+function invalidatesContentDerivedCaches(signalType: SignalType): boolean {
+  return CONTENT_DERIVED_CACHE_SIGNAL_TYPE_SET.has(signalType);
+}
+
+function requestContentDerivedCacheInvalidation(userId?: number): void {
+  try {
+    _invalidateContentDerivedCaches?.(userId);
+  } catch {
+    // Cache invalidation is advisory and must never turn a committed signal
+    // mutation into a reported failure.
+  }
+}
+
+function requestPlanningCacheInvalidation(userId?: number): void {
+  try {
+    _invalidatePlanningCaches?.(userId);
+  } catch {
+    // Planning invalidation is advisory. A failed cache clear must not mask a
+    // committed signal mutation or skip sibling cache families.
+  }
+}
+
+function invalidateContentSignalCaches(metadata: ContentSignalCacheMetadata): void {
+  if (!invalidatesContentDerivedCaches(metadata.signal_type)) return;
+  // A private signal has one exact cache owner. Tenant-global and
+  // platform-global signals may affect more than one creator; the current
+  // cache API has no tenant-only selector, so those require a global clear.
+  requestContentDerivedCacheInvalidation(
+    hasValidScopedUserId(metadata.user_id ?? undefined) ? metadata.user_id! : undefined,
+  );
+}
+
+function invalidateChangedContentSignalCaches(rows: ContentSignalCacheMetadata[]): void {
+  const relevant = rows.filter((row) => invalidatesContentDerivedCaches(row.signal_type));
+  if (relevant.length === 0) return;
+  if (relevant.some((row) => !hasValidScopedUserId(row.user_id ?? undefined))) {
+    invalidateContentSignalCaches(relevant.find((row) => !hasValidScopedUserId(row.user_id ?? undefined))!);
+    return;
+  }
+  const userIds = new Set(relevant.map((row) => row.user_id!));
+  for (const userId of userIds) {
+    requestContentDerivedCacheInvalidation(userId);
+  }
+}
+
+function invalidateChangedPlanningSignalCaches(rows: ContentSignalCacheMetadata[]): void {
+  const relevant = rows.filter((row) => row.mesh_priority === 1);
+  if (relevant.length === 0) return;
+  // A private signal has one exact planning-cache owner. Tenant-global and
+  // platform-global signals may affect more than one creator; the planning
+  // cache API has no tenant-only selector, so those require a global clear.
+  if (relevant.some((row) => !hasValidScopedUserId(row.user_id ?? undefined))) {
+    requestPlanningCacheInvalidation();
+    return;
+  }
+  const userIds = new Set(relevant.map((row) => row.user_id!));
+  for (const userId of userIds) {
+    requestPlanningCacheInvalidation(userId);
+  }
+}
+
+interface ActiveSignalCacheMetadataRead {
+  available: boolean;
+  metadata: ContentSignalCacheMetadata | null;
+}
+
+function readActiveSignalCacheMetadata(
+  d: IntelligenceBusDatabase,
+  signalId: number,
+  hasTenantColumn: boolean,
+): ActiveSignalCacheMetadataRead {
+  try {
+    const row = d.prepare(hasTenantColumn ? `
+      SELECT signal_type, tenant_id, user_id, mesh_priority
+        FROM agent_signals
+       WHERE id = ? AND status = 'active'
+       LIMIT 1
+    ` : `
+      SELECT signal_type, NULL AS tenant_id, user_id, mesh_priority
+        FROM agent_signals
+       WHERE id = ? AND status = 'active'
+       LIMIT 1
+    `).get(signalId) as ContentSignalCacheMetadata | undefined;
+    return { available: true, metadata: row ?? null };
+  } catch {
+    return { available: false, metadata: null };
+  }
 }
 
 function reportScopeAnomaly(report: ScopeAnomalyReport): void {
@@ -571,7 +773,9 @@ function isValidSignalProvenance(value: unknown): value is SignalProvenance {
 function governedSignalInvariantFailure(
   signal: GovernedSignalWriteInput,
 ): GovernedSignalWriteErrorCode | null {
+  if (!isActiveSignalType(signal.signal_type)) return 'invalid_signal_type';
   if (!isValidSignalProvenance(signal.provenance)) return 'invalid_provenance';
+  if (isPausedGovernedSignalSourceAgent(signal.source_agent)) return 'paused_source_agent';
 
   if (signal.confidence !== undefined
     && (!Number.isFinite(signal.confidence) || signal.confidence < 0 || signal.confidence > 1)) {
@@ -657,6 +861,7 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
   const d = database ?? db();
   if (!d) return -1;
   try {
+    if (!isActiveSignalType(signal.signal_type)) return -1;
     if (!isAllowedSignalSourceAgent(signal.source_agent)) {
       reportScopeAnomaly({
         layer: 'intelligence_bus',
@@ -712,6 +917,10 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
     const normalizedUserId = requiresUserScope ? scopedUserId! : null;
     const normalizedTenantId = hasTenantColumn ? (scopedTenantId ?? null) : undefined;
+    // The allowlist intentionally accepts surrounding whitespace and mixed
+    // case for compatibility. Persist the canonical spelling so later SQL
+    // governance cannot be bypassed by those representational differences.
+    const persistedSourceAgent = signal.source_agent.trim().toLowerCase();
     const provenance: SignalProvenance = signal.provenance ?? {
       producerVersion: 'legacy-unknown',
       source: 'runtime',
@@ -719,7 +928,7 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
     };
     const persistedPayload = { ...signal.payload, _signalProvenance: provenance };
     const signalIdentity = createSignalIdentity({
-      sourceAgent: signal.source_agent,
+      sourceAgent: persistedSourceAgent,
       signalType: signal.signal_type,
       payload: signal.payload,
       tenantId: normalizedTenantId ?? null,
@@ -733,7 +942,7 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
       'expires_at',
     ];
     const values: unknown[] = [
-      signal.source_agent,
+      persistedSourceAgent,
       signal.signal_type,
       JSON.stringify(persistedPayload),
       priority,
@@ -771,13 +980,20 @@ function writeSignalInternal(signal: SignalWriteInput, database?: DbLike): numbe
       INSERT INTO agent_signals (${columns.join(', ')})
       VALUES (${columns.map(() => '?').join(', ')})
     `).run(...values);
+    const signalId = Number((result as any).lastInsertRowid ?? -1);
     const meshPriority = signal.meshPriority ?? null;
     if (meshPriority === 1) {
-      if (_invalidatePlanningCaches) {
-        _invalidatePlanningCaches(normalizedUserId ?? undefined);
-      }
+      requestPlanningCacheInvalidation(normalizedUserId ?? undefined);
     }
-    return (result as any).lastInsertRowid ?? -1;
+    if (signalId > 0) {
+      invalidateContentSignalCaches({
+        signal_type: signal.signal_type,
+        tenant_id: normalizedTenantId ?? null,
+        user_id: normalizedUserId,
+        mesh_priority: meshPriority,
+      });
+    }
+    return signalId;
   } catch {
     return -1;
   }
@@ -802,9 +1018,17 @@ export function readSignals(
   userId?: number,
   maxAgeDays?: number,
   tenantId?: number,
+  options: {
+    excludeSourceAgents?: readonly string[];
+    strict?: boolean;
+    database?: IntelligenceBusDatabase;
+  } = {},
 ): AgentSignal[] {
-  const d = db();
-  if (!d) return [];
+  const d = options.database ?? db();
+  if (!d) {
+    if (options.strict) throw new IntelligenceBusReadUnavailableError('read_signals');
+    return [];
+  }
   try {
     const placeholders = signalTypes.map(() => '?').join(',');
     const scopedUserId = hasValidScopedUserId(userId) ? userId : undefined;
@@ -847,9 +1071,14 @@ export function readSignals(
       ? new Date(readAt.getTime() - Math.floor(maxAgeDays) * 86_400_000).toISOString()
       : null;
     const ageClause = maxAgeCutoffIso ? 'AND created_at > ?' : '';
+    const excludedSourceAgents = normalizeSignalSourceAgentList(options.excludeSourceAgents ?? []);
+    const sourceAgentClause = excludedSourceAgents.length > 0
+      ? `AND LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (${excludedSourceAgents.map(() => '?').join(',')})`
+      : '';
     const params: any[] = [readAtIso, ...signalTypes];
     params.push(...scopeParams);
     if (maxAgeCutoffIso) params.push(maxAgeCutoffIso);
+    params.push(...excludedSourceAgents);
     params.push(limit);
 
     const rows = d.prepare(`
@@ -859,16 +1088,137 @@ export function readSignals(
         AND signal_type IN (${placeholders})
         ${scopeClauses.join('\n        ')}
         ${ageClause}
+        ${sourceAgentClause}
       ORDER BY
         CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
         created_at DESC
       LIMIT ?
     `).all(...params) as any[];
 
-    return rows
-      .map(parseSignalRow)
+    return parseSignalRowsSafely(rows)
+      .filter(isEligibleContentLearningDigestSignal)
       .filter(s => !s.consumed_by.includes(consumer));
-  } catch {
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof IntelligenceBusReadUnavailableError) throw error;
+      throw new IntelligenceBusReadUnavailableError('read_signals');
+    }
+    return [];
+  }
+}
+
+/**
+ * Read every logically active row for one exact governed producer/type/scope.
+ *
+ * This is a lifecycle primitive for deterministic synchronization and
+ * reconciliation. It deliberately has no presentation limit and never mixes
+ * tenant-global rows into a private owner scope.
+ */
+export function readActiveScopedSignalsBySource(
+  input: {
+    sourceAgent: string;
+    signalType: SignalType;
+    userId: number;
+    tenantId: number;
+  },
+  options: { strict?: boolean; database?: IntelligenceBusDatabase } = {},
+): AgentSignal[] {
+  const d = options.database ?? db();
+  if (!d) {
+    if (options.strict) throw new IntelligenceBusReadUnavailableError('read_scoped_signals');
+    return [];
+  }
+  try {
+    if (!isAllowedSignalSourceAgent(input.sourceAgent)
+      || !isActiveSignalType(input.signalType)
+      || !hasValidScopedUserId(input.userId)
+      || !hasValidTenantId(input.tenantId)
+      || !tableHasColumn(d, 'agent_signals', 'tenant_id')) {
+      if (options.strict) throw new IntelligenceBusReadUnavailableError('read_scoped_signals');
+      return [];
+    }
+    const rows = d.prepare(`
+      SELECT *
+        FROM agent_signals
+       WHERE status = 'active'
+         AND julianday(expires_at) > julianday('now')
+         AND source_agent = ?
+         AND signal_type = ?
+         AND tenant_id = ?
+         AND user_id = ?
+       ORDER BY id ASC
+    `).all(
+      input.sourceAgent.trim().toLowerCase(),
+      input.signalType,
+      input.tenantId,
+      input.userId,
+    ) as any[];
+    return parseSignalRowsSafely(rows)
+      .filter(isEligibleContentLearningDigestSignal);
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof IntelligenceBusReadUnavailableError) throw error;
+      throw new IntelligenceBusReadUnavailableError('read_scoped_signals');
+    }
+    return [];
+  }
+}
+
+/**
+ * Resolve every logically active, exactly scoped signal for one canonical
+ * workspace item. This unbounded identity query is reserved for lifecycle
+ * cleanup; it must not inherit the presentation/read limits used by ordinary
+ * consumers. Logically expired rows remain owned by the expiry sweeper.
+ */
+export function findActiveScopedSignalIdsByPayloadItemId(
+  input: {
+    signalType: SignalType;
+    sourceAgent: string;
+    itemId: number;
+    userId: number;
+    tenantId: number;
+  },
+  options: { strict?: boolean; database?: IntelligenceBusDatabase } = {},
+): number[] {
+  const d = options.database ?? db();
+  if (!d) {
+    if (options.strict) throw new IntelligenceBusReadUnavailableError('read_signals');
+    return [];
+  }
+  try {
+    if (!Number.isSafeInteger(input.itemId) || input.itemId <= 0
+      || !hasValidScopedUserId(input.userId)
+      || !hasValidTenantId(input.tenantId)
+      || !isAllowedSignalSourceAgent(input.sourceAgent)) {
+      if (options.strict) throw new IntelligenceBusReadUnavailableError('read_signals');
+      return [];
+    }
+    const rows = d.prepare(`
+      SELECT id
+       FROM agent_signals
+       WHERE status = 'active'
+         AND julianday(expires_at) > julianday('now')
+         AND signal_type = ?
+         AND source_agent = ?
+         AND tenant_id = ?
+         AND user_id = ?
+         AND json_valid(payload) = 1
+         AND json_type(payload, '$.itemId') = 'integer'
+         AND json_extract(payload, '$.itemId') = ?
+       ORDER BY id ASC
+    `).all(
+      input.signalType,
+      input.sourceAgent,
+      input.tenantId,
+      input.userId,
+      input.itemId,
+    ) as Array<{ id: unknown }>;
+    return rows.map((row) => Number(row.id)).filter((id) => Number.isSafeInteger(id) && id > 0);
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof IntelligenceBusReadUnavailableError) throw error;
+      throw new IntelligenceBusReadUnavailableError('read_signals');
+    }
     return [];
   }
 }
@@ -893,57 +1243,91 @@ export function markConsumed(signalId: number, consumer: string): void {
 /**
  * Dismiss a signal (manual override from Mission Control).
  */
-export function dismissSignal(signalId: number, userId?: number, tenantId?: number): number {
-  const d = db();
-  if (!d) return 0;
+export function dismissSignal(
+  signalId: number,
+  userId?: number,
+  tenantId?: number,
+  options: { strict?: boolean; database?: IntelligenceBusDatabase } = {},
+): number {
+  const d = options.database ?? db();
+  if (!d) {
+    if (options.strict) throw new IntelligenceBusMutationUnavailableError('dismiss_signal');
+    return 0;
+  }
   try {
     const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    if (userId !== undefined && !hasValidScopedUserId(userId)) return 0;
+    if (userId === undefined && tenantId !== undefined && !hasValidTenantId(tenantId)) return 0;
+    const cacheMetadataRead = readActiveSignalCacheMetadata(d, signalId, hasTenantColumn);
+    let result: { changes?: number };
     if (hasTenantColumn) {
       if (userId === undefined) {
         if (tenantId === undefined) {
-          const result = d.prepare(`
+          result = d.prepare(`
             UPDATE agent_signals
             SET status = 'dismissed'
             WHERE id = ?
+              AND status = 'active'
               AND tenant_id IS NULL
               AND user_id IS NULL
           `).run(signalId);
-          return (result as any).changes ?? 0;
+        } else {
+          result = d.prepare(`
+            UPDATE agent_signals
+            SET status = 'dismissed'
+            WHERE id = ?
+              AND status = 'active'
+              AND tenant_id = ?
+              AND user_id IS NULL
+          `).run(signalId, tenantId);
         }
-        if (!hasValidTenantId(tenantId)) return 0;
-        const result = d.prepare(`
+      } else {
+        const scopedTenantId = resolveSignalTenantId(userId, tenantId);
+        if (scopedTenantId === undefined) return 0;
+        result = d.prepare(`
           UPDATE agent_signals
           SET status = 'dismissed'
           WHERE id = ?
+            AND status = 'active'
             AND tenant_id = ?
-            AND user_id IS NULL
-        `).run(signalId, tenantId);
-        return (result as any).changes ?? 0;
+            AND (user_id IS NULL OR user_id = ?)
+        `).run(signalId, scopedTenantId, userId);
       }
-      if (!hasValidScopedUserId(userId)) return 0;
-      const scopedTenantId = resolveSignalTenantId(userId, tenantId);
-      if (scopedTenantId === undefined) return 0;
-      const result = d.prepare(`
+    } else if (userId !== undefined) {
+      result = d.prepare(`
         UPDATE agent_signals
         SET status = 'dismissed'
         WHERE id = ?
-          AND tenant_id = ?
-          AND (user_id IS NULL OR user_id = ?)
-      `).run(signalId, scopedTenantId, userId);
-      return (result as any).changes ?? 0;
-    }
-    if (userId !== undefined) {
-      const result = d.prepare(`
-        UPDATE agent_signals
-        SET status = 'dismissed'
-        WHERE id = ?
+          AND status = 'active'
           AND (user_id IS NULL OR user_id = ?)
       `).run(signalId, userId);
-      return (result as any).changes ?? 0;
+    } else {
+      result = d.prepare(`
+        UPDATE agent_signals
+           SET status = 'dismissed'
+         WHERE id = ?
+           AND status = 'active'
+           AND user_id IS NULL
+      `).run(signalId);
     }
-    const result = d.prepare("UPDATE agent_signals SET status = 'dismissed' WHERE id = ? AND user_id IS NULL").run(signalId);
-    return (result as any).changes ?? 0;
-  } catch {
+    const changed = result.changes ?? 0;
+    if (changed > 0) {
+      if (!cacheMetadataRead.available) {
+        // The mutation committed but exact signal ownership could not be read.
+        // Fail safe rather than leave unknown derived cache families stale.
+        requestContentDerivedCacheInvalidation();
+        requestPlanningCacheInvalidation();
+      } else if (cacheMetadataRead.metadata) {
+        invalidateContentSignalCaches(cacheMetadataRead.metadata);
+        invalidateChangedPlanningSignalCaches([cacheMetadataRead.metadata]);
+      }
+    }
+    return changed;
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof IntelligenceBusMutationUnavailableError) throw error;
+      throw new IntelligenceBusMutationUnavailableError('dismiss_signal');
+    }
     return 0;
   }
 }
@@ -956,13 +1340,45 @@ export function expireStaleSignals(): number {
   const d = db();
   if (!d) return 0;
   try {
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const placeholders = CONTENT_DERIVED_CACHE_SIGNAL_TYPES.map(() => '?').join(',');
+    let expiringDerivedSignals: ContentSignalCacheMetadata[] | null = null;
+    try {
+      expiringDerivedSignals = d.prepare(hasTenantColumn ? `
+        SELECT signal_type, tenant_id, user_id, mesh_priority
+          FROM agent_signals
+         WHERE status = 'active'
+           AND (julianday(expires_at) <= julianday('now') OR julianday(expires_at) IS NULL)
+           AND (signal_type IN (${placeholders}) OR mesh_priority = 1)
+      ` : `
+        SELECT signal_type, NULL AS tenant_id, user_id, mesh_priority
+          FROM agent_signals
+         WHERE status = 'active'
+           AND (julianday(expires_at) <= julianday('now') OR julianday(expires_at) IS NULL)
+           AND (signal_type IN (${placeholders}) OR mesh_priority = 1)
+      `).all(...CONTENT_DERIVED_CACHE_SIGNAL_TYPES) as ContentSignalCacheMetadata[];
+    } catch {
+      // Preserve expiry cleanup. If rows change without readable metadata, the
+      // only safe cache target is each global derived-cache family.
+      expiringDerivedSignals = null;
+    }
     const result = d.prepare(`
       UPDATE agent_signals
       SET status = 'expired'
       WHERE status = 'active'
-        AND julianday(expires_at) <= julianday('now')
+        AND (julianday(expires_at) <= julianday('now') OR julianday(expires_at) IS NULL)
     `).run();
-    return (result as any).changes ?? 0;
+    const changed = (result as any).changes ?? 0;
+    if (changed > 0) {
+      if (expiringDerivedSignals === null) {
+        requestContentDerivedCacheInvalidation();
+        requestPlanningCacheInvalidation();
+      } else {
+        invalidateChangedContentSignalCaches(expiringDerivedSignals);
+        invalidateChangedPlanningSignalCaches(expiringDerivedSignals);
+      }
+    }
+    return changed;
   } catch {
     return 0;
   }
@@ -971,13 +1387,28 @@ export function expireStaleSignals(): number {
 /**
  * Get count of active signals.
  */
-export function getActiveSignalCount(userId?: number, tenantId?: number): number {
+export function getActiveSignalCount(
+  userId?: number,
+  tenantId?: number,
+  options: {
+    excludeSourceAgents?: readonly string[];
+    excludeIneligibleContentLearningDigests?: boolean;
+    strict?: boolean;
+  } = {},
+): number {
   const d = db();
-  if (!d) return 0;
+  if (!d) {
+    if (options.strict) throw new IntelligenceBusReadUnavailableError('active_signal_count');
+    return 0;
+  }
   try {
     const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
-    const clauses = ["status = 'active'", "julianday(expires_at) > julianday('now')"];
-    const params: any[] = [];
+    const clauses = [
+      "status = 'active'",
+      "julianday(expires_at) > julianday('now')",
+      `signal_type IN (${ACTIVE_SIGNAL_TYPES.map(() => '?').join(',')})`,
+    ];
+    const params: any[] = [...ACTIVE_SIGNAL_TYPES];
     if (hasTenantColumn) {
       const scopedTenantId = resolveSignalTenantId(userId, tenantId);
       if (scopedTenantId !== undefined) {
@@ -995,9 +1426,24 @@ export function getActiveSignalCount(userId?: number, tenantId?: number): number
     } else {
       clauses.push('user_id IS NULL');
     }
+    const excludedSourceAgents = normalizeSignalSourceAgentList(options.excludeSourceAgents ?? []);
+    if (excludedSourceAgents.length > 0) {
+      clauses.push(`LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (${excludedSourceAgents.map(() => '?').join(',')})`);
+      params.push(...excludedSourceAgents);
+    }
+    if (options.excludeIneligibleContentLearningDigests === true) {
+      const rows = d.prepare(`SELECT * FROM agent_signals WHERE ${clauses.join(' AND ')}`).all(...params) as any[];
+      return parseSignalRowsSafely(rows)
+        .filter(isEligibleContentLearningDigestSignal)
+        .length;
+    }
     const row = d.prepare(`SELECT COUNT(*) as cnt FROM agent_signals WHERE ${clauses.join(' AND ')}`).get(...params) as any;
     return row?.cnt ?? 0;
-  } catch {
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof IntelligenceBusReadUnavailableError) throw error;
+      throw new IntelligenceBusReadUnavailableError('active_signal_count');
+    }
     return 0;
   }
 }
@@ -1005,13 +1451,20 @@ export function getActiveSignalCount(userId?: number, tenantId?: number): number
 /**
  * Get recent signal log (for Mission Control).
  */
-export function getSignalLog(limit = 100, userId?: number, tenantId?: number): AgentSignal[] {
+export function getSignalLog(
+  limit = 100,
+  userId?: number,
+  tenantId?: number,
+  options: { excludeSourceAgents?: readonly string[] } = {},
+): AgentSignal[] {
   const d = db();
   if (!d) return [];
   try {
     const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
-    const clauses: string[] = [];
-    const params: any[] = [];
+    const clauses: string[] = [
+      `signal_type IN (${ACTIVE_SIGNAL_TYPES.map(() => '?').join(',')})`,
+    ];
+    const params: any[] = [...ACTIVE_SIGNAL_TYPES];
     if (hasTenantColumn) {
       const scopedTenantId = resolveSignalTenantId(userId, tenantId);
       if (scopedTenantId !== undefined) {
@@ -1028,6 +1481,11 @@ export function getSignalLog(limit = 100, userId?: number, tenantId?: number): A
       params.push(userId);
     } else {
       clauses.push('user_id IS NULL');
+    }
+    const excludedSourceAgents = normalizeSignalSourceAgentList(options.excludeSourceAgents ?? []);
+    if (excludedSourceAgents.length > 0) {
+      clauses.push(`LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (${excludedSourceAgents.map(() => '?').join(',')})`);
+      params.push(...excludedSourceAgents);
     }
     params.push(limit);
     const rows = d.prepare(`
@@ -1036,7 +1494,8 @@ export function getSignalLog(limit = 100, userId?: number, tenantId?: number): A
       ORDER BY created_at DESC
       LIMIT ?
     `).all(...params) as any[];
-    return rows.map(parseSignalRow);
+    return parseSignalRowsSafely(rows)
+      .filter(isEligibleContentLearningDigestSignal);
   } catch {
     return [];
   }
@@ -1045,7 +1504,7 @@ export function getSignalLog(limit = 100, userId?: number, tenantId?: number): A
 /**
  * Get agent stats (last run, signal counts, status).
  */
-export function getAgentStats(): {
+export function getAgentStats(options: { strict?: boolean } = {}): {
   agent: string;
   last_run: string | null;
   last_status: string;
@@ -1053,7 +1512,10 @@ export function getAgentStats(): {
   total_runs: number;
 }[] {
   const d = db();
-  if (!d) return [];
+  if (!d) {
+    if (options.strict) throw new IntelligenceBusReadUnavailableError('agent_stats');
+    return [];
+  }
   try {
     return d.prepare(`
       SELECT
@@ -1066,7 +1528,11 @@ export function getAgentStats(): {
       GROUP BY agent_name
       ORDER BY last_run DESC
     `).all() as any[];
-  } catch {
+  } catch (error) {
+    if (options.strict) {
+      if (error instanceof IntelligenceBusReadUnavailableError) throw error;
+      throw new IntelligenceBusReadUnavailableError('agent_stats');
+    }
     return [];
   }
 }
@@ -1095,7 +1561,13 @@ export function logAgentRun(
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function parseSignalRow(row: any): AgentSignal {
+  if (!isActiveSignalType(row.signal_type)) {
+    throw new Error('retired_or_unknown_signal_type');
+  }
   const storedPayload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+  const storedConsumedBy = typeof row.consumed_by === 'string'
+    ? JSON.parse(row.consumed_by)
+    : row.consumed_by;
   const { _signalProvenance, ...payload } = storedPayload ?? {};
   const persistedProvenance = parsePersistedSignalProvenance(row.provenance_json)
     ?? parsePersistedSignalProvenance(_signalProvenance)
@@ -1110,7 +1582,9 @@ function parseSignalRow(row: any): AgentSignal {
     signal_type: row.signal_type,
     payload,
     priority: row.priority,
-    consumed_by: typeof row.consumed_by === 'string' ? JSON.parse(row.consumed_by) : row.consumed_by,
+    consumed_by: Array.isArray(storedConsumedBy)
+      ? storedConsumedBy.filter((consumer): consumer is string => typeof consumer === 'string')
+      : [],
     status: row.status,
     created_at: row.created_at,
     expires_at: row.expires_at,
@@ -1185,6 +1659,57 @@ function parsePersistedSignalProvenance(value: unknown): SignalProvenance | null
   };
 }
 
+function parseSignalRowsSafely(rows: readonly any[]): AgentSignal[] {
+  const parsed: AgentSignal[] = [];
+  for (const row of rows) {
+    try {
+      parsed.push(parseSignalRow(row));
+    } catch {
+      // Corrupt persisted JSON makes only that row ineligible. One bad row
+      // must not erase other tenant-scoped decision inputs.
+    }
+  }
+  return parsed;
+}
+
+const CONTENT_LEARNING_DIGEST_SIGNAL_TYPES = new Set<SignalType>([
+  'learning_digest',
+  'creator_learning_digest',
+]);
+
+/**
+ * A synthesized digest is eligible only when its producer and payload prove
+ * that every input passed the current active-agent policy. This prevents a
+ * still-live v2 digest, derived before Performance and SEO were paused, from
+ * influencing Content consumers during its seven-day TTL.
+ */
+export function isEligibleContentLearningDigestSignal(
+  signal: Pick<AgentSignal, 'signal_type' | 'payload' | 'provenance'>,
+): boolean {
+  if (!CONTENT_LEARNING_DIGEST_SIGNAL_TYPES.has(signal.signal_type)) return true;
+
+  const inputEligibility = signal.payload?.inputEligibility;
+  const sourceAgents = inputEligibility?.sourceAgents;
+  const sourceSignalIds = inputEligibility?.sourceSignalIds;
+  return signal.provenance?.producerVersion === CONTENT_LEARNING_DIGEST_PRODUCER_VERSION
+    && inputEligibility?.policyVersion === CONTENT_LEARNING_DIGEST_INPUT_POLICY_VERSION
+    && Array.isArray(sourceAgents)
+    && sourceAgents.length > 0
+    && sourceAgents.every((sourceAgent: unknown) => (
+      typeof sourceAgent === 'string'
+      && sourceAgent.trim().length > 0
+      && !isPausedGovernedSignalSourceAgent(sourceAgent)
+    ))
+    && Array.isArray(sourceSignalIds)
+    && sourceSignalIds.length > 0
+    && sourceSignalIds.every((signalId: unknown) => (
+      typeof signalId === 'number'
+      && Number.isInteger(signalId)
+      && signalId > 0
+    ))
+    && new Set(sourceSignalIds).size === sourceSignalIds.length;
+}
+
 // ─── Ranked Signal Reader ──────────────────────────────────────────
 //
 // Unlike readSignals() which returns flat results ordered by priority
@@ -1227,6 +1752,7 @@ function freshnessScore(createdAt: string, expiresAt: string): number {
  *   - pillar: only signals tagged with this pillar (or untagged)
  *   - format: only signals tagged with this format (or untagged)
  *   - minConfidence: floor (default 0.1 — filter out noise)
+ *   - excludeSourceAgents: normalized source identities to omit before ranking
  *
  * Returns RankedSignal[] sorted by relevanceScore DESC.
  */
@@ -1240,10 +1766,15 @@ export function readRankedSignals(
     pillar?: string;
     format?: string;
     minConfidence?: number;
+    excludeSourceAgents?: readonly string[];
+    strict?: boolean;
   } = {},
 ): RankedSignal[] {
   const d = db();
-  if (!d) return [];
+  if (!d) {
+    if (opts.strict) throw new IntelligenceBusReadUnavailableError('read_ranked_signals');
+    return [];
+  }
 
   const limit = opts.limit ?? 20;
   const minConfidence = opts.minConfidence ?? 0.1;
@@ -1278,6 +1809,12 @@ export function readRankedSignals(
       clauses.push('user_id IS NULL');
     }
 
+    const excludedSourceAgents = normalizeSignalSourceAgentList(opts.excludeSourceAgents ?? []);
+    if (excludedSourceAgents.length > 0) {
+      clauses.push(`LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (${excludedSourceAgents.map(() => '?').join(',')})`);
+      params.push(...excludedSourceAgents);
+    }
+
     // Pillar filter (include untagged signals too)
     if (opts.pillar) {
       clauses.push('(pillar_tag IS NULL OR pillar_tag = ?)');
@@ -1300,8 +1837,8 @@ export function readRankedSignals(
       LIMIT ?
     `).all(...params) as any[];
 
-    const signals = rows
-      .map(parseSignalRow)
+    const signals = parseSignalRowsSafely(rows)
+      .filter(isEligibleContentLearningDigestSignal)
       .filter(s => !s.consumed_by.includes(consumer));
 
     // Compute relevance scores
@@ -1321,7 +1858,11 @@ export function readRankedSignals(
     ranked.sort((a, b) => b.relevanceScore - a.relevanceScore || b.confidence - a.confidence);
 
     return ranked.slice(0, limit);
-  } catch {
+  } catch (error) {
+    if (opts.strict) {
+      if (error instanceof IntelligenceBusReadUnavailableError) throw error;
+      throw new IntelligenceBusReadUnavailableError('read_ranked_signals');
+    }
     return [];
   }
 }

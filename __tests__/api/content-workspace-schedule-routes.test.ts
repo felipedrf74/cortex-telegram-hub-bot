@@ -5,6 +5,9 @@ import { Router, type Request, type Response } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let testDb: Database.Database;
+const mockInvalidateContentDerivedCaches = vi.hoisted(() => vi.fn());
+const mockDismissContentFilmingSignalsForItem = vi.hoisted(() => vi.fn());
+const scheduleRouteFaults = vi.hoisted(() => ({ failEventEnqueue: false }));
 
 vi.mock('../../src/services/database', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/database')>();
@@ -15,6 +18,26 @@ vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
 }));
+
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  invalidateContentDerivedCaches: mockInvalidateContentDerivedCaches,
+}));
+
+vi.mock('../../src/services/content-schedule-signal-reconciliation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/content-schedule-signal-reconciliation')>()),
+  dismissContentFilmingSignalsForItem: mockDismissContentFilmingSignalsForItem,
+}));
+
+vi.mock('../../src/services/event-outbox', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/event-outbox')>();
+  return {
+    ...actual,
+    emitDomainEvent: (...args: Parameters<typeof actual.emitDomainEvent>) => {
+      if (scheduleRouteFaults.failEventEnqueue) throw new Error('event outbox unavailable');
+      return actual.emitDomainEvent(...args);
+    },
+  };
+});
 
 import { registerContentWorkspaceScheduleRoutes } from '../../src/api/routes/content-workspace-schedule-routes';
 import { registerContentWorkspaceRoutes } from '../../src/api/routes/content-workspace-routes';
@@ -27,6 +50,8 @@ import {
   type ContentWorkspaceScope,
 } from '../../src/services/content-workspace';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
+import { ContentScheduleSignalReconciliationError } from '../../src/services/content-schedule-signal-reconciliation';
+import { logger } from '../../src/utils/logger';
 
 const OWNER: ContentWorkspaceScope = { tenantId: 501, userId: 501 };
 const WINDOW = { start: '2032-07-18T09:00:00.000Z', end: '2032-07-18T11:00:00.000Z' };
@@ -43,6 +68,9 @@ interface MockResponse {
 
 describe('canonical Content schedule routes', () => {
   beforeEach(() => {
+    scheduleRouteFaults.failEventEnqueue = false;
+    mockInvalidateContentDerivedCaches.mockReset();
+    mockDismissContentFilmingSignalsForItem.mockReset();
     testDb = createMigratedTestDatabase();
   });
 
@@ -68,6 +96,66 @@ describe('canonical Content schedule routes', () => {
       .toEqual({ count: 0 });
   });
 
+  it('rejects invalid or conflicting schedule idempotency before any preview mutation', async () => {
+    const fixture = seedApproved('idempotency-contract');
+    const validRequest = {
+      workKind: 'record',
+      durationMinutes: 60,
+      preferredWindows: [WINDOW],
+    };
+    const cases: Array<{
+      body: Record<string, unknown>;
+      headers?: Record<string, string>;
+      expectedCode: string;
+    }> = [
+      { body: validRequest, expectedCode: 'CONTENT_IDEMPOTENCY_KEY_REQUIRED' },
+      {
+        body: { ...validRequest, idempotencyKey: 123 },
+        expectedCode: 'CONTENT_VALIDATION_FAILED',
+      },
+      {
+        body: { ...validRequest, idempotencyKey: 'short' },
+        expectedCode: 'CONTENT_VALIDATION_FAILED',
+      },
+      {
+        body: validRequest,
+        headers: { 'x-idempotency-key': 'x'.repeat(201) },
+        expectedCode: 'CONTENT_VALIDATION_FAILED',
+      },
+      {
+        body: { ...validRequest, idempotencyKey: 'route-schedule-body-001' },
+        headers: { 'x-idempotency-key': 'route-schedule-header-001' },
+        expectedCode: 'CONTENT_IDEMPOTENCY_KEY_CONFLICT',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = await dispatch(
+        'POST',
+        `/workspace/items/${fixture.itemId}/schedule-previews`,
+        testCase.body,
+        OWNER.userId,
+        OWNER.tenantId,
+        testCase.headers,
+      );
+      expect(response.statusCode).toBe(testCase.expectedCode === 'CONTENT_IDEMPOTENCY_KEY_CONFLICT' ? 409 : 400);
+      expect(response.body.error.code).toBe(testCase.expectedCode);
+    }
+
+    for (const body of [
+      { workKind: 'record', preferredWindows: [WINDOW], idempotencyKey: 'route-schedule-no-duration-001' },
+      { workKind: 'record', durationMinutes: 14, preferredWindows: [WINDOW], idempotencyKey: 'route-schedule-duration-low-001' },
+      { workKind: 'record', durationMinutes: 481, preferredWindows: [WINDOW], idempotencyKey: 'route-schedule-duration-high-001' },
+      { workKind: 'record', durationMinutes: 60, idempotencyKey: 'route-schedule-no-windows-001' },
+    ]) {
+      const response = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-previews`, body);
+      expect(response.statusCode).toBe(400);
+      expect(response.body.error.code).toBe('CONTENT_VALIDATION_FAILED');
+    }
+
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_schedule_previews').get()).toEqual({ count: 0 });
+  });
+
   it('supports preview, explicit confirmation, read, and truthful cancellation', async () => {
     const fixture = seedApproved('journey');
     const created = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-previews`, {
@@ -82,7 +170,8 @@ describe('canonical Content schedule routes', () => {
       durationMinutes: 60,
       preferredWindows: [WINDOW],
       priority: 'high',
-      idempotencyKey: 'route-schedule-preview-journey-001',
+    }, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-preview-journey-001',
     });
 
     expect(created.statusCode).toBe(201);
@@ -102,8 +191,8 @@ describe('canonical Content schedule routes', () => {
       .toEqual({ count: 0 });
 
     const previewKey = created.body.data.preview.previewKey;
-    const confirmed = await dispatch('POST', `/workspace/schedule-previews/${previewKey}/confirm`, {
-      idempotencyKey: 'route-schedule-confirm-journey-001',
+    const confirmed = await dispatch('POST', `/workspace/schedule-previews/${previewKey}/confirm`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-confirm-journey-001',
     });
     const read = await dispatch('GET', `/workspace/items/${fixture.itemId}/schedule`);
 
@@ -113,6 +202,8 @@ describe('canonical Content schedule routes', () => {
       providerSyncState: 'pending',
       publicationExecution: 'not_performed',
     });
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenLastCalledWith(OWNER.userId);
     expect(read.body.data.schedule).toMatchObject({
       localAgendaState: 'scheduled',
       contentChangedSinceScheduling: false,
@@ -150,20 +241,108 @@ describe('canonical Content schedule routes', () => {
     expect(serializedWorkspace).not.toContain('bindingId');
     expect(serializedWorkspace).not.toContain('previewKey');
 
-    const cancelled = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-cancel`, {
-      idempotencyKey: 'route-schedule-cancel-journey-001',
+    const cancelled = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-cancel`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-cancel-journey-001',
     });
     expect(cancelled.body.data.schedule).toMatchObject({
       state: 'cancelled',
       localAgendaState: 'cancelled',
       publicationExecution: 'not_performed',
     });
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledTimes(2);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenLastCalledWith(OWNER.userId);
+    expect(mockDismissContentFilmingSignalsForItem).toHaveBeenCalledWith(OWNER, fixture.itemId);
     const afterCancellation = await dispatch('GET', `/workspace/items/${fixture.itemId}`);
     expect(afterCancellation.body.data.item).toMatchObject({
       productionState: 'approved',
       workSchedule: null,
       nextAction: { action: 'schedule_work' },
     });
+  });
+
+  it('reports derived-signal reconciliation failure after cancellation and retries it idempotently', async () => {
+    const fixture = seedApproved('signal-reconciliation-retry');
+    const preview = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-previews`, {
+      workKind: 'record',
+      durationMinutes: 60,
+      preferredWindows: [WINDOW],
+      idempotencyKey: 'route-schedule-preview-signal-retry-001',
+    });
+    await dispatch('POST', `/workspace/schedule-previews/${preview.body.data.preview.previewKey}/confirm`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-confirm-signal-retry-001',
+    });
+    mockInvalidateContentDerivedCaches.mockClear();
+    mockDismissContentFilmingSignalsForItem.mockImplementationOnce(() => {
+      throw new ContentScheduleSignalReconciliationError();
+    });
+
+    const first = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-cancel`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-cancel-signal-retry-001',
+    });
+    expect(first.statusCode).toBe(503);
+    expect(first.body.error).toMatchObject({
+      code: 'CONTENT_SCHEDULE_SIGNAL_RECONCILIATION_UNAVAILABLE',
+      details: {
+        canonicalCancellationCommitted: true,
+        durableReconciliationQueued: true,
+        recovery: 'retry_cancellation',
+        retryable: true,
+      },
+    });
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenLastCalledWith(OWNER.userId);
+
+    const replay = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-cancel`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-cancel-signal-retry-001',
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body.data).toMatchObject({
+      schedule: { state: 'cancelled', localAgendaState: 'cancelled' },
+      mutation: { replayed: true, changed: false },
+    });
+    expect(mockDismissContentFilmingSignalsForItem).toHaveBeenCalledTimes(2);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledTimes(2);
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenLastCalledWith(OWNER.userId);
+  });
+
+  it('invalidates plan caches when event enqueue fails after Secretary may have cancelled', async () => {
+    const fixture = seedApproved('signal-enqueue-failure');
+    const preview = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-previews`, {
+      workKind: 'record',
+      durationMinutes: 60,
+      preferredWindows: [WINDOW],
+      idempotencyKey: 'route-schedule-preview-enqueue-failure-001',
+    });
+    await dispatch('POST', `/workspace/schedule-previews/${preview.body.data.preview.previewKey}/confirm`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-confirm-enqueue-failure-001',
+    });
+    mockInvalidateContentDerivedCaches.mockClear();
+    scheduleRouteFaults.failEventEnqueue = true;
+
+    const response = await dispatch('POST', `/workspace/items/${fixture.itemId}/schedule-cancel`, undefined, OWNER.userId, OWNER.tenantId, {
+      'x-idempotency-key': 'route-schedule-cancel-enqueue-failure-001',
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCHEDULE_SIGNAL_RECONCILIATION_QUEUE_UNAVAILABLE',
+      details: {
+        recovery: 'retry_cancellation',
+        secretaryCancellationMayBeCommitted: true,
+        publicationExecution: 'not_performed',
+      },
+    });
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledWith(OWNER.userId);
+    expect(mockDismissContentFilmingSignalsForItem).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorName: 'Error',
+        errorFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/),
+        bindingId: expect.any(Number),
+      }),
+      'Content schedule signal reconciliation enqueue failed',
+    );
   });
 
   it('projects provider failure and tenant-safe recovery through workspace list and detail APIs', async () => {
@@ -197,7 +376,11 @@ describe('canonical Content schedule routes', () => {
         recoverable: true,
         publicationExecution: 'not_performed',
       },
-      nextAction: { action: 'recover_work_schedule', label: 'Recover work block' },
+      nextAction: {
+        action: 'recover_work_schedule',
+        label: 'Recover work block',
+        reason: 'The private work block is confirmed in Secretary, but provider sync needs attention.',
+      },
     });
     expect(detail.body.data.item).toMatchObject({
       id: fixture.itemId,
@@ -276,7 +459,7 @@ function seedApproved(suffix: string): { itemId: number; artifactId: number; pri
 async function dispatch(
   method: string,
   path: string,
-  body: Record<string, unknown> = {},
+  body: Record<string, unknown> | undefined = {},
   userId: number | undefined = OWNER.userId,
   tenantId: number | undefined = OWNER.tenantId,
   headers: Record<string, string> = {},

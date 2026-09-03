@@ -24,6 +24,7 @@
  *   settled replay never authorizes provider work again.
  */
 
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { recordOperatorAlert } from './operator-alerts';
@@ -159,8 +160,11 @@ function toUtcDay(value: Date): string {
 }
 
 /** Missing plan rows fail closed: zero credits, zero daily cap. */
-export function getPlanCreditPolicy(plan: BillingPlan): PlanCreditPolicy {
-  const db = getDb();
+export function getPlanCreditPolicy(
+  plan: BillingPlan,
+  database: Database.Database = getDb(),
+): PlanCreditPolicy {
+  const db = database;
   const row = db
     .prepare('SELECT monthly_ai_credits, daily_ai_credit_cap FROM plan_configs WHERE plan_id = ?')
     .get(plan) as { monthly_ai_credits: number | null; daily_ai_credit_cap: number | null } | undefined;
@@ -246,8 +250,12 @@ const LOT_WITH_CAPTURED_SQL = `
  * Usable lots in debit order: monthly, then promotional by nearest expiry,
  * then purchased FIFO by grant time.
  */
-function listUsableLots(userId: number, nowIso: string): LotRow[] {
-  const db = getDb();
+function listUsableLots(
+  userId: number,
+  nowIso: string,
+  database: Database.Database = getDb(),
+): LotRow[] {
+  const db = database;
   const rows = db
     .prepare(
       `${LOT_WITH_CAPTURED_SQL}
@@ -263,16 +271,23 @@ function listUsableLots(userId: number, nowIso: string): LotRow[] {
   return rows.filter((row) => row.credits_granted - row.captured > 0);
 }
 
-function sumActiveReservations(userId: number): number {
-  const db = getDb();
+function sumActiveReservations(
+  userId: number,
+  database: Database.Database = getDb(),
+): number {
+  const db = database;
   const row = db
     .prepare(`SELECT COALESCE(SUM(credits), 0) AS total FROM ai_credit_reservations WHERE user_id = ? AND state = 'reserved'`)
     .get(userId) as { total: number };
   return row.total;
 }
 
-function sumDailyCommittedCredits(userId: number, day: string): number {
-  const db = getDb();
+function sumDailyCommittedCredits(
+  userId: number,
+  day: string,
+  database: Database.Database = getDb(),
+): number {
+  const db = database;
   const row = db
     .prepare(
       `SELECT COALESCE(SUM(credits), 0) AS total
@@ -311,8 +326,12 @@ export function getAiCreditWallet(userId: number, plan: BillingPlan, now: Date =
   };
 }
 
-function getReservationByReplayScope(userId: number, scope: AiCreditReplayScope): ReservationRow | undefined {
-  const db = getDb();
+function getReservationByReplayScope(
+  userId: number,
+  scope: AiCreditReplayScope,
+  database: Database.Database = getDb(),
+): ReservationRow | undefined {
+  const db = database;
   return db
     .prepare(
       `SELECT * FROM ai_credit_reservations
@@ -323,8 +342,11 @@ function getReservationByReplayScope(userId: number, scope: AiCreditReplayScope)
     | undefined;
 }
 
-export function getAiCreditReservation(reservationId: number): AiCreditReservation | null {
-  const db = getDb();
+export function getAiCreditReservation(
+  reservationId: number,
+  database: Database.Database = getDb(),
+): AiCreditReservation | null {
+  const db = database;
   const row = db.prepare('SELECT * FROM ai_credit_reservations WHERE id = ?').get(reservationId) as
     | ReservationRow
     | undefined;
@@ -342,8 +364,8 @@ export function reserveAiCredits(input: {
   operationClass: AiCreditOperationClass;
   replayScope: AiCreditReplayScope;
   now?: Date;
-}): ReserveAiCreditsResult {
-  const db = getDb();
+}, database: Database.Database = getDb()): ReserveAiCreditsResult {
+  const db = database;
   const now = input.now ?? new Date();
   const cost = getAiCreditOperationCost(input.operationClass);
   const packCtaEligible = input.plan === 'pro' || input.plan === 'max';
@@ -357,13 +379,13 @@ export function reserveAiCredits(input: {
         plan: input.plan,
       };
     }
-    const existing = getReservationByReplayScope(input.userId, input.replayScope);
+    const existing = getReservationByReplayScope(input.userId, input.replayScope, db);
     if (existing) {
       return { kind: 'replay', reservation: mapReservation(existing) };
     }
-    const policy = getPlanCreditPolicy(input.plan);
+    const policy = getPlanCreditPolicy(input.plan, db);
     const day = toUtcDay(now);
-    const dailyUsed = sumDailyCommittedCredits(input.userId, day);
+    const dailyUsed = sumDailyCommittedCredits(input.userId, day, db);
     if (dailyUsed + cost > policy.dailyCapCredits) {
       return {
         kind: 'daily_cap_exceeded',
@@ -372,9 +394,9 @@ export function reserveAiCredits(input: {
         dailyRemainingCredits: Math.max(0, policy.dailyCapCredits - dailyUsed),
       };
     }
-    const lots = listUsableLots(input.userId, toIso(now));
+    const lots = listUsableLots(input.userId, toIso(now), db);
     const usable = lots.reduce((total, lot) => total + (lot.credits_granted - lot.captured), 0);
-    const available = Math.max(0, usable - sumActiveReservations(input.userId));
+    const available = Math.max(0, usable - sumActiveReservations(input.userId, db));
     if (cost > available) {
       return {
         kind: 'insufficient_credits',
@@ -401,7 +423,7 @@ export function reserveAiCredits(input: {
         toIso(now),
         day,
       );
-    const reservation = getAiCreditReservation(Number(inserted.lastInsertRowid));
+    const reservation = getAiCreditReservation(Number(inserted.lastInsertRowid), db);
     if (!reservation) {
       throw new Error('ai-credit-ledger: reservation insert readback failed');
     }
@@ -421,8 +443,8 @@ export function captureAiCreditReservation(input: {
   reservationId: number;
   resultRef?: string;
   now?: Date;
-}): SettleAiCreditsResult {
-  const db = getDb();
+}, database: Database.Database = getDb()): SettleAiCreditsResult {
+  const db = database;
   const now = input.now ?? new Date();
   const tx = db.transaction((): SettleAiCreditsResult => {
     const row = db.prepare('SELECT * FROM ai_credit_reservations WHERE id = ?').get(input.reservationId) as
@@ -450,7 +472,7 @@ export function captureAiCreditReservation(input: {
         metadata: { reservationId: row.id, userId: row.user_id, existingCaptureRows: existingCaptures.n },
         suspectedArea: 'billing',
         userImpact: 'none_capture_refused',
-      });
+      }, db);
       return { kind: 'capture_conflict', reservationId: row.id };
     }
     let remainingToCapture = row.credits;
@@ -458,7 +480,7 @@ export function captureAiCreditReservation(input: {
       `INSERT INTO ai_credit_captures (reservation_id, lot_id, user_id, credits, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     );
-    for (const lot of listUsableLots(row.user_id, toIso(now))) {
+    for (const lot of listUsableLots(row.user_id, toIso(now), db)) {
       if (remainingToCapture <= 0) break;
       const lotRemaining = lot.credits_granted - lot.captured;
       const take = Math.min(lotRemaining, remainingToCapture);
@@ -487,9 +509,9 @@ export function captureAiCreditReservation(input: {
         metadata: { reservationId: row.id, userId: row.user_id, shortfall: remainingToCapture },
         suspectedArea: 'billing',
         userImpact: 'none_user_kept_result',
-      });
+      }, db);
     }
-    const reservation = getAiCreditReservation(row.id);
+    const reservation = getAiCreditReservation(row.id, db);
     if (!reservation) {
       throw new Error('ai-credit-ledger: capture readback failed');
     }
@@ -502,8 +524,8 @@ export function captureAiCreditReservation(input: {
 export function releaseAiCreditReservation(input: {
   reservationId: number;
   now?: Date;
-}): SettleAiCreditsResult {
-  const db = getDb();
+}, database: Database.Database = getDb()): SettleAiCreditsResult {
+  const db = database;
   const now = input.now ?? new Date();
   const tx = db.transaction((): SettleAiCreditsResult => {
     const row = db.prepare('SELECT * FROM ai_credit_reservations WHERE id = ?').get(input.reservationId) as
@@ -517,7 +539,7 @@ export function releaseAiCreditReservation(input: {
       toIso(now),
       row.id,
     );
-    const reservation = getAiCreditReservation(row.id);
+    const reservation = getAiCreditReservation(row.id, db);
     if (!reservation) {
       throw new Error('ai-credit-ledger: release readback failed');
     }
@@ -864,8 +886,8 @@ export function listAiCreditReservationsForRequest(input: {
   userId: number;
   workload: string;
   requestHash: string;
-}): AiCreditReservation[] {
-  const db = getDb();
+}, database: Database.Database = getDb()): AiCreditReservation[] {
+  const db = database;
   const rows = db
     .prepare(
       `SELECT * FROM ai_credit_reservations

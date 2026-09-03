@@ -5,14 +5,23 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { logger } from '../../utils/logger';
 import {
+  ContentAgencyIntegrityError,
+  ContentAgencyPackageVersionError,
+  ContentAgencyValidationError,
   buildContentAgencyBrief,
   buildContentAgencyCompetitorStudy,
   buildContentAgencyPackage,
   buildContentAgencyTranscriptStudy,
   evaluateContentAgencyPackage,
+  getContentAgencyPackage,
   getContentAgencyProject,
   handoffContentAgencyPackageToWorkspace,
+  normalizeContentAgencyArtifactId,
   persistContentAgencyArtifact,
+  persistContentAgencyPackageBundle,
+  type ContentAgencyBriefInput,
+  type ContentAgencyCompetitorInput,
+  type ContentAgencyPackageInput,
   validateContentAgencyReadiness,
 } from '../../services/content-agency';
 import {
@@ -22,6 +31,7 @@ import {
 } from '../../services/content-agency-rules';
 import { assertTenantScope, requireMutationScope, TenantScopeError } from '../../services/tenant-scope';
 import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 
 interface ContentAgencyResponseContract {
   tenantId: number | null;
@@ -68,12 +78,16 @@ function routeContentAgencyTenantId(
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.map((item) => String(item ?? '').trim()).filter(Boolean)
+    ? value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim().slice(0, 2_048))
+      .filter(Boolean)
+      .slice(0, 64)
     : [];
 }
 
 function uniqueStrings(...values: unknown[]): string[] {
-  return [...new Set(values.flatMap(toStringArray))];
+  return [...new Set(values.flatMap(toStringArray))].slice(0, 64);
 }
 
 function buildResponseContract(
@@ -87,32 +101,124 @@ function buildResponseContract(
   const nextBestActions = uniqueStrings(artifact?.nextBestActions, brief?.nextBestActions, fallback.nextBestActions);
   const sourceTrace = uniqueStrings(artifact?.sourceTrace, brief?.sourceTrace, fallback.sourceTrace);
   const referenceIds = uniqueStrings(artifact?.referenceIds, fallback.referenceIds);
-  const confidence = Number.isFinite(Number(artifact?.confidence ?? brief?.confidence ?? fallback.confidence))
-    ? Number(artifact?.confidence ?? brief?.confidence ?? fallback.confidence)
+  const rawConfidence = artifact?.confidence ?? brief?.confidence ?? fallback.confidence;
+  const confidence = typeof rawConfidence === 'number' && Number.isFinite(rawConfidence)
+    ? Math.max(0, Math.min(1, rawConfidence))
     : 0.5;
+  const rawQualityScore = quality?.score ?? artifact?.qualityScore ?? fallback.qualityScore;
+  const visibilityScope = artifact?.visibilityScope ?? brief?.visibilityScope ?? fallback.visibilityScope;
+  const platform = artifact?.platform ?? brief?.platform ?? fallback.platform;
+  const format = artifact?.format ?? brief?.format ?? fallback.format;
+  const objective = artifact?.objective ?? brief?.objective ?? brief?.goal ?? fallback.objective;
+  const tenantId = artifact?.tenantId ?? brief?.tenantId ?? fallback.tenantId;
+  const userId = artifact?.userId ?? brief?.userId ?? fallback.userId;
 
   return {
-    tenantId: Number.isFinite(Number(artifact?.tenantId ?? brief?.tenantId ?? fallback.tenantId))
-      ? Number(artifact?.tenantId ?? brief?.tenantId ?? fallback.tenantId)
+    tenantId: Number.isSafeInteger(tenantId) && Number(tenantId) > 0
+      ? Number(tenantId)
       : null,
-    userId: Number.isFinite(Number(artifact?.userId ?? brief?.userId ?? fallback.userId))
-      ? Number(artifact?.userId ?? brief?.userId ?? fallback.userId)
+    userId: Number.isSafeInteger(userId) && Number(userId) > 0
+      ? Number(userId)
       : null,
-    visibilityScope: String(artifact?.visibilityScope ?? brief?.visibilityScope ?? fallback.visibilityScope ?? 'user_private'),
-    platform: String(artifact?.platform ?? brief?.platform ?? fallback.platform ?? 'generic'),
-    format: String(artifact?.format ?? brief?.format ?? fallback.format ?? 'generic_script'),
-    objective: String(artifact?.objective ?? brief?.objective ?? brief?.goal ?? fallback.objective ?? 'Build a useful content package'),
+    visibilityScope: visibilityScope === 'tenant_shared' || visibilityScope === 'platform_internal'
+      ? visibilityScope
+      : 'user_private',
+    platform: typeof platform === 'string' && platform.trim() ? platform.trim().slice(0, 80) : 'generic',
+    format: typeof format === 'string' && format.trim() ? format.trim().slice(0, 80) : 'generic_script',
+    objective: typeof objective === 'string' && objective.trim()
+      ? objective.trim().slice(0, 600)
+      : 'Build a useful content package',
     sourceTrace,
     referenceIds,
     confidence,
-    qualityScore: Number.isFinite(Number(quality?.score ?? (artifact as any)?.qualityScore ?? fallback.qualityScore))
-      ? Number(quality?.score ?? (artifact as any)?.qualityScore ?? fallback.qualityScore)
+    qualityScore: typeof rawQualityScore === 'number' && Number.isFinite(rawQualityScore)
+      ? Math.max(0, Math.min(100, rawQualityScore))
       : null,
     warnings,
     blockers,
-    reviewRequired: Boolean((artifact?.reviewRequired ?? fallback.reviewRequired) ?? (blockers.length > 0 || warnings.length > 0)),
+    reviewRequired: typeof artifact?.reviewRequired === 'boolean'
+      ? artifact.reviewRequired
+      : typeof fallback.reviewRequired === 'boolean'
+        ? fallback.reviewRequired
+        : blockers.length > 0 || warnings.length > 0,
     nextBestActions,
   };
+}
+
+function requireAgencyRequestBody(value: unknown, field = 'body'): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ContentAgencyValidationError(`${field} must be an object.`, field);
+  }
+  return value as Record<string, unknown>;
+}
+
+function bindPrivateAgencyScope(
+  value: unknown,
+  userId: number,
+  tenantId: number,
+  field: string,
+): Record<string, unknown> {
+  const input = value === undefined || value === null
+    ? {}
+    : requireAgencyRequestBody(value, field);
+  if (input.userId !== undefined && input.userId !== userId) {
+    throw new ContentAgencyValidationError(`${field}.userId must match the authenticated user.`, `${field}.userId`);
+  }
+  if (input.tenantId !== undefined && input.tenantId !== tenantId) {
+    throw new ContentAgencyValidationError(`${field}.tenantId must match the authenticated tenant.`, `${field}.tenantId`);
+  }
+  if (input.visibilityScope !== undefined && input.visibilityScope !== 'user_private') {
+    throw new ContentAgencyValidationError(
+      `${field}.visibilityScope must be user_private on public Content Agency routes.`,
+      `${field}.visibilityScope`,
+    );
+  }
+  return {
+    ...input,
+    userId,
+    tenantId,
+    visibilityScope: 'user_private',
+  };
+}
+
+function safeAgencyErrorFields(error: unknown): { errorName: string; errorCode: string } {
+  const candidate = error as { name?: unknown; code?: unknown } | null;
+  const safeToken = (value: unknown, fallback: string): string => (
+    typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.:-]{0,79}$/.test(value)
+      ? value
+      : fallback
+  );
+  return {
+    errorName: safeToken(candidate?.name, typeof error),
+    errorCode: safeToken(candidate?.code, 'CONTENT_AGENCY_INTERNAL_ERROR'),
+  };
+}
+
+function sendContentAgencyFailure(
+  res: Response,
+  error: unknown,
+  context: { operation: string; userId: number; tenantId: number },
+  publicMessage: string,
+): void {
+  if (error instanceof ContentAgencyValidationError) {
+    sendError(res, error.code, error.message, error.status, { field: error.field });
+    return;
+  }
+  if (error instanceof ContentAgencyIntegrityError) {
+    sendError(res, error.code, error.message, error.status);
+    return;
+  }
+  if (error instanceof ContentAgencyPackageVersionError) {
+    sendError(res, error.code, error.message, error.status);
+    return;
+  }
+  logger.error({
+    ...safeAgencyErrorFields(error),
+    operation: context.operation,
+    userId: context.userId,
+    tenantId: context.tenantId,
+  }, 'content agency operation failed');
+  sendInternalError(res, publicMessage);
 }
 
 export function registerContentAgencyRoutes(
@@ -141,16 +247,21 @@ export function registerContentAgencyRoutes(
     if (tenantId == null) return;
 
     try {
-      const brief = buildContentAgencyBrief({
-        ...(req.body && typeof req.body === 'object' ? req.body : {}),
+      const brief = buildContentAgencyBrief(bindPrivateAgencyScope(
+        requireAgencyRequestBody(req.body),
         userId,
         tenantId,
-      });
+        'body',
+      ) as unknown as ContentAgencyBriefInput);
       persistContentAgencyArtifact('brief', brief);
       sendSuccess(res, { brief, contract: buildResponseContract(brief) }, { status: 201 });
     } catch (err) {
-      logger.error({ err, userId, tenantId }, 'content agency brief failed');
-      sendInternalError(res, 'Failed to create content agency brief');
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_brief_create', userId, tenantId },
+        'Failed to create content agency brief',
+      );
     }
   }));
 
@@ -162,22 +273,33 @@ export function registerContentAgencyRoutes(
     if (tenantId == null) return;
 
     try {
-      const fallbackBrief = buildContentAgencyBrief({
-        ...(req.body?.brief && typeof req.body.brief === 'object' ? req.body.brief : {}),
+      const body = bindPrivateAgencyScope(
+        requireAgencyRequestBody(req.body),
         userId,
         tenantId,
-      });
+        'body',
+      );
+      const fallbackBrief = buildContentAgencyBrief(bindPrivateAgencyScope(
+        body.brief,
+        userId,
+        tenantId,
+        'brief',
+      ) as unknown as ContentAgencyBriefInput);
       const study = buildContentAgencyCompetitorStudy({
         userId,
         tenantId,
-        brief: req.body?.brief ?? fallbackBrief,
-        competitors: Array.isArray(req.body?.competitors) ? req.body.competitors : [],
+        brief: fallbackBrief,
+        competitors: body.competitors as ContentAgencyCompetitorInput['competitors'],
       });
       persistContentAgencyArtifact('competitor_study', study);
       sendSuccess(res, { study, contract: buildResponseContract(study, buildResponseContract(fallbackBrief)) }, { status: 201 });
     } catch (err) {
-      logger.error({ err, userId, tenantId }, 'content agency competitor study failed');
-      sendInternalError(res, 'Failed to create competitor study');
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_competitor_study', userId, tenantId },
+        'Failed to create competitor study',
+      );
     }
   }));
 
@@ -189,22 +311,33 @@ export function registerContentAgencyRoutes(
     if (tenantId == null) return;
 
     try {
-      const fallbackBrief = buildContentAgencyBrief({
-        ...(req.body?.brief && typeof req.body.brief === 'object' ? req.body.brief : {}),
+      const body = bindPrivateAgencyScope(
+        requireAgencyRequestBody(req.body),
         userId,
         tenantId,
-      });
+        'body',
+      );
+      const fallbackBrief = buildContentAgencyBrief(bindPrivateAgencyScope(
+        body.brief,
+        userId,
+        tenantId,
+        'brief',
+      ) as unknown as ContentAgencyBriefInput);
       const study = buildContentAgencyTranscriptStudy({
         userId,
         tenantId,
-        transcript: typeof req.body?.transcript === 'string' ? req.body.transcript : '',
-        title: typeof req.body?.title === 'string' ? req.body.title : null,
+        transcript: body.transcript as string | null | undefined,
+        title: body.title as string | null | undefined,
       });
       persistContentAgencyArtifact('transcript_study', study);
       sendSuccess(res, { study, contract: buildResponseContract(study, buildResponseContract(fallbackBrief)) }, { status: 201 });
     } catch (err) {
-      logger.error({ err, userId, tenantId }, 'content agency transcript study failed');
-      sendInternalError(res, 'Failed to create transcript study');
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_transcript_study', userId, tenantId },
+        'Failed to create transcript study',
+      );
     }
   }));
 
@@ -216,54 +349,31 @@ export function registerContentAgencyRoutes(
     if (tenantId == null) return;
 
     try {
+      const body = bindPrivateAgencyScope(
+        requireAgencyRequestBody(req.body),
+        userId,
+        tenantId,
+        'body',
+      );
       const pkg = buildContentAgencyPackage({
-        ...(req.body && typeof req.body === 'object' ? req.body : {}),
+        ...body,
+        brief: bindPrivateAgencyScope(body.brief, userId, tenantId, 'brief'),
         userId,
         tenantId,
-      });
-      persistContentAgencyArtifact('package', pkg);
-      persistContentAgencyArtifact('compliance_review', {
-        id: `${pkg.id}_compliance`,
-        userId,
-        tenantId,
-        visibilityScope: pkg.visibilityScope,
-        platform: pkg.platform,
-        format: pkg.format,
-        status: pkg.complianceReview.status,
-        complianceReview: pkg.complianceReview,
-        warnings: pkg.complianceReview.warnings,
-        blockers: pkg.complianceReview.blockers,
-        sourceTrace: pkg.sourceTrace,
-      });
-      persistContentAgencyArtifact('experiment_run', {
-        id: `${pkg.id}_experiment`,
-        userId,
-        tenantId,
-        visibilityScope: pkg.visibilityScope,
-        platform: pkg.platform,
-        format: pkg.format,
-        status: 'planned',
-        experimentPlan: pkg.experimentPlan,
-        warnings: [],
-        blockers: [],
-        sourceTrace: pkg.sourceTrace,
-      });
-      persistContentAgencyArtifact('quality_review', {
-        id: `${pkg.id}_quality`,
-        userId,
-        tenantId,
-        visibilityScope: pkg.visibilityScope,
-        platform: pkg.platform,
-        format: pkg.format,
-        quality: pkg.quality,
-        warnings: pkg.quality.warnings,
-        blockers: pkg.quality.blockers,
-        sourceTrace: pkg.sourceTrace,
-      });
-      sendSuccess(res, { package: pkg, contract: buildResponseContract(pkg) }, { status: 201 });
+      } as unknown as ContentAgencyPackageInput);
+      const persistence = persistContentAgencyPackageBundle(pkg);
+      sendSuccess(res, {
+        package: persistence.package,
+        contract: buildResponseContract(persistence.package),
+        mutation: { created: persistence.created, replayed: !persistence.created },
+      }, { status: persistence.created ? 201 : 200 });
     } catch (err) {
-      logger.error({ err, userId, tenantId }, 'content agency package failed');
-      sendInternalError(res, 'Failed to create content agency package');
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_package_create', userId, tenantId },
+        'Failed to create content agency package',
+      );
     }
   }));
 
@@ -275,9 +385,12 @@ export function registerContentAgencyRoutes(
     if (tenantId == null) return;
 
     try {
-      const pkg = req.body?.package;
-      if (!pkg || typeof pkg !== 'object') {
-        sendError(res, 'VALIDATION', 'package is required', 400);
+      const body = requireAgencyRequestBody(req.body);
+      const submittedPackage = requireAgencyRequestBody(body.package, 'package');
+      const packageId = normalizeContentAgencyArtifactId(submittedPackage.id, 'package.id');
+      const pkg = getContentAgencyPackage({ userId, tenantId, id: packageId });
+      if (!pkg) {
+        sendError(res, 'NOT_FOUND', 'Content agency package not found', 404);
         return;
       }
       const quality = evaluateContentAgencyPackage({
@@ -304,45 +417,59 @@ export function registerContentAgencyRoutes(
       });
       sendSuccess(res, { quality, contract: buildResponseContract({ ...pkg, quality }, buildResponseContract(pkg)) });
     } catch (err) {
-      logger.error({ err, userId, tenantId }, 'content agency score failed');
-      sendInternalError(res, 'Failed to score content agency package');
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_score', userId, tenantId },
+        'Failed to score content agency package',
+      );
     }
   }));
 
   router.get('/agency/projects/:id', asyncHandler(async (req, res: Response) => {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
-    const projectId = req.params.id;
-    if (!ensureValidContentRouteScope(res, userId, 'content_agency_project_get', { projectId })) return;
+    if (!ensureValidContentRouteScope(res, userId, 'content_agency_project_get')) return;
     const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_project_get');
     if (tenantId == null) return;
 
-    const project = getContentAgencyProject({
-      userId,
-      tenantId,
-      id: projectId,
-    });
-    if (!project) {
-      sendError(res, 'NOT_FOUND', 'Content agency project not found', 404);
-      return;
+    try {
+      const projectId = normalizeContentAgencyArtifactId(req.params.id, 'projectId');
+      const project = getContentAgencyProject({
+        userId,
+        tenantId,
+        id: projectId,
+      });
+      if (!project) {
+        sendError(res, 'NOT_FOUND', 'Content agency project not found', 404);
+        return;
+      }
+      sendSuccess(res, { ...project, contract: buildResponseContract(project.artifact) });
+    } catch (err) {
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_project_get', userId, tenantId },
+        'Failed to read content agency project',
+      );
     }
-    sendSuccess(res, { ...project, contract: buildResponseContract(project.artifact) });
   }));
 
   router.post('/agency/projects/:id/handoff', asyncHandler(async (req, res: Response) => {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
-    const projectId = req.params.id;
-    if (!ensureValidContentRouteScope(res, userId, 'content_agency_workspace_handoff', { projectId })) return;
+    if (!ensureValidContentRouteScope(res, userId, 'content_agency_workspace_handoff')) return;
     const tenantId = routeContentAgencyTenantId(authReq, res, 'content_agency_workspace_handoff', 'content_domain_objects');
     if (tenantId == null) return;
 
     try {
+      const projectId = normalizeContentAgencyArtifactId(req.params.id, 'projectId');
       const result = handoffContentAgencyPackageToWorkspace({
         userId,
         tenantId,
         packageId: projectId,
       });
+      if (result.changed) invalidateContentDerivedCaches(userId);
       if (result.status === 'not_found') {
         sendError(res, 'NOT_FOUND', 'Content agency package not found', 404, {
           handoff: result,
@@ -391,8 +518,12 @@ export function registerContentAgencyRoutes(
         sendError(res, err.code, err.message, err.status, err.details);
         return;
       }
-      logger.error({ err, userId, tenantId, projectId }, 'content agency workspace handoff failed');
-      sendInternalError(res, 'Failed to add content agency package to the Content workspace');
+      sendContentAgencyFailure(
+        res,
+        err,
+        { operation: 'content_agency_workspace_handoff', userId, tenantId },
+        'Failed to add content agency package to the Content workspace',
+      );
     }
   }));
 }

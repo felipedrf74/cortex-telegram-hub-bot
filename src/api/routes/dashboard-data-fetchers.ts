@@ -544,7 +544,22 @@ export const CONTENT_DASHBOARD_STAGE_TRACKING = {
   scripted: { tracking: 'derived', source: 'artifact_phase' },
   filmed: { tracking: 'not_tracked', reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED' },
   editing: { tracking: 'not_tracked', reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED' },
-  published: { tracking: 'derived', source: 'production_state' },
+  published: {
+    tracking: 'internal_workflow_state',
+    source: 'production_state',
+    semantics: 'internal_production_state_only',
+    publicationEvidence: false,
+  },
+} as const;
+
+export const CONTENT_DASHBOARD_PUBLICATION_TRACKING = {
+  availability: 'unavailable',
+  reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+  publicationExecution: 'not_supported',
+} as const;
+
+export const CONTENT_DASHBOARD_BUCKET_SEMANTICS = {
+  published: 'internal_production_state_only',
 } as const;
 
 export async function fetchContent(userId: number, tenantId: number) {
@@ -561,6 +576,9 @@ export async function fetchContent(userId: number, tenantId: number) {
     return {
       pipelineCount,
       stageTracking: CONTENT_DASHBOARD_STAGE_TRACKING,
+      bucketSemantics: CONTENT_DASHBOARD_BUCKET_SEMANTICS,
+      publicationTracking: CONTENT_DASHBOARD_PUBLICATION_TRACKING,
+      publicationExecution: 'not_supported' as const,
       nextDeadline: null,
       status: 'ready' as const,
       warningCodes: [],
@@ -569,8 +587,11 @@ export async function fetchContent(userId: number, tenantId: number) {
   } catch {
     return buildUnavailableSection(
       {
-        pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 },
+        pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: null },
         stageTracking: CONTENT_DASHBOARD_STAGE_TRACKING,
+        bucketSemantics: CONTENT_DASHBOARD_BUCKET_SEMANTICS,
+        publicationTracking: CONTENT_DASHBOARD_PUBLICATION_TRACKING,
+        publicationExecution: 'not_supported' as const,
         nextDeadline: null,
       },
       ['CONTENT_UNAVAILABLE'],

@@ -83,11 +83,12 @@ export function loadPromptWithVars(name: string, vars: Record<string, string>): 
 
 /**
  * Load the canonical creator-config.md and return its content.
- * This is the SINGLE source of truth for creator identity, voice,
- * worldview, SFX/EDIT library, content accuracy rules, and output format.
+ * This is a neutral compatibility template, not a source of creator identity.
+ * Runtime creator identity and style come from authenticated tenant-scoped
+ * profile and Voice DNA rows.
  *
- * Content prompts (content.md, topic-generation.md) reference this via
- * the {{CREATOR_CONFIG}} placeholder.
+ * Only prompts that explicitly carry {{CREATOR_CONFIG}} opt into this block;
+ * current shared Content prompts intentionally do not.
  */
 export function loadCreatorConfig(): string {
   return loadPrompt('creator-config');

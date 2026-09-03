@@ -31,7 +31,9 @@ function fakeDb(rows: {
 describe('content topic context helpers', () => {
   it('parses positive ids and non-empty text defensively', () => {
     expect(parseOptionalPositiveId('42')).toBe(42);
-    expect(parseOptionalPositiveId(12.6)).toBe(13);
+    expect(parseOptionalPositiveId(12.6)).toBeNull();
+    expect(parseOptionalPositiveId('12suffix')).toBeNull();
+    expect(parseOptionalPositiveId(Number.MAX_SAFE_INTEGER + 1)).toBeNull();
     expect(parseOptionalPositiveId(0)).toBeNull();
     expect(parseOptionalPositiveId(-7)).toBeNull();
     expect(parseOptionalPositiveId(Number.POSITIVE_INFINITY)).toBeNull();
@@ -42,6 +44,26 @@ describe('content topic context helpers', () => {
     expect(parseOptionalPositiveId(undefined)).toBeNull();
     expect(parseOptionalText('  hook  ')).toBe('hook');
     expect(parseOptionalText('   ')).toBeNull();
+    expect(parseOptionalText('x'.repeat(6), 5)).toBeNull();
+  });
+
+  it('omits oversized stored prompt context instead of truncating an unsafe tail', () => {
+    const context = resolveScriptTopicContext(
+      7,
+      { topicFeedbackId: 11 },
+      fakeDb({
+        feedback: {
+          id: 11,
+          niche: 'n'.repeat(161),
+          hook_idea: 'h'.repeat(501),
+          why_now: 'w'.repeat(1_001),
+          angle_tag: 'a'.repeat(161),
+          source_job: 's'.repeat(121),
+        },
+      }),
+    );
+
+    expect(context).toEqual({ topicFeedbackId: 11 });
   });
 
   it('merges first-party topic feedback rows with explicit request overrides', () => {

@@ -1324,7 +1324,11 @@ function normalizeContentDecision(
   const candidate = firstRenderable([detail, subline, headline]);
   if (!candidate) return null;
   if (/bloco de conte[uú]do|content block/i.test(candidate)) {
-    return localizePT(language, 'Janela de gravação preservada', 'Filming window preserved');
+    // The daily impact text does not carry workKind or schedule-authority
+    // fields here. Keep the normalization neutral instead of turning any
+    // Content block (write, edit, review, proposal, etc.) into protected
+    // filming time.
+    return localizePT(language, 'Bloco de trabalho de conteúdo', 'Content work block');
   }
   if (/conte[uú]do alinhado|content aligned/i.test(candidate)) {
     return null;

@@ -48,15 +48,19 @@ vi.mock('../../src/services/content-intelligence', () => ({
   localizeFilmingRecommendation: vi.fn((recommendation: any) => recommendation),
 }));
 
-vi.mock('../../src/services/content-radar-preferences', () => ({
-  getContentRadarPreferences: vi.fn(() => ({ topics: ['running'], updatedAt: '2026-04-24T10:00:00.000Z' })),
-  setContentRadarPreferences: vi.fn((userId: number, topics: string[], tenantId?: number) => ({
-    topics,
-    userId,
-    tenantId,
-    updatedAt: '2026-04-24T10:05:00.000Z',
-  })),
-}));
+vi.mock('../../src/services/content-radar-preferences', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/content-radar-preferences')>();
+  return {
+    ...actual,
+    getContentRadarPreferences: vi.fn(() => ({ topics: ['running'], updatedAt: '2026-04-24T10:00:00.000Z' })),
+    setContentRadarPreferences: vi.fn((userId: number, topics: string[], tenantId?: number) => ({
+      topics,
+      userId,
+      tenantId,
+      updatedAt: '2026-04-24T10:05:00.000Z',
+    })),
+  };
+});
 
 vi.mock('../../src/services/content-topic-secretary-sync', () => ({
   cleanupContentTopicSecretaryArtifacts: vi.fn(async () => ({ taskDeleted: true, calendarDeleted: true, errors: [] })),
@@ -335,7 +339,7 @@ describe('content topic routes', () => {
     const read = await dispatch('GET', '/radar-preferences', {}, 77);
     expect(read.response.statusCode).toBe(200);
     expect(read.response.body.data.topics).toEqual(['running']);
-    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 77);
+    expect(getContentRadarPreferences).toHaveBeenCalledWith(77, 77, { strict: true });
     expect(read.ensureValidScope).toHaveBeenCalledWith(expect.anything(), 77, 'content_route_radar_preferences_read');
 
     const write = await dispatch('PUT', '/radar-preferences', { topics: ['hybrid', 'product'] }, 77);
@@ -349,7 +353,24 @@ describe('content topic routes', () => {
     const { response } = await dispatch('PUT', '/radar-preferences', { topics: ['valid', 7] }, 77);
 
     expect(response.statusCode).toBe(400);
-    expect(response.body.error.code).toBe('BAD_REQUEST');
+    expect(response.body.error.code).toBe('CONTENT_RADAR_PREFERENCES_INVALID');
+    expect(setContentRadarPreferences).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [['a,b']],
+    [['']],
+    [[`line\nbreak`]],
+    [['x'.repeat(121)]],
+    [Array.from({ length: 13 }, (_, index) => `topic-${index}`)],
+  ])('rejects noncanonical or over-limit radar preferences before mutation: %j', async (topics) => {
+    const { response } = await dispatch('PUT', '/radar-preferences', { topics }, 77);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_RADAR_PREFERENCES_INVALID',
+      details: { maxTopics: 12, maxTopicChars: 120 },
+    });
     expect(setContentRadarPreferences).not.toHaveBeenCalled();
   });
 
@@ -378,6 +399,28 @@ describe('content topic routes', () => {
     }));
   });
 
+  it('rejects partial, zero, and over-limit topic page sizes', async () => {
+    const partial = await dispatch('GET', '/topics?limit=20items', {}, 77);
+    const zero = await dispatch('GET', '/topics?limit=0', {}, 77);
+    const overLimit = await dispatch('GET', '/topics?limit=501', {}, 77);
+
+    expect(partial.response.statusCode).toBe(400);
+    expect(zero.response.statusCode).toBe(400);
+    expect(overLimit.response.statusCode).toBe(400);
+    expect(getTopics).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid or inverted topic deadline ranges', async () => {
+    const impossible = await dispatch('GET', '/topics?from=2026-02-30', {}, 77);
+    const inverted = await dispatch('GET', '/topics?from=2026-04-26&to=2026-04-25', {}, 77);
+    const ambiguousBoolean = await dispatch('GET', '/topics?scheduledOnly=yes', {}, 77);
+
+    expect(impossible.response.statusCode).toBe(400);
+    expect(inverted.response.statusCode).toBe(400);
+    expect(ambiguousBoolean.response.statusCode).toBe(400);
+    expect(getTopics).not.toHaveBeenCalled();
+  });
+
   it('creates topics, trims title, and invalidates dashboard coordination caches', async () => {
     const { response } = await dispatch('POST', '/topics', {
       title: '  Race recap  ',
@@ -398,6 +441,16 @@ describe('content topic routes', () => {
     expect(updateTopic).not.toHaveBeenCalled();
     expect(response.body.data.topic.schedule_semantics).toBe('workspace_deadline');
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
+  });
+
+  it.each([null, []])('rejects non-object topic create and update bodies %j', async (body) => {
+    const create = await dispatch('POST', '/topics', body as any, 77);
+    const update = await dispatch('PATCH', '/topics/11', body as any, 77);
+
+    expect(create.response.statusCode).toBe(400);
+    expect(update.response.statusCode).toBe(400);
+    expect(addTopic).not.toHaveBeenCalled();
+    expect(updateTopic).not.toHaveBeenCalled();
   });
 
   it('captures a date-only canonical deadline without claiming a Secretary task exists', async () => {
@@ -427,9 +480,19 @@ describe('content topic routes', () => {
     const update = await dispatch('PATCH', '/topics/11', {
       scheduledDate: '25/04/2026',
     }, 77);
+    const impossibleDate = await dispatch('POST', '/topics', {
+      title: 'Impossible deadline',
+      scheduledDate: '2026-02-30',
+    }, 77);
+    const impossibleDateTime = await dispatch('POST', '/topics', {
+      title: 'Impossible datetime',
+      scheduledDateTime: '2026-02-30T09:00:00',
+    }, 77);
 
     expect(create.response.statusCode).toBe(400);
     expect(update.response.statusCode).toBe(400);
+    expect(impossibleDate.response.statusCode).toBe(400);
+    expect(impossibleDateTime.response.statusCode).toBe(400);
     expect(addTopic).not.toHaveBeenCalled();
     expect(updateTopic).not.toHaveBeenCalled();
   });
@@ -531,6 +594,59 @@ describe('content topic routes', () => {
     expect(addTopic).toHaveBeenCalledWith(77, 'Header keyed', expect.objectContaining({
       provenance: { source: null, clientRequestId: 'hdr-456' },
     }));
+  });
+
+  it('treats a present but empty legacy Idempotency-Key header as absent', async () => {
+    const { response } = await dispatch(
+      'POST',
+      '/topics',
+      { title: 'Legacy empty header' },
+      77,
+      77,
+      makeEnsureValidScope(),
+      { 'idempotency-key': '' },
+    );
+
+    expect(response.statusCode).toBe(201);
+    const options = vi.mocked(addTopic).mock.calls[0]?.[2];
+    expect(options).toBeDefined();
+    expect(Object.prototype.hasOwnProperty.call(options ?? {}, 'provenance')).toBe(false);
+  });
+
+  it('rejects ambiguous or control-bearing optional topic replay keys', async () => {
+    const conflicting = await dispatch(
+      'POST',
+      '/topics',
+      { title: 'Conflicting key', idempotencyKey: 'body-key-001' },
+      77,
+      77,
+      makeEnsureValidScope(),
+      { 'idempotency-key': 'header-key-001' },
+    );
+    const controlBearing = await dispatch('POST', '/topics', {
+      title: 'Control key',
+      idempotencyKey: 'topic-key\u0085hidden',
+    }, 77);
+    const wrongType = await dispatch('POST', '/topics', {
+      title: 'Numeric key',
+      idempotencyKey: 123,
+    }, 77);
+
+    expect(conflicting.response.statusCode).toBe(409);
+    expect(conflicting.response.body.error.code).toBe('CONTENT_IDEMPOTENCY_KEY_CONFLICT');
+    expect(controlBearing.response.statusCode).toBe(400);
+    expect(wrongType.response.statusCode).toBe(400);
+    expect(addTopic).not.toHaveBeenCalled();
+  });
+
+  it('rejects partial and unsafe topic path identifiers', async () => {
+    const partial = await dispatch('PATCH', '/topics/11suffix', { title: 'Should not update' }, 77);
+    const unsafe = await dispatch('DELETE', `/topics/${Number.MAX_SAFE_INTEGER + 1}`, {}, 77);
+
+    expect(partial.response.statusCode).toBe(400);
+    expect(unsafe.response.statusCode).toBe(400);
+    expect(updateTopic).not.toHaveBeenCalled();
+    expect(deleteTopic).not.toHaveBeenCalled();
   });
 
   it('updates and deletes only through scoped topic mutations', async () => {

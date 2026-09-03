@@ -12,7 +12,10 @@ import { getCurrentRequestId, generateRequestId } from '../utils/request-context
 import { config } from '../config';
 import {
   contentEngineApiBaseUrl,
-  parseForwardedAiBudgetError,
+  ForwardedAiBudgetError,
+  ForwardedContentPolicyError,
+  ForwardedLocalInferenceError,
+  parseForwardedContentEngineError,
 } from '../services/content-engine';
 import {
   AiBudgetError,
@@ -26,33 +29,30 @@ import {
   contentScopeParams,
   contentScopePredicate,
   ensureContentTenantScopeColumns,
+  platformOrSystemSeedContentScopePredicate,
 } from '../services/content-tenant-scope';
 
 const CONTENT_ENGINE_URL = contentEngineApiBaseUrl();
 const BOOKS_SIGNAL_PRODUCER_VERSION = 'books-command.v1';
 
+function safeErrorName(error: unknown): string {
+  const candidate = error instanceof Error && error.name ? error.name : typeof error;
+  return candidate.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80) || 'UnknownError';
+}
+
 // ── Seed books (extracted on first deploy if table is empty) ────────
 
-// Seed books: read from config_seed_books table (migration 055).
-// Falls back to hardcoded array if the table doesn't exist yet.
+// Seed books are explicit operator configuration. Missing/empty config must
+// stay neutral instead of projecting a founder-specific canon globally.
 function getSeedBooks(): Array<{ title: string; author: string }> {
   try {
     const rows = getDb().prepare(
       'SELECT title, author FROM config_seed_books WHERE enabled = 1'
     ).all() as Array<{ title: string; author: string }>;
     if (rows.length > 0) return rows;
-  } catch { /* table doesn't exist yet */ }
-  // Fallback (kept for safety until migration is confirmed applied)
-  return [
-    { title: 'The Law', author: 'Frédéric Bastiat' },
-    { title: 'Economics in One Lesson', author: 'Henry Hazlitt' },
-    { title: 'Human Action', author: 'Ludwig von Mises' },
-    { title: 'The Road to Serfdom', author: 'Friedrich Hayek' },
-    { title: 'Democracy: The God That Failed', author: 'Hans-Hermann Hoppe' },
-    { title: 'Anatomy of the State', author: 'Murray Rothbard' },
-  ];
+  } catch { /* table does not exist yet */ }
+  return [];
 }
-const SEED_BOOKS = getSeedBooks();
 
 /**
  * Seed default books if the library is empty. Called on startup.
@@ -60,36 +60,71 @@ const SEED_BOOKS = getSeedBooks();
  */
 export function seedBooksIfEmpty(sendAlert: (msg: string) => Promise<void>): void {
   const db = getDb();
-  const count = (db.prepare('SELECT COUNT(*) as cnt FROM book_library').get() as any)?.cnt ?? 0;
+  const seedBooks = getSeedBooks();
+  if (seedBooks.length === 0) return;
+  ensureContentTenantScopeColumns(db);
+  const count = (db.prepare(`
+    SELECT COUNT(*) AS cnt
+      FROM book_library
+     WHERE ${platformOrSystemSeedContentScopePredicate()}
+  `).get() as { cnt?: number } | undefined)?.cnt ?? 0;
   if (count > 0) return;
 
-  logger.info('Seeding book library with %d default books', SEED_BOOKS.length);
+  logger.info('Seeding book library with %d configured books', seedBooks.length);
+  const systemScope = contentScopeForInsert(0, 0, 'platform_internal', 'pending');
 
   // Insert all as 'pending', then extract sequentially in background
-  for (const book of SEED_BOOKS) {
+  for (const book of seedBooks) {
     db.prepare(`
-      INSERT OR IGNORE INTO book_library (title, author, extraction_status, user_id)
-      VALUES (?, ?, 'pending', 0)
-    `).run(book.title, book.author);
+      INSERT INTO book_library (
+        title, author, extraction_status, user_id, owner_scope, tenant_id,
+        owner_user_id, visibility_scope, lifecycle_state, scope_status,
+        created_by, updated_by, audit_metadata_json
+      )
+      VALUES (?, ?, 'pending', 0, 'system', ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, title, author) DO UPDATE SET
+        extraction_status = 'pending',
+        owner_scope = 'system',
+        tenant_id = excluded.tenant_id,
+        owner_user_id = excluded.owner_user_id,
+        visibility_scope = excluded.visibility_scope,
+        lifecycle_state = excluded.lifecycle_state,
+        scope_status = excluded.scope_status,
+        updated_by = excluded.updated_by
+    `).run(
+      book.title,
+      book.author,
+      systemScope.tenantId,
+      systemScope.ownerUserId,
+      systemScope.visibilityScope,
+      systemScope.lifecycleState,
+      systemScope.scopeStatus,
+      systemScope.createdBy,
+      systemScope.updatedBy,
+      systemScope.auditMetadataJson,
+    );
   }
 
   // Fire-and-forget extraction
   (async () => {
-    for (let i = 0; i < SEED_BOOKS.length; i++) {
-      const book = SEED_BOOKS[i];
+    for (let i = 0; i < seedBooks.length; i++) {
+      const book = seedBooks[i];
       try {
-        await sendAlert(`📚 Seeding book library... ${i + 1}/${SEED_BOOKS.length} <b>${escapeHtml(book.title)}</b> — extracting...`);
+        await sendAlert(`📚 Seeding book library... ${i + 1}/${seedBooks.length} <b>${escapeHtml(book.title)}</b> — extracting...`);
         await extractAndStore(book.title, book.author);
         // 10s delay between books to avoid rate limits
-        if (i < SEED_BOOKS.length - 1) {
+        if (i < seedBooks.length - 1) {
           await new Promise(r => setTimeout(r, 10_000));
         }
       } catch (err: any) {
-        logger.error({ err, book: book.title }, 'Failed to seed book');
+        logger.error(
+          { errorName: safeErrorName(err), titleLength: book.title.length },
+          'Failed to seed book',
+        );
       }
     }
-    await sendAlert(`📚 Book library seeding complete! ${SEED_BOOKS.length} books extracted.`);
-  })().catch(err => logger.error({ err }, 'Book seeding failed'));
+    await sendAlert(`📚 Book library seeding complete! ${seedBooks.length} books extracted.`);
+  })().catch(err => logger.error({ errorName: safeErrorName(err) }, 'Book seeding failed'));
 }
 
 // ── Core extraction function ────────────────────────────────────────
@@ -99,10 +134,265 @@ type PortalBookScope = {
   tenantId?: number;
 };
 
+type BookExtractionOptions = {
+  abortSignal?: AbortSignal;
+  creatorContext?: BookCreatorContext;
+};
+
+type BookCreatorContext = {
+  creatorProfile: string | undefined;
+  language: ReturnType<typeof normalizeContentOutputLanguage>;
+};
+
+type ExtractedBookFramework = {
+  name: string;
+  description: string;
+  use_in_content?: string;
+  pillar?: string;
+};
+
+type ExtractedBookIdea = {
+  idea: string;
+  context?: string;
+  use_when?: string;
+};
+
+type ExtractedBook = {
+  title: string;
+  author: string;
+  core_thesis: string;
+  key_frameworks: ExtractedBookFramework[];
+  quotable_ideas: ExtractedBookIdea[];
+  pillar_mapping: string[];
+  counter_arguments: string[];
+  related_thinkers: string[];
+  personal_notes: string[];
+};
+
+type BookExtractionResult = {
+  book: ExtractedBook;
+  degraded: boolean;
+  warnings: Array<'research_source_unavailable'>;
+};
+
+class ContentBookExtractionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status: 400 | 403 | 409 | 422 | 429 | 502 | 503 = 502,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'ContentBookExtractionError';
+  }
+}
+
+function resolveBookCreatorContext(scope?: PortalBookScope): BookCreatorContext {
+  if (!scope) {
+    return { creatorProfile: undefined, language: 'en-US' };
+  }
+
+  try {
+    const profile = getContentCreatorProfile(scope.userId, scope.tenantId);
+    const language = normalizeContentOutputLanguage(profile.languagePreference, 'en-US');
+    const creatorProfile = [
+      'Creator scope: current authenticated Nexus Hub user only.',
+      `Primary output language: ${language}.`,
+      profile.audience ? `Audience: ${profile.audience}` : null,
+      profile.pillars.length > 0 ? `Pillars: ${profile.pillars.join(', ')}` : null,
+      profile.niches.length > 0 ? `Niches: ${profile.niches.join(', ')}` : null,
+      profile.voiceRules.length > 0 ? `Voice rules: ${profile.voiceRules.join('; ')}` : null,
+      profile.contentGoals.length > 0 ? `Content goals: ${profile.contentGoals.join('; ')}` : null,
+    ].filter((line): line is string => Boolean(line)).join('\n').slice(0, 6000);
+    return { creatorProfile, language };
+  } catch (err) {
+    logger.warn(
+      { errorName: safeErrorName(err), userId: scope.userId, tenantId: scope.tenantId },
+      'Book extraction creator profile unavailable',
+    );
+    throw new ContentBookExtractionError(
+      'CONTENT_CREATOR_PROFILE_UNAVAILABLE',
+      'The creator profile is temporarily unavailable. No book extraction was started.',
+      503,
+      { retryable: true },
+    );
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readBoundedString(value: unknown, maxLength: number, allowFormattingWhitespace = false): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text.length < 1 || text.length > maxLength) return null;
+  const unsupported = allowFormattingWhitespace
+    ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/
+    : /[\u0000-\u001f\u007f-\u009f]/;
+  return unsupported.test(text) ? null : text;
+}
+
+function readOptionalBoundedString(
+  value: unknown,
+  maxLength: number,
+  allowFormattingWhitespace = false,
+): string | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  return readBoundedString(value, maxLength, allowFormattingWhitespace);
+}
+
+function readBoundedStringArray(
+  value: unknown,
+  maxItems: number,
+  maxLength: number,
+  allowFormattingWhitespace = false,
+): string[] | null {
+  if (!Array.isArray(value) || value.length > maxItems) return null;
+  const values = value.map((item) => readBoundedString(item, maxLength, allowFormattingWhitespace));
+  return values.every((item): item is string => item !== null) ? values : null;
+}
+
+function readBookFrameworks(value: unknown): ExtractedBookFramework[] | null {
+  if (!Array.isArray(value) || value.length > 6) return null;
+  const frameworks: ExtractedBookFramework[] = [];
+  for (const item of value) {
+    if (!isPlainRecord(item)) return null;
+    const name = readBoundedString(item.name, 500);
+    const description = readBoundedString(item.description, 4_000, true);
+    const useInContent = readOptionalBoundedString(item.use_in_content, 4_000, true);
+    const pillar = readOptionalBoundedString(item.pillar, 500);
+    if (!name || !description || useInContent === null || pillar === null) return null;
+    frameworks.push({
+      name,
+      description,
+      ...(useInContent ? { use_in_content: useInContent } : {}),
+      ...(pillar ? { pillar } : {}),
+    });
+  }
+  return frameworks;
+}
+
+function readBookIdeas(value: unknown): ExtractedBookIdea[] | null {
+  if (!Array.isArray(value) || value.length > 8) return null;
+  const ideas: ExtractedBookIdea[] = [];
+  for (const item of value) {
+    if (!isPlainRecord(item)) return null;
+    const idea = readBoundedString(item.idea, 4_000, true);
+    const context = readOptionalBoundedString(item.context, 4_000, true);
+    const useWhen = readOptionalBoundedString(item.use_when, 4_000, true);
+    if (!idea || context === null || useWhen === null) return null;
+    ideas.push({
+      idea,
+      ...(context ? { context } : {}),
+      ...(useWhen ? { use_when: useWhen } : {}),
+    });
+  }
+  return ideas;
+}
+
+function invalidBookOutput(): ContentBookExtractionError {
+  return new ContentBookExtractionError(
+    'CONTENT_BOOK_OUTPUT_INVALID',
+    'Content Engine book extraction response did not match the bounded contract.',
+    502,
+    { retryable: true },
+  );
+}
+
+function validateBookExtractionResponse(
+  value: unknown,
+  expectedTitle: string,
+  expectedAuthor: string,
+): BookExtractionResult {
+  if (
+    !isPlainRecord(value)
+    || typeof value.duration_ms !== 'number'
+    || !Number.isSafeInteger(value.duration_ms)
+    || value.duration_ms < 0
+  ) {
+    throw invalidBookOutput();
+  }
+  if (!isPlainRecord(value.quality_report)) throw invalidBookOutput();
+  const warnings = readBoundedStringArray(value.quality_report.warnings, 10, 500);
+  if (!warnings) throw invalidBookOutput();
+  const allowedWarnings = new Set([
+    'prompt_over_budget',
+    'prompt_section_truncated',
+    'no_source_data',
+    'research_source_unavailable',
+    'provider_output_invalid',
+  ]);
+  if (warnings.some((warning) => !allowedWarnings.has(warning))) throw invalidBookOutput();
+  if (warnings.includes('no_source_data')) {
+    throw new ContentBookExtractionError(
+      'CONTENT_BOOK_SOURCE_UNAVAILABLE',
+      'Book extraction requires usable research sources before it can be stored.',
+      503,
+      { retryable: true },
+    );
+  }
+  if (warnings.includes('provider_output_invalid')) throw invalidBookOutput();
+  if (!isPlainRecord(value.book)) throw invalidBookOutput();
+
+  const responseTitle = readBoundedString(value.book.title, 500);
+  const responseAuthor = readBoundedString(value.book.author, 500);
+  const coreThesis = readBoundedString(value.book.core_thesis, 4_000, true);
+  const keyFrameworks = readBookFrameworks(value.book.key_frameworks);
+  const quotableIdeas = readBookIdeas(value.book.quotable_ideas);
+  const pillarMapping = readBoundedStringArray(value.book.pillar_mapping, 20, 500);
+  const counterArguments = readBoundedStringArray(value.book.counter_arguments, 20, 4_000, true);
+  const relatedThinkers = readBoundedStringArray(value.book.related_thinkers, 20, 500);
+  const personalNotes = readBoundedStringArray(value.book.personal_notes, 20, 4_000, true);
+  if (
+    !responseTitle
+    || !responseAuthor
+    || responseTitle !== expectedTitle.trim()
+    || responseAuthor !== expectedAuthor.trim()
+    || !coreThesis
+    || !keyFrameworks
+    || !quotableIdeas
+    || !pillarMapping
+    || !counterArguments
+    || !relatedThinkers
+    || !personalNotes
+  ) {
+    throw invalidBookOutput();
+  }
+  const sourceWarnings: Array<'research_source_unavailable'> = warnings.includes('research_source_unavailable')
+    ? ['research_source_unavailable']
+    : [];
+  return {
+    book: {
+      title: responseTitle,
+      author: responseAuthor,
+      core_thesis: coreThesis,
+      key_frameworks: keyFrameworks,
+      quotable_ideas: quotableIdeas,
+      pillar_mapping: pillarMapping,
+      counter_arguments: counterArguments,
+      related_thinkers: relatedThinkers,
+      personal_notes: personalNotes,
+    },
+    degraded: sourceWarnings.length > 0,
+    warnings: sourceWarnings,
+  };
+}
+
+function throwIfBookExtractionAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : Object.assign(new Error('content_book_client_disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+}
+
 function bookWhere(title: string, author: string, scope?: PortalBookScope): { clause: string; params: unknown[] } {
   if (!scope) {
     return {
-      clause: 'title = ? AND author = ?',
+      clause: `title = ? AND author = ? AND ${platformOrSystemSeedContentScopePredicate()}`,
       params: [title, author],
     };
   }
@@ -112,9 +402,34 @@ function bookWhere(title: string, author: string, scope?: PortalBookScope): { cl
   };
 }
 
-async function extractAndStore(title: string, author: string, scope?: PortalBookScope): Promise<void> {
+function restoreCancelledBookExtraction(
+  db: ReturnType<typeof getDb>,
+  where: { clause: string; params: unknown[] },
+): void {
+  // The public add/retry paths place the row in `pending` before extraction.
+  // Restore only our still-in-flight marker so a concurrent terminal update is
+  // never overwritten by a late disconnect handler.
+  db.prepare(`
+    UPDATE book_library
+       SET extraction_status = 'pending',
+           updated_at = datetime('now')
+     WHERE ${where.clause}
+       AND extraction_status = 'extracting'
+  `).run(...where.params);
+}
+
+async function extractAndStore(
+  title: string,
+  author: string,
+  scope?: PortalBookScope,
+  options: BookExtractionOptions = {},
+): Promise<Omit<BookExtractionResult, 'book'>> {
+  throwIfBookExtractionAborted(options.abortSignal);
+  // Resolve private creator context before changing lifecycle state. A failed
+  // profile read must leave both new and existing library rows untouched.
+  const { creatorProfile, language } = options.creatorContext ?? resolveBookCreatorContext(scope);
   const db = getDb();
-  if (scope) ensureContentTenantScopeColumns(db);
+  ensureContentTenantScopeColumns(db);
   const where = bookWhere(title, author, scope);
 
   // Mark as extracting
@@ -123,68 +438,91 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 180_000);
+    const abortFromCaller = (): void => controller.abort(
+      options.abortSignal?.reason instanceof Error
+        ? options.abortSignal.reason
+        : Object.assign(new Error('content_book_client_disconnected'), {
+          name: 'AbortError',
+          code: 'CONTENT_CLIENT_DISCONNECTED',
+        }),
+    );
+    if (options.abortSignal?.aborted) abortFromCaller();
+    else options.abortSignal?.addEventListener('abort', abortFromCaller, { once: true });
+    const timer = setTimeout(() => controller.abort(Object.assign(
+      new Error('content_book_extraction_timed_out'),
+      { name: 'TimeoutError', code: 'CONTENT_BOOK_EXTRACTION_TIMEOUT' },
+    )), 180_000);
 
     // Distributed tracing: propagate the current requestId so the Python
     // content-engine can log it. Same pattern as engineFetch in
     // services/content-engine.ts. (Quarter audit item.)
     const requestId = getCurrentRequestId() || generateRequestId();
-    let creatorProfile: string | undefined;
-    let language: ReturnType<typeof normalizeContentOutputLanguage> = 'en-US';
-    if (scope) {
-      try {
-        const profile = getContentCreatorProfile(scope.userId, scope.tenantId);
-        language = normalizeContentOutputLanguage(profile.languagePreference, language);
-        creatorProfile = [
-          'Creator scope: current authenticated Nexus Hub user only.',
-          `Primary output language: ${language}.`,
-          profile.audience ? `Audience: ${profile.audience}` : null,
-          profile.pillars.length > 0 ? `Pillars: ${profile.pillars.join(', ')}` : null,
-          profile.niches.length > 0 ? `Niches: ${profile.niches.join(', ')}` : null,
-          profile.voiceRules.length > 0 ? `Voice rules: ${profile.voiceRules.join('; ')}` : null,
-          profile.contentGoals.length > 0 ? `Content goals: ${profile.contentGoals.join('; ')}` : null,
-        ].filter((line): line is string => Boolean(line)).join('\n').slice(0, 6000);
-      } catch (err) {
-        logger.warn({ err, userId: scope.userId, tenantId: scope.tenantId },
-          'Book extraction creator profile unavailable; using neutral content-engine prompt');
+    let data: unknown;
+    try {
+      const resp = await fetch(`${CONTENT_ENGINE_URL}/books/extract`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Request-Id': requestId,
+          'X-Internal-Secret': config.contentEngine.internalApiSecret,
+        },
+        body: JSON.stringify({
+          title,
+          author,
+          creator_profile: creatorProfile,
+          language,
+          user_id: scope?.userId,
+          tenant_id: scope?.tenantId ?? scope?.userId,
+          internal_attribution_token: scope
+            ? createInternalAttributionToken({
+                userId: scope.userId,
+                tenantId: scope.tenantId ?? scope.userId,
+                category: 'content_engine_book',
+              }) ?? undefined
+            : undefined,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const body = (await resp.text()).slice(0, 8_192);
+        const forwardedError = parseForwardedContentEngineError(resp, body);
+        if (forwardedError instanceof ForwardedAiBudgetError) throw forwardedError;
+        if (forwardedError instanceof ForwardedContentPolicyError) {
+          throw new ContentBookExtractionError(
+            forwardedError.code,
+            forwardedError.publicMessage,
+            forwardedError.status,
+            { ...forwardedError.details },
+          );
+        }
+        if (forwardedError instanceof ForwardedLocalInferenceError) {
+          if (forwardedError.code === 'ACCOUNT_DELETION_IN_PROGRESS') throw forwardedError;
+          throw new ContentBookExtractionError(
+            forwardedError.code,
+            forwardedError.publicMessage,
+            forwardedError.status,
+            { ...forwardedError.details },
+          );
+        }
+        throw new ContentBookExtractionError(
+          'CONTENT_BOOK_ENGINE_REQUEST_FAILED',
+          'Content Engine book extraction is temporarily unavailable.',
+          503,
+          { retryable: true },
+        );
       }
+      data = await resp.json() as unknown;
+    } finally {
+      clearTimeout(timer);
+      options.abortSignal?.removeEventListener('abort', abortFromCaller);
     }
-    const resp = await fetch(`${CONTENT_ENGINE_URL}/books/extract`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Request-Id': requestId,
-        'X-Internal-Secret': config.contentEngine.internalApiSecret,
-      },
-      body: JSON.stringify({
-        title,
-        author,
-        creator_profile: creatorProfile,
-        language,
-        user_id: scope?.userId,
-        tenant_id: scope?.tenantId ?? scope?.userId,
-        internal_attribution_token: scope
-          ? createInternalAttributionToken({
-              userId: scope.userId,
-              tenantId: scope.tenantId ?? scope.userId,
-              category: 'content_engine_book',
-            }) ?? undefined
-          : undefined,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw parseForwardedAiBudgetError(resp, body)
-        ?? new Error(`Content Engine ${resp.status}: ${body}`);
-    }
-
-    const data = await resp.json() as any;
-    const book = data.book;
+    throwIfBookExtractionAborted(options.abortSignal);
+    const extraction = validateBookExtractionResponse(data, title, author);
+    const { book } = extraction;
 
     // Store extracted knowledge
+    throwIfBookExtractionAborted(options.abortSignal);
     db.prepare(`
       UPDATE book_library SET
         core_thesis = ?,
@@ -208,6 +546,7 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
     // tenant/user-scoped portal books into that bus until shared context has
     // tenant namespaces for content reference signals.
     if (!scope) {
+      throwIfBookExtractionAborted(options.abortSignal);
       writeGovernedSignal({
         source_agent: 'book-extractor',
         signal_type: 'book_knowledge',
@@ -229,8 +568,13 @@ async function extractAndStore(title: string, author: string, scope?: PortalBook
       });
     }
 
-    logger.info({ title, author }, 'Book extracted and stored');
+    logger.info({ titleLength: title.length, authorLength: author.length }, 'Book extracted and stored');
+    return { degraded: extraction.degraded, warnings: extraction.warnings };
   } catch (err: any) {
+    if (options.abortSignal?.aborted) {
+      restoreCancelledBookExtraction(db, where);
+      throwIfBookExtractionAborted(options.abortSignal);
+    }
     db.prepare(`UPDATE book_library SET extraction_status = 'failed' WHERE ${where.clause}`)
       .run(...where.params);
     throw err;
@@ -243,9 +587,18 @@ export async function handleAddBookFromPortal(
   title: string,
   author: string,
   scope?: PortalBookScope,
-): Promise<{ ok: boolean; message: string }> {
+  options: BookExtractionOptions = {},
+): Promise<{
+  ok: boolean;
+  message: string;
+  code?: string;
+  status?: 400 | 403 | 409 | 422 | 429 | 502 | 503;
+  details?: Record<string, unknown>;
+  degraded?: boolean;
+  warnings?: Array<'research_source_unavailable'>;
+}> {
   const db = getDb();
-  if (scope) ensureContentTenantScopeColumns(db);
+  ensureContentTenantScopeColumns(db);
   const where = bookWhere(title, author, scope);
   const existing = db.prepare(`SELECT extraction_status FROM book_library WHERE ${where.clause}`)
     .get(...where.params) as any;
@@ -254,67 +607,124 @@ export async function handleAddBookFromPortal(
     return { ok: true, message: `${title} already in library` };
   }
 
-  if (scope) {
-    const insertScope = contentScopeForInsert(scope.userId, scope.tenantId, 'user_private', 'pending');
-    db.prepare(`
-      INSERT INTO book_library (
-        title, author, extraction_status, user_id, owner_scope, tenant_id,
-        owner_user_id, visibility_scope, lifecycle_state, scope_status,
-        created_by, updated_by, audit_metadata_json
-      )
-      VALUES (?, ?, 'pending', ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id, title, author) DO UPDATE SET
-        extraction_status = 'pending',
-        tenant_id = excluded.tenant_id,
-        owner_user_id = excluded.owner_user_id,
-        visibility_scope = excluded.visibility_scope,
-        lifecycle_state = excluded.lifecycle_state,
-        scope_status = excluded.scope_status,
-        updated_by = excluded.updated_by,
-        updated_at = datetime('now')
-    `).run(
-      title,
-      author,
-      scope.userId,
-      insertScope.tenantId,
-      insertScope.ownerUserId,
-      insertScope.visibilityScope,
-      insertScope.lifecycleState,
-      insertScope.scopeStatus,
-      insertScope.createdBy,
-      insertScope.updatedBy,
-      insertScope.auditMetadataJson,
-    );
-  } else {
-    db.prepare(`
-      INSERT INTO book_library (title, author, extraction_status)
-      VALUES (?, ?, 'pending')
-      ON CONFLICT(title, author) DO UPDATE SET extraction_status = 'pending'
-    `).run(title, author);
-  }
-
   try {
+    // Profile availability is an admission prerequisite. Resolve it before
+    // quota reservation and before inserting or changing any library row.
+    const creatorContext = resolveBookCreatorContext(scope);
+    const startExtraction = async (): Promise<Omit<BookExtractionResult, 'book'>> => {
+      throwIfBookExtractionAborted(options.abortSignal);
+      if (scope) {
+        const insertScope = contentScopeForInsert(scope.userId, scope.tenantId, 'user_private', 'pending');
+        db.prepare(`
+          INSERT INTO book_library (
+            title, author, extraction_status, user_id, owner_scope, tenant_id,
+            owner_user_id, visibility_scope, lifecycle_state, scope_status,
+            created_by, updated_by, audit_metadata_json
+          )
+          VALUES (?, ?, 'pending', ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_id, title, author) DO UPDATE SET
+            extraction_status = 'pending',
+            tenant_id = excluded.tenant_id,
+            owner_user_id = excluded.owner_user_id,
+            visibility_scope = excluded.visibility_scope,
+            lifecycle_state = excluded.lifecycle_state,
+            scope_status = excluded.scope_status,
+            updated_by = excluded.updated_by,
+            updated_at = datetime('now')
+        `).run(
+          title,
+          author,
+          scope.userId,
+          insertScope.tenantId,
+          insertScope.ownerUserId,
+          insertScope.visibilityScope,
+          insertScope.lifecycleState,
+          insertScope.scopeStatus,
+          insertScope.createdBy,
+          insertScope.updatedBy,
+          insertScope.auditMetadataJson,
+        );
+      } else {
+        const systemScope = contentScopeForInsert(0, 0, 'platform_internal', 'pending');
+        db.prepare(`
+          INSERT INTO book_library (
+            title, author, extraction_status, user_id, owner_scope, tenant_id,
+            owner_user_id, visibility_scope, lifecycle_state, scope_status,
+            created_by, updated_by, audit_metadata_json
+          )
+          VALUES (?, ?, 'pending', 0, 'system', ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_id, title, author) DO UPDATE SET
+            extraction_status = 'pending',
+            owner_scope = 'system',
+            tenant_id = excluded.tenant_id,
+            owner_user_id = excluded.owner_user_id,
+            visibility_scope = excluded.visibility_scope,
+            lifecycle_state = excluded.lifecycle_state,
+            scope_status = excluded.scope_status,
+            updated_by = excluded.updated_by,
+            updated_at = datetime('now')
+        `).run(
+          title,
+          author,
+          systemScope.tenantId,
+          systemScope.ownerUserId,
+          systemScope.visibilityScope,
+          systemScope.lifecycleState,
+          systemScope.scopeStatus,
+          systemScope.createdBy,
+          systemScope.updatedBy,
+          systemScope.auditMetadataJson,
+        );
+      }
+
+      return extractAndStore(title, author, scope, { ...options, creatorContext });
+    };
+
+    let extraction: Omit<BookExtractionResult, 'book'>;
     if (scope) {
       const runId = getCurrentRequestId() || generateRequestId();
-      await withAiBudgetReservation({
+      extraction = await withAiBudgetReservation({
         userId: scope.userId,
         requestSource: 'interactive',
         baseCategory: 'content_engine_book',
         jobName: 'content_book_extract',
         runId,
-      }, () => extractAndStore(title, author, scope));
+      }, startExtraction);
     } else {
       // Unsigned platform seed/operator work acquires the shared system
       // reservation inside /internal/ai-complete. Do not hold a second outer
       // system lock here without a signed re-entry token.
-      await extractAndStore(title, author);
+      extraction = await startExtraction();
     }
-    return { ok: true, message: `${title} extracted successfully` };
+    return {
+      ok: true,
+      message: `${title} extracted successfully`,
+      ...(extraction.degraded
+        ? { degraded: true, warnings: extraction.warnings }
+        : {}),
+    };
   } catch (err: any) {
+    if (options.abortSignal?.aborted) {
+      throw options.abortSignal.reason instanceof Error
+        ? options.abortSignal.reason
+        : Object.assign(new Error('content_book_client_disconnected'), {
+          name: 'AbortError',
+          code: 'CONTENT_CLIENT_DISCONNECTED',
+        });
+    }
     if (err instanceof AiBudgetError || err?.name === 'AiBudgetError' || err?.name === 'ForwardedAiBudgetError') {
       throw err;
     }
-    return { ok: false, message: `Extraction failed: ${err.message?.slice(0, 100)}` };
+    const knownError = err instanceof ContentBookExtractionError;
+    return {
+      ok: false,
+      code: knownError ? err.code : 'CONTENT_BOOK_EXTRACTION_FAILED',
+      status: knownError ? err.status : 503,
+      details: knownError ? err.details : { retryable: true },
+      message: `Extraction failed: ${knownError
+        ? err.message
+        : 'Book extraction is temporarily unavailable.'}`,
+    };
   }
 }
 
@@ -338,7 +748,7 @@ export async function handleAddBook(ctx: Context): Promise<void> {
   if (parts.length < 2 || !parts[0] || !parts[1]) {
     await ctx.reply(
       '📚 <b>Usage:</b> <code>/addbook Title | Author</code>\n\n' +
-      'Example: <code>/addbook The Law | Frédéric Bastiat</code>',
+      'Example: <code>/addbook Example Book | Example Author</code>',
       { parse_mode: 'HTML' },
     );
     return;
@@ -393,8 +803,14 @@ export async function handleAddBook(ctx: Context): Promise<void> {
     await ctx.reply(msg, { parse_mode: 'HTML' });
   } catch (err: any) {
     clearInterval(typingInterval);
-    logger.error({ err, title, author }, 'Book extraction failed');
-    await ctx.reply(`❌ Extraction failed: ${escapeHtml(err.message?.slice(0, 100) || 'Unknown error')}`, { parse_mode: 'HTML' });
+    logger.error(
+      { errorName: safeErrorName(err), titleLength: title.length, authorLength: author.length },
+      'Book extraction failed',
+    );
+    const publicMessage = err instanceof ContentBookExtractionError
+      ? err.message
+      : 'Book extraction is temporarily unavailable.';
+    await ctx.reply(`❌ Extraction failed: ${escapeHtml(publicMessage)}`, { parse_mode: 'HTML' });
   }
 }
 
@@ -405,7 +821,7 @@ export async function handleBookNote(ctx: Context): Promise<void> {
   if (parts.length < 2 || !parts[0] || !parts[1]) {
     await ctx.reply(
       '📝 <b>Usage:</b> <code>/booknote Book Title | Your note</code>\n\n' +
-      'Example: <code>/booknote The Law | Legal plunder is the perfect analogy for Brazilian tax system</code>',
+      'Example: <code>/booknote Example Book | Apply this framework to the next tutorial</code>',
       { parse_mode: 'HTML' },
     );
     return;

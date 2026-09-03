@@ -4,10 +4,27 @@ import { DateTime } from 'luxon';
 import { claimChatActionRunForExecution, updateChatActionRun, type ChatActionRunStatus } from '../../chat-action-run-store';
 import { upsertPendingChatAction } from '../../chat-action-state';
 import type { ChatActionPlan, ChatPlannerInput, ChatPlanStep } from '../../chat/types';
-import { buildContentAgencyPackage, getContentAgencyProject, handoffContentAgencyPackageToWorkspace, persistContentAgencyArtifact } from '../../content-agency';
+import {
+  CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION,
+  ContentAgencyIntegrityError,
+  ContentAgencyPackageVersionError,
+  ContentAgencyValidationError,
+  buildContentAgencyBrief,
+  buildContentAgencyPackage,
+  getContentAgencyPackage,
+  handoffContentAgencyPackageToWorkspace,
+  persistContentAgencyPackageBundle,
+  type ContentAgencyBriefInput,
+  type ContentAgencyPackageInput,
+} from '../../content-agency';
 import { createContentTopicCompatibility, getContentTopicCompatibility } from '../../content-topic-workspace-compat';
 import { createContentSchedulePreview } from '../../content-workspace-scheduling';
-import { claimActionRunForStepExecution, reconciliationPendingResult, updateClaimedActionRun } from '../../chat/executor/helpers';
+import {
+  claimActionRunForStepExecution,
+  reconciliationPendingResult,
+  replayDuplicateClaimedActionRun,
+  updateClaimedActionRun,
+} from '../../chat/executor/helpers';
 import { getDb } from '../../database';
 import {
   getContentWorkspaceItem,
@@ -15,8 +32,9 @@ import {
   type ContentWorkspaceItem,
   type ContentWorkspaceScope,
 } from '../../content-workspace';
-import { normalizeContentPipelineTransitionStage, type ContentPipelineTransitionStage } from './pipeline-stage';
+import { normalizeContentPipelineTransitionStage } from './pipeline-stage';
 import { missingContentAgencySlots } from './helpers';
+import { invalidateContentDerivedCaches } from '../../cache-coherence-registry';
 
 export function executeContentAgencyStep(
   step: ChatPlanStep,
@@ -24,7 +42,7 @@ export function executeContentAgencyStep(
   input: ChatPlannerInput,
   persistRuns: boolean,
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
-  const args = step.args as any;
+  const rawArgs: unknown = step.args;
   const claim = persistRuns ? claimChatActionRunForExecution({
     userId: input.userId,
     tenantId: input.tenantId,
@@ -34,7 +52,7 @@ export function executeContentAgencyStep(
     provider: 'nexus',
     actionType: step.action,
     risk: step.risk,
-    request: step.args,
+    request: rawArgs,
     nowIso: plan.createdAt,
   }) : null;
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
@@ -43,8 +61,27 @@ export function executeContentAgencyStep(
   if (claim && !claim.acquired && claim.row.status === 'verified_pending') {
     return { step, status: 'verified_pending', result: claim.row.result_json ? JSON.parse(claim.row.result_json) : { replayed: true } };
   }
+  if (claim && !claim.acquired) {
+    const replay = replayDuplicateClaimedActionRun(claim, step);
+    if (replay) return replay;
+  }
   try {
-    const missing = missingContentAgencySlots(step.action, args);
+    const args = requireContentAgencyExecutorRecord(rawArgs, 'args');
+    const directMissing = missingContentAgencySlots(step.action, args);
+    if (step.action === 'content_rewrite' && directMissing.length > 0) {
+      const result = { missingSlots: directMissing, verified: false };
+      if (!updateClaimedActionRun(claim, 'blocked', {
+        result,
+        verification: { verified: false, reason: 'content_rewrite_input_required' },
+        error: { reason: 'content_rewrite_input_required', missingSlots: directMissing },
+      })) return reconciliationPendingResult(step, 'blocked');
+      return { step, status: 'blocked', result, error: 'content_rewrite_input_required' };
+    }
+    const prepared = preparePrivateContentAgencyRequest(step, args, input);
+    const pkg = buildContentAgencyPackage(prepared.packageInput, {
+      generatorContractVersion: CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION,
+    });
+    const missing = missingContentAgencySlots(step.action, prepared.slotArgs);
     if (missing.length > 0) {
       const result = persistRuns
         ? upsertContentPendingAction(step, plan, input, args, missing)
@@ -57,41 +94,25 @@ export function executeContentAgencyStep(
         };
       if (!updateClaimedActionRun(claim, 'verified_pending', {
         result,
-        providerObjectId: result.pendingActionId ? String(result.pendingActionId) : undefined,
+        providerObjectId: result.pendingActionId || undefined,
         verification: { verified: false, reason: 'content_spec_input_required', pendingActionId: result.pendingActionId },
       })) return reconciliationPendingResult(step, 'verified_pending');
       return { step, status: 'verified_pending', result };
     }
-    const isRewrite = step.action === 'content_rewrite';
-    const sourceText = typeof args.sourceText === 'string' && args.sourceText.trim()
-      ? args.sourceText.trim()
-      : null;
-    const pkg = buildContentAgencyPackage({
-      userId: input.userId,
-      tenantId: input.tenantId,
-      transcript: isRewrite ? sourceText ?? input.text : null,
-      requestedOutput: isRewrite ? 'rewrite' : step.action === 'content_script_create' ? 'script' : 'brief',
-      brief: {
-        userId: input.userId,
-        tenantId: input.tenantId,
-        goal: String(args.goal || args.objective || args.topic || (isRewrite ? 'Rewrite user supplied content' : 'Create content from chat request')),
-        objective: String(args.objective || args.topic || (isRewrite ? 'Rewrite the supplied content while preserving the user intent.' : input.text)),
-        audience: typeof args.audience === 'string' ? args.audience : null,
-        platform: typeof args.platform === 'string' ? args.platform : 'generic',
-        format: typeof args.format === 'string' ? args.format : null,
-        notes: input.text,
-      },
-    });
-    persistContentAgencyArtifact('package', pkg);
-    const readBack = getContentAgencyProject({ userId: input.userId, tenantId: input.tenantId, id: pkg.id });
-    const verified = readBack?.kind === 'package' && readBack.artifact?.id === pkg.id;
+    persistContentAgencyPackageBundle(pkg);
+    const readBack = getContentAgencyPackage({ userId: input.userId, tenantId: input.tenantId, id: pkg.id });
+    const verified = readBack?.id === pkg.id
+      && readBack.contentHash === pkg.contentHash
+      && readBack.generatorContractVersion === CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION;
     const result = {
       packageId: pkg.id,
       brief: pkg.brief,
       firstScript: pkg.scriptVariants[0] ?? null,
       quality: pkg.quality,
       verified,
-      sourceTextPreserved: isRewrite && sourceText ? !pkg.transcriptStudy.warnings.includes('transcript_missing') : undefined,
+      sourceTextPreserved: prepared.sourceText
+        ? !pkg.transcriptStudy.warnings.includes('transcript_missing')
+        : undefined,
     };
     const status: ChatActionRunStatus = verified ? 'verified_success' : 'partial_success';
     if (!updateClaimedActionRun(claim, status, {
@@ -101,9 +122,232 @@ export function executeContentAgencyStep(
     })) return reconciliationPendingResult(step, status);
     return { step, status, result };
   } catch (err) {
-    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
-    return { step, status: 'failed', error: 'content_agency_package_failed' };
+    const failure = contentAgencyExecutorFailure(err);
+    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: failure.audit });
+    return { step, status: 'failed', error: failure.publicCode };
   }
+}
+
+interface PreparedContentAgencyRequest {
+  packageInput: ContentAgencyPackageInput;
+  slotArgs: Record<string, unknown>;
+  sourceText: string | null;
+}
+
+function preparePrivateContentAgencyRequest(
+  step: ChatPlanStep,
+  args: Record<string, unknown>,
+  input: ChatPlannerInput,
+): PreparedContentAgencyRequest {
+  const scopedArgs = bindPrivateContentAgencyExecutorScope(args, input, 'args');
+  const nestedBrief = bindPrivateContentAgencyExecutorScope(scopedArgs.brief, input, 'args.brief');
+
+  // Validate both accepted shapes independently so malformed fields cannot be
+  // hidden by a valid value in the other shape during the compatibility merge.
+  buildContentAgencyBrief(scopedArgs as unknown as ContentAgencyBriefInput);
+  if (scopedArgs.brief !== undefined && scopedArgs.brief !== null) {
+    buildContentAgencyBrief(nestedBrief as unknown as ContentAgencyBriefInput);
+  }
+
+  if (scopedArgs.generatorContractVersion !== undefined
+    && scopedArgs.generatorContractVersion !== CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION) {
+    throw new ContentAgencyValidationError(
+      `args.generatorContractVersion must be ${CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION}.`,
+      'args.generatorContractVersion',
+    );
+  }
+
+  const isRewrite = step.action === 'content_rewrite';
+  const requestedOutput = isRewrite
+    ? 'rewrite'
+    : step.action === 'content_script_create'
+      ? 'script'
+      : 'brief';
+  if (scopedArgs.requestedOutput !== undefined
+    && scopedArgs.requestedOutput !== null
+    && scopedArgs.requestedOutput !== requestedOutput) {
+    throw new ContentAgencyValidationError(
+      `args.requestedOutput must be ${requestedOutput} for ${step.action}.`,
+      'args.requestedOutput',
+    );
+  }
+
+  const goal = firstContentAgencyText([
+    { value: scopedArgs.goal, field: 'args.goal' },
+    { value: nestedBrief.goal, field: 'args.brief.goal' },
+    { value: scopedArgs.objective, field: 'args.objective' },
+    { value: nestedBrief.objective, field: 'args.brief.objective' },
+    { value: scopedArgs.topic, field: 'args.topic' },
+  ], isRewrite ? 'Rewrite user supplied content' : 'Create content from chat request');
+  const objective = firstContentAgencyText([
+    { value: scopedArgs.objective, field: 'args.objective' },
+    { value: nestedBrief.objective, field: 'args.brief.objective' },
+    { value: scopedArgs.topic, field: 'args.topic' },
+    { value: scopedArgs.goal, field: 'args.goal' },
+    { value: nestedBrief.goal, field: 'args.brief.goal' },
+  ], isRewrite
+    ? 'Rewrite the supplied content while preserving the user intent.'
+    : input.text);
+  const explicitSourceText = isRewrite
+    ? firstOptionalContentAgencyText([
+      { value: scopedArgs.sourceText, field: 'args.sourceText' },
+    ])
+    : null;
+  const sourceText = isRewrite ? explicitSourceText : null;
+  const transcript = isRewrite
+    ? sourceText
+    : preferredContentAgencyValue(scopedArgs, nestedBrief, 'transcript');
+  const platform = preferredContentAgencyValue(scopedArgs, nestedBrief, 'platform');
+  const brief: ContentAgencyBriefInput = {
+    ...nestedBrief,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    visibilityScope: 'user_private',
+    goal,
+    objective,
+    audience: preferredContentAgencyValue(scopedArgs, nestedBrief, 'audience') as string | null | undefined,
+    offer: preferredContentAgencyValue(scopedArgs, nestedBrief, 'offer') as string | null | undefined,
+    platform: platform as string | null | undefined,
+    format: preferredContentAgencyValue(scopedArgs, nestedBrief, 'format') as string | null | undefined,
+    constraints: preferredContentAgencyValue(scopedArgs, nestedBrief, 'constraints') as string[] | null | undefined,
+    currentMetrics: preferredContentAgencyValue(scopedArgs, nestedBrief, 'currentMetrics') as Record<string, unknown> | null | undefined,
+    brandVoice: preferredContentAgencyValue(scopedArgs, nestedBrief, 'brandVoice') as string | null | undefined,
+    notes: (preferredContentAgencyValue(scopedArgs, nestedBrief, 'notes') ?? input.text) as string | null | undefined,
+  };
+  const packageInput: ContentAgencyPackageInput = {
+    userId: input.userId,
+    tenantId: input.tenantId,
+    brief,
+    competitors: scopedArgs.competitors as ContentAgencyPackageInput['competitors'],
+    transcript: transcript as string | null | undefined,
+    brandedContent: scopedArgs.brandedContent as boolean | null | undefined,
+    references: scopedArgs.references as string[] | null | undefined,
+    requestedOutput,
+  };
+
+  return {
+    packageInput,
+    slotArgs: {
+      ...args,
+      goal,
+      objective,
+      topic: firstOptionalContentAgencyText([
+        { value: scopedArgs.topic, field: 'args.topic' },
+        { value: goal, field: 'args.goal' },
+      ]),
+      platform,
+    },
+    sourceText: isRewrite && explicitSourceText ? explicitSourceText : null,
+  };
+}
+
+function requireContentAgencyExecutorRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ContentAgencyValidationError(`${field} must be an object.`, field);
+  }
+  return value as Record<string, unknown>;
+}
+
+function bindPrivateContentAgencyExecutorScope(
+  value: unknown,
+  input: ChatPlannerInput,
+  field: string,
+): Record<string, unknown> {
+  const candidate = value === undefined || value === null
+    ? {}
+    : requireContentAgencyExecutorRecord(value, field);
+  if (candidate.userId !== undefined && candidate.userId !== input.userId) {
+    throw new ContentAgencyValidationError(
+      `${field}.userId must match the authenticated user.`,
+      `${field}.userId`,
+    );
+  }
+  if (candidate.tenantId !== undefined && candidate.tenantId !== input.tenantId) {
+    throw new ContentAgencyValidationError(
+      `${field}.tenantId must match the authenticated tenant.`,
+      `${field}.tenantId`,
+    );
+  }
+  if (candidate.visibilityScope !== undefined && candidate.visibilityScope !== 'user_private') {
+    throw new ContentAgencyValidationError(
+      `${field}.visibilityScope must be user_private for chat Content Agency execution.`,
+      `${field}.visibilityScope`,
+    );
+  }
+  return {
+    ...candidate,
+    userId: input.userId,
+    tenantId: input.tenantId,
+    visibilityScope: 'user_private',
+  };
+}
+
+function preferredContentAgencyValue(
+  args: Record<string, unknown>,
+  nestedBrief: Record<string, unknown>,
+  field: string,
+): unknown {
+  return args[field] !== undefined ? args[field] : nestedBrief[field];
+}
+
+function firstContentAgencyText(
+  candidates: Array<{ value: unknown; field: string }>,
+  fallback: string,
+): string {
+  return firstOptionalContentAgencyText(candidates) ?? fallback;
+}
+
+function firstOptionalContentAgencyText(
+  candidates: Array<{ value: unknown; field: string }>,
+): string | null {
+  for (const candidate of candidates) {
+    if (candidate.value === undefined || candidate.value === null) continue;
+    if (typeof candidate.value !== 'string') {
+      throw new ContentAgencyValidationError(`${candidate.field} must be a string.`, candidate.field);
+    }
+    const normalized = candidate.value.trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function contentAgencyExecutorFailure(error: unknown): {
+  publicCode: string;
+  audit: Record<string, string>;
+} {
+  if (error instanceof ContentAgencyValidationError) {
+    return {
+      publicCode: error.code,
+      audit: { code: error.code, field: error.field },
+    };
+  }
+  if (error instanceof ContentAgencyIntegrityError || error instanceof ContentAgencyPackageVersionError) {
+    return {
+      publicCode: error.code,
+      audit: { code: error.code },
+    };
+  }
+  return {
+    publicCode: 'content_agency_package_failed',
+    audit: safeContentExecutorAuditError(error, 'CONTENT_AGENCY_INTERNAL_ERROR'),
+  };
+}
+
+function safeContentExecutorAuditError(
+  error: unknown,
+  fallbackCode = 'CONTENT_EXECUTOR_INTERNAL_ERROR',
+): Record<string, string> {
+  const candidate = error as { name?: unknown; code?: unknown } | null;
+  return {
+    code: safeContentAgencyErrorToken(candidate?.code, fallbackCode),
+    errorName: safeContentAgencyErrorToken(candidate?.name, typeof error),
+  };
+}
+
+function safeContentAgencyErrorToken(value: unknown, fallback: string): string {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.:-]{0,79}$/.test(value)
+    ? value
+    : fallback;
 }
 
 export function executeContentScheduleWorkStep(
@@ -135,16 +379,21 @@ export function executeContentScheduleWorkStep(
       if (claim) updateChatActionRun(claim.row.id, 'blocked', { error: { reason: 'content_schedule_item_ambiguous', title } });
       return { step, status: 'blocked', error: 'content_schedule_item_ambiguous' };
     }
+    let itemCreated = false;
     const item = lookup.status === 'found'
       ? lookup.item
-      : getContentWorkspaceItem(scope, createContentTopicCompatibility({
-        scope,
-        title,
-        notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
-        status: 'planned',
-        source: 'chat_action',
-        idempotencyKey: childIdempotencyKey(step.idempotencyKey, 'item'),
-      }, db).topic.workspace_item_id, db)!;
+      : (() => {
+          const topicMutation = createContentTopicCompatibility({
+            scope,
+            title,
+            notes: typeof args.notes === 'string' ? args.notes : 'Created from Chat action.',
+            status: 'planned',
+            source: 'chat_action',
+            idempotencyKey: childIdempotencyKey(step.idempotencyKey, 'item'),
+          }, db);
+          itemCreated = topicMutation.created && !topicMutation.replayed;
+          return getContentWorkspaceItem(scope, topicMutation.topic.workspace_item_id, db)!;
+        })();
     const durationMinutes = Number.isSafeInteger(args.durationMinutes)
       ? Math.min(480, Math.max(15, Number(args.durationMinutes)))
       : 60;
@@ -162,6 +411,9 @@ export function executeContentScheduleWorkStep(
       idempotencyKey: childIdempotencyKey(step.idempotencyKey, 'preview'),
       now: input.nowIso,
     }, db);
+    if (itemCreated || preview.changed) {
+      invalidateContentDerivedCaches(input.userId);
+    }
     const result = {
       workspaceItemId: item.id,
       preview: preview.value,
@@ -184,7 +436,9 @@ export function executeContentScheduleWorkStep(
     })) return reconciliationPendingResult(step, status);
     return { step, status, result };
   } catch (err) {
-    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    if (claim) updateChatActionRun(claim.row.id, 'failed', {
+      error: safeContentExecutorAuditError(err, 'CONTENT_SCHEDULE_INTERNAL_ERROR'),
+    });
     return { step, status: 'failed', error: 'content_schedule_failed' };
   }
 }
@@ -257,6 +511,7 @@ export function executeContentPipelineHandoffStep(
       packageId,
     });
     const verified = handoff.status === 'created' || handoff.status === 'already_exists';
+    if (handoff.changed) invalidateContentDerivedCaches(input.userId);
     const status: ChatActionRunStatus = verified ? 'verified_success' : handoff.status === 'blocked' ? 'blocked' : 'failed';
     if (!updateClaimedActionRun(claim, status, {
       result: handoff,
@@ -266,7 +521,9 @@ export function executeContentPipelineHandoffStep(
     })) return reconciliationPendingResult(step, status);
     return { step, status, result: handoff, error: verified ? undefined : handoff.blockers[0] ?? 'content_pipeline_handoff_failed' };
   } catch (err) {
-    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    if (claim) updateChatActionRun(claim.row.id, 'failed', {
+      error: safeContentExecutorAuditError(err, 'CONTENT_PIPELINE_HANDOFF_INTERNAL_ERROR'),
+    });
     return { step, status: 'failed', error: 'content_pipeline_handoff_failed' };
   }
 }
@@ -284,14 +541,15 @@ export function executeContentPipelineStageTransitionStep(
 ): { step: ChatPlanStep; status: ChatActionRunStatus; result?: unknown; error?: string } {
   const args = step.args as Record<string, unknown>;
   const topicTitle = typeof args.topicTitle === 'string' && args.topicTitle.trim() ? args.topicTitle.trim() : null;
-  const targetStage = normalizeContentPipelineTransitionStage(args.targetStage);
-  if (!topicTitle || !targetStage) return { step, status: 'blocked', error: 'content_pipeline_stage_requires_topic_and_stage' };
-  if (targetStage === 'published') {
+  const requestedStage = typeof args.targetStage === 'string' ? args.targetStage.trim().toLowerCase() : null;
+  if (requestedStage === 'published') {
     return { step, status: 'blocked', error: 'content_publication_tracking_not_supported' };
   }
-  if (targetStage === 'filmed' || targetStage === 'editing') {
+  if (requestedStage === 'filmed' || requestedStage === 'editing') {
     return { step, status: 'blocked', error: 'content_production_stage_not_modeled' };
   }
+  const targetStage = normalizeContentPipelineTransitionStage(args.targetStage);
+  if (!topicTitle || !targetStage) return { step, status: 'blocked', error: 'content_pipeline_stage_requires_topic_and_stage' };
 
   const claim = claimActionRunForStepExecution(step, plan, input, persistRuns);
   if (claim && !claim.acquired && claim.row.status === 'verified_success') {
@@ -325,7 +583,7 @@ export function executeContentPipelineStageTransitionStep(
       : item.artifactPhase === 'idea' || item.artifactPhase === 'brief' || item.artifactPhase === 'outline'
         ? 'idea'
         : 'scripted';
-    const verified = targetStage === 'scripted';
+    const verified = true;
     const result = {
       pipelineId: item.id,
       workspaceItemId: item.id,
@@ -343,7 +601,7 @@ export function executeContentPipelineStageTransitionStep(
       changed: false,
       verified,
     };
-    const status: ChatActionRunStatus = verified ? 'verified_success' : 'blocked';
+    const status: ChatActionRunStatus = 'verified_success';
     if (!updateClaimedActionRun(claim, status, {
       result,
       providerObjectId: String(item.id),
@@ -352,11 +610,12 @@ export function executeContentPipelineStageTransitionStep(
         expected: { stage: targetStage, savedScriptRevision: true },
         actual: { stage: 'scripted', revisionId: script.currentRevision.id },
       },
-      error: verified ? undefined : { reason: 'content_production_stage_not_modeled' },
     })) return reconciliationPendingResult(step, status);
-    return { step, status, result, error: verified ? undefined : 'content_production_stage_not_modeled' };
+    return { step, status, result };
   } catch (err) {
-    if (claim) updateChatActionRun(claim.row.id, 'failed', { error: { message: err instanceof Error ? err.message : String(err) } });
+    if (claim) updateChatActionRun(claim.row.id, 'failed', {
+      error: safeContentExecutorAuditError(err, 'CONTENT_PIPELINE_STAGE_INTERNAL_ERROR'),
+    });
     return { step, status: 'failed', error: 'content_pipeline_stage_transition_failed' };
   }
 }

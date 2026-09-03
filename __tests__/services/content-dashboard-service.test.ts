@@ -17,6 +17,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import {
+  ContentKnowledgeUnavailableError,
   getBooks,
   getVoiceDna,
   getPipelineRecent,
@@ -167,6 +168,19 @@ describe('content-dashboard-service: voice DNA', () => {
 
     expect(voiceDna).toHaveLength(1);
     expect(voiceDna[0].text).toBe('User voice');
+  });
+
+  it('withholds malformed active source lineage from strict intelligence reads', () => {
+    testDb.prepare(`
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, user_id, owner_scope)
+      VALUES ('brand_voice', 'User voice', '["valid",7]', 2, 42, 'user')
+    `).run();
+
+    expect(getVoiceDna(undefined, 42)[0]?.sources).toEqual([]);
+    expect(() => getVoiceDna(undefined, 42, undefined, { strict: true }))
+      .toThrow(ContentKnowledgeUnavailableError);
+    expect(() => getKnowledgeStats(undefined, 42, undefined, { strict: true }))
+      .toThrow(ContentKnowledgeUnavailableError);
   });
 });
 

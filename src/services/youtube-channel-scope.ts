@@ -2,6 +2,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export interface UserScopedYoutubeChannelTarget {
   userId: number;
@@ -104,7 +105,10 @@ export function listUserScopedYoutubeChannelTargets(): UserScopedYoutubeChannelT
     }
     return Array.from(deduped.values());
   } catch (err) {
-    logger.warn({ err }, 'Failed to resolve user-scoped YouTube channel targets');
+    logger.warn(
+      safeContentLogErrorFields(err),
+      'Failed to resolve user-scoped YouTube channel targets',
+    );
     return [];
   }
 }

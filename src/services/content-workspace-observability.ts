@@ -11,7 +11,7 @@ import { getDb } from './database';
  * user content, prompts, URLs, hashes, or provider responses. Persistence is
  * best effort and can never change the result of a user operation.
  */
-export const CONTENT_WORKSPACE_OBSERVABILITY_SCHEMA_VERSION = 'content-workspace-observability.v5';
+export const CONTENT_WORKSPACE_OBSERVABILITY_SCHEMA_VERSION = 'content-workspace-observability.v6';
 
 export const CONTENT_WORKSPACE_OPERATIONS = [
   'item_create',
@@ -89,8 +89,10 @@ export const CONTENT_WORKSPACE_PRODUCT_SIGNALS = [
   'revision_saved',
   'revision_restored',
   'content_approved',
-  'content_scheduled',
-  'content_published',
+  // These are internal workflow/work-plan counters. Neither is evidence that
+  // an external platform accepted or published content.
+  'internal_scheduled_state_or_confirmed_work_block',
+  'internal_workflow_published_state',
   'script_generated',
   'platform_variant_generated',
   'proposal_accepted',
@@ -107,6 +109,23 @@ export const CONTENT_WORKSPACE_PRODUCT_SIGNALS = [
   'legacy_editorial_compatibility_mutation',
 ] as const;
 export type ContentWorkspaceProductSignal = typeof CONTENT_WORKSPACE_PRODUCT_SIGNALS[number];
+
+type StoredContentWorkspaceProductSignal = Exclude<
+  ContentWorkspaceProductSignal,
+  'internal_scheduled_state_or_confirmed_work_block' | 'internal_workflow_published_state'
+> | 'content_scheduled' | 'content_published';
+
+function storedProductSignal(signal: ContentWorkspaceProductSignal): StoredContentWorkspaceProductSignal {
+  if (signal === 'internal_scheduled_state_or_confirmed_work_block') return 'content_scheduled';
+  if (signal === 'internal_workflow_published_state') return 'content_published';
+  return signal;
+}
+
+function publicProductSignal(signal: string): ContentWorkspaceProductSignal | null {
+  if (signal === 'content_scheduled') return 'internal_scheduled_state_or_confirmed_work_block';
+  if (signal === 'content_published') return 'internal_workflow_published_state';
+  return isMember(CONTENT_WORKSPACE_PRODUCT_SIGNALS, signal) ? signal : null;
+}
 
 export const CONTENT_WORKSPACE_QUALITY_SIGNALS = [
   'lineage_recorded_clear',
@@ -203,6 +222,12 @@ export interface ContentWorkspaceObservabilitySnapshot extends AggregateState {
     pendingWrite: boolean;
     bestEffortWrites: true;
     userOperationFailurePropagation: false;
+  };
+  publicationTracking: {
+    status: 'unavailable';
+    publicationEvidence: false;
+    reasonCode: 'EXTERNAL_PUBLICATION_RECEIPTS_UNAVAILABLE';
+    internalWorkflowStateMetric: 'internal_workflow_published_state';
   };
 }
 
@@ -554,7 +579,7 @@ function persistAggregateDelta(db: Database.Database, delta: AggregateState): vo
   }
 
   persistNamedMetrics(db, 'content_workspace_reason_metrics', 'reason', delta.reasons, CONTENT_WORKSPACE_REASONS);
-  persistNamedMetrics(db, 'content_workspace_product_metrics', 'signal', delta.product, CONTENT_WORKSPACE_PRODUCT_SIGNALS);
+  persistProductMetrics(db, delta.product);
   persistNamedMetrics(db, 'content_workspace_quality_metrics', 'signal', delta.quality, CONTENT_WORKSPACE_QUALITY_SIGNALS);
 }
 
@@ -573,6 +598,22 @@ function persistNamedMetrics<T extends string>(
   `);
   for (const key of keys) {
     if (values[key] > 0) statement.run(key, values[key]);
+  }
+}
+
+function persistProductMetrics(
+  db: Database.Database,
+  values: Record<ContentWorkspaceProductSignal, number>,
+): void {
+  const statement = db.prepare(`
+    INSERT INTO content_workspace_product_metrics (signal, metric_value)
+    VALUES (?, ?)
+    ON CONFLICT(signal) DO UPDATE SET
+      metric_value = MIN(9007199254740991,
+        content_workspace_product_metrics.metric_value + excluded.metric_value)
+  `);
+  for (const signal of CONTENT_WORKSPACE_PRODUCT_SIGNALS) {
+    if (values[signal] > 0) statement.run(storedProductSignal(signal), values[signal]);
   }
 }
 
@@ -614,7 +655,7 @@ function readDurableAggregate(db: Database.Database): AggregateState {
     };
   }
   readNamedMetrics(db, 'content_workspace_reason_metrics', 'reason', CONTENT_WORKSPACE_REASONS, aggregate.reasons);
-  readNamedMetrics(db, 'content_workspace_product_metrics', 'signal', CONTENT_WORKSPACE_PRODUCT_SIGNALS, aggregate.product);
+  readProductMetrics(db, aggregate.product);
   readNamedMetrics(db, 'content_workspace_quality_metrics', 'signal', CONTENT_WORKSPACE_QUALITY_SIGNALS, aggregate.quality);
   return aggregate;
 }
@@ -632,6 +673,19 @@ function readNamedMetrics<T extends string>(
   }>;
   for (const row of rows) {
     if (isMember(keys, row.metric_key)) target[row.metric_key] = safeMetric(row.metric_value);
+  }
+}
+
+function readProductMetrics(
+  db: Database.Database,
+  target: Record<ContentWorkspaceProductSignal, number>,
+): void {
+  const rows = db.prepare(`
+    SELECT signal, metric_value FROM content_workspace_product_metrics
+  `).all() as Array<{ signal: string; metric_value: number }>;
+  for (const row of rows) {
+    const signal = publicProductSignal(row.signal);
+    if (signal) target[signal] = safeMetric(row.metric_value);
   }
 }
 
@@ -671,6 +725,12 @@ function snapshotFromAggregate(
       durableStore: 'sqlite_aggregate',
       bestEffortWrites: true,
       userOperationFailurePropagation: false,
+    },
+    publicationTracking: {
+      status: 'unavailable',
+      publicationEvidence: false,
+      reasonCode: 'EXTERNAL_PUBLICATION_RECEIPTS_UNAVAILABLE',
+      internalWorkflowStateMetric: 'internal_workflow_published_state',
     },
     ...aggregate,
   };

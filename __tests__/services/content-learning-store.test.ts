@@ -555,6 +555,12 @@ describe('content-learning-store: artifact chain', () => {
     expect(chain.identifier).toMatchObject({ workspaceItemId: itemId, resolvedAs: 'workspace_item' });
     expect(chain.pipeline).not.toBeNull();
     expect(chain.pipeline!.stage).toBe('active');
+    expect(chain.pipeline!.publishedAt).toBeNull();
+    expect(chain.pipeline!.publicationTracking).toEqual({
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    });
 
     expect(chain.script).not.toBeNull();
     expect(chain.script!.scriptText).toBe('Full script text here...');
@@ -688,16 +694,16 @@ function seedCanonicalScript(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 5. Voice Agent Script Availability
+// 5. Scoped Script Availability
 // ═══════════════════════════════════════════════════════════════════
 
-describe('content-learning-store: voice agent access', () => {
+describe('content-learning-store: scoped script access', () => {
   beforeEach(() => {
     testDb = createMigratedTestDatabase();
   });
   afterEach(() => testDb?.close());
 
-  it('voice agent can read full script text from DB (not DOCX)', () => {
+  it('reads full script text from DB (not DOCX)', () => {
     storeScript({
       topic: 'Voice Test Script',
       format: 'youtube',
@@ -705,7 +711,7 @@ describe('content-learning-store: voice agent access', () => {
       userId: 0,
     });
 
-    // This is exactly what the voice-evolution-agent now does:
+    // Scoped consumers read the canonical bytes directly from the database.
     const scripts = getRecentScripts(0, 30, 10);
 
     expect(scripts).toHaveLength(1);
@@ -714,7 +720,7 @@ describe('content-learning-store: voice agent access', () => {
     expect(scripts[0].scriptText).not.toContain('[Script file:');
   });
 
-  it('voice agent reads scripts within time window', () => {
+  it('reads scripts within time window', () => {
     storeScript({ topic: 'Recent', format: 'reel', scriptText: 'recent text', userId: 0 });
 
     // Should find within 30 days
@@ -799,16 +805,22 @@ describe('content-learning-store: voice agent access', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-learning-store: structural', () => {
-  it('voice-evolution-agent reads only current scripts from the canonical workspace', () => {
+  it('voice-evolution-agent learns only from direct canonical agent-to-user revision pairs', () => {
     const agentSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/agents/voice-evolution-agent.ts'),
       'utf8',
     );
 
-    expect(agentSource).toContain('getRecentContentWorkspaceScripts');
-    expect(agentSource).toContain('content-workspace-read-models');
+    expect(agentSource).toContain('FROM content_revisions child');
+    expect(agentSource).toContain('JOIN content_revisions parent');
+    expect(agentSource).toContain('parent.id = child.parent_revision_id');
+    expect(agentSource).toContain("child.actor_type = 'user'");
+    expect(agentSource).toContain('child.actor_id = ?');
+    expect(agentSource).toContain('.all(tenantId, userId, String(userId))');
+    expect(agentSource).toContain("parent.actor_type = 'agent'");
+    expect(agentSource).not.toContain('FROM video_transcripts');
     expect(agentSource).not.toContain('getRecentScripts');
-    expect(agentSource).toContain('getActiveUserTargets');
+    expect(agentSource).toContain('listActiveAgentJobTenantTargets');
     expect(agentSource).not.toContain('getOwnerBootstrapTarget');
   });
 

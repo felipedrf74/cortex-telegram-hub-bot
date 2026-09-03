@@ -93,15 +93,45 @@ function seedUser(id: number, label: string): void {
   `).run(id, 10_000 + id, `${label}@example.test`, label, label);
 }
 
-function seedTranscript(userId: number, videoId: string, text: string): void {
+function seedReferenceTranscript(userId: number, videoId: string, text: string): void {
   testDb.prepare(`
     INSERT INTO video_transcripts
       (video_id, title, channel_name, language, full_text, source, user_id, tenant_id,
        owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by,
        updated_by, audit_metadata_json, created_at)
-    VALUES (?, ?, 'test-channel', 'en', ?, 'test', ?, ?, ?, 'user_private',
+    VALUES (?, ?, 'reference-channel', 'en', ?, 'channel_analysis', ?, ?, ?, 'user_private',
        'active', 'active', ?, ?, '{}', datetime('now'))
   `).run(videoId, `${videoId} title`, text, userId, userId, userId, userId, userId);
+}
+
+async function seedCreatorEditPair(
+  userId: number,
+  key: string,
+  creatorText: string,
+  generatedText = `agent draft for ${key}`,
+): Promise<void> {
+  const { saveGeneratedScriptToWorkspace } = await import('../../src/services/content-workspace-capture');
+  const { saveContentRevision } = await import('../../src/services/content-workspace');
+  const captured = saveGeneratedScriptToWorkspace({
+    scope: { userId, tenantId: userId },
+    topic: `${key} topic`,
+    format: 'reel',
+    scriptText: generatedText,
+    idempotencyKey: `voice-generated:${userId}:${key}`,
+    captureOrigin: 'script_generation',
+  });
+  saveContentRevision({
+    scope: { userId, tenantId: userId },
+    artifactId: captured.artifact.id,
+    baseRevision: captured.revision.revisionNumber,
+    content: { format: 'plain_text', text: creatorText },
+    changeSummary: 'Creator edited the generated draft',
+    changeReason: 'authenticated_creator_edit',
+    actorType: 'user',
+    actorId: String(userId),
+    provenance: { source: 'authenticated_user_api' },
+    idempotencyKey: `voice-creator-edit:${userId}:${key}`,
+  });
 }
 
 function validVoiceAnalysis(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -164,7 +194,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     testDb.close();
   });
 
-  it('builds voice signals from each active tenant’s own transcripts and scripts only', async () => {
+  it('learns only from each tenant’s direct agent-to-user revision pairs', async () => {
     const { saveGeneratedScriptToWorkspace } = await import('../../src/services/content-workspace-capture');
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
 
@@ -172,44 +202,40 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     seedUser(28, 'knitter');
     seedUser(30, 'script-only');
 
-    saveGeneratedScriptToWorkspace({
-      scope: { userId: 25, tenantId: 25 },
-      topic: 'Founder training topic',
-      format: 'reel',
-      scriptText: `founder-only-script strength phrasing ${'s'.repeat(3_100)} founder-script-truncation-tail`,
-      captureOrigin: 'script_generation',
-    });
-    saveGeneratedScriptToWorkspace({
-      scope: { userId: 28, tenantId: 28 },
-      topic: 'Knitting pattern topic',
-      format: 'reel',
-      scriptText: 'knitter-only-script knitting phrasing',
-      captureOrigin: 'script_generation',
-    });
+    await seedCreatorEditPair(
+      25,
+      'founder-edit',
+      `founder-creator-revision with marathon cadence ${'x'.repeat(3_100)} founder-creator-truncation-tail`,
+      `founder-agent-draft strength phrasing ${'s'.repeat(3_100)} founder-agent-truncation-tail`,
+    );
+    await seedCreatorEditPair(
+      28,
+      'knitter-edit',
+      'knitter-creator-revision with yarn cadence',
+      'knitter-agent-draft with generic phrasing',
+    );
     saveGeneratedScriptToWorkspace({
       scope: { userId: 30, tenantId: 30 },
       topic: 'Script-only topic',
       format: 'reel',
-      scriptText: 'script-only-script without a transcript',
+      scriptText: 'script-only-agent-draft without a creator revision',
+      idempotencyKey: 'voice-generated:30:script-only',
       captureOrigin: 'script_generation',
     });
 
-    seedTranscript(
-      25,
-      'founder-video',
-      `founder-only-transcript with marathon cadence ${'x'.repeat(2_100)} founder-truncation-tail`,
-    );
-    seedTranscript(25, 'founder-video-companion', 'founder-companion-transcript');
-    seedTranscript(28, 'knitter-video', 'knitter-only-transcript with yarn cadence');
+    seedReferenceTranscript(25, 'founder-reference-video', 'reference transcript must never become creator voice');
+    seedReferenceTranscript(28, 'knitter-reference-video', 'competitor transcript must never become creator voice');
 
     mockCompleteOneShotWithFallback.mockImplementation(async (...args: unknown[]) => {
-      const prompt = args.find((arg): arg is string => typeof arg === 'string' && arg.includes('AI-GENERATED SCRIPTS')) ?? '';
-      if (prompt.includes('founder-only-transcript')) {
-        expect(prompt).not.toContain('knitter-only-transcript');
-        expect(prompt).toContain('founder-companion-transcript');
-        expect(prompt).toContain('\n\n===');
-        expect(prompt).not.toContain('founder-truncation-tail');
-        expect(prompt).not.toContain('founder-script-truncation-tail');
+      const prompt = args.find((arg): arg is string => typeof arg === 'string' && arg.includes('CANONICAL CREATOR EDIT PAIRS')) ?? '';
+      expect(prompt).not.toContain('reference transcript must never become creator voice');
+      expect(prompt).not.toContain('competitor transcript must never become creator voice');
+      expect(prompt).not.toContain('published video');
+      if (prompt.includes('founder-creator-revision')) {
+        expect(prompt).not.toContain('knitter-creator-revision');
+        expect(prompt).toContain('founder-agent-draft');
+        expect(prompt).not.toContain('founder-creator-truncation-tail');
+        expect(prompt).not.toContain('founder-agent-truncation-tail');
         return {
           text: JSON.stringify({
             additions: [{ pattern: 'founder-signal', examples: ['marathon cadence'], frequency: 'often', category: 'argument' }],
@@ -221,8 +247,9 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
           }),
         };
       }
-      if (prompt.includes('knitter-only-transcript')) {
-        expect(prompt).not.toContain('founder-only-transcript');
+      if (prompt.includes('knitter-creator-revision')) {
+        expect(prompt).not.toContain('founder-creator-revision');
+        expect(prompt).toContain('knitter-agent-draft');
         return {
           text: JSON.stringify({
             additions: [{ pattern: 'knitter-signal', examples: ['yarn cadence'], frequency: 'often', category: 'anecdote' }],
@@ -234,36 +261,42 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
           }),
         };
       }
-      if (prompt.includes('script-only-script')) {
-        expect(prompt).toContain('No published transcripts available for this period.');
-        return {
-          text: JSON.stringify(validVoiceAnalysis({ voice_summary: 'script-only summary' })),
-        };
-      }
       throw new Error(`unexpected prompt: ${prompt}`);
     });
 
     await runVoiceEvolutionAgent();
     await runVoiceEvolutionAgent();
 
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).toContain('script-only-script');
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).not.toContain('founder-only-transcript');
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(2);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
+    for (const call of mockCompleteOneShotWithFallback.mock.calls) {
+      expect(call[4]).toEqual(expect.objectContaining({
+        maxRetries: 0,
+        allowFallbackAfterProviderFailure: false,
+      }));
+    }
+    expect(mockCompleteOneShotWithFallback.mock.calls.every((call) => (
+      !String(call[1]).includes('script-only-agent-draft')
+    ))).toBe(true);
 
-    seedTranscript(28, 'knitter-video-new', 'knitter-only-transcript with a newly changed stitch cadence');
+    await seedCreatorEditPair(
+      28,
+      'knitter-edit-new',
+      'knitter-creator-revision with a newly changed stitch cadence',
+      'knitter-agent-draft for a new pattern',
+    );
     await runVoiceEvolutionAgent();
 
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(4);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(4);
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[3][1])).toContain('newly changed stitch cadence');
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[3][1])).not.toContain('founder-only-transcript');
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).toContain('newly changed stitch cadence');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[2][1])).not.toContain('founder-creator-revision');
 
     // A fourth unchanged run must observe the fingerprint written only after
     // the successful changed-input outputs and make zero additional calls.
     await runVoiceEvolutionAgent();
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(4);
-    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(4);
+    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(3);
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(3);
 
     const fingerprints = testDb.prepare(`
       SELECT user_id, tenant_id, payload
@@ -271,14 +304,13 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
       WHERE signal_type = 'voice_analysis_fingerprint'
       ORDER BY user_id, id
     `).all() as { user_id: number; tenant_id: number; payload: string }[];
-    expect(fingerprints).toHaveLength(4);
+    expect(fingerprints).toHaveLength(3);
     expect(fingerprints.map((row) => [row.user_id, row.tenant_id])).toEqual([
       [25, 25],
       [28, 28],
       [28, 28],
-      [30, 30],
     ]);
-    expect(fingerprints.every((row) => !row.payload.includes('transcript'))).toBe(true);
+    expect(fingerprints.every((row) => row.payload.includes('voice-evolution-input-v2'))).toBe(true);
 
     const signals = testDb.prepare(`
       SELECT user_id, tenant_id, signal_type, payload
@@ -312,10 +344,142 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     ]);
   });
 
+  it('makes no provider call for unedited drafts or arbitrary cached transcripts', async () => {
+    const { saveGeneratedScriptToWorkspace } = await import('../../src/services/content-workspace-capture');
+    const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'no-edit-evidence');
+    saveGeneratedScriptToWorkspace({
+      scope: { userId: 25, tenantId: 25 },
+      topic: 'Unedited draft',
+      format: 'reel',
+      scriptText: 'agent-only draft is not creator voice evidence',
+      idempotencyKey: 'voice-generated:25:no-edit-evidence',
+      captureOrigin: 'script_generation',
+    });
+    seedReferenceTranscript(25, 'competitor-reference', 'private competitor transcript is not creator evidence');
+
+    await runVoiceEvolutionAgent();
+
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockCompleteOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+  });
+
+  it('persists only non-absent book influences grounded in supplied book context and creator text', async () => {
+    const { runVoiceEvolutionForTarget } = await import('../../src/agents/voice-evolution-agent');
+    const { writeSignal } = await import('../../src/services/intelligence-bus');
+    seedUser(25, 'book-grounding');
+    await seedCreatorEditPair(
+      25,
+      'book-grounding',
+      'For the next draft, make the cue obvious before asking for action.',
+    );
+    expect(writeSignal({
+      source_agent: 'book-extractor',
+      signal_type: 'book_knowledge',
+      payload: {
+        title: 'Atomic Habits',
+        key_concepts: ['make the cue obvious', 'identity habits'],
+        summary: 'A framework for shaping repeatable behavior.',
+      },
+    })).toBeGreaterThan(0);
+    mockCompleteOneShotWithFallback.mockResolvedValue({
+      text: JSON.stringify(validVoiceAnalysis({
+        book_influences: [
+          {
+            book_or_concept: 'make the cue obvious',
+            how_it_appears: 'make the cue obvious',
+            adoption_level: 'integrated',
+          },
+          {
+            book_or_concept: 'identity habits',
+            how_it_appears: 'asking for action',
+            adoption_level: 'absent',
+          },
+          {
+            book_or_concept: 'Atomic Habits',
+            how_it_appears: 'stack a habit after lunch',
+            adoption_level: 'emerging',
+          },
+          {
+            book_or_concept: 'invented framework',
+            how_it_appears: 'asking for action',
+            adoption_level: 'integrated',
+          },
+        ],
+      })),
+    });
+
+    await runVoiceEvolutionForTarget({ tenantId: 25, userId: 25 });
+
+    const signal = testDb.prepare(`
+      SELECT payload
+        FROM agent_signals
+       WHERE tenant_id = ? AND user_id = ?
+         AND signal_type = 'voice_pattern'
+         AND json_extract(payload, '$.observation') = 'book_voice_influence'
+       LIMIT 1
+    `).get(25, 25) as { payload: string };
+    expect(JSON.parse(signal.payload).influences).toEqual([
+      expect.objectContaining({
+        book_or_concept: 'make the cue obvious',
+        adoption_level: 'integrated',
+      }),
+    ]);
+    expect(testDb.prepare(`
+      SELECT pattern_text
+        FROM content_learned_patterns
+       WHERE tenant_id = ? AND user_id = ? AND category = 'book_influence'
+       ORDER BY pattern_text
+    `).all(25, 25)).toEqual([{ pattern_text: 'make the cue obvious' }]);
+  });
+
+  it('persists zero outputs when cancellation arrives after provider dispatch', async () => {
+    const { runVoiceEvolutionForTarget } = await import('../../src/agents/voice-evolution-agent');
+    seedUser(25, 'post-provider-cancel');
+    await seedCreatorEditPair(25, 'post-provider-cancel', 'creator revision must not be persisted after cancellation');
+
+    let resolveProvider!: (result: { text: string }) => void;
+    mockCompleteOneShotWithFallback.mockImplementation(() => new Promise((resolve) => {
+      resolveProvider = resolve;
+    }));
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('account deletion started'), {
+      name: 'AbortError',
+      code: 'ACCOUNT_DELETION_IN_PROGRESS',
+    });
+    const outcome = runVoiceEvolutionForTarget(
+      { tenantId: 25, userId: 25 },
+      { abortSignal: controller.signal },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await vi.waitFor(() => expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1));
+    controller.abort(cancellation);
+    resolveProvider({ text: JSON.stringify(validVoiceAnalysis()) });
+
+    expect(await outcome).toBe(cancellation);
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_signals
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+    expect(testDb.prepare(`
+      SELECT COUNT(*) AS count
+      FROM content_learned_patterns
+      WHERE user_id = ? AND tenant_id = ?
+    `).get(25, 25)).toEqual({ count: 0 });
+  });
+
   it('rejects syntactically valid JSON that does not satisfy the provider output schema', async () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'malformed-provider-output');
-    seedTranscript(25, 'malformed-provider-video', 'tenant-private malformed-provider transcript');
+    await seedCreatorEditPair(25, 'malformed-provider', 'tenant-private malformed-provider creator revision');
     mockCompleteOneShotWithFallback.mockResolvedValue({
       text: JSON.stringify(validVoiceAnalysis({
         additions: [{
@@ -361,7 +525,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   ])('rejects otherwise valid JSON exceeding the $label limit', async ({ analysis, expectedMessage }) => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'oversized-provider-output');
-    seedTranscript(25, 'oversized-provider-video', 'tenant-private oversized-provider transcript');
+    await seedCreatorEditPair(25, 'oversized-provider', 'tenant-private oversized-provider creator revision');
     mockCompleteOneShotWithFallback.mockResolvedValue({ text: JSON.stringify(analysis) });
 
     const failure = await captureAggregateFailure(runVoiceEvolutionAgent());
@@ -376,7 +540,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   it('serializes concurrent identical tenant runs into one reservation, provider call, and output set', async () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'concurrent-run');
-    seedTranscript(25, 'concurrent-run-video', 'tenant-private concurrent-run transcript');
+    await seedCreatorEditPair(25, 'concurrent-run', 'tenant-private concurrent-run creator revision');
 
     let resolveProvider!: (result: { text: string }) => void;
     mockCompleteOneShotWithFallback.mockImplementation(() => new Promise((resolve) => {
@@ -409,16 +573,16 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'first-malformed');
     seedUser(28, 'second-valid');
-    seedTranscript(25, 'first-malformed-video', 'first tenant malformed-output transcript');
-    seedTranscript(28, 'second-valid-video', 'second tenant valid-output transcript');
+    await seedCreatorEditPair(25, 'first-malformed', 'first tenant malformed-output creator revision');
+    await seedCreatorEditPair(28, 'second-valid', 'second tenant valid-output creator revision');
     mockCompleteOneShotWithFallback.mockImplementation(async (...args: unknown[]) => {
       const prompt = String(args[1]);
-      if (prompt.includes('first tenant malformed-output transcript')) {
+      if (prompt.includes('first tenant malformed-output creator revision')) {
         return {
           text: JSON.stringify(validVoiceAnalysis({ recurring_phrases: 'not-an-array' })),
         };
       }
-      if (prompt.includes('second tenant valid-output transcript')) {
+      if (prompt.includes('second tenant valid-output creator revision')) {
         return {
           text: JSON.stringify(validVoiceAnalysis({ voice_summary: 'second tenant persisted summary' })),
         };
@@ -435,10 +599,10 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(2);
     expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(2);
     expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain(
-      'first tenant malformed-output transcript',
+      'first tenant malformed-output creator revision',
     );
     expect(String(mockCompleteOneShotWithFallback.mock.calls[1][1])).toContain(
-      'second tenant valid-output transcript',
+      'second tenant valid-output creator revision',
     );
     expect(testDb.prepare(`
       SELECT user_id, tenant_id, signal_type
@@ -453,7 +617,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   it('rolls back signals and learned patterns when the final fingerprint write fails', async () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'persistence-failure');
-    seedTranscript(25, 'persistence-failure-video', 'tenant-private persistence-failure transcript');
+    await seedCreatorEditPair(25, 'persistence-failure', 'tenant-private persistence-failure creator revision');
     mockCompleteOneShotWithFallback.mockResolvedValue({
       text: JSON.stringify(validVoiceAnalysis({
         additions: [{
@@ -520,8 +684,8 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'first-persistence-failure');
     seedUser(28, 'later-must-not-run');
-    seedTranscript(25, 'first-persistence-video', 'first tenant persistence-failure transcript');
-    seedTranscript(28, 'later-must-not-run-video', 'later tenant must not enter provider prompt');
+    await seedCreatorEditPair(25, 'first-persistence', 'first tenant persistence-failure creator revision');
+    await seedCreatorEditPair(28, 'later-must-not-run', 'later tenant must not enter provider prompt');
     mockCompleteOneShotWithFallback.mockResolvedValue({
       text: JSON.stringify(validVoiceAnalysis({
         additions: [{
@@ -550,7 +714,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(1);
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
     expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain(
-      'first tenant persistence-failure transcript',
+      'first tenant persistence-failure creator revision',
     );
     expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).not.toContain(
       'later tenant must not enter provider prompt',
@@ -570,7 +734,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   it('fails closed without budget or provider work when the fingerprint read fails', async () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'fingerprint-read-failure');
-    seedTranscript(25, 'fingerprint-read-failure-video', 'tenant-private read-failure transcript');
+    await seedCreatorEditPair(25, 'fingerprint-read-failure', 'tenant-private read-failure creator revision');
     testDb.exec('ALTER TABLE agent_signals RENAME TO agent_signals_unavailable');
 
     await expect(runVoiceEvolutionAgent()).rejects.toThrow(
@@ -585,8 +749,8 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     const { runVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'paid');
     seedUser(28, 'trial');
-    seedTranscript(25, 'paid-video', 'paid transcript');
-    seedTranscript(28, 'trial-video', 'trial transcript must not enter a prompt');
+    await seedCreatorEditPair(25, 'paid', 'paid creator revision');
+    await seedCreatorEditPair(28, 'trial', 'trial creator revision must not enter a prompt');
     mockResolveAiAutomationEligibility.mockImplementation((userId: number) => ({
       allowed: userId === 25,
       reason: userId === 25 ? 'eligible' : 'automation_entitlement_required',
@@ -603,8 +767,8 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
     expect(mockResolveAiAutomationEligibility).toHaveBeenCalledWith(25, 'content');
     expect(mockResolveAiAutomationEligibility).toHaveBeenCalledWith(28, 'content');
     expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain('paid transcript');
-    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).not.toContain('trial transcript');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).toContain('paid creator revision');
+    expect(String(mockCompleteOneShotWithFallback.mock.calls[0][1])).not.toContain('trial creator revision');
     expect(mockWithAiBudgetReservation).toHaveBeenCalledWith(expect.objectContaining({
       userId: 25,
       requestSource: 'automation',
@@ -621,7 +785,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   it('audits scheduled usage by run id and makes zero calls for the unchanged tenant fingerprint', async () => {
     const { runScheduledVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'scheduled-voice');
-    seedTranscript(25, 'scheduled-voice-video', 'stable scheduled voice transcript');
+    await seedCreatorEditPair(25, 'scheduled-voice', 'stable scheduled creator revision');
     mockCompleteOneShotWithFallback.mockResolvedValue({
       text: JSON.stringify(validVoiceAnalysis()),
     });
@@ -664,7 +828,7 @@ describe('Voice Evolution Agent — multi-tenant scope', () => {
   it('audits a scheduled provider-schema failure and keeps it retryable', async () => {
     const { runScheduledVoiceEvolutionAgent } = await import('../../src/agents/voice-evolution-agent');
     seedUser(25, 'scheduled-invalid-voice');
-    seedTranscript(25, 'scheduled-invalid-video', 'scheduled invalid schema transcript');
+    await seedCreatorEditPair(25, 'scheduled-invalid', 'scheduled invalid schema creator revision');
     mockCompleteOneShotWithFallback.mockResolvedValue({ text: JSON.stringify({ voice_summary: 'incomplete' }) });
     mockWithAiBudgetReservation.mockImplementation(async (request: any, fn: () => Promise<unknown>) => {
       const result = await fn();

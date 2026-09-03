@@ -7,6 +7,10 @@ import path from 'path';
 
 let testDb: Database.Database;
 
+const { invalidateContentDerivedCachesMock } = vi.hoisted(() => ({
+  invalidateContentDerivedCachesMock: vi.fn(),
+}));
+
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('journal_mode = WAL');
@@ -32,6 +36,13 @@ vi.mock('../../src/services/database', () => ({
 vi.mock('../../src/api/routes/training-plan-calendar-sync', () => ({
   previewTrainingSessionReflow: vi.fn(),
   confirmTrainingSessionReflow: vi.fn(),
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/cache-coherence-registry')>(
+    '../../src/services/cache-coherence-registry'
+  )),
+  invalidateContentDerivedCaches: invalidateContentDerivedCachesMock,
 }));
 
 import {
@@ -2576,6 +2587,60 @@ describe('ChatActionPlanner', () => {
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_schedule_bindings').get()).toEqual({ count: 0 });
     expect(testDb.prepare("SELECT COUNT(*) AS count FROM secretary_agenda_items WHERE source_skill = 'content'").get())
       .toEqual({ count: 0 });
+    expect(invalidateContentDerivedCachesMock).toHaveBeenCalledTimes(1);
+    expect(invalidateContentDerivedCachesMock).toHaveBeenLastCalledWith(4201);
+
+    await executeChatActionPlan(schedulePlan!, {
+      ...baseInput,
+      userId: 4201,
+      tenantId: 4201,
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    }, { confirmed: true });
+    expect(invalidateContentDerivedCachesMock).toHaveBeenCalledTimes(1);
+
+    const rescheduledPlan = parseLlmPlannerJson(JSON.stringify({
+      confidence: 0.9,
+      steps: [{
+        skill: 'content',
+        action: 'content_schedule_work',
+        args: {
+          title: 'Filmar reel de recuperação',
+          dateTime: '2026-05-19T10:00:00+01:00',
+        },
+        missingFields: [],
+      }],
+    }), {
+      ...baseInput,
+      userId: 4201,
+      tenantId: 4201,
+      messageId: 'content-schedule-existing-item',
+      persistRuns: false,
+    });
+    await executeChatActionPlan(rescheduledPlan!, {
+      ...baseInput,
+      userId: 4201,
+      tenantId: 4201,
+      messageId: 'content-schedule-existing-item',
+      persistRuns: false,
+    }, {
+      calendar: {
+        createEvent: vi.fn() as any,
+        getEventsForSources: vi.fn() as any,
+        hasGoogle: vi.fn(() => false),
+        hasOutlook: vi.fn(() => false),
+      },
+      taskProviderForUser: vi.fn(() => ({}) as any),
+    }, { confirmed: true });
+    expect(invalidateContentDerivedCachesMock).toHaveBeenCalledTimes(2);
+    expect(invalidateContentDerivedCachesMock).toHaveBeenLastCalledWith(4201);
 
     const topicsBeforeBlockedPublication = getTopics(4201, { includeTerminal: true, limit: 50 }).length;
     const legacyPublicationPlan = parseLlmPlannerJson(JSON.stringify({
@@ -2649,6 +2714,25 @@ describe('ChatActionPlanner', () => {
     }, { confirmed: true });
     expect(handoffResponse.metadata.actionStatus).toBe('verified_success');
     expect(handoffResponse.text).toContain('workspace');
+    expect(invalidateContentDerivedCachesMock).toHaveBeenCalledTimes(3);
+    expect(invalidateContentDerivedCachesMock).toHaveBeenLastCalledWith(4201);
+
+    const replayedHandoffResponse = await executeChatActionPlan(
+      handoffPlan!,
+      { ...baseInput, userId: 4201, tenantId: 4201, persistRuns: false },
+      {
+        calendar: {
+          createEvent: vi.fn() as any,
+          getEventsForSources: vi.fn() as any,
+          hasGoogle: vi.fn(() => false),
+          hasOutlook: vi.fn(() => false),
+        },
+        taskProviderForUser: vi.fn(() => ({}) as any),
+      },
+      { confirmed: true },
+    );
+    expect(replayedHandoffResponse.metadata.actionStatus).toBe('verified_success');
+    expect(invalidateContentDerivedCachesMock).toHaveBeenCalledTimes(3);
   });
 
   it('extracts Content schedule date-time slots before executor dispatch', () => {
@@ -2706,7 +2790,7 @@ describe('ChatActionPlanner', () => {
   it('routes Content pipeline stage transitions before the content noun gate and keeps edit/live narrow', () => {
     const stagePlan = buildDeterministicChatActionPlan({
       ...baseInput,
-      text: 'Mark the recovery idea as filmed',
+      text: 'Mark the recovery idea as scripted',
       locale: 'en-US',
       messageId: 'content-stage-without-content-noun',
     });
@@ -2715,9 +2799,17 @@ describe('ChatActionPlanner', () => {
       action: 'content_pipeline_stage_transition',
       args: {
         topicTitle: 'recovery idea',
-        targetStage: 'filmed',
+        targetStage: 'scripted',
       },
     });
+
+    const filmedPlan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Mark the recovery idea as filmed',
+      locale: 'en-US',
+      messageId: 'content-stage-filmed-unmodeled',
+    });
+    expect(filmedPlan?.steps[0]?.action).not.toBe('content_pipeline_stage_transition');
 
     const editPlan = buildDeterministicChatActionPlan({
       ...baseInput,
@@ -2799,6 +2891,14 @@ describe('ChatActionPlanner', () => {
       persistRuns: false,
     };
     const plan = buildDeterministicChatActionPlan(input)!;
+    expect(plan.steps[0]).toMatchObject({
+      action: 'content_rewrite',
+      requiredArgsPresent: true,
+      args: {
+        sourceText: 'Hook: the first minute after waking decides your run.',
+        objective: 'punchier',
+      },
+    });
     const result = executeContentAgencyStep(plan.steps[0]!, plan, input, false);
 
     expect(result.status).toBe('verified_success');
@@ -2809,12 +2909,44 @@ describe('ChatActionPlanner', () => {
     expect(readBack?.artifact?.transcriptStudy?.structure).toContain('hook');
   });
 
+  it('asks for source and goal together when either Content rewrite input is missing', () => {
+    const plan = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Rewrite this caption to be punchier',
+      locale: 'en-US',
+      messageId: 'content-rewrite-missing-source',
+    });
+
+    expect(plan?.steps[0]).toMatchObject({
+      action: 'content_rewrite',
+      requiredArgsPresent: false,
+      args: { sourceText: null, objective: 'punchier' },
+    });
+    expect(plan?.clarificationQuestion).toMatch(/source copy and rewrite goal together/i);
+
+    const missingGoal = buildDeterministicChatActionPlan({
+      ...baseInput,
+      text: 'Rewrite this caption: Morning routines start the night before.',
+      locale: 'en-US',
+      messageId: 'content-rewrite-missing-goal',
+    });
+    expect(missingGoal?.steps[0]).toMatchObject({
+      action: 'content_rewrite',
+      requiredArgsPresent: false,
+      args: {
+        sourceText: 'Morning routines start the night before.',
+        objective: null,
+      },
+    });
+    expect(missingGoal?.clarificationQuestion).toMatch(/source copy and rewrite goal together/i);
+  });
+
   it('routes and executes Content pipeline stage transitions with scoped read-back', async () => {
     const deterministic = buildDeterministicChatActionPlan({
       ...baseInput,
       userId: 4210,
       tenantId: 4210,
-      text: 'Mark the recovery reel as filmed',
+      text: 'Mark the recovery reel as scripted',
       locale: 'en-US',
       messageId: 'content-pipeline-stage-route',
     });
@@ -2824,7 +2956,7 @@ describe('ChatActionPlanner', () => {
       requiredArgsPresent: true,
       args: {
         topicTitle: 'recovery reel',
-        targetStage: 'filmed',
+        targetStage: 'scripted',
       },
     });
 

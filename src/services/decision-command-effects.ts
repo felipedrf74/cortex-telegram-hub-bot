@@ -9,6 +9,7 @@ import {
 } from './content-workspace-decision-adapter';
 import type { DecisionApiItem } from './decision-center';
 import { hashStable } from './chat-core-v2/deterministic-read/common';
+import { invalidateContentDerivedCaches } from './cache-coherence-registry';
 
 export const DECISION_COMMAND_EFFECTS_VERSION = 'decision_command_effects@1.0.0';
 
@@ -72,7 +73,7 @@ export function executeDecisionContentCommand(input: {
   db?: Database.Database;
 }): DecisionContentCommandResult {
   const db = input.db ?? getDb();
-  return db.transaction(() => {
+  const committed = db.transaction(() => {
     const object = directOwnedContentObjectForDecision(input.item, input.userId, input.tenantId);
     if (!object) throw new Error('DECISION_CONTENT_TARGET_NOT_AUTHORIZED');
     if (contentApprovalVersionForObject(object) !== input.expectedContentVersion) {
@@ -128,6 +129,8 @@ export function executeDecisionContentCommand(input: {
       contentApprovalState: expectedContentState,
     };
   })();
+  invalidateContentDerivedCaches(input.userId);
+  return committed;
 }
 
 export function executeDecisionChatFixerProjection(input: {

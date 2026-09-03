@@ -31,6 +31,7 @@ import { resolveChatTenantId } from './chat-tenant-scope';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { taskPriorityRankSql } from './task-store/task-priority';
 import { countActiveContentWorkspaceItems } from './content-workspace-idea-consumers';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export type DailyContextReadStatus = 'available' | 'empty' | 'failed';
 
@@ -403,7 +404,10 @@ export async function buildDailyContext(userId: number, tenantId?: number): Prom
       parts.push(`CONTENT: ${activeItems} active items in workspace`);
     }
   } catch (err) {
-    logger.debug({ err, userId }, 'context: content section failed');
+    logger.debug(
+      { ...safeContentLogErrorFields(err), userId },
+      'context: content section failed',
+    );
   }
 
   const summary = enforceTokenBudget(parts.join('\n'));

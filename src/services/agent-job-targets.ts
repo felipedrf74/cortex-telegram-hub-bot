@@ -3,6 +3,7 @@
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { getOwnerBootstrapTarget } from './user-service';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export interface AgentJobTenantTarget {
   tenantId: number;
@@ -16,11 +17,22 @@ export interface ActiveAgentJobTargetOptions {
 }
 
 export class AgentJobTargetEnumerationError extends Error {
-  readonly code = 'AGENT_JOB_TARGET_ENUMERATION_FAILED';
+  readonly code: string = 'AGENT_JOB_TARGET_ENUMERATION_FAILED';
 
   constructor(readonly errorName: string) {
     super('Active agent-job targets could not be enumerated');
     this.name = 'AgentJobTargetEnumerationError';
+  }
+}
+
+export class AgentJobTargetReadUnavailableError extends AgentJobTargetEnumerationError {
+  readonly code = 'AGENT_JOB_TARGETS_UNAVAILABLE';
+  readonly retryable = true;
+
+  constructor() {
+    super('AgentJobTargetReadUnavailable');
+    this.message = 'Active agent-job tenant targets are temporarily unavailable.';
+    this.name = 'AgentJobTargetReadUnavailableError';
   }
 }
 
@@ -66,12 +78,16 @@ export function listActiveAgentJobTenantTargets(
           }]
         : [];
     }
+    if (error instanceof AgentJobTargetEnumerationError) throw error;
+    logger.warn(
+      { operation: 'listActiveAgentJobTenantTargets', ...safeContentLogErrorFields(error) },
+      'Active agent-job tenant query failed',
+    );
     const errorName = error instanceof Error ? error.name : 'UnknownError';
     logger.error(
       { operation: 'listActiveAgentJobTenantTargets', errorCode: errorName },
       'Active agent-job tenant query failed closed',
     );
-    if (error instanceof AgentJobTargetEnumerationError) throw error;
-    throw new AgentJobTargetEnumerationError(errorName);
+    throw new AgentJobTargetReadUnavailableError();
   }
 }

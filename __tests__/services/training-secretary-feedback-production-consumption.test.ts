@@ -167,7 +167,7 @@ describe('Training Secretary feedback production consumption', () => {
         planDrift: false,
         fuelingGap: false,
         budgetConstraint: false,
-        contentCommitment: false,
+        confirmedContentWorkBlock: false,
         otherSportRpeToday: 0,
       },
     });

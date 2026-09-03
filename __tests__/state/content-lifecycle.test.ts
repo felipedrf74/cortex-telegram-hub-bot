@@ -132,6 +132,8 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(summary.buckets).toHaveLength(12);
     expect(summary.total).toBe(0);
     expect(summary.hasData).toBe(false);
+    expect(summary.availability).toBe('available');
+    expect(summary.unavailableSections).toEqual([]);
     expect(summary.buckets.every(b => b.count === 0)).toBe(true);
   });
 
@@ -151,6 +153,7 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(byStage.accepted).toBe(1);
     expect(byStage.rejected).toBe(2);
     expect(summary.hasData).toBe(true);
+    expect(summary.availability).toBe('available');
   });
 
   it('does not count accepted radar signals that were converted or already have a topic', () => {
@@ -172,6 +175,17 @@ describe('content-lifecycle (CONTENT-UI-O4)', () => {
     expect(summary.total).toBe(0);
     expect(summary.tenantId).toBe(0);
     expect(summary.buckets).toHaveLength(12);
+    expect(summary.availability).toBe('unavailable');
+    expect(summary.unavailableSections).toEqual(['workspace', 'radar_feedback']);
+  });
+
+  it('marks a failed lifecycle source unavailable instead of treating its zeros as complete', () => {
+    testDb.exec('DROP TABLE content_radar_feedback');
+
+    const summary = summarizeCanonicalLifecycle(USER, USER);
+
+    expect(summary.availability).toBe('partial');
+    expect(summary.unavailableSections).toEqual(['radar_feedback']);
   });
 });
 

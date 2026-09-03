@@ -181,6 +181,23 @@ describe('chat state shortcut builders', () => {
     });
   });
 
+  it('keeps performance reads inside the authenticated tenant scope', async () => {
+    const { buildContentStateShortcutResponse } = await import('../../src/api/routes/chat-state-shortcuts');
+
+    await buildContentStateShortcutResponse('performance', 42, 'en-US', 91);
+
+    expect(mockGetPerformanceSummary).toHaveBeenCalledWith(42, 30, 91);
+  });
+
+  it('keeps learning and fallback performance reads inside the authenticated tenant scope', async () => {
+    const { buildContentStateShortcutResponse } = await import('../../src/api/routes/chat-state-shortcuts');
+
+    await buildContentStateShortcutResponse('learning', 42, 'en-US', 91);
+
+    expect(mockGetLearnedPatterns).toHaveBeenCalledWith(42, undefined, 91);
+    expect(mockGetPerformanceSummary).toHaveBeenCalledWith(42, 30, 91);
+  });
+
   it('builds accountant bundle blockers with provider labels', async () => {
     const { buildFinanceStateShortcutResponse } = await import('../../src/api/routes/chat-state-shortcuts');
     mockGetFiscalCollectionSummary.mockReturnValue({

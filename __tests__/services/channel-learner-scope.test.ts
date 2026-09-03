@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 let testDb: Database.Database;
-const { completeOneShotWithFallback, writeSignal } = vi.hoisted(() => ({
+const { completeOneShotWithFallback, writeSignal, invalidateContentDerivedCaches } = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   writeSignal: vi.fn(),
+  invalidateContentDerivedCaches: vi.fn(),
 }));
 vi.hoisted(() => {
   process.env.YOUTUBE_API_KEY = 'test-youtube-key';
@@ -64,6 +65,10 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   writeGovernedSignal: writeSignal,
 }));
 
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  invalidateContentDerivedCaches,
+}));
+
 vi.mock('../../src/services/ai-automation-policy', () => ({
   recordAiAutomationEligibilitySkip: vi.fn(),
   resolveAiAutomationEligibility: vi.fn((userId: number) => ({
@@ -84,7 +89,14 @@ import {
   updateChannelStatus,
   upsertPatterns,
 } from '../../src/state/content-references';
-import { analyzeChannel, processAllChannelScopes } from '../../src/services/channel-learner';
+import {
+  ChannelAutomationTargetsUnavailableError,
+  ChannelSourceUnavailableError,
+  addAndAnalyzeChannel,
+  analyzeChannel,
+  planChannelRelearnScopes,
+  processAllChannelScopes,
+} from '../../src/services/channel-learner';
 import { resolveAiAutomationEligibility } from '../../src/services/ai-automation-policy';
 
 const adminContext = createContentReferencesAdminContext('channel learner scope test');
@@ -95,6 +107,8 @@ describe('channel-learner: scoped synthesis', () => {
     completeOneShotWithFallback.mockReset();
     writeSignal.mockReset();
     writeSignal.mockReturnValue(1);
+    invalidateContentDerivedCaches.mockReset();
+    vi.mocked(resolveAiAutomationEligibility).mockClear();
 
     completeOneShotWithFallback.mockImplementation(async (_system, prompt, jobName) => {
       if (jobName === 'channel_analysis') {
@@ -136,13 +150,15 @@ describe('channel-learner: scoped synthesis', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
       const href = String(url);
       if (href.startsWith('https://www.googleapis.com/youtube/v3/channels')) {
-        return { json: async () => ({ items: [{ id: 'UCsystem', snippet: { title: 'System Channel' } }] }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: 'UCsystem', snippet: { title: 'System Channel' } }] }) } as Response;
       }
       if (href.startsWith('https://www.googleapis.com/youtube/v3/search') && href.includes('channelId=UCsystem')) {
-        return { json: async () => ({ items: [{ id: { videoId: 'vid-system-1' } }] }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: { videoId: 'vid-system-1' } }] }) } as Response;
       }
       if (href.startsWith('https://www.googleapis.com/youtube/v3/videos')) {
         return {
+          ok: true,
+          status: 200,
           json: async () => ({
             items: [{
               id: 'vid-system-1',
@@ -210,7 +226,181 @@ describe('channel-learner: scoped synthesis', () => {
     expect(privateChannels).toBe(0);
   });
 
+  it('fails scheduled target selection closed when active-user truth is unavailable', () => {
+    testDb.exec('ALTER TABLE users RENAME TO users_unavailable');
+
+    expect(() => planChannelRelearnScopes())
+      .toThrow(ChannelAutomationTargetsUnavailableError);
+    expect(resolveAiAutomationEligibility).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('preserves typed YouTube HTTP unavailability instead of reporting no channel or videos', async () => {
+    const channel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 42);
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: { message: 'private upstream detail' } }),
+    } as Response)));
+
+    await expect(analyzeChannel(channel.id)).rejects.toMatchObject({
+      name: ChannelSourceUnavailableError.name,
+      code: 'CONTENT_CHANNEL_SOURCE_UNAVAILABLE',
+      reason: 'http',
+      status: 503,
+      retryable: true,
+    });
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare(
+      'SELECT status, error_message FROM content_ref_channels WHERE id = ?',
+    ).get(channel.id)).toEqual({
+      status: 'failed',
+      error_message: 'CONTENT_CHANNEL_SOURCE_UNAVAILABLE',
+    });
+  });
+
+  it.each([
+    ['missing required snippet fields', {
+      id: 'vid-system-1',
+      snippet: {
+        description: 'Description',
+        publishedAt: '2026-04-17T09:00:00.000Z',
+        channelTitle: 'System Channel',
+      },
+      statistics: { viewCount: '1000' },
+      contentDetails: { duration: 'PT10M' },
+    }],
+    ['a non-numeric required view count', {
+      id: 'vid-system-1',
+      snippet: {
+        title: 'System video',
+        description: 'Description',
+        publishedAt: '2026-04-17T09:00:00.000Z',
+        channelTitle: 'System Channel',
+      },
+      statistics: { viewCount: 'not-a-count' },
+      contentDetails: { duration: 'PT10M' },
+    }],
+    ['invalid published-at and duration fields', {
+      id: 'vid-system-1',
+      snippet: {
+        title: 'System video',
+        description: 'Description',
+        publishedAt: 'not-rfc3339',
+        channelTitle: 'System Channel',
+      },
+      statistics: { viewCount: '1000' },
+      contentDetails: { duration: 'ten minutes' },
+    }],
+    ['an unrequested video id', {
+      id: 'vid-from-another-response',
+      snippet: {
+        title: 'Unexpected video',
+        description: 'Description',
+        publishedAt: '2026-04-17T09:00:00.000Z',
+        channelTitle: 'Another Channel',
+      },
+      statistics: { viewCount: '1000' },
+      contentDetails: { duration: 'PT10M' },
+    }],
+  ])('rejects malformed YouTube 2xx video details with typed source unavailability: %s', async (_label, videoDetails) => {
+    const channel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 42);
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      if (href.startsWith('https://www.googleapis.com/youtube/v3/channels')) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: 'UCsystem', snippet: { title: 'System Channel' } }] }) } as Response;
+      }
+      if (href.startsWith('https://www.googleapis.com/youtube/v3/search')) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: { videoId: 'vid-system-1' } }] }) } as Response;
+      }
+      if (href.startsWith('https://www.googleapis.com/youtube/v3/videos')) {
+        return { ok: true, status: 200, json: async () => ({ items: [videoDetails] }) } as Response;
+      }
+      throw new Error(`Unexpected fetch ${href}`);
+    }));
+
+    await expect(analyzeChannel(channel.id)).rejects.toMatchObject({
+      name: ChannelSourceUnavailableError.name,
+      code: 'CONTENT_CHANNEL_SOURCE_UNAVAILABLE',
+      reason: 'invalid_response',
+      status: 503,
+      retryable: true,
+    });
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(testDb.prepare(
+      'SELECT status, error_message FROM content_ref_channels WHERE id = ?',
+    ).get(channel.id)).toEqual({
+      status: 'failed',
+      error_message: 'CONTENT_CHANNEL_SOURCE_UNAVAILABLE',
+    });
+  });
+
+  it('accepts omitted optional YouTube like and comment counters without inventing a malformed source', async () => {
+    const channel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 42);
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      if (href.startsWith('https://www.googleapis.com/youtube/v3/channels')) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: 'UCsystem', snippet: { title: 'System Channel' } }] }) } as Response;
+      }
+      if (href.startsWith('https://www.googleapis.com/youtube/v3/search')) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: { videoId: 'vid-system-1' } }] }) } as Response;
+      }
+      if (href.startsWith('https://www.googleapis.com/youtube/v3/videos')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [{
+              id: 'vid-system-1',
+              snippet: {
+                title: 'System video',
+                description: 'Description',
+                publishedAt: '2026-04-17T09:00:00.000Z',
+                channelTitle: 'System Channel',
+              },
+              statistics: { viewCount: '1000' },
+              contentDetails: { duration: 'PT10M' },
+            }],
+          }),
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch ${href}`);
+    }));
+
+    await expect(analyzeChannel(channel.id)).resolves.toMatchObject({
+      success: true,
+      videosAnalyzed: 1,
+    });
+    expect(completeOneShotWithFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a valid empty YouTube result distinct from source unavailability', async () => {
+    const channel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 42);
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: href.startsWith('https://www.googleapis.com/youtube/v3/channels')
+            ? [{ id: 'UCsystem', snippet: { title: 'System Channel' } }]
+            : [],
+        }),
+      } as Response;
+    }));
+
+    await expect(analyzeChannel(channel.id)).resolves.toMatchObject({
+      success: false,
+      error: 'CHANNEL_SOURCE_NO_RESULTS',
+      videosAnalyzed: 0,
+    });
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
   it('resynthesizes user knowledge after shared system channels refresh without emitting per-user channel_dna signals', async () => {
+    testDb.prepare(
+      "INSERT INTO users (id, telegram_id, tier, status) VALUES (42, 4200, 'pro', 'active')",
+    ).run();
     const systemChannel = addSystemChannel('https://www.youtube.com/channel/UCsystem', 'manual', adminContext);
     testDb.prepare(`
       UPDATE content_ref_channels
@@ -266,9 +456,14 @@ describe('channel-learner: scoped synthesis', () => {
 
     expect(writeSignal).toHaveBeenCalled();
     expect(writeSignal.mock.calls.some(([signal]) => signal.user_id === 42)).toBe(false);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(undefined);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(42);
   });
 
   it('skips platform and user YouTube work when no eligible Content automation consumer exists', async () => {
+    testDb.prepare(
+      "INSERT INTO users (id, telegram_id, tier, status) VALUES (77, 7700, 'free', 'active')",
+    ).run();
     const denied = addChannel('https://www.youtube.com/@denied', 'manual', 77);
     expect(denied.user_id).toBe(77);
 
@@ -285,6 +480,7 @@ describe('channel-learner: scoped synthesis', () => {
     expect(resolveAiAutomationEligibility).toHaveBeenCalledWith(77, 'content');
     expect(fetch).not.toHaveBeenCalled();
     expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(invalidateContentDerivedCaches).not.toHaveBeenCalled();
   });
 
   it('defers platform scope when eligible users have no shared-consumption evidence', async () => {
@@ -340,6 +536,8 @@ describe('channel-learner: scoped synthesis', () => {
     const result = await analyzeChannel(userChannel.id);
 
     expect(result.success).toBe(false);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledTimes(1);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(42);
     const channelRow = testDb.prepare(
       'SELECT status, analysis_fingerprint FROM content_ref_channels WHERE id = ?',
     ).get(userChannel.id) as { status: string; analysis_fingerprint: string | null };
@@ -348,6 +546,120 @@ describe('channel-learner: scoped synthesis', () => {
       'SELECT pattern_text FROM content_patterns WHERE channel_id = ?',
     ).all(userChannel.id) as Array<{ pattern_text: string }>;
     expect(patterns.map((pattern) => pattern.pattern_text)).toContain('Prior valid hook pattern');
+  });
+
+  it('rejects non-default tenant add-and-analyze before channel or provider mutation', async () => {
+    const before = testDb.prepare('SELECT COUNT(*) AS count FROM content_ref_channels').get() as { count: number };
+
+    await expect(addAndAnalyzeChannel(
+      'https://www.youtube.com/channel/UCtenant',
+      'portal',
+      42,
+      314,
+    )).rejects.toMatchObject({
+      name: 'UnsupportedChannelLearningScopeError',
+      code: 'UNSUPPORTED_SCOPE',
+      status: 409,
+      message: 'Channel analysis and synthesis currently support user-default tenant only',
+    });
+
+    const after = testDb.prepare('SELECT COUNT(*) AS count FROM content_ref_channels').get() as { count: number };
+    expect(after).toEqual(before);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+    expect(invalidateContentDerivedCaches).not.toHaveBeenCalled();
+  });
+
+  it('invalidates the creator cache when add-and-analyze first commits a channel row', async () => {
+    completeOneShotWithFallback.mockResolvedValue({ text: '{not-json', provider: 'gemini' });
+
+    const result = await addAndAnalyzeChannel(
+      'https://www.youtube.com/channel/UCsystem',
+      'portal',
+      42,
+      42,
+    );
+
+    expect(result.channel.user_id).toBe(42);
+    expect(result.analysis.success).toBe(false);
+    expect(invalidateContentDerivedCaches.mock.calls).toEqual([[42], [42]]);
+  });
+
+  it('cancels channel search work when the interactive request disconnects', async () => {
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('content client disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => { fetchStarted = resolve; });
+    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        fetchStarted();
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const analysis = addAndAnalyzeChannel(
+      'https://www.youtube.com/channel/UCsystem',
+      'portal',
+      42,
+      42,
+      {
+        requestSource: 'interactive',
+        jobName: 'channel_add_manual',
+        abortSignal: controller.signal,
+      },
+    );
+    await started;
+    controller.abort(cancellation);
+
+    await expect(analysis).rejects.toBe(cancellation);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit)?.signal).toBe(controller.signal);
+    expect(completeOneShotWithFallback).not.toHaveBeenCalled();
+  });
+
+  it('does not persist extracted patterns after provider work is cancelled', async () => {
+    const channel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 42);
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('content client disconnected'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    completeOneShotWithFallback.mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return {
+        provider: 'gemini',
+        text: JSON.stringify({
+          channel_summary: 'Cancelled result',
+          patterns: PATTERN_CATEGORIES.map((category) => ({
+            category,
+            pattern_text: `Cancelled ${category}`,
+            examples: ['Must not persist'],
+            confidence: 0.9,
+            source_videos: ['vid-system-1'],
+          })),
+        }),
+      };
+    });
+
+    await expect(analyzeChannel(channel.id, {
+      budgetContext: {
+        requestSource: 'interactive',
+        jobName: 'channel_reanalyze_manual',
+        abortSignal: controller.signal,
+      },
+    })).rejects.toBe(cancellation);
+
+    expect(testDb.prepare(
+      'SELECT COUNT(*) AS count FROM content_patterns WHERE channel_id = ?',
+    ).get(channel.id)).toEqual({ count: 0 });
+    expect(testDb.prepare(
+      'SELECT status, analysis_fingerprint FROM content_ref_channels WHERE id = ?',
+    ).get(channel.id)).toEqual({ status: 'pending', analysis_fingerprint: null });
+    expect(writeSignal).not.toHaveBeenCalled();
   });
 
   it('rejects category-incomplete extraction and retains the prior pattern set', async () => {

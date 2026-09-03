@@ -2,7 +2,15 @@
 
 import { DateTime } from 'luxon';
 import { getCached, setCache } from './cache-store';
-import { composeWeeklyPlan, type WeeklyPlanDay, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
+import { CONTENT_AGENT_LIFECYCLE_POLICY_VERSION } from './content-agent-lifecycle';
+import { safeContentLogErrorFields } from './content-log-safety';
+import {
+  composeWeeklyPlan,
+  CONTENT_PLAN_PROJECTION_VERSION,
+  hasConfirmedPrivateContentBlock,
+  type WeeklyPlanDay,
+  type WeeklyPlanResponse,
+} from './weekly-plan-orchestrator';
 import {
   buildSecretaryCoordination,
   type SecretaryCoordinationModel,
@@ -42,6 +50,7 @@ export interface DailyBriefResponse {
   garmin_stale: boolean;
   conflicts: WeeklyPlanResponse['conflicts'];
   creativeCopy: WeeklyPlanResponse['creativeCopy'];
+  contentPlan: WeeklyPlanResponse['contentPlan'];
   day: WeeklyPlanDay;
   coordination: SecretaryCoordinationModel;
 }
@@ -119,6 +128,16 @@ function buildEmptyDailyBriefResponse(opts: {
     creativeCopy: {
       headline: '',
       note: '',
+    },
+    contentPlan: {
+      authority: 'secretary',
+      authorityStatus: 'unavailable',
+      planStatus: 'unavailable',
+      semantics: 'private_work_session',
+      confirmedBlockCount: 0,
+      confirmedBlocksComplete: false,
+      attentionCount: 0,
+      deadlineCount: 0,
     },
     day: buildEmptyDailyBriefDay(targetDate, opts.language, timezone),
     coordination: {
@@ -343,6 +362,8 @@ export async function composeDailyBrief(opts: {
   const cacheKey = [
     'plan', 'today', 'u', opts.userId, 't', tenantId, targetDate,
     'tz', context.timezone, 'lang', context.language,
+    'content-policy', CONTENT_AGENT_LIFECYCLE_POLICY_VERSION,
+    'projection', CONTENT_PLAN_PROJECTION_VERSION,
   ].join(':');
   const ownsCache = opts.cacheMode !== 'bypass';
   // A caller-supplied week is the canonical input for this composition. Do not
@@ -395,7 +416,7 @@ export async function composeDailyBrief(opts: {
       } catch (err) {
         coordinationDegraded = true;
         logger.warn(
-          { err, userId: opts.userId, date: targetDate },
+          { ...safeContentLogErrorFields(err), userId: opts.userId, date: targetDate },
           'daily brief coordination build failed — returning empty coordination shell',
         );
       }
@@ -413,6 +434,7 @@ export async function composeDailyBrief(opts: {
       garmin_stale: weekPlan.garmin_stale,
       conflicts,
       creativeCopy: weekPlan.creativeCopy,
+      contentPlan: weekPlan.contentPlan,
       day,
       coordination,
     };
@@ -426,7 +448,7 @@ export async function composeDailyBrief(opts: {
     // successful (albeit degraded) plan.
     if (err instanceof SecretaryPlanningContextError) throw err;
     logger.warn(
-      { err, userId: opts.userId, date: targetDate },
+      { ...safeContentLogErrorFields(err), userId: opts.userId, date: targetDate },
       'daily brief weekly-plan compose failed — returning degraded fallback',
     );
     return buildUnavailableDailyBriefResponse({
@@ -512,12 +534,13 @@ function buildDailyCoordination(opts: {
     secretaryTodaySignals: opts.secretaryTodaySignals,
     sourceHealth: opts.weekPlan.sourceHealth,
   });
+  const hasConfirmedContentBlock = hasConfirmedPrivateContentBlock(opts.day.content);
 
   return {
     ...coordination,
     executionOrder: coordination.executionOrder.length > 0
       ? coordination.executionOrder
-      : opts.day.secretary.sequence.slice(0, 5),
+      : opts.day.secretary.sequence.slice(0, 3),
     watchouts: coordination.watchouts.length > 0
       ? coordination.watchouts
       : compact([
@@ -533,11 +556,11 @@ function buildDailyCoordination(opts: {
         opts.day.meals.some((meal) => meal.title === 'Fueling coverage missing')
           ? 'Training depends on meal coverage landing before the key session.'
           : null,
-        opts.day.content?.status === 'scheduled' && opts.day.training.status !== 'rest'
-          ? 'Content should follow the protected training and fueling commitments instead of displacing them.'
+        hasConfirmedContentBlock && opts.day.training.status !== 'rest'
+          ? 'A Secretary-confirmed private Content work block is reserved today; reconcile any overlap without treating it as publication.'
           : null,
-        opts.day.content?.status === 'scheduled' && opts.day.finance?.budgetNote
-          ? 'Keep the content execution path aligned with the current finance constraints for the week.'
+        hasConfirmedContentBlock && opts.day.finance?.budgetNote
+          ? 'Keep the confirmed private Content work block aligned with the current finance constraints without implying a delivery commitment.'
           : null,
       ]),
   };

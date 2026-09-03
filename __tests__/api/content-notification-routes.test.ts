@@ -216,8 +216,12 @@ describe('content notification resolver route', () => {
 
   it('rejects invalid ids and invalid authenticated scope', async () => {
     const invalidId = await dispatch('/notifications/not-a-number');
+    const partialId = await dispatch('/notifications/1suffix');
+    const unsafeId = await dispatch(`/notifications/${Number.MAX_SAFE_INTEGER + 1}`);
     expect(invalidId.response.statusCode).toBe(400);
     expect(invalidId.response.body.error.code).toBe('BAD_REQUEST');
+    expect(partialId.response.statusCode).toBe(400);
+    expect(unsafeId.response.statusCode).toBe(400);
 
     const invalidScope = await dispatch('/notifications/1', 0);
     expect(invalidScope.response.statusCode).toBe(401);

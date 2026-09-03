@@ -7,29 +7,35 @@
 import { makeStep, type StepKeyInputs } from '../step-builder';
 import { extractTopic, inferContentPlatform } from '../text-extractors';
 import type { ChatPlanStep } from '../../chat/types';
-import { parseContentPipelineStageTransition } from './pipeline-stage';
+import {
+  parseContentPipelineStageTransition,
+  parseContentPublicationTrackingRequest,
+} from './pipeline-stage';
 import { extractContentScheduleDateTime, extractContentScheduleTitle } from './datetime';
+import { extractInlineContentRewrite } from './rewrite';
 
 export function parseContentActionStep(
   input: StepKeyInputs & { text: string; timezone?: string; nowIso?: string },
   folded: string,
 ): ChatPlanStep | null {
+  const publicationTracking = parseContentPublicationTrackingRequest(input.text);
+  if (publicationTracking.targetStage && publicationTracking.topicTitle) {
+    return makeStep(input, {
+      skill: 'content',
+      action: 'content_publish_now',
+      risk: 'ambiguous',
+      provider: 'none',
+      args: {
+        publicationRequest: input.text,
+        requestedMode: 'track_publication',
+        rejectionReason: 'content_publication_tracking_not_supported',
+      },
+      requiredArgsPresent: false,
+    });
+  }
+
   const pipelineStage = parseContentPipelineStageTransition(input.text);
   if (pipelineStage.targetStage && pipelineStage.topicTitle) {
-    if (pipelineStage.targetStage === 'published') {
-      return makeStep(input, {
-        skill: 'content',
-        action: 'content_publish_now',
-        risk: 'ambiguous',
-        provider: 'none',
-        args: {
-          publicationRequest: input.text,
-          requestedMode: 'track_publication',
-          rejectionReason: 'content_publication_tracking_not_supported',
-        },
-        requiredArgsPresent: false,
-      });
-    }
     return makeStep(input, {
       skill: 'content',
       action: 'content_pipeline_stage_transition',
@@ -58,13 +64,14 @@ export function parseContentActionStep(
   if (/\b(rewrite|reescreve[r]?|reescrita|reescrev[oae]|reescribe[r]?|reescritura|acorta[r]?|alarga[r]?|reduce)\b/.test(folded)
     || /\bmake\s+(?:this|the|that|it)\s+(?:caption|copy|script|brief|reel|post|text|email|message|version)?\s*(?:shorter|longer|punchier|simpler|tighter|crisper|catchier|more\s+\w+)\b/.test(folded)
     || /\b(hacer|hazlo|hacerla|hacerlo)\s+(?:m[aá]s\s+)?(?:corta?|larga?|simple|tighter|crisper|catchier)\b/.test(folded)) {
+    const rewrite = extractInlineContentRewrite(input.text);
     return makeStep(input, {
       skill: 'content',
       action: 'content_rewrite',
       risk: 'safe_write',
       provider: 'nexus',
-      args: { sourceText: input.text, objective: topic },
-      requiredArgsPresent: false,
+      args: { ...rewrite },
+      requiredArgsPresent: Boolean(rewrite.sourceText && rewrite.objective),
     });
   }
 

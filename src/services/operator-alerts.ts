@@ -1,5 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import type Database from 'better-sqlite3';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { pushEvent } from '../portal/telemetry';
@@ -247,8 +248,11 @@ function mapAlert(row: any): OperatorAlert {
   };
 }
 
-function getOpenAlertByDedupeKey(dedupeKey: string): OperatorAlert | null {
-  const row = getDb().prepare(`
+function getOpenAlertByDedupeKey(
+  dedupeKey: string,
+  database: Database.Database = getDb(),
+): OperatorAlert | null {
+  const row = database.prepare(`
     SELECT *
     FROM operator_alerts
     WHERE dedupe_key = ? AND status = 'open'
@@ -257,7 +261,10 @@ function getOpenAlertByDedupeKey(dedupeKey: string): OperatorAlert | null {
   return row ? mapAlert(row) : null;
 }
 
-export function recordOperatorAlert(input: RecordOperatorAlertInput): RecordOperatorAlertResult {
+export function recordOperatorAlert(
+  input: RecordOperatorAlertInput,
+  providedDatabase?: Database.Database,
+): RecordOperatorAlertResult {
   const severity = input.severity;
   const source = sanitizeText(input.source, MAX_SOURCE_LENGTH);
   const dedupeKey = sanitizeText(input.dedupeKey, MAX_DEDUPE_LENGTH);
@@ -274,7 +281,8 @@ export function recordOperatorAlert(input: RecordOperatorAlertInput): RecordOper
   }
 
   try {
-    const update = getDb().prepare(`
+    const database = providedDatabase ?? getDb();
+    const update = database.prepare(`
       UPDATE operator_alerts
       SET
         severity = ?,
@@ -295,7 +303,7 @@ export function recordOperatorAlert(input: RecordOperatorAlertInput): RecordOper
     `).run(severity, title, detail, metadataJson, owner, suspectedArea, userImpact, runbookUrl, dedupeKey);
 
     if (update.changes > 0) {
-      const alert = getOpenAlertByDedupeKey(dedupeKey) ?? undefined;
+      const alert = getOpenAlertByDedupeKey(dedupeKey, database) ?? undefined;
       if (alert) {
         logger.warn(
           {
@@ -316,7 +324,7 @@ export function recordOperatorAlert(input: RecordOperatorAlertInput): RecordOper
       };
     }
 
-    const insert = getDb().prepare(`
+    const insert = database.prepare(`
       INSERT INTO operator_alerts (
         severity,
         source,
@@ -332,7 +340,7 @@ export function recordOperatorAlert(input: RecordOperatorAlertInput): RecordOper
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(severity, source, dedupeKey, title, detail, metadataJson, owner, suspectedArea, userImpact, runbookUrl);
 
-    const row = getDb().prepare('SELECT * FROM operator_alerts WHERE id = ?').get(insert.lastInsertRowid);
+    const row = database.prepare('SELECT * FROM operator_alerts WHERE id = ?').get(insert.lastInsertRowid);
     const alert = row ? mapAlert(row) : undefined;
     if (alert) {
       logger.warn(

@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { normalizeScriptLanguage } from '../../src/services/content-engine-script-runtime';
 
 // Vitest hoists these factories. Keep them at module scope so future Vitest
 // versions do not reject mocks declared inside a suite.
@@ -54,6 +55,11 @@ vi.mock('../../src/utils/logger', () => ({
 // ═══════════════════════════════════════════════════════════════════
 
 describe('script-pipeline: fake-userId regression', () => {
+  it('uses neutral English when a lower-level caller omits script locale', () => {
+    expect(normalizeScriptLanguage()).toBe('en-US');
+    expect(normalizeScriptLanguage('')).toBe('en-US');
+  });
+
   it('no executable handleContent calls remain in content-workflow.ts', () => {
     // The old code called handleContent(prompt, 4096) where 4096 was
     // silently consumed as the userId parameter. Verify no executable
@@ -162,7 +168,7 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     expect(engineSource).toContain('export function buildScriptCacheKey');
-    expect(engineSource).toContain("'script-v8'");
+    expect(engineSource).toContain("'script-v9'");
     expect(engineSource).toContain('`duration:${maxDuration}`');
     expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
     expect(engineSource).toContain('`mode:${mode}`');
@@ -183,8 +189,9 @@ describe('script-pipeline: cache key hardening', () => {
       'utf8',
     );
 
-    expect(engineSource).toContain("readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays, tenantId)");
-    expect(engineSource).toMatch(/readSignals\('script-engine', \[\.\.\.signalTypes\], 100, userId, cfg\.signalDays, tenantId\)/);
+    expect(engineSource).toMatch(
+      /readSignals\(\s*'script-engine',\s*\[\.\.\.signalTypes\],\s*100,\s*normalizedUserId,\s*cfg\.signalDays,\s*normalizedTenantId,/,
+    );
   });
 
   it('gates user-derived signal reads behind the typed execution policy', () => {
@@ -209,10 +216,10 @@ describe('script-pipeline: cache key hardening', () => {
       'utf8',
     );
 
-    expect(engineSource).toContain('topic_context: scriptContext ?? undefined');
-    expect(engineSource).toContain('creator_profile: creatorProfile || undefined');
+    expect(engineSource).toContain('topic_context: normalizedContext');
+    expect(engineSource).toContain('creator_profile: normalizedCreatorProfile');
     expect(engineSource).toContain('force_refresh: forceRefresh || undefined');
-    expect(engineSource).toContain('regeneration_seed: regenerationSeed || undefined');
+    expect(engineSource).toContain('regeneration_seed: normalizedRegenerationSeed');
   });
 
   it('checks the token-zero script cache before entering the fresh-provider budget boundary', () => {
@@ -222,7 +229,7 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     const cacheLookup = engineSource.indexOf('const cached = getCached<ScriptResponse>(normalizedKey)');
-    const providerBoundary = engineSource.indexOf('const result = providerBoundary');
+    const providerBoundary = engineSource.indexOf('const providerResult = providerBoundary');
     const tokenMint = engineSource.indexOf('buildContentEngineScriptAttribution({');
     const freshProviderCallback = engineSource.indexOf('const invokeFreshProviderPath');
     expect(cacheLookup).toBeGreaterThan(-1);
@@ -270,7 +277,7 @@ describe('script-pipeline: formatScriptToText', () => {
     expect(text).toContain('Fala galera, hoje eu vou');
 
     // Sources present
-    expect(text).toContain('FONTES VERIFICADAS:');
+    expect(text).toContain('FONTES ASSOCIADAS (NÃO VERIFICADAS):');
     expect(text).toContain('Study X');
     expect(text).toContain('https://example.com/x');
 
@@ -294,7 +301,7 @@ describe('script-pipeline: formatScriptToText', () => {
     const text = formatScriptToText(mockResponse);
 
     expect(text).not.toContain('TITLE OPTIONS:');
-    expect(text).not.toContain('FONTES VERIFICADAS:');
+    expect(text).not.toContain('FONTES ASSOCIADAS (NÃO VERIFICADAS):');
     expect(text).toContain('HOOK:');
     expect(text).toContain('SCRIPT:');
   });
@@ -430,14 +437,15 @@ describe('script-pipeline: iOS API route', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('script-pipeline: format-specific behavior', () => {
-  it('generateScript passes maxDuration=1 for reels', () => {
+  it('generateScript derives the bounded minute budget from the selected duration preset', () => {
     const workflowSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
       'utf8',
     );
 
-    // Reel format should use maxDuration = 1 (1 minute max)
-    expect(workflowSource).toContain("format === 'reel' ? 1 : 8");
+    expect(workflowSource).toMatch(/format === 'reel'\s*\? \[15, 30, 45, 60\]/);
+    expect(workflowSource).toContain("format === 'reel' ? 60 : 480");
+    expect(workflowSource).toContain('Math.ceil(targetDurationSeconds / 60)');
   });
 
   it('generateScript passes format string to getScript', () => {

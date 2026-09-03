@@ -64,7 +64,15 @@ for (const id of duplicateIds(manifestJobIds)) errors.push(`duplicate manifest j
 for (const id of runtimeJobIds) if (!manifestJobIds.includes(id)) errors.push(`scheduler job missing from manifest: ${id}`);
 for (const id of manifestJobIds) if (!runtimeJobIds.includes(id)) errors.push(`manifest job missing from scheduler: ${id}`);
 for (const id of scheduledJobIds) if (!runtimeJobIds.includes(id)) errors.push(`scheduled callback is unregistered: ${id}`);
-for (const id of runtimeJobIds) if (!scheduledJobIds.includes(id)) errors.push(`registered job has no scheduled callback: ${id}`);
+for (const id of runtimeJobIds) {
+  const manifest = jobManifest.jobs.find((entry) => entry.id === id);
+  if (manifest?.lifecycle === 'active' && !scheduledJobIds.includes(id)) {
+    errors.push(`active registered job has no scheduled callback: ${id}`);
+  }
+  if (manifest?.lifecycle === 'paused' && scheduledJobIds.includes(id)) {
+    errors.push(`paused registered job still has a scheduled callback: ${id}`);
+  }
+}
 for (const registration of registrations) {
   const scheduled = schedules.find((entry) => entry.id === registration.id);
   const manifest = jobManifest.jobs.find((entry) => entry.id === registration.id);
@@ -82,6 +90,9 @@ for (const registration of registrations) {
   }
 }
 for (const job of jobManifest.jobs) {
+  if (!['active', 'paused'].includes(job.lifecycle)) {
+    errors.push(`job has invalid lifecycle: ${job.id}`);
+  }
   for (const field of [
     'policyOwner',
     'jobVersion',

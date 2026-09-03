@@ -30,8 +30,9 @@ export function registerContentNotificationRoutes(
       notificationId: req.params.id,
     })) return;
 
-    const notificationId = Number.parseInt(String(req.params.id), 10);
-    if (!Number.isFinite(notificationId) || notificationId <= 0) {
+    const rawNotificationId = String(req.params.id);
+    const notificationId = /^[1-9]\d*$/u.test(rawNotificationId) ? Number(rawNotificationId) : Number.NaN;
+    if (!Number.isSafeInteger(notificationId)) {
       sendError(res, 'BAD_REQUEST', 'notification id must be a positive integer', 400);
       return;
     }

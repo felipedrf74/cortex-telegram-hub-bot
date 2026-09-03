@@ -4,7 +4,7 @@
  * Content Scheduler Service
  *
  * TASK-14 Phase 2 — backs the iOS Content skill's Topic scheduler card.
- * Owns a user's self-created topics with optional publish dates: the
+ * Owns a user's self-created topics with optional private target deadlines: the
  * "here are the videos I plan to make in the next month" workflow.
  *
  * Distinct from `content-workflow.ts`:
@@ -12,7 +12,7 @@
  *     approves/rejects (sentiment-driven, runs inside the pipeline
  *     agent cron)
  *   - content-scheduler.ts → user's OWN manually-entered topics with
- *     optional publish dates, edited and reviewed interactively
+ *     optional target deadlines, edited and reviewed interactively
  *
  * Migration 247 keeps this public API as a compatibility facade while all
  * topic CRUD persists through the canonical Content workspace. The retired
@@ -30,6 +30,7 @@ import { DateTime } from 'luxon';
 import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { safeContentLogErrorFields } from './content-log-safety';
 import { calculateReadiness } from './readiness-scorer';
 import { getFocusBlockRecommendation } from './focus-planner';
 import { readTrainingContextAll } from './training-signals';
@@ -178,8 +179,8 @@ export function findTopicByClientRequestId(
 
 /**
  * List topics for a user, with optional filters. Sort order:
- *   1. Scheduled topics first, ordered by scheduled_date ASC
- *   2. Unscheduled topics last, ordered by updated_at DESC
+ *   1. Topics with deadlines first, ordered by scheduled_date ASC
+ *   2. Topics without deadlines last, ordered by updated_at DESC
  *
  * This matches the iOS UI expectation: the upcoming timeline at the
  * top of the view, then "later" topics at the bottom.
@@ -192,7 +193,7 @@ export function getTopics(
     from?: string;
     /** Only topics with scheduled_date <= this date (YYYY-MM-DD). */
     to?: string;
-    /** If true, only return scheduled topics (excludes null dates). */
+    /** If true, only return topics with a private target deadline (excludes null dates). */
     scheduledOnly?: boolean;
     /** Exclude cancelled + published by default — caller can opt in. */
     includeTerminal?: boolean;
@@ -218,7 +219,7 @@ export function getTopicById(userId: number, topicId: number, tenantId: number =
 }
 
 /**
- * Count of topics scheduled within the next N days (default: 14).
+ * Count of topics carrying a private target deadline within the next N days (default: 14).
  * Used by the iOS Content skill landing page's Topic scheduler card
  * subtitle ("3 topics this week") without loading the full list.
  */
@@ -394,17 +395,28 @@ export async function getFilmingRecommendation(
 
   logger.info(
     {
-      userId,
-      date: recommendation.date,
+      outcome: 'generated',
       confidence: recommendation.confidence,
-      trainingLoad: recommendation.trainingLoad,
-      calendarLoad: recommendation.calendarLoad,
-      readinessScore: recommendation.readinessScore,
+      hadCalendarData: calendarResult.status === 'fulfilled',
+      hadReadinessData: readiness?.score != null,
+      hadTrainingData: trainingSchedule.size > 0 || trainingContext.signals.length > 0,
+      calendarReservationAvailable: recommendation.calendarReservationAvailable,
     },
     'Content filming recommendation generated',
   );
 
   return recommendation;
+}
+
+export class ContentFilmingRecommendationUnavailableError extends Error {
+  readonly code = 'CONTENT_FILMING_RECOMMENDATION_UNAVAILABLE';
+  readonly statusCode = 503;
+  readonly retryable = true;
+
+  constructor(readonly unavailableInput: 'calendar') {
+    super('A required filming-recommendation input is temporarily unavailable.');
+    this.name = 'ContentFilmingRecommendationUnavailableError';
+  }
 }
 
 // ─── Update ─────────────────────────────────────────────────────────
@@ -501,7 +513,10 @@ async function readBestReadiness(userId: number, tenantId?: number): Promise<{ s
     const readiness = await calculateReadiness(userId, { tenantId });
     return { score: readiness?.score ?? null };
   } catch (err) {
-    logger.debug({ err, userId }, 'Content filming recommendation readiness lookup failed');
+    logger.debug(
+      { ...safeContentLogErrorFields(err), operation: 'content_filming_recommendation', input: 'readiness' },
+      'Content filming recommendation readiness lookup failed',
+    );
     return null;
   }
 }

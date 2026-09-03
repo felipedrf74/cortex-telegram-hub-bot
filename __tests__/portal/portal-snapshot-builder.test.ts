@@ -16,6 +16,12 @@ describe('portal snapshot builder ownership', () => {
     expect(snapshotBuilderSource).toContain('export interface PortalSnapshotResponse');
     expect(snapshotBuilderSource).toContain('export function buildPortalSnapshot');
     expect(snapshotBuilderSource).toContain('domainStatus: PortalSnapshotResponse');
+    expect(snapshotBuilderSource).toContain('!isPausedContentAgent');
+    expect(snapshotBuilderSource).toContain("lifecycle: 'paused', lastResult: 'paused'");
+    expect(snapshotBuilderSource).toContain("if (job.lifecycle === 'paused') continue");
+    expect(snapshotBuilderSource).toContain("if (job.lifecycle === 'active')");
+    expect(snapshotBuilderSource).toContain('excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS');
+    expect(snapshotBuilderSource).toContain('excludeIneligibleContentLearningDigests: true');
     expect(snapshotBuilderSource).toContain('usageMetering: PortalSnapshotResponse');
 
     expect(serverSource).toContain('buildPortalSnapshot(startedAt)');

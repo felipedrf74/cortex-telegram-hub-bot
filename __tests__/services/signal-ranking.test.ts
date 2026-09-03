@@ -325,15 +325,16 @@ describe('signal-ranking: pipeline metrics', () => {
   });
   afterEach(() => testDb?.close());
 
-  it('returns zero metrics on empty pipeline', () => {
+  it('returns unavailable publication metrics on an empty pipeline', () => {
     const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
     expect(metrics.totalEverEntered).toBe(0);
-    expect(metrics.totalPublished).toBe(0);
-    expect(metrics.approvalToPublishRate).toBe(0);
+    expect(metrics.totalPublished).toBeNull();
+    expect(metrics.approvalToPublishRate).toBeNull();
+    expect(metrics.publicationTracking.reasonCode).toBe('CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED');
     expect(metrics.staleInventory).toHaveLength(0);
   });
 
-  it('computes conversion rates', () => {
+  it('computes script conversion without inventing a publication conversion rate', () => {
     // Insert pipeline entries at various stages
     seedWorkspaceMetricItem('Approved', 'active', 'idea');
     seedWorkspaceMetricItem('Scripted', 'active', 'draft');
@@ -345,8 +346,8 @@ describe('signal-ranking: pipeline metrics', () => {
 
     const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
     expect(metrics.totalEverEntered).toBe(5);
-    expect(metrics.totalPublished).toBe(2);
-    expect(metrics.approvalToPublishRate).toBe(40); // 2/5 = 40%
+    expect(metrics.totalPublished).toBeNull();
+    expect(metrics.approvalToPublishRate).toBeNull();
     expect(metrics.approvalToScriptRate).toBe(80); // 4/5 (scripted+filming+published)
   });
 
@@ -360,15 +361,14 @@ describe('signal-ranking: pipeline metrics', () => {
     expect(metrics.staleInventory[0].daysStuck).toBeGreaterThanOrEqual(9);
   });
 
-  it('computes weekly throughput', () => {
+  it('keeps weekly publication throughput unavailable without receipts', () => {
     // Insert a published item from 2 days ago
     const itemId = seedWorkspaceMetricItem('Recent Pub', 'published', 'final', '-2 days');
     seedWorkspacePublishEvent(itemId, '-2 days');
 
     const metrics = getPipelineOperationalMetrics(CONTENT_SCOPE);
-    // The most recent week (weeklyThroughput[3]) should have 1
-    expect(metrics.weeklyThroughput).toHaveLength(4);
-    expect(metrics.weeklyThroughput[3]).toBe(1);
+    expect(metrics.weeklyThroughput).toBeNull();
+    expect(metrics.publicationTracking.availability).toBe('unavailable');
   });
 });
 

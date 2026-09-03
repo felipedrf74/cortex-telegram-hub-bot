@@ -1893,8 +1893,12 @@ export function transitionContentWorkspaceItem(
   else if (transitionChanged) {
     observation.complete('success');
     if (targetState === 'approved') recordContentWorkspaceProductSignal('content_approved');
-    if (targetState === 'scheduled') recordContentWorkspaceProductSignal('content_scheduled');
-    if (targetState === 'published') recordContentWorkspaceProductSignal('content_published');
+    if (targetState === 'scheduled') {
+      recordContentWorkspaceProductSignal('internal_scheduled_state_or_confirmed_work_block');
+    }
+    if (targetState === 'published') {
+      recordContentWorkspaceProductSignal('internal_workflow_published_state');
+    }
   } else observation.complete('no_change');
   return mutation;
   } catch (error) {
@@ -2955,22 +2959,22 @@ function validateItemStateTarget(
   if (targetState === 'published') {
     throw new ContentWorkspaceError(
       'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED',
-      'Publication cannot be inferred from a status change. Confirm the external publication through the dedicated tracking flow.',
+      'Publication cannot be inferred from a status change, and external publication tracking is not supported.',
       409,
       {
         publicationExecution: 'not_performed',
-        recovery: 'confirm_external_publication',
+        recovery: 'publication_tracking_not_supported',
       },
     );
   }
   if (targetState === 'scheduled') {
     throw new ContentWorkspaceError(
       'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED',
-      'A private Content work block does not schedule publication. Use a future dedicated publication confirmation flow.',
+      'A private Content work block does not schedule publication. Publication execution and tracking are not supported.',
       409,
       {
         publicationExecution: 'not_performed',
-        recovery: 'schedule_content_work_or_confirm_publication_separately',
+        recovery: 'schedule_content_work_only',
       },
     );
   }
@@ -3322,9 +3326,18 @@ function deriveNextAction(
       reason: 'The work block is being removed. Check its status before scheduling another one.',
     };
   }
+  if (
+    workSchedule?.state === 'sync_failed'
+    && workSchedule.authorityStatus === 'current'
+  ) {
+    return {
+      action: 'recover_work_schedule',
+      label: 'Recover work block',
+      reason: 'The private work block is confirmed in Secretary, but provider sync needs attention.',
+    };
+  }
   if (workSchedule && (
-    workSchedule.state === 'sync_failed'
-    || workSchedule.state === 'stale'
+    workSchedule.state === 'stale'
     || workSchedule.authorityStatus === 'unavailable'
   )) {
     return {
@@ -3369,10 +3382,18 @@ function deriveNextAction(
     };
   }
   if (productionState === 'scheduled') {
-    return { action: 'prepare_publish', label: 'Prepare to publish', reason: 'Complete production checks before the scheduled time.' };
+    return {
+      action: 'prepare_publish',
+      label: 'Review internal scheduled-state work',
+      reason: 'This legacy internal state is not proof of a publication schedule or external post.',
+    };
   }
   if (productionState === 'published') {
-    return { action: 'repurpose_content', label: 'Create a new version', reason: 'Reuse the published work for another format or platform.' };
+    return {
+      action: 'repurpose_content',
+      label: 'Review internally completed work',
+      reason: 'This legacy internal state is not proof that the work was published externally.',
+    };
   }
   if (productionState === 'archived' || productionState === 'rejected') {
     return { action: 'restore_to_inbox', label: 'Return to inbox', reason: 'Restore this item before continuing work.' };
@@ -3506,7 +3527,11 @@ function workflowConflict(item: ContentWorkspaceItem, supplied: number): Content
 }
 
 function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
-  if (!scope || !Number.isInteger(scope.tenantId) || scope.tenantId <= 0 || !Number.isInteger(scope.userId) || scope.userId <= 0) {
+  if (!scope
+    || !Number.isSafeInteger(scope.tenantId)
+    || scope.tenantId <= 0
+    || !Number.isSafeInteger(scope.userId)
+    || scope.userId <= 0) {
     throw new ContentWorkspaceError('CONTENT_SCOPE_REQUIRED', 'A valid tenant and user scope is required.', 401);
   }
   return { tenantId: scope.tenantId, userId: scope.userId };
@@ -3518,6 +3543,14 @@ function normalizeIdempotencyKey(value: string): string {
     throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', 'idempotencyKey must contain at least 8 characters.', 400, {
       field: 'idempotencyKey',
     });
+  }
+  if (/[\u0000-\u001F\u007F-\u009F]/u.test(key)) {
+    throw new ContentWorkspaceError(
+      'CONTENT_VALIDATION_FAILED',
+      'idempotencyKey contains unsupported control characters.',
+      400,
+      { field: 'idempotencyKey' },
+    );
   }
   return key;
 }
@@ -4255,7 +4288,7 @@ function optionalText(value: unknown, field: string, maxLength: number): string 
 
 function normalizePositiveInteger(value: unknown, field: string): number {
   const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
-  if (!Number.isInteger(parsed) || Number(parsed) <= 0) {
+  if (!Number.isSafeInteger(parsed) || Number(parsed) <= 0) {
     throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', `${field} must be a positive integer.`, 400, { field });
   }
   return Number(parsed);
@@ -4263,7 +4296,7 @@ function normalizePositiveInteger(value: unknown, field: string): number {
 
 function normalizeNonNegativeInteger(value: unknown, field: string): number {
   const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
-  if (!Number.isInteger(parsed) || Number(parsed) < 0) {
+  if (!Number.isSafeInteger(parsed) || Number(parsed) < 0) {
     throw new ContentWorkspaceError('CONTENT_VALIDATION_FAILED', `${field} must be a non-negative integer.`, 400, { field });
   }
   return Number(parsed);

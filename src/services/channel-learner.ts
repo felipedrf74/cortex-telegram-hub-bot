@@ -14,7 +14,7 @@
  * structures, storytelling techniques, etc. from the best creators.
  */
 import Anthropic from '@anthropic-ai/sdk';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
@@ -27,6 +27,7 @@ import {
   addSystemChannel,
   createContentReferencesAdminContext,
   getActiveChannels,
+  getAllChannels,
   getSystemChannels,
   getPatternsForChannel,
   updateChannelStatus,
@@ -50,6 +51,7 @@ import {
   contentScopeParams,
   contentScopePredicate,
   ensureContentTenantScopeColumns,
+  resolveContentTenantId,
 } from './content-tenant-scope';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import {
@@ -58,11 +60,14 @@ import {
 } from './ai-automation-policy';
 import { AiBudgetError, withAiBudgetReservation, type AiBudgetRequest } from './cost-guardrail';
 import { ApiUsagePersistenceError } from './api-usage-fallback';
+import { invalidateContentDerivedCaches } from './cache-coherence-registry';
 
 const CHANNEL_LEARNER_SIGNAL_PRODUCER_VERSION = 'channel-learner.v1';
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
-  maxRetries: 3,
+  // Each extraction/synthesis call is cost-bearing and has no durable replay
+  // identity at the provider boundary. Transport retries are therefore unsafe.
+  maxRetries: 0,
 });
 
 const CONTENT_LEARNER_ADMIN_CONTEXT = createContentReferencesAdminContext('channel-learner system-scope processing');
@@ -78,6 +83,67 @@ const CHANNEL_EXTRACTION_USER_PROMPT_MAX_CHARS = 7_000;
 const CHANNEL_SYNTHESIS_SYSTEM_PROMPT_MAX_CHARS = 3_000;
 const CHANNEL_SYNTHESIS_USER_PROMPT_MAX_CHARS = 6_000;
 const CHANNEL_LEARNING_BASE_CATEGORY = 'channel_learning';
+const CHANNEL_LEARNING_UNSUPPORTED_SCOPE_MESSAGE = 'Channel analysis and synthesis currently support user-default tenant only';
+
+export class UnsupportedChannelLearningScopeError extends Error {
+  readonly code = 'UNSUPPORTED_SCOPE';
+  readonly status = 409;
+
+  constructor() {
+    super(CHANNEL_LEARNING_UNSUPPORTED_SCOPE_MESSAGE);
+    this.name = 'UnsupportedChannelLearningScopeError';
+  }
+}
+
+export class ChannelAutomationTargetsUnavailableError extends Error {
+  readonly code = 'CONTENT_CHANNEL_AUTOMATION_TARGETS_UNAVAILABLE';
+  readonly status = 503;
+  readonly retryable = true;
+
+  constructor() {
+    super('Active Content channel-learning targets are temporarily unavailable.');
+    this.name = 'ChannelAutomationTargetsUnavailableError';
+  }
+}
+
+export class ChannelSourceUnavailableError extends Error {
+  readonly code = 'CONTENT_CHANNEL_SOURCE_UNAVAILABLE';
+  readonly status = 503;
+  readonly retryable = true;
+  readonly source = 'youtube';
+
+  constructor(readonly reason: 'configuration' | 'transport' | 'http' | 'invalid_response') {
+    super('The YouTube channel source is temporarily unavailable.');
+    this.name = 'ChannelSourceUnavailableError';
+  }
+}
+
+function assertSupportedChannelLearningScope(userId: number, tenantId?: number): void {
+  if (userId > 0 && resolveContentTenantId(userId, tenantId) !== userId) {
+    throw new UnsupportedChannelLearningScopeError();
+  }
+}
+
+function safeChannelErrorName(error: unknown): string {
+  const candidate = error instanceof Error && error.name ? error.name : typeof error;
+  return candidate.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80) || 'UnknownError';
+}
+
+function channelInputDiagnostics(value: string): { inputHash: string; inputLength: number } {
+  return {
+    inputHash: createHash('sha256').update(value).digest('hex').slice(0, 16),
+    inputLength: value.length,
+  };
+}
+
+function invalidateChannelLearnerContentCaches(userId?: number): void {
+  try {
+    invalidateContentDerivedCaches(userId != null && userId > 0 ? userId : undefined);
+  } catch {
+    // A cache clear cannot undo the committed channel/knowledge mutation and
+    // must not change the learner's reported provider or persistence result.
+  }
+}
 
 function compactBalancedText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
@@ -134,7 +200,7 @@ function recordChannelSynthesisContractDeferral(
     // Migration 226 is additive and may not exist during an observe-only
     // rolling deploy. The provider call still remains fail-closed.
     logger.warn(
-      { err, userId, jobName, runId: budgetContext.runId ?? null },
+      { errorName: safeChannelErrorName(err), userId, jobName, runId: budgetContext.runId ?? null },
       'Channel synthesis contract deferral persistence unavailable',
     );
   }
@@ -191,12 +257,15 @@ function recordChannelAnalysisFailure(channelId: number): void {
     ).get(channelId) as { channel_name: string | null; failures: number } | undefined;
     if (row && row.failures === CHANNEL_FAILURE_BACKOFF_THRESHOLD) {
       logger.warn(
-        { channelId, channelName: row.channel_name, consecutiveFailures: row.failures },
+        { channelId, consecutiveFailures: row.failures },
         'Channel entered failure backoff — auto-retry limited to once per 7 days until a successful analysis',
       );
     }
   } catch (err) {
-    logger.warn({ err, channelId }, 'Failed to record channel analysis failure metadata (non-critical)');
+    logger.warn(
+      { errorName: safeChannelErrorName(err), channelId },
+      'Failed to record channel analysis failure metadata (non-critical)',
+    );
   }
 }
 
@@ -220,12 +289,15 @@ function recordChannelAnalysisSuccess(channelId: number, fingerprint: string): v
     `).run(fingerprint, channelId);
     if (row && row.failures >= CHANNEL_FAILURE_BACKOFF_THRESHOLD) {
       logger.info(
-        { channelId, channelName: row.channel_name, previousConsecutiveFailures: row.failures },
+        { channelId, previousConsecutiveFailures: row.failures },
         'Channel left failure backoff after successful analysis',
       );
     }
   } catch (err) {
-    logger.warn({ err, channelId }, 'Failed to record channel analysis success metadata (non-critical)');
+    logger.warn(
+      { errorName: safeChannelErrorName(err), channelId },
+      'Failed to record channel analysis success metadata (non-critical)',
+    );
   }
 }
 
@@ -286,7 +358,7 @@ function listContentChannelUserIds(): number[] {
 }
 
 function listEligibleContentAutomationUserIds(): number[] {
-  const candidateIds = new Set<number>(listContentChannelUserIds());
+  const candidateIds = new Set<number>();
   try {
     const rows = getDb().prepare(
       "SELECT id FROM users WHERE status = 'active' ORDER BY id ASC",
@@ -295,7 +367,11 @@ function listEligibleContentAutomationUserIds(): number[] {
       if (Number.isSafeInteger(row.id) && row.id > 0) candidateIds.add(row.id);
     }
   } catch (err) {
-    logger.warn({ err }, 'Unable to enumerate active Content automation consumers');
+    logger.warn(
+      { errorName: safeChannelErrorName(err) },
+      'Unable to enumerate active Content automation consumers',
+    );
+    throw new ChannelAutomationTargetsUnavailableError();
   }
 
   const eligible: number[] = [];
@@ -337,7 +413,7 @@ function hasSharedChannelKnowledgeConsumerEvidence(userId: number): boolean {
     return row.consuming === 1;
   } catch (err) {
     logger.warn(
-      { err, userId },
+      { errorName: safeChannelErrorName(err), userId },
       'Shared channel learning consumer evidence unavailable; platform scope skipped fail-closed',
     );
     return false;
@@ -363,7 +439,10 @@ function recordSharedKnowledgeEvidenceDeferral(): void {
       )
     `).run();
   } catch (err) {
-    logger.warn({ err }, 'Channel platform-scope evidence deferral could not be persisted');
+    logger.warn(
+      { errorName: safeChannelErrorName(err) },
+      'Channel platform-scope evidence deferral could not be persisted',
+    );
   }
 }
 
@@ -373,6 +452,22 @@ const YT_API_KEY = process.env.YOUTUBE_API_KEY || '';
 const YT_SEARCH_URL = 'https://www.googleapis.com/youtube/v3/search';
 const YT_VIDEOS_URL = 'https://www.googleapis.com/youtube/v3/videos';
 const YT_CHANNELS_URL = 'https://www.googleapis.com/youtube/v3/channels';
+
+async function readYouTubeItems(response: Response): Promise<unknown[]> {
+  if (!response.ok) throw new ChannelSourceUnavailableError('http');
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ChannelSourceUnavailableError('invalid_response');
+  }
+  if (!payload || Array.isArray(payload) || typeof payload !== 'object') {
+    throw new ChannelSourceUnavailableError('invalid_response');
+  }
+  const items = (payload as { items?: unknown }).items;
+  if (!Array.isArray(items)) throw new ChannelSourceUnavailableError('invalid_response');
+  return items;
+}
 
 interface VideoData {
   videoId: string;
@@ -386,17 +481,83 @@ interface VideoData {
   channelTitle: string;
 }
 
+function youtubePayloadRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function parseYouTubeCount(value: unknown, optional = false): number {
+  if (value === undefined && optional) return 0;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new ChannelSourceUnavailableError('invalid_response');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new ChannelSourceUnavailableError('invalid_response');
+  }
+  return parsed;
+}
+
+function parseYouTubeVideoDetails(
+  item: unknown,
+  requestedVideoIds: ReadonlySet<string>,
+  seenVideoIds: Set<string>,
+): VideoData {
+  const video = youtubePayloadRecord(item);
+  const snippet = youtubePayloadRecord(video?.snippet);
+  const statistics = youtubePayloadRecord(video?.statistics);
+  const contentDetails = youtubePayloadRecord(video?.contentDetails);
+  const videoId = typeof video?.id === 'string' ? video.id.trim() : '';
+  const title = typeof snippet?.title === 'string' ? snippet.title.trim() : '';
+  const description = snippet?.description;
+  const publishedAt = typeof snippet?.publishedAt === 'string' ? snippet.publishedAt.trim() : '';
+  const duration = typeof contentDetails?.duration === 'string' ? contentDetails.duration.trim() : '';
+  const channelTitle = typeof snippet?.channelTitle === 'string' ? snippet.channelTitle.trim() : '';
+  const validPublishedAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(publishedAt)
+    && Number.isFinite(Date.parse(publishedAt));
+  const validDuration = /^P(?=.+)(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?$/.test(duration);
+
+  if (!videoId
+    || !requestedVideoIds.has(videoId)
+    || seenVideoIds.has(videoId)
+    || !title
+    || typeof description !== 'string'
+    || !validPublishedAt
+    || !validDuration
+    || !channelTitle
+    || !statistics) {
+    throw new ChannelSourceUnavailableError('invalid_response');
+  }
+  seenVideoIds.add(videoId);
+
+  return {
+    videoId,
+    title,
+    description: description.substring(0, 500),
+    publishedAt,
+    viewCount: parseYouTubeCount(statistics.viewCount),
+    // YouTube may omit these counters when likes or comments are disabled.
+    // Preserve the learner's legacy numeric shape for that valid omission;
+    // malformed present values still fail the complete source response closed.
+    likeCount: parseYouTubeCount(statistics.likeCount, true),
+    commentCount: parseYouTubeCount(statistics.commentCount, true),
+    duration,
+    channelTitle,
+  };
+}
+
 /**
  * Resolve a YouTube channel URL/handle to a channel ID and name.
  * Supports: @handle, /channel/UCxxxx, /c/Name, full URL
  */
-async function resolveChannel(channelUrl: string): Promise<{
+async function resolveChannel(channelUrl: string, abortSignal?: AbortSignal): Promise<{
   channelId: string;
   channelName: string;
 } | null> {
   if (!YT_API_KEY) {
     logger.warn('YOUTUBE_API_KEY not set — cannot resolve channel');
-    return null;
+    throw new ChannelSourceUnavailableError('configuration');
   }
 
   // Extract handle or ID from URL
@@ -408,16 +569,28 @@ async function resolveChannel(channelUrl: string): Promise<{
     // Direct channel ID — fetch info
     try {
       const url = `${YT_CHANNELS_URL}?part=snippet&id=${channelIdMatch[1]}&key=${YT_API_KEY}`;
-      const res = await fetch(url);
-      const data = await res.json() as any;
-      if (data.items?.length > 0) {
+      const res = await fetch(url, { signal: abortSignal });
+      const items = await readYouTubeItems(res);
+      if (items.length > 0) {
+        const first = items[0] as { id?: unknown; snippet?: { title?: unknown } } | null;
+        if (!first || typeof first.id !== 'string' || !first.id.trim()) {
+          throw new ChannelSourceUnavailableError('invalid_response');
+        }
         return {
-          channelId: data.items[0].id,
-          channelName: data.items[0].snippet?.title || channelUrl,
+          channelId: first.id,
+          channelName: typeof first.snippet?.title === 'string' && first.snippet.title.trim()
+            ? first.snippet.title
+            : channelUrl,
         };
       }
     } catch (err) {
-      logger.warn({ err, channelUrl }, 'Failed to resolve channel by ID');
+      throwIfChannelLearningAborted(abortSignal);
+      if (err instanceof ChannelSourceUnavailableError) throw err;
+      logger.warn(
+        { errorName: safeChannelErrorName(err), ...channelInputDiagnostics(channelUrl) },
+        'Failed to resolve channel by ID',
+      );
+      throw new ChannelSourceUnavailableError('transport');
     }
     return null;
   }
@@ -439,17 +612,33 @@ async function resolveChannel(channelUrl: string): Promise<{
       maxResults: '1',
       key: YT_API_KEY,
     });
-    const res = await fetch(`${YT_SEARCH_URL}?${params}`);
-    const data = await res.json() as any;
+    const res = await fetch(`${YT_SEARCH_URL}?${params}`, { signal: abortSignal });
+    const items = await readYouTubeItems(res);
 
-    if (data.items?.length > 0) {
+    if (items.length > 0) {
+      const first = items[0] as {
+        id?: { channelId?: unknown };
+        snippet?: { channelId?: unknown; channelTitle?: unknown };
+      } | null;
+      const channelId = first?.id?.channelId ?? first?.snippet?.channelId;
+      if (typeof channelId !== 'string' || !channelId.trim()) {
+        throw new ChannelSourceUnavailableError('invalid_response');
+      }
       return {
-        channelId: data.items[0].id?.channelId || data.items[0].snippet?.channelId,
-        channelName: data.items[0].snippet?.channelTitle || searchQuery,
+        channelId,
+        channelName: typeof first?.snippet?.channelTitle === 'string' && first.snippet.channelTitle.trim()
+          ? first.snippet.channelTitle
+          : searchQuery,
       };
     }
   } catch (err) {
-    logger.warn({ err, searchQuery }, 'Failed to search for channel');
+    throwIfChannelLearningAborted(abortSignal);
+    if (err instanceof ChannelSourceUnavailableError) throw err;
+    logger.warn(
+      { errorName: safeChannelErrorName(err), ...channelInputDiagnostics(searchQuery) },
+      'Failed to search for channel',
+    );
+    throw new ChannelSourceUnavailableError('transport');
   }
 
   return null;
@@ -461,8 +650,9 @@ async function resolveChannel(channelUrl: string): Promise<{
 async function fetchChannelVideos(
   channelId: string,
   maxVideos = 20,
+  abortSignal?: AbortSignal,
 ): Promise<VideoData[]> {
-  if (!YT_API_KEY) return [];
+  if (!YT_API_KEY) throw new ChannelSourceUnavailableError('configuration');
 
   try {
     // Step 1: Get video IDs
@@ -476,12 +666,15 @@ async function fetchChannelVideos(
       maxResults: String(fetchCount),
       key: YT_API_KEY,
     });
-    const searchRes = await fetch(`${YT_SEARCH_URL}?${searchParams}`);
-    const searchData = await searchRes.json() as any;
-
-    const videoIds = (searchData.items || [])
-      .map((item: any) => item.id?.videoId)
-      .filter(Boolean);
+    const searchRes = await fetch(`${YT_SEARCH_URL}?${searchParams}`, { signal: abortSignal });
+    const searchItems = await readYouTubeItems(searchRes);
+    const videoIds = searchItems.map((item) => {
+      const videoId = (item as { id?: { videoId?: unknown } } | null)?.id?.videoId;
+      if (typeof videoId !== 'string' || !videoId.trim()) {
+        throw new ChannelSourceUnavailableError('invalid_response');
+      }
+      return videoId;
+    });
 
     if (videoIds.length === 0) return [];
 
@@ -491,28 +684,26 @@ async function fetchChannelVideos(
       id: videoIds.join(','),
       key: YT_API_KEY,
     });
-    const statsRes = await fetch(`${YT_VIDEOS_URL}?${statsParams}`);
-    const statsData = await statsRes.json() as any;
-
-    const allVideos = (statsData.items || []).map((v: any) => ({
-      videoId: v.id,
-      title: v.snippet?.title || '',
-      description: (v.snippet?.description || '').substring(0, 500),
-      publishedAt: v.snippet?.publishedAt || '',
-      viewCount: parseInt(v.statistics?.viewCount || '0', 10),
-      likeCount: parseInt(v.statistics?.likeCount || '0', 10),
-      commentCount: parseInt(v.statistics?.commentCount || '0', 10),
-      duration: v.contentDetails?.duration || '',
-      channelTitle: v.snippet?.channelTitle || '',
-    }));
+    const statsRes = await fetch(`${YT_VIDEOS_URL}?${statsParams}`, { signal: abortSignal });
+    const statsItems = await readYouTubeItems(statsRes);
+    const requestedVideoIds = new Set(videoIds);
+    const seenVideoIds = new Set<string>();
+    const allVideos = statsItems.map((item) => (
+      parseYouTubeVideoDetails(item, requestedVideoIds, seenVideoIds)
+    ));
 
     // Return top performers sorted by view count
     return allVideos
       .sort((a: VideoData, b: VideoData) => b.viewCount - a.viewCount)
       .slice(0, maxVideos);
   } catch (err) {
-    logger.error({ err, channelId }, 'Failed to fetch channel videos');
-    return [];
+    throwIfChannelLearningAborted(abortSignal);
+    if (err instanceof ChannelSourceUnavailableError) throw err;
+    logger.error(
+      { errorName: safeChannelErrorName(err), ...channelInputDiagnostics(channelId) },
+      'Failed to fetch channel videos',
+    );
+    throw new ChannelSourceUnavailableError('transport');
   }
 }
 
@@ -726,8 +917,8 @@ async function extractPatternsForCreatorContext(
   );
 
   // Gemini-first: gemini-2.5-flash matches Sonnet for analytical pattern
-  // extraction at ~9× lower cost. Falls back through OpenAI, then gated
-  // Anthropic on failure.
+  // extraction at ~9× lower cost. Provider selection may fall through only
+  // before dispatch; a dispatched failure is terminal without a replay ID.
   const { text: rawAnalysisText } = await withAiBudgetReservation({
     userId: meteringScope.userId ?? 0,
     requestSource: budgetContext.requestSource,
@@ -760,8 +951,10 @@ async function extractPatternsForCreatorContext(
       model: CHANNEL_LEARNING_MODEL,
       maxTokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
       temperature: 0.3,
+      maxRetries: 0,
       ...meteringScope,
       abortSignal: budgetContext.abortSignal,
+      allowFallbackAfterProviderFailure: false,
     },
   ));
 
@@ -783,7 +976,7 @@ async function extractPatternsForCreatorContext(
     return validateChannelExtraction(JSON.parse(text));
   } catch (err) {
     logger.warn(
-      { err, textLength: text.length },
+      { errorName: safeChannelErrorName(err), textLength: text.length },
       'Channel extraction failed validation; retaining prior patterns and success fingerprint',
     );
     if (err instanceof InvalidChannelExtractionError) throw err;
@@ -799,7 +992,9 @@ async function synthesizeKnowledge(
     requestSource: userId != null && userId > 0 ? 'interactive' : 'system',
   },
 ): Promise<boolean> {
+  throwIfChannelLearningAborted(budgetContext.abortSignal);
   const scopedUserId = userId != null && userId > 0 ? userId : 0;
+  let knowledgeChanged = false;
   const creatorContext = scopedUserId > 0 ? loadCreatorPromptContextForUser(scopedUserId, scopedUserId) : buildCreatorPromptContext(null);
   const synthesisSystemPrompt = buildChannelLearnerSynthesisPromptFromContext(creatorContext);
   const platformChannels = getScopedChannelsForProcessing('active', undefined);
@@ -935,9 +1130,11 @@ async function synthesizeKnowledge(
           model: CHANNEL_LEARNING_MODEL,
           maxTokens: CHANNEL_LEARNING_MAX_OUTPUT_TOKENS,
           temperature: 0.3,
+          maxRetries: 0,
           userId: scopedUserId,
           tenantId: scopedUserId,
           abortSignal: budgetContext.abortSignal,
+          allowFallbackAfterProviderFailure: false,
         },
       ));
 
@@ -975,11 +1172,13 @@ async function synthesizeKnowledge(
       if (unexpectedCategories.length > 0 || parsed.categories.length !== synthesisInputs.length) {
         throw new Error('Synthesis response category set does not match the requested set');
       }
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
 
       // Validate the complete category set before opening the transaction,
       // then persist it atomically so a SQLite failure cannot leave a scope
       // with a half-old/half-new knowledge set.
       getDb().transaction(() => {
+        throwIfChannelLearningAborted(budgetContext.abortSignal);
         for (const result of directKnowledge) {
           persistKnowledge(result.category, result.text, result.sourceChannels);
         }
@@ -987,7 +1186,9 @@ async function synthesizeKnowledge(
           persistKnowledge(result.category, result.text, result.sourceChannels);
         }
       })();
+      knowledgeChanged = true;
     } catch (err) {
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
       // An unmetered provider response is a process-wide fail-closed event for
       // every request source. Do not turn it into an ordinary synthesis skip.
       if (
@@ -1000,25 +1201,34 @@ async function synthesizeKnowledge(
         throw err;
       }
       logger.warn(
-        { err, categories: synthesisInputs.map((input) => input.category) },
+        { errorName: safeChannelErrorName(err), categoryCount: synthesisInputs.length },
         'Batched channel synthesis deferred — retaining latest valid knowledge for every category',
       );
       return false;
     }
   } else if (directKnowledge.length > 0) {
     try {
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
       getDb().transaction(() => {
+        throwIfChannelLearningAborted(budgetContext.abortSignal);
         for (const result of directKnowledge) {
           persistKnowledge(result.category, result.text, result.sourceChannels);
         }
       })();
+      knowledgeChanged = true;
     } catch (err) {
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
       logger.warn(
-        { err, categories: directKnowledge.map((entry) => entry.category) },
+        { errorName: safeChannelErrorName(err), categoryCount: directKnowledge.length },
         'Direct channel knowledge persistence deferred — retaining latest valid category set',
       );
       return false;
     }
+  }
+
+  throwIfChannelLearningAborted(budgetContext.abortSignal);
+  if (knowledgeChanged) {
+    invalidateChannelLearnerContentCaches(scopedUserId);
   }
 
   logger.info({ userId: userId ?? null }, 'Knowledge synthesis complete');
@@ -1084,10 +1294,13 @@ function writeChannelDNASignals(channels: ContentRefChannel[]): void {
         if (signalId > 0) {
           signalCount++;
         } else {
-          logger.warn({ channel: channel.channel_name, category }, 'Governed channel DNA signal write rejected');
+          logger.warn({ channelId: channel.id }, 'Governed channel DNA signal write rejected');
         }
       } catch (err) {
-        logger.warn({ err, channel: channel.channel_name, category }, 'Failed to write channel DNA signal');
+        logger.warn(
+          { errorName: safeChannelErrorName(err), channelId: channel.id },
+          'Failed to write channel DNA signal',
+        );
       }
     }
   }
@@ -1137,6 +1350,7 @@ export async function analyzeChannel(
     requestSource: channel.user_id && channel.user_id > 0 ? 'interactive' as const : 'system' as const,
     jobName: 'channel_analysis',
   };
+  throwIfChannelLearningAborted(budgetContext.abortSignal);
 
   if (budgetContext.requestSource === 'automation' && channelMeteringScope.userId > 0) {
     const eligibility = resolveAiAutomationEligibility(channelMeteringScope.userId, 'content');
@@ -1164,7 +1378,10 @@ export async function analyzeChannel(
     ? loadCreatorPromptContextForUser(channel.user_id, channel.tenant_id ?? channel.user_id)
     : buildCreatorPromptContext(null);
 
-  logger.info({ channelId, url: channel.channel_url }, 'Starting channel analysis');
+  logger.info(
+    { channelId, ...channelInputDiagnostics(channel.channel_url) },
+    'Starting channel analysis',
+  );
   updateChannelStatus(channelId, 'analyzing', undefined, channelAccess);
 
   try {
@@ -1181,12 +1398,14 @@ export async function analyzeChannel(
       estimatedCostUsd: budgetContext.estimatedCostUsd,
       automationPriority: 'channel_learning',
     }, async () => undefined);
+    throwIfChannelLearningAborted(budgetContext.abortSignal);
 
     // Step 1: Resolve channel
-    const resolved = await resolveChannel(channel.channel_url);
+    const resolved = await resolveChannel(channel.channel_url, budgetContext.abortSignal);
+    throwIfChannelLearningAborted(budgetContext.abortSignal);
     if (!resolved) {
       updateChannelStatus(channelId, 'failed', {
-        error_message: 'Could not resolve YouTube channel — check URL or API key',
+        error_message: 'CHANNEL_SOURCE_NOT_FOUND',
       }, channelAccess);
       recordChannelAnalysisFailure(channelId);
       return {
@@ -1194,7 +1413,7 @@ export async function analyzeChannel(
         summary: '',
         patternsFound: 0,
         videosAnalyzed: 0,
-        error: 'Could not resolve YouTube channel',
+        error: 'CHANNEL_SOURCE_NOT_FOUND',
       };
     }
 
@@ -1204,10 +1423,11 @@ export async function analyzeChannel(
     }, channelAccess);
 
     // Step 2: Fetch recent videos
-    const videos = await fetchChannelVideos(resolved.channelId, 10);
+    const videos = await fetchChannelVideos(resolved.channelId, 10, budgetContext.abortSignal);
+    throwIfChannelLearningAborted(budgetContext.abortSignal);
     if (videos.length === 0) {
       updateChannelStatus(channelId, 'failed', {
-        error_message: 'No videos found for this channel',
+        error_message: 'CHANNEL_SOURCE_NO_RESULTS',
       }, channelAccess);
       recordChannelAnalysisFailure(channelId);
       return {
@@ -1215,7 +1435,7 @@ export async function analyzeChannel(
         summary: '',
         patternsFound: 0,
         videosAnalyzed: 0,
-        error: 'No videos found',
+        error: 'CHANNEL_SOURCE_NO_RESULTS',
       };
     }
 
@@ -1226,10 +1446,11 @@ export async function analyzeChannel(
     // updateChannelStatus) and last_checked_at records the verification.
     const fingerprint = computeChannelAnalysisFingerprint(videos);
     if (options.skipIfUnchanged && channel.analysis_fingerprint && channel.analysis_fingerprint === fingerprint) {
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
       updateChannelStatus(channelId, 'active', { error_message: null }, channelAccess);
       recordChannelAnalysisSuccess(channelId, fingerprint);
       logger.info(
-        { channelId, channelName: resolved.channelName, videoCount: videos.length },
+        { channelId, videoCount: videos.length },
         'Channel re-learn skipped — no new videos since last successful analysis',
       );
       return {
@@ -1241,7 +1462,7 @@ export async function analyzeChannel(
       };
     }
 
-    logger.info({ channelName: resolved.channelName, videoCount: videos.length }, 'Videos fetched, extracting patterns');
+    logger.info({ channelId, videoCount: videos.length }, 'Videos fetched, extracting patterns');
 
     // Step 2.5: Fetch transcripts for top 5 videos (enriches pattern extraction)
     let transcriptData: string | undefined;
@@ -1257,16 +1478,21 @@ export async function analyzeChannel(
         5,
         channel.user_id && channel.user_id > 0 ? channel.user_id : 0,
         channel.tenant_id ?? channel.user_id ?? 0,
+        budgetContext.abortSignal,
       );
       if (deep.transcriptCount > 0) {
         transcriptData = deep.deepPatterns;
         logger.info({
-          channelName: resolved.channelName,
+          channelId,
           transcriptCount: deep.transcriptCount,
         }, 'Transcript data fetched for top videos');
       }
     } catch (err) {
-      logger.warn({ err, channelName: resolved.channelName }, 'Transcript enrichment failed (non-critical, continuing with metadata only)');
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
+      logger.warn(
+        { errorName: safeChannelErrorName(err), channelId },
+        'Transcript enrichment failed (non-critical, continuing with metadata only)',
+      );
     }
 
     // Step 3: Extract patterns via Claude (now with optional transcript data)
@@ -1278,6 +1504,7 @@ export async function analyzeChannel(
       channelMeteringScope,
       budgetContext,
     );
+    throwIfChannelLearningAborted(budgetContext.abortSignal);
 
     // Step 4: Store patterns
     const validPatterns = extraction.patterns.filter(
@@ -1285,11 +1512,13 @@ export async function analyzeChannel(
     );
 
     if (validPatterns.length > 0) {
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
       upsertPatterns(channelId, validPatterns, channelAccess);
     }
 
     // Step 5: Mark as active + persist the fingerprint of the analyzed
     // video set (drives the new-video gate on the next re-learn cycle).
+    throwIfChannelLearningAborted(budgetContext.abortSignal);
     updateChannelStatus(channelId, 'active', {
       video_count_analyzed: videos.length,
       error_message: null,
@@ -1297,7 +1526,7 @@ export async function analyzeChannel(
     recordChannelAnalysisSuccess(channelId, fingerprint);
 
     logger.info({
-      channelName: resolved.channelName,
+      channelId,
       patternsFound: validPatterns.length,
       videosAnalyzed: videos.length,
     }, 'Channel analysis complete');
@@ -1305,7 +1534,7 @@ export async function analyzeChannel(
     pushEvent({
       ts: new Date().toISOString(),
       type: 'job',
-      summary: `Channel "${resolved.channelName}" analyzed: ${validPatterns.length} patterns from ${videos.length} videos`,
+      summary: `Channel ${channelId} analyzed: ${validPatterns.length} patterns from ${videos.length} videos`,
     });
 
     return {
@@ -1315,6 +1544,11 @@ export async function analyzeChannel(
       videosAnalyzed: videos.length,
     };
   } catch (err) {
+    if (budgetContext.abortSignal?.aborted) {
+      const restoreStatus: ContentRefChannel['status'] = channel.analysis_fingerprint ? 'active' : 'pending';
+      updateChannelStatus(channelId, restoreStatus, { error_message: 'Channel analysis cancelled' }, channelAccess);
+      throwIfChannelLearningAborted(budgetContext.abortSignal);
+    }
     if (err instanceof AiBudgetError) {
       const restoreStatus: ContentRefChannel['status'] = channel.analysis_fingerprint ? 'active' : 'pending';
       updateChannelStatus(channelId, restoreStatus, {
@@ -1344,17 +1578,37 @@ export async function analyzeChannel(
       }, channelAccess);
       throw err;
     }
-    const message = (err as Error).message;
-    logger.error({ err, channelId }, 'Channel analysis failed');
-    updateChannelStatus(channelId, 'failed', { error_message: message }, channelAccess);
+    if (err instanceof ChannelSourceUnavailableError) {
+      updateChannelStatus(
+        channelId,
+        channel.status === 'active' ? 'active' : 'failed',
+        { error_message: err.code, preserve_last_analyzed_at: true },
+        channelAccess,
+      );
+      logger.warn(
+        { channelId, reason: err.reason, source: err.source },
+        'Channel source unavailable; analysis withheld',
+      );
+      throw err;
+    }
+    const failureCode = err instanceof InvalidChannelExtractionError
+      ? 'CHANNEL_EXTRACTION_OUTPUT_INVALID'
+      : 'CHANNEL_ANALYSIS_FAILED';
+    logger.error({ errorName: safeChannelErrorName(err), channelId, failureCode }, 'Channel analysis failed');
+    updateChannelStatus(channelId, 'failed', { error_message: failureCode }, channelAccess);
     recordChannelAnalysisFailure(channelId);
     return {
       success: false,
       summary: '',
       patternsFound: 0,
       videosAnalyzed: 0,
-      error: message,
+      error: failureCode,
     };
+  } finally {
+    // Every path reaching the provider pipeline first transitions this row to
+    // `analyzing`; clear the exact creator cache (or all caches for shared
+    // system channels) after its terminal status/pattern mutation settles.
+    invalidateChannelLearnerContentCaches(channel.user_id ?? undefined);
   }
 }
 
@@ -1438,7 +1692,7 @@ export async function processAllChannels(
         error_message: 'Auto-recovered from stuck analyzing state (process crash or timeout)',
       }, accessForUserId(userId));
       logger.warn(
-        { channelId: ch.id, channelName: ch.channel_name },
+        { channelId: ch.id },
         'Channel was stuck in analyzing — reset to pending for retry',
       );
     }
@@ -1465,7 +1719,6 @@ export async function processAllChannels(
       logger.info(
         {
           channelId: ch.id,
-          channelName: ch.channel_name,
           consecutiveFailures: ch.consecutive_failure_count,
           inBackoff: ch.consecutive_failure_count >= CHANNEL_FAILURE_BACKOFF_THRESHOLD,
         },
@@ -1482,7 +1735,10 @@ export async function processAllChannels(
   } catch (err) {
     // Recovery is best-effort — if it fails, proceed with whatever
     // pending/active channels we can still find.
-    logger.error({ err }, 'Channel recovery query failed (non-critical, continuing)');
+    logger.error(
+      { errorName: safeChannelErrorName(err) },
+      'Channel recovery query failed (non-critical, continuing)',
+    );
   }
 
   // Process pending channels first (now includes any just-recovered ones).
@@ -1677,28 +1933,39 @@ export async function addAndAnalyzeChannel(
   addedVia: 'manual' | 'portal' | 'bot' = 'bot',
   userId = 0,
   tenantId?: number,
+  budgetContext: ChannelAiBudgetContext = {
+    requestSource: userId > 0 ? 'interactive' : 'system',
+    jobName: 'channel_add',
+  },
 ): Promise<{
   channel: ContentRefChannel;
   analysis: Awaited<ReturnType<typeof analyzeChannel>>;
 }> {
+  // Synthesized knowledge is unique by (user_id, category), so accepting a
+  // second tenant here would overwrite that user's default-tenant knowledge.
+  // Reject before even reading or adding the channel until persistence can
+  // represent independent tenant-specific synthesis safely.
+  assertSupportedChannelLearningScope(userId, tenantId);
+  throwIfChannelLearningAborted(budgetContext.abortSignal);
+  const normalizedUrl = channelUrl.trim().replace(/\/+$/, '');
+  const existingChannel = (userId > 0
+    ? getAllChannels(userId, tenantId)
+    : getSystemChannels(CONTENT_LEARNER_ADMIN_CONTEXT))
+    .find((candidate) => candidate.channel_url === normalizedUrl);
   const channel = userId > 0
     ? addChannel(channelUrl, addedVia, userId, tenantId)
     : addSystemChannel(channelUrl, addedVia, CONTENT_LEARNER_ADMIN_CONTEXT);
-  const analysis = await analyzeChannel(channel.id);
+  if (!existingChannel || (existingChannel.status === 'failed' && channel.status === 'pending')) {
+    invalidateChannelLearnerContentCaches(userId > 0 ? userId : undefined);
+  }
+  const analysis = await analyzeChannel(channel.id, { budgetContext });
 
   // Re-synthesize if analysis was successful. Explicit add-and-analyze runs
   // without the new-video gate (skipIfUnchanged defaults off), so `skipped`
   // is never set today; the guard future-proofs against gated callers, since
   // a skipped analysis produces nothing new to synthesize.
   if (analysis.success && !analysis.skipped) {
-    if (tenantId == null || tenantId === userId || userId === 0) {
-      await synthesizeKnowledge(userId);
-    } else {
-      logger.warn(
-        { userId, tenantId, channelId: channel.id },
-        'Skipping channel knowledge synthesis for non-default tenant until synthesis accepts explicit tenant scope',
-      );
-    }
+    await synthesizeKnowledge(userId, budgetContext);
   }
 
   // Return fresh channel data
@@ -1713,34 +1980,30 @@ export async function addAndAnalyzeChannel(
 
 // ─── Seed default channels ──────────────────────────────────────────
 
-// Default channels: read from config_default_channels table (migration 055).
-// Falls back to hardcoded array if the table doesn't exist yet.
+// Default channels are explicit operator configuration. Missing/empty config
+// must stay neutral instead of projecting creator-specific references globally.
 function getDefaultChannels(): string[] {
   try {
     const rows = getDb().prepare(
       'SELECT url FROM config_default_channels WHERE enabled = 1'
     ).all() as Array<{ url: string }>;
     if (rows.length > 0) return rows.map(r => r.url);
-  } catch { /* table doesn't exist yet */ }
-  return [
-    'https://www.youtube.com/@danielbarada',
-    'https://www.youtube.com/@NewelOfKnowledge',
-    'https://www.youtube.com/@Jett.franzen',
-    'https://www.youtube.com/@DanKoeTalks',
-  ];
+  } catch { /* table does not exist yet */ }
+  return [];
 }
-const DEFAULT_CHANNELS = getDefaultChannels();
 
 /**
  * Seed the default reference channels if the table is empty.
  * Called once during bot startup.
  */
 export function seedDefaultChannels(): void {
+  const defaultChannels = getDefaultChannels();
+  if (defaultChannels.length === 0) return;
   const existing = getSystemChannels(CONTENT_LEARNER_ADMIN_CONTEXT);
   if (existing.length > 0) return; // Already seeded
 
-  logger.info({ channels: DEFAULT_CHANNELS }, 'Seeding default content reference channels');
-  for (const url of DEFAULT_CHANNELS) {
+  logger.info({ channelCount: defaultChannels.length }, 'Seeding default content reference channels');
+  for (const url of defaultChannels) {
     addSystemChannel(url, 'manual', CONTENT_LEARNER_ADMIN_CONTEXT);
   }
 }

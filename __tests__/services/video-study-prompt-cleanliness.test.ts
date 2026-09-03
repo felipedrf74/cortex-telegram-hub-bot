@@ -29,4 +29,15 @@ describe('video-study prompt cleanliness', () => {
     expect(prompt).toContain('25-45 women');
     expect(prompt).toContain('knitting');
   });
+
+  it('treats platform timing and audience-response guidance as bounded hypotheses', () => {
+    const prompt = buildVideoStudySystemPrompt(NON_FOUNDER_PROFILE);
+
+    expect(prompt).toContain('use transcript timestamps rather than assuming a universal duration');
+    expect(prompt).toContain('bounded review hypotheses');
+    expect(prompt).not.toContain('viral potential');
+    expect(prompt).not.toContain('aim for 30-60s');
+    expect(prompt).not.toContain('Detailed first-30s breakdown');
+    expect(prompt).not.toContain('FIRST 30 SECONDS (HOOK)');
+  });
 });

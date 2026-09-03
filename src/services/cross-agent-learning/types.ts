@@ -5,7 +5,12 @@
 import type { MeshPriority, SignalPriority, SignalType } from '../intelligence-bus';
 import type { MealPlan, ShoppingList } from '../cooking-chef';
 import type { ContentNotification } from '../content-notification-store';
-import type { ContentFilmingRecommendation, ContentTopicStatus } from '../content-scheduler';
+import type { ContentFilmingRecommendation } from '../content-scheduler';
+import type { ContentScheduleWorkKind } from '../content-workspace-scheduling';
+import type {
+  ContentNextAction,
+  ContentProductionState,
+} from '../content-workspace';
 import type { getKnowledgeStats, getVoiceDna } from '../content-dashboard-service';
 import type {
   ContentDeskItem,
@@ -209,17 +214,105 @@ export interface CookingSafetySourceHealth extends CookingSourceHealth {
   }>;
 }
 
+export type ContentWorkPlanStatus =
+  | 'confirmed'
+  | 'proposed'
+  | 'unplanned'
+  | 'partial'
+  | 'unavailable';
+
+export interface ContentMeshDeadline {
+  itemId: number;
+  title: string;
+  date: string;
+  deadlineAt: string;
+  status: string;
+  semantics: 'target_date_not_publication';
+}
+
+export interface ContentMeshConfirmedWorkBlock {
+  itemId: number;
+  title: string;
+  /** Canonical calendar reads always author these planning details. */
+  itemStatus?: ContentProductionState;
+  outcome?: string;
+  estimatedEffortMinutes?: number;
+  dependency?: ContentNextAction | null;
+  approvalState?: 'not_required' | 'required' | 'approved' | 'rejected';
+  nextAction?: ContentNextAction;
+  date: string;
+  startsAt: string;
+  endsAt: string;
+  workKind: ContentScheduleWorkKind;
+  /**
+   * `sync_failed` remains confirmed local Secretary work when the current
+   * private agenda item is still scheduled. It also requires provider
+   * attention; cancellation states are deliberately excluded.
+   */
+  state: 'scheduled' | 'provider_synced' | 'sync_failed';
+  authority: 'secretary';
+  authorityStatus: 'current';
+  semantics: 'private_work_session';
+  contentChangedSinceScheduling: boolean;
+}
+
+export interface ContentMeshWorkSchedule {
+  authority: 'secretary';
+  authorityStatus: 'current' | 'partially_unavailable' | 'unavailable';
+  planStatus: ContentWorkPlanStatus;
+  semantics: 'private_work_session';
+  confirmedBlocks: ContentMeshConfirmedWorkBlock[];
+  /** False means the bounded calendar read truncated and this list is partial. */
+  confirmedBlocksComplete?: boolean;
+  attentionCount: number;
+}
+
+/**
+ * Aggregate guard for consumers of per-block Secretary authority. A bounded
+ * partial projection may still carry trustworthy current blocks, but an
+ * unavailable, proposed, or unplanned aggregate must never promote a stale
+ * embedded block into a confirmed fact.
+ */
+export function canConsumeConfirmedContentWorkSchedule(
+  schedule: ContentMeshWorkSchedule | null | undefined,
+): schedule is ContentMeshWorkSchedule {
+  return Boolean(
+    schedule
+    && schedule.authority === 'secretary'
+    && (
+      schedule.authorityStatus === 'current'
+      || schedule.authorityStatus === 'partially_unavailable'
+    )
+    && (schedule.planStatus === 'confirmed' || schedule.planStatus === 'partial')
+    && schedule.semantics === 'private_work_session',
+  );
+}
+
+export type ContentMeshUnavailableSection =
+  | 'timezone'
+  | 'filming_recommendation'
+  | 'notifications'
+  | 'content_desk'
+  | 'pillars'
+  | 'signals'
+  | 'topic_count'
+  | 'topics'
+  | 'calendar'
+  | 'next_execution'
+  | 'voice_dna'
+  | 'knowledge_stats';
 export interface ContentMeshContext {
   userId: number;
   weekStart: string;
   weekEnd: string;
+  /** Whether every bounded Content input was read successfully for this snapshot. */
+  availability: 'available' | 'partial' | 'unavailable';
+  /** Exact inputs that could not be established; empty arrays remain real data only when absent here. */
+  unavailableSections: ContentMeshUnavailableSection[];
   upcomingTopicCount: number;
-  scheduledTopics: Array<{
-    id: number;
-    title: string;
-    scheduledDate: string;
-    status: ContentTopicStatus;
-  }>;
+  /** Canonical target dates. They are never calendar reservations or publication evidence. */
+  deadlines: ContentMeshDeadline[];
+  workSchedule: ContentMeshWorkSchedule;
   filmingRecommendation: ContentFilmingRecommendation | null;
   unreadNotifications: ContentNotification[];
   deskItems: ContentDeskItem[];

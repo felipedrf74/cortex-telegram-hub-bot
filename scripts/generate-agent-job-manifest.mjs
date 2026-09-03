@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 export const AGENT_JOB_MANIFEST_SCHEMA = 'nexus.agent-job-manifest.v3';
 export const AGENT_JOB_MANIFEST_VERSION = '2026-08-31.1';
 
-const GEMINI_ONE_SHOT_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
+const GEMINI_FALLBACK_PROVIDER_ROUTE = 'gemini-primary-openai-fallback-anthropic-gated-last-resort';
+const GEMINI_SINGLE_ATTEMPT_PROVIDER_ROUTE = 'gemini-primary-configuration-fallthrough-single-attempt';
+const GROUNDED_SINGLE_ATTEMPT_PROVIDER_ROUTE = 'grounded-provider-configuration-fallthrough-single-attempt';
 
 const noProvider = (policyOwner, tenantScope, overrides = {}) => ({
   policyOwner,
@@ -122,7 +124,7 @@ export const JOB_POLICIES = Object.freeze({
     evidence: 'channel video fingerprint skips analysis and synthesis when unchanged',
     tests: ['__tests__/services/channel-learner-relearn-gate.test.ts'],
   }, {
-    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    providerRouting: GEMINI_SINGLE_ATTEMPT_PROVIDER_ROUTE,
     costPolicy: 'content-automation-budget',
     ...sharedGovernedRunner('platform-or-tenant-user', { fingerprintGate: 'adapter' }),
   }),
@@ -191,7 +193,7 @@ export const JOB_POLICIES = Object.freeze({
       '__tests__/services/agent-job-runner.test.ts',
     ],
   }, {
-    providerRouting: 'grounded-provider-fallback-route',
+    providerRouting: GROUNDED_SINGLE_ATTEMPT_PROVIDER_ROUTE,
     costPolicy: 'content-automation-budget',
     ...sharedGovernedRunner('tenant-user'),
   }),
@@ -204,7 +206,7 @@ export const JOB_POLICIES = Object.freeze({
     ],
   }, {
     retryPolicy: 'report-dispatch-next-tick-on-released-transient-claim',
-    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    providerRouting: GEMINI_FALLBACK_PROVIDER_ROUTE,
     costPolicy: 'ai-cost-guardrail:coach_analysis',
     ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
@@ -229,12 +231,22 @@ export const JOB_POLICIES = Object.freeze({
   nexus_points_expiry: noProvider('billing', 'platform-tenant-scoped-ledger'),
   notification_release: noProvider('notifications', 'durable-notification-tenant-user', { retryPolicy: 'delivery-policy-retry-and-dead-letter' }),
   operator_alert_delivery: noProvider('operations', 'durable-operator-alert-queue', { retryPolicy: 'delivery-retry-and-dead-letter' }),
-  performance_agent: noProvider('content', 'user-scoped-channel-targets', { outputPolicy: 'fail-closed-paused-until-tenant-scoped-signals' }),
-  pipeline_agent: noProvider('content', 'platform-content-signal-scope', { outputPolicy: 'deterministic-signal-contract' }),
-  reaction_radar: noProvider('content', 'reviewed-platform-reference-channels', { costPolicy: 'external-youtube-quota-only', outputPolicy: 'deterministic-scored-signal-contract' }),
+  performance_agent: noProvider('content', 'user-scoped-channel-targets', {
+    lifecycle: 'paused',
+    outputPolicy: 'fail-closed-paused-until-tenant-scoped-signals',
+  }),
+  pipeline_agent: noProvider('content', 'eligible-active-tenant-user-content-workspace', { outputPolicy: 'deterministic-tenant-scoped-signal-contract' }),
+  reaction_radar: noProvider('content', 'none-until-tenant-user-rebuild', {
+    lifecycle: 'paused',
+    costPolicy: 'no-runtime-cost-while-paused',
+    outputPolicy: 'fail-closed-paused-until-tenant-user-scoped-discovery-and-signals',
+  }),
   reminders: noProvider('secretary', 'due-reminder-tenant-user', { retryPolicy: 'next-minute-until-delivery-succeeds' }),
   secretary_agenda_sync: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'source-revision-and-provider-readback-gated' }),
-  seo_agent: noProvider('content', 'user-scoped-channel-targets', { outputPolicy: 'fail-closed-paused-until-tenant-scoped-storage' }),
+  seo_agent: noProvider('content', 'user-scoped-channel-targets', {
+    lifecycle: 'paused',
+    outputPolicy: 'fail-closed-paused-until-tenant-scoped-storage',
+  }),
   shared_list: noProvider('secretary', 'active-tenant-loop', { outputPolicy: 'notification-dedupe-key' }),
   task_ledger_retention: noProvider('tasks', 'platform-retention'),
   task_sync: noProvider('tasks', 'active-and-pending-task-tenant-user', { retryPolicy: 'provider-mutation-ledger-bounded-retry', outputPolicy: 'content-hash-and-provider-link-idempotency' }),
@@ -248,7 +260,7 @@ export const JOB_POLICIES = Object.freeze({
       '__tests__/services/agent-job-runner.test.ts',
     ],
   }, {
-    providerRouting: 'grounded-provider-fallback-route',
+    providerRouting: GROUNDED_SINGLE_ATTEMPT_PROVIDER_ROUTE,
     costPolicy: 'content-automation-budget',
     ...sharedGovernedRunner('tenant-user'),
   }),
@@ -278,17 +290,17 @@ export const JOB_POLICIES = Object.freeze({
       '__tests__/services/agent-job-runner.test.ts',
     ],
   }, {
-    providerRouting: 'grounded-provider-fallback-route',
+    providerRouting: GROUNDED_SINGLE_ATTEMPT_PROVIDER_ROUTE,
     costPolicy: 'content-automation-budget',
     ...sharedGovernedRunner('tenant-user'),
   }),
   uber_collection: noProvider('finance', 'owner-integration-profile', { retryPolicy: 'collector-bounded-retry' }),
   voice_evolution: providerCapable('content', 'eligible-content-tenant-loop', {
     enforcement: 'runtime-fingerprint',
-    evidence: 'tenant-scoped analytics fingerprint is persisted only after validated output',
+    evidence: 'tenant-scoped canonical creator-edit-pair fingerprint is persisted only after validated output',
     tests: ['__tests__/agents/voice-evolution-multi-tenant.test.ts'],
   }, {
-    providerRouting: GEMINI_ONE_SHOT_PROVIDER_ROUTE,
+    providerRouting: GEMINI_SINGLE_ATTEMPT_PROVIDER_ROUTE,
     costPolicy: 'content-automation-budget',
     ...sharedGovernedRunner('tenant-user', { fingerprintGate: 'adapter' }),
   }),
@@ -325,6 +337,11 @@ export const DIRECT_EVENT_EFFECT_POLICIES = Object.freeze({
     runtimeGroup: 'event-backbone-default',
     retryPolicy: 'event-outbox-max-3-with-backoff',
     outputPolicy: 'exact-scope-monotonic-cooking-finance-content-feedback-upsert',
+  }),
+  reconcile_content_schedule_filming_signal: noProviderHandler('content', 'durable-event-owner-and-exact-content-tenant', {
+    runtimeGroup: 'event-backbone-default',
+    retryPolicy: 'event-outbox-max-3-with-backoff',
+    outputPolicy: 'exact-binding-verified-shoot-day-lock-dismissal',
   }),
 });
 
@@ -370,10 +387,6 @@ export const QUEUED_JOB_HANDLER_POLICIES = Object.freeze({
   training_summary_projector: noProviderHandler('training', 'durable-queue-tenant-user', {
     runtimeGroup: 'event-backbone-default',
     outputPolicy: 'tenant-scoped-training-home-week-projection',
-  }),
-  content_radar_scan_stub_or_existing: noProviderHandler('content', 'durable-queue-tenant-user', {
-    runtimeGroup: 'event-backbone-default',
-    outputPolicy: 'intentional-no-op-foundation-handler',
   }),
   content_topic_secretary_sync: noProviderHandler('content', 'durable-queue-tenant-user', {
     runtimeGroup: 'event-backbone-default',

@@ -10,15 +10,17 @@ export type ChatScriptShortcutFormat = 'Reel' | 'YouTube';
 type BrandVoiceReader = (
   category: string,
   userId: number,
+  tenantId: number,
 ) => { synthesized_text?: string | null } | null | undefined;
 
 export function getUserBrandVoiceForChatScript(
   userId: number,
+  tenantId: number,
   readKnowledgeByCategory?: BrandVoiceReader,
 ): string | null {
   try {
     const reader = readKnowledgeByCategory ?? require('../../state/content-references').getKnowledgeByCategory;
-    const row = reader('brand_voice', userId);
+    const row = reader('brand_voice', userId, tenantId);
     return row?.synthesized_text || null;
   } catch {
     return null;

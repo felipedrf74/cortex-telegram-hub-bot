@@ -548,6 +548,24 @@ describe('SkillRegistry — getEnabledSubmodules()', () => {
     expect(getEnabledSubmodules('ghost')).toEqual([]);
   });
 
+  it('uses declarative defaults when a known skill row is missing', () => {
+    const enabled = getEnabledSubmodules('content');
+    expect(enabled).toContain('creator-agency');
+    for (const paused of ['meme-scout', 'seo-tracker', 'reaction-radar', 'performance-intel']) {
+      expect(enabled).not.toContain(paused);
+    }
+  });
+
+  it('uses declarative defaults when a known skill has missing submodule rows', () => {
+    install({ name: 'content' });
+
+    const enabled = getEnabledSubmodules('content');
+    expect(enabled).toContain('creator-agency');
+    for (const paused of ['meme-scout', 'seo-tracker', 'reaction-radar', 'performance-intel']) {
+      expect(enabled).not.toContain(paused);
+    }
+  });
+
   it('returns empty array when all submodules disabled', () => {
     install({
       name: 'my-skill',
@@ -578,5 +596,14 @@ describe('SkillRegistry — isSubmoduleEnabled()', () => {
 
   it('returns false for non-existent skill/submodule', () => {
     expect(isSubmoduleEnabled('ghost', 'mod-a')).toBe(false);
+  });
+
+  it('uses declarative defaults when a known submodule row is missing', () => {
+    install({ name: 'content' });
+
+    expect(isSubmoduleEnabled('content', 'creator-agency')).toBe(true);
+    for (const paused of ['meme-scout', 'seo-tracker', 'reaction-radar', 'performance-intel']) {
+      expect(isSubmoduleEnabled('content', paused)).toBe(false);
+    }
   });
 });

@@ -964,7 +964,7 @@ describe('Dashboard API route', () => {
       scripted: 0,
       filmed: 0,
       editing: 0,
-      published: 0,
+      published: null,
     });
     expect(res.body.data.content.stageTracking.filmed).toEqual({
       tracking: 'not_tracked',
@@ -973,6 +973,20 @@ describe('Dashboard API route', () => {
     expect(res.body.data.content.stageTracking.editing).toEqual({
       tracking: 'not_tracked',
       reasonCode: 'CONTENT_EDITING_STATE_NOT_MODELED',
+    });
+    expect(res.body.data.content.stageTracking.published).toEqual({
+      tracking: 'internal_workflow_state',
+      source: 'production_state',
+      semantics: 'internal_production_state_only',
+      publicationEvidence: false,
+    });
+    expect(res.body.data.content.bucketSemantics).toEqual({
+      published: 'internal_production_state_only',
+    });
+    expect(res.body.data.content.publicationTracking).toEqual({
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
     });
   });
 

@@ -70,7 +70,7 @@ const scopedTables = [
 const ensured = new WeakSet<object>();
 
 export function resolveContentTenantId(userId: number, tenantId?: number | null): number {
-  return Number.isFinite(tenantId) && Number(tenantId) > 0
+  return Number.isSafeInteger(tenantId) && Number(tenantId) > 0
     ? Number(tenantId)
     : userId;
 }
@@ -156,9 +156,9 @@ export function contentScopePredicate(alias?: string): string {
 }
 
 /**
- * Strict private-owner read predicate for personal Content surfaces. Legacy
- * NULL scope fields inherit only their positive user_id, so they remain
- * visible in that user's personal tenant and never in an arbitrary tenant.
+ * Strict private-owner predicate for personal Content reads and mutations.
+ * Legacy NULL scope fields inherit only their positive user_id, so they remain
+ * available in that user's personal tenant and never in an arbitrary tenant.
  */
 export function contentPrivateScopePredicate(alias?: string): string {
   const c = (name: string) => alias ? `${alias}.${name}` : name;

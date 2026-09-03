@@ -15,12 +15,16 @@ import {
   deleteTopic,
   getTopicById,
   CONTENT_TOPIC_STATUSES,
+  ContentFilmingRecommendationUnavailableError,
   type ContentTopicStatus,
   type ContentTopic,
 } from '../../services/content-scheduler';
 import {
+  ContentRadarPreferencesUnavailableError,
+  ContentRadarPreferencesValidationError,
   getContentRadarPreferences,
   setContentRadarPreferences,
+  validateContentRadarPreferenceTopics,
 } from '../../services/content-radar-preferences';
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
 import { cleanupContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
@@ -36,6 +40,7 @@ import { consumeResourceBudget } from '../../services/resource-budgets';
 import { recordContentWorkspaceProductSignal } from '../../services/content-workspace-observability';
 import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
 import type { Lang } from '../../utils/i18n';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -46,20 +51,74 @@ type EnsureValidContentRouteScope = (
 ) => userId is number;
 
 function parseContentTopicId(value: string): number | null {
-  const topicId = parseInt(value, 10);
-  return Number.isNaN(topicId) ? null : topicId;
+  if (!/^[1-9]\d*$/u.test(value)) return null;
+  const topicId = Number(value);
+  return Number.isSafeInteger(topicId) ? topicId : null;
+}
+
+function resolveOptionalTopicIdempotencyKey(
+  req: Pick<AuthenticatedRequest, 'body' | 'header'>,
+  res: Response,
+): string | undefined | null {
+  if (req.body !== undefined && (
+    req.body === null
+    || typeof req.body !== 'object'
+    || Array.isArray(req.body)
+  )) {
+    sendError(res, 'BAD_REQUEST', 'request body must be an object');
+    return null;
+  }
+  const body = req.body as { idempotencyKey?: unknown } | undefined;
+  const bodySupplied = Boolean(body && Object.prototype.hasOwnProperty.call(body, 'idempotencyKey'));
+  const bodyValue = body?.idempotencyKey;
+  const headerValue = req.header('Idempotency-Key');
+  if (bodySupplied && typeof bodyValue !== 'string') {
+    sendError(res, 'BAD_REQUEST', 'idempotencyKey must be a string');
+    return null;
+  }
+  const bodyKey = typeof bodyValue === 'string' ? bodyValue.trim() : '';
+  const headerKey = typeof headerValue === 'string' ? headerValue.trim() : '';
+  const headerSupplied = headerKey.length > 0;
+  const supplied = [
+    ...(bodySupplied ? [bodyKey] : []),
+    ...(headerSupplied ? [headerKey] : []),
+  ];
+  if (supplied.some((value) => (
+    value.length === 0
+    || value.length > 128
+    || /[\u0000-\u001F\u007F-\u009F]/u.test(value)
+  ))) {
+    sendError(res, 'BAD_REQUEST', 'idempotencyKey must contain 1 to 128 visible characters');
+    return null;
+  }
+  if (bodySupplied && headerSupplied && bodyKey !== headerKey) {
+    sendError(res, 'CONTENT_IDEMPOTENCY_KEY_CONFLICT', 'Body and header idempotency keys must match', 409);
+    return null;
+  }
+  return bodyKey || headerKey || undefined;
 }
 
 function isValidScheduledDate(value: unknown): value is string | null | undefined {
   if (value === undefined || value === null) return true;
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  return typeof value === 'string' && isValidCalendarDate(value);
 }
 
 function isValidScheduledDateTime(value: unknown): value is string | null | undefined {
   if (value === undefined || value === null) return true;
   return typeof value === 'string'
     && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})?$/.test(value)
+    && isValidCalendarDate(value.slice(0, 10))
     && !Number.isNaN(Date.parse(value));
+}
+
+function isValidCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return false;
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function datePartFromScheduledDateTime(value: string | null | undefined): string | undefined {
@@ -76,7 +135,12 @@ export function registerContentTopicRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_radar_preferences_read')) return;
 
-    sendSuccess(res, getContentRadarPreferences(userId, tenantId));
+    try {
+      sendSuccess(res, getContentRadarPreferences(userId, tenantId, { strict: true }));
+    } catch (error) {
+      if (!(error instanceof ContentRadarPreferencesUnavailableError)) throw error;
+      sendError(res, error.code, error.message, error.statusCode, { retryable: error.retryable });
+    }
   }));
 
   /** PUT /api/v1/content/radar-preferences — replace creator topics for Reaction Radar */
@@ -84,39 +148,74 @@ export function registerContentTopicRoutes(
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_radar_preferences_write')) return;
 
-    const topics = Array.isArray(req.body?.topics) ? req.body.topics : null;
-    if (!topics || topics.some((topic: unknown) => typeof topic !== 'string')) {
-      sendError(res, 'BAD_REQUEST', 'topics must be an array of strings', 400);
+    let topics: string[];
+    try {
+      topics = validateContentRadarPreferenceTopics(req.body?.topics);
+    } catch (error) {
+      if (!(error instanceof ContentRadarPreferencesValidationError)) throw error;
+      sendError(res, error.code, error.message, error.statusCode, error.details);
       return;
     }
 
-    const preferences = setContentRadarPreferences(userId, topics, tenantId);
-    invalidateContentDerivedCaches(userId);
-    sendSuccess(res, preferences);
+    try {
+      const preferences = setContentRadarPreferences(userId, topics, tenantId);
+      invalidateContentDerivedCaches(userId);
+      sendSuccess(res, preferences);
+    } catch (error) {
+      if (!(error instanceof ContentRadarPreferencesUnavailableError)) throw error;
+      sendError(res, error.code, error.message, error.statusCode, { retryable: error.retryable });
+    }
   }));
 
   /**
    * GET /api/v1/content/topics?status=&from=&to=&scheduledOnly=&limit=
    *
-   * Returns the user's topics sorted with scheduled topics first
-   * (by date ASC), unscheduled last (by updated_at DESC). Cancelled
-   * topics are hidden unless the caller passes ?status=cancelled.
+   * Returns the user's topics with private workspace deadlines first
+   * (by date ASC), then topics without a deadline (by updated_at DESC).
+   * `scheduledOnly` is the legacy query name for requiring a deadline;
+   * cancelled topics stay hidden unless ?status=cancelled is passed.
    */
   router.get('/topics', asyncHandler(async (req, res: Response) => {
     const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_list')) return;
     recordContentWorkspaceProductSignal('legacy_topics_compatibility_read');
 
-    const status = typeof req.query.status === 'string'
+    const rawStatus = req.query.status;
+    const rawFrom = req.query.from;
+    const rawTo = req.query.to;
+    const rawScheduledOnly = req.query.scheduledOnly;
+    if ((rawStatus !== undefined && typeof rawStatus !== 'string')
+      || (rawFrom !== undefined && typeof rawFrom !== 'string')
+      || (rawTo !== undefined && typeof rawTo !== 'string')
+      || (rawScheduledOnly !== undefined && rawScheduledOnly !== 'true' && rawScheduledOnly !== 'false')) {
+      sendError(res, 'BAD_REQUEST', 'status, from, to, and scheduledOnly must each be a single supported value');
+      return;
+    }
+    const status = typeof rawStatus === 'string'
       ? (req.query.status as ContentTopicStatus)
       : undefined;
-    const from = typeof req.query.from === 'string' ? req.query.from : undefined;
-    const to = typeof req.query.to === 'string' ? req.query.to : undefined;
-    const scheduledOnly = req.query.scheduledOnly === 'true';
-    const limit = Math.min(parseInt(String(req.query.limit ?? ''), 10) || 20, 500);
+    const from = typeof rawFrom === 'string' ? rawFrom : undefined;
+    const to = typeof rawTo === 'string' ? rawTo : undefined;
+    const scheduledOnly = rawScheduledOnly === 'true';
+    const rawLimit = req.query.limit;
+    const limit = rawLimit === undefined || rawLimit === ''
+      ? 20
+      : (typeof rawLimit === 'string' && /^[1-9]\d*$/u.test(rawLimit)
+        ? Number(rawLimit)
+        : Number.NaN);
 
     if (status && !CONTENT_TOPIC_STATUSES.includes(status)) {
       sendError(res, 'BAD_REQUEST', `status must be one of: ${CONTENT_TOPIC_STATUSES.join(', ')}`);
+      return;
+    }
+    if ((from !== undefined && !isValidCalendarDate(from))
+      || (to !== undefined && !isValidCalendarDate(to))
+      || (from !== undefined && to !== undefined && from > to)) {
+      sendError(res, 'BAD_REQUEST', 'from and to must be valid YYYY-MM-DD values with from no later than to');
+      return;
+    }
+    if (!Number.isSafeInteger(limit) || limit > 500) {
+      sendError(res, 'BAD_REQUEST', 'limit must be an integer from 1 to 500');
       return;
     }
 
@@ -146,7 +245,17 @@ export function registerContentTopicRoutes(
         filmingRecommendation: localizeFilmingRecommendation(filmingRecommendation, language),
       });
     } catch (err: any) {
-      logger.error({ err, userId }, 'iOS content topics list failed');
+      logger.error({ ...safeContentLogErrorFields(err), userId }, 'iOS content topics list failed');
+      if (err instanceof ContentFilmingRecommendationUnavailableError) {
+        sendError(
+          res,
+          err.code,
+          err.message,
+          err.statusCode,
+          { retryable: err.retryable, unavailableInput: err.unavailableInput },
+        );
+        return;
+      }
       sendInternalError(res, 'Failed to fetch topics');
     }
   }));
@@ -173,6 +282,11 @@ export function registerContentTopicRoutes(
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
     recordContentWorkspaceProductSignal('legacy_topics_compatibility_mutation');
 
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      sendError(res, 'BAD_REQUEST', 'request body must be an object');
+      return;
+    }
+
     const { title, notes, scheduledDate, scheduledDateTime, status, source } = req.body;
     if (!title || typeof title !== 'string' || !title.trim()) {
       sendError(res, 'BAD_REQUEST', 'title is required and must be non-empty');
@@ -196,15 +310,8 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', `source must be one of: ${TOPIC_CREATE_SOURCES.join(', ')}`);
       return;
     }
-    const headerIdempotencyKey = req.header('Idempotency-Key');
-    const rawIdempotencyKey = typeof req.body?.idempotencyKey === 'string'
-      ? req.body.idempotencyKey
-      : (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
-    const idempotencyKey = rawIdempotencyKey?.trim() || undefined;
-    if (idempotencyKey !== undefined && idempotencyKey.length > 128) {
-      sendError(res, 'BAD_REQUEST', 'idempotencyKey must be at most 128 characters');
-      return;
-    }
+    const idempotencyKey = resolveOptionalTopicIdempotencyKey(req as unknown as AuthenticatedRequest, res);
+    if (idempotencyKey === null) return;
 
     try {
       const language = resolveContentLanguage(req, userId);
@@ -284,6 +391,11 @@ export function registerContentTopicRoutes(
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_update', { topicId })) return;
     recordContentWorkspaceProductSignal('legacy_topics_compatibility_mutation');
 
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      sendError(res, 'BAD_REQUEST', 'request body must be an object');
+      return;
+    }
+
     const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
     if (topicId == null) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
@@ -309,15 +421,8 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
       return;
     }
-    const headerIdempotencyKey = req.header('Idempotency-Key');
-    const rawIdempotencyKey = typeof req.body?.idempotencyKey === 'string'
-      ? req.body.idempotencyKey
-      : (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
-    const idempotencyKey = rawIdempotencyKey?.trim() || undefined;
-    if (idempotencyKey !== undefined && idempotencyKey.length > 128) {
-      sendError(res, 'BAD_REQUEST', 'idempotencyKey must be at most 128 characters');
-      return;
-    }
+    const idempotencyKey = resolveOptionalTopicIdempotencyKey(req as unknown as AuthenticatedRequest, res);
+    if (idempotencyKey === null) return;
 
     try {
       const existingTopic = getTopicById(userId, topicId, tenantId);
@@ -425,15 +530,8 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
-    const headerIdempotencyKey = req.header('Idempotency-Key');
-    const rawIdempotencyKey = typeof req.body?.idempotencyKey === 'string'
-      ? req.body.idempotencyKey
-      : (typeof headerIdempotencyKey === 'string' ? headerIdempotencyKey : undefined);
-    const idempotencyKey = rawIdempotencyKey?.trim() || undefined;
-    if (idempotencyKey !== undefined && idempotencyKey.length > 128) {
-      sendError(res, 'BAD_REQUEST', 'idempotencyKey must be at most 128 characters');
-      return;
-    }
+    const idempotencyKey = resolveOptionalTopicIdempotencyKey(req as unknown as AuthenticatedRequest, res);
+    if (idempotencyKey === null) return;
 
     try {
       if (idempotencyKey && hasContentTopicCompatibilityDeleteReplay(
@@ -539,7 +637,7 @@ function sendContentTopicError(
     sendError(res, error.code, error.message, error.status, error.details);
     return;
   }
-  logger.error({ err: error, userId, tenantId, ...details }, logMessage);
+  logger.error({ ...safeContentLogErrorFields(error), userId, tenantId, ...details }, logMessage);
   sendInternalError(res, 'Content workspace is temporarily unavailable.');
 }
 

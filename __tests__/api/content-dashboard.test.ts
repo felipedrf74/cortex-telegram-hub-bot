@@ -47,6 +47,15 @@ let portalTokenValue = '';
 let portalReadTokenValue = '';
 let portalWriteTokenValue = '';
 let portalAllowLocalBypass = false;
+const mockDashboardActiveSignalCount = vi.fn((..._args: unknown[]) => 3);
+const mockDashboardSignalLog = vi.fn((..._args: unknown[]) => undefined);
+const mockDashboardAgentStats = vi.fn((..._args: unknown[]) => [
+  { agent: 'pipeline-agent', last_run: '2026-04-08T20:00:00Z', last_status: 'success', signals_produced: 4, total_runs: 12 },
+  { agent: 'reaction-radar', last_run: '2026-04-09T08:00:00Z', last_status: 'failed', signals_produced: 0, total_runs: 40 },
+  { agent: 'performance-agent', last_run: '2026-04-06T06:00:00Z', last_status: 'success', signals_produced: 9, total_runs: 5 },
+  { agent: 'seo-agent', last_run: '2026-04-07T06:00:00Z', last_status: 'success', signals_produced: 7, total_runs: 6 },
+]);
+const dashboardLifecycleState = vi.hoisted(() => ({ reactionRadarActive: false }));
 
 // ── Mocks ────────────────────────────────────────────────────────────
 // NOTE: every mock below must be defined BEFORE the unit under test is
@@ -72,6 +81,19 @@ vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   LOGGER_REDACTION_PATHS: [],
 }));
+
+vi.mock('../../src/services/content-agent-lifecycle', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/content-agent-lifecycle')>();
+  return {
+    ...actual,
+    isPausedContentAgent: (agentId: string) => (
+      dashboardLifecycleState.reactionRadarActive
+        && agentId.trim().toLowerCase().replaceAll('-', '_') === 'reaction_radar'
+        ? false
+        : actual.isPausedContentAgent(agentId)
+    ),
+  };
+});
 
 // Provide a config with togglable portal auth state. The route reads
 // `config.portal` at every request, so we can change both token and
@@ -129,6 +151,26 @@ vi.mock('../../src/portal/telemetry', () => ({
       lastDurationMs: null,
       lastError: null,
     },
+    {
+      name: 'performance_agent',
+      label: 'Performance Intel',
+      cronExpression: '0 6 * * 0',
+      domain: 'content',
+      lastRunAt: '2026-04-06T06:00:00Z',
+      lastResult: 'success',
+      lastDurationMs: 10,
+      lastError: null,
+    },
+    {
+      name: 'seo_agent',
+      label: 'SEO Tracking',
+      cronExpression: '0 6 * * 1',
+      domain: 'content',
+      lastRunAt: '2026-04-07T06:00:00Z',
+      lastResult: 'success',
+      lastDurationMs: 10,
+      lastError: null,
+    },
     // Non-content job — must be filtered out.
     {
       name: 'garmin_coach',
@@ -148,50 +190,50 @@ vi.mock('../../src/portal/telemetry', () => ({
 // tolerates an empty list too (we test that in the "minimal data" case
 // by just not stubbing anything in the signals array).
 vi.mock('../../src/services/intelligence-bus', () => ({
-  getAgentStats: () => [
-    { agent: 'pipeline_agent', last_run: '2026-04-08T20:00:00Z', last_status: 'success', signals_produced: 4, total_runs: 12 },
-    { agent: 'reaction_radar', last_run: '2026-04-09T08:00:00Z', last_status: 'failed', signals_produced: 0, total_runs: 40 },
-  ],
-  getSignalLog: () => [
-    {
-      id: 101,
-      source_agent: 'reaction_radar',
-      signal_type: 'reaction_opportunity',
-      payload: { title: 'Trump vs Lula debate' },
-      priority: 'urgent',
-      consumed_by: [],
-      status: 'active',
-      created_at: '2026-04-09T08:00:00Z',
-      expires_at: '2026-04-12T08:00:00Z',
-      user_id: null,
-    },
-    {
-      id: 102,
-      source_agent: 'reaction_radar',
-      signal_type: 'trending_spike',
-      payload: { topic: 'bitcoin ETF' },
-      priority: 'normal',
-      consumed_by: [],
-      status: 'active',
-      created_at: '2026-04-09T07:30:00Z',
-      expires_at: '2026-04-12T07:30:00Z',
-      user_id: null,
-    },
-    // A non-radar signal — must be filtered out of reactionRadar.recentSignals
-    {
-      id: 103,
-      source_agent: 'pipeline_agent',
-      signal_type: 'pipeline_bottleneck',
-      payload: { stage: 'scripted', count: 5 },
-      priority: 'normal',
-      consumed_by: [],
-      status: 'active',
-      created_at: '2026-04-08T20:00:00Z',
-      expires_at: '2026-04-11T20:00:00Z',
-      user_id: null,
-    },
-  ],
-  getActiveSignalCount: () => 3,
+  getAgentStats: (...args: unknown[]) => mockDashboardAgentStats(...args),
+  getSignalLog: (...args: unknown[]) => {
+    mockDashboardSignalLog(...args);
+    return [
+      {
+        id: 101,
+        source_agent: 'reaction_radar',
+        signal_type: 'reaction_opportunity',
+        payload: { title: 'Trump vs Lula debate' },
+        priority: 'urgent',
+        consumed_by: [],
+        status: 'active',
+        created_at: '2026-04-09T08:00:00Z',
+        expires_at: '2026-04-12T08:00:00Z',
+        user_id: null,
+      },
+      {
+        id: 102,
+        source_agent: 'reaction_radar',
+        signal_type: 'trending_spike',
+        payload: { topic: 'bitcoin ETF' },
+        priority: 'normal',
+        consumed_by: [],
+        status: 'active',
+        created_at: '2026-04-09T07:30:00Z',
+        expires_at: '2026-04-12T07:30:00Z',
+        user_id: null,
+      },
+      // A non-radar signal — must be filtered out of reactionRadar.recentSignals
+      {
+        id: 103,
+        source_agent: 'pipeline_agent',
+        signal_type: 'pipeline_bottleneck',
+        payload: { stage: 'scripted', count: 5 },
+        priority: 'normal',
+        consumed_by: [],
+        status: 'active',
+        created_at: '2026-04-08T20:00:00Z',
+        expires_at: '2026-04-11T20:00:00Z',
+        user_id: null,
+      },
+    ];
+  },
+  getActiveSignalCount: (...args: unknown[]) => mockDashboardActiveSignalCount(...args),
   writeSignal: vi.fn(),
   writeGovernedSignal: vi.fn(() => 1),
 }));
@@ -287,25 +329,61 @@ function seedPipeline() {
 function seedYouTube() {
   const channelInsert = testDb.prepare(`
     INSERT INTO content_ref_channels (channel_url, channel_name, status,
-      video_count_analyzed, last_analyzed_at, added_via, user_id, owner_scope)
-    VALUES (?, ?, ?, ?, ?, 'manual', 0, 'system')
+      video_count_analyzed, last_analyzed_at, added_via, user_id, owner_scope,
+      tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?, 'manual', 0, 'system', 0, 0, 'platform_internal',
+      'active', 'active', 0, 0)
   `);
   channelInsert.run('https://youtube.com/@nando', 'Nando Moura', 'active', 12, '2026-04-08T00:00:00Z');
   channelInsert.run('https://youtube.com/@renato', 'Renato 38tão', 'active', 8, '2026-04-07T00:00:00Z');
   channelInsert.run('https://youtube.com/@pending', null, 'pending', 0, null);
 
   const transcriptInsert = testDb.prepare(`
-    INSERT INTO video_transcripts (video_id, title, channel_name, full_text, source)
-    VALUES (?, ?, ?, ?, 'manual')
+    INSERT INTO video_transcripts (video_id, title, channel_name, full_text, source,
+      user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+      scope_status, created_by, updated_by)
+    VALUES (?, ?, ?, ?, 'manual', 0, 0, 0, 'platform_internal', 'active', 'active', 0, 0)
   `);
   transcriptInsert.run('abc123xyz01', 'Why the state always grows', 'Nando Moura', 'Transcript body...');
   transcriptInsert.run('def456abc02', 'Hybrid athlete reality check', 'Renato 38tão', 'Transcript body...');
 
   const studyInsert = testDb.prepare(`
-    INSERT INTO video_studies (video_id, transcript_id, study_type, analysis_json)
-    VALUES (?, 1, 'full', '{}')
+    INSERT INTO video_studies (video_id, transcript_id, study_type, analysis_json,
+      user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+      scope_status, created_by, updated_by)
+    VALUES (?, 1, 'full', '{}', 0, 0, 0, 'platform_internal', 'active', 'active', 0, 0)
   `);
   studyInsert.run('abc123xyz01');
+
+  testDb.prepare(`
+    INSERT INTO content_ref_channels (
+      channel_url, channel_name, status, video_count_analyzed, added_via,
+      user_id, owner_scope, tenant_id, owner_user_id, visibility_scope,
+      lifecycle_state, scope_status, created_by, updated_by
+    ) VALUES (
+      'https://youtube.com/@private', 'Private creator channel', 'active', 99, 'manual',
+      77, 'user', 77, 77, 'user_private', 'active', 'active', 77, 77
+    )
+  `).run();
+  testDb.prepare(`
+    INSERT INTO video_transcripts (
+      video_id, title, channel_name, full_text, source, user_id, tenant_id,
+      owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+    ) VALUES (
+      'private00001', 'Private transcript title', 'Private creator channel', 'Private transcript body',
+      'manual', 77, 77, 77, 'user_private', 'active', 'active', 77, 77
+    )
+  `).run();
+  testDb.prepare(`
+    INSERT INTO video_studies (
+      video_id, transcript_id, study_type, analysis_json, user_id, tenant_id,
+      owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+    ) VALUES (
+      'private00001', (SELECT id FROM video_transcripts WHERE video_id = 'private00001' AND user_id = 77),
+      'full', '{}', 77, 77, 77, 'user_private', 'active', 'active', 77, 77
+    )
+  `).run();
 }
 
 function seedVoiceDna() {
@@ -387,6 +465,11 @@ describe('content-dashboard route', () => {
     portalReadTokenValue = '';
     portalWriteTokenValue = '';
     portalAllowLocalBypass = false;
+    dashboardLifecycleState.reactionRadarActive = false;
+    mockDashboardActiveSignalCount.mockClear();
+    mockDashboardActiveSignalCount.mockReturnValue(3);
+    mockDashboardSignalLog.mockClear();
+    mockDashboardAgentStats.mockClear();
   });
 
   afterEach(() => {
@@ -410,6 +493,24 @@ describe('content-dashboard route', () => {
     const data = buildContentDashboard({ tenantId: 1, userId: 1 });
     expect(data.ok).toBe(true);
     expect(typeof data.generatedAt).toBe('string');
+    expect(data.availability).toBe('available');
+    expect(data.unavailableSections).toEqual([]);
+    expect(data.scope).toEqual({
+      mode: 'mixed_operator_overview',
+      workspaceScope: { tenantId: 1, userId: 1 },
+      workspaceScopedSections: ['pipeline', 'activeSignals'],
+      platformSections: [
+        'commands',
+        'books',
+        'youtube',
+        'agentGraph',
+        'triggers',
+        'voiceDna',
+        'reactionRadar',
+        'knowledgeStats',
+        'referenceChannels',
+      ],
+    });
 
     // Books — 3 total, 2 extracted, 1 pending
     expect(data.books.total).toBe(3);
@@ -430,10 +531,15 @@ describe('content-dashboard route', () => {
       reasonCode: 'CONTENT_FILMING_STATE_NOT_MODELED',
     });
     expect(data.pipeline.stages.editing).toBe(0);
-    expect(data.pipeline.stages.published).toBe(1);
+    expect(data.pipeline.stages.published).toBeNull();
     expect(data.pipeline.totalActive).toBe(2); // approved + scripted
-    expect(data.pipeline.publishedThisWeek).toBe(1);
-    expect(data.pipeline.recent.length).toBe(3);
+    expect(data.pipeline.publishedThisWeek).toBeNull();
+    expect(data.pipeline.publicationTracking).toMatchObject({
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    });
+    expect(data.pipeline.recent.length).toBe(2);
 
     // YouTube — channels + videos + totals
     expect(data.youtube.totals.channels).toBe(3);
@@ -442,6 +548,8 @@ describe('content-dashboard route', () => {
     expect(data.youtube.totals.studies).toBe(1);
     expect(data.youtube.channels.length).toBe(3);
     expect(data.youtube.videos.length).toBe(2);
+    expect(JSON.stringify(data.youtube)).not.toContain('Private creator channel');
+    expect(JSON.stringify(data.youtube)).not.toContain('Private transcript title');
     expect(data.youtube.videos[0].youtubeUrl).toMatch(/^https:\/\/www\.youtube\.com\/watch\?v=/);
 
     // Voice DNA
@@ -455,6 +563,11 @@ describe('content-dashboard route', () => {
     expect(groupNames).toContain('discover');
     expect(groupNames).toContain('pipeline');
     expect(groupNames).toContain('library');
+    const pipelineGroup = data.commands.find((g) => g.group === 'pipeline');
+    const pipelineCommands = pipelineGroup?.rows.map((row) => row.name) ?? [];
+    expect(pipelineCommands).not.toContain('filmed');
+    expect(pipelineCommands).not.toContain('editing');
+    expect(pipelineCommands).not.toContain('published');
     const discoverGroup = data.commands.find((g) => g.group === 'discover');
     expect(discoverGroup).toBeDefined();
     // content_discovery + content_discovery_continuation should have attributed
@@ -462,23 +575,70 @@ describe('content-dashboard route', () => {
     const discoverRow = discoverGroup?.rows.find((r) => r.name === 'discover');
     expect(discoverRow).toBeDefined();
     expect(discoverRow?.calls7d).toBeGreaterThanOrEqual(2);
+    const seoGroup = data.commands.find((g) => g.group === 'seo');
+    expect(seoGroup?.rows.find((r) => r.name === 'seokeyword')?.description).toContain('Paused');
+    expect(seoGroup?.rows.find((r) => r.name === 'seorank')?.description).toContain('no global ranks');
 
-    // Agent graph — every static node and edge is present and overlays run stats
+    // Agent graph — every node is present, while only active lifecycle edges
+    // remain visible, with current run stats overlaid.
     expect(data.agentGraph.nodes.length).toBeGreaterThan(5);
-    expect(data.agentGraph.edges.length).toBeGreaterThan(5);
+    expect(data.agentGraph.edges).toEqual([
+      { from: 'book_extractor', to: 'voice_evolution', signal: 'book_knowledge' },
+      { from: 'book_extractor', to: 'content_workflow', signal: 'book_knowledge' },
+    ]);
     const pipelineNode = data.agentGraph.nodes.find((n) => n.id === 'pipeline_agent');
+    expect(mockDashboardAgentStats).toHaveBeenCalledWith({ strict: true });
     expect(pipelineNode?.lastStatus).toBe('success');
     expect(pipelineNode?.totalRuns).toBe(12);
     const radarNode = data.agentGraph.nodes.find((n) => n.id === 'reaction_radar');
-    expect(radarNode?.lastStatus).toBe('failed');
+    expect(radarNode?.lastStatus).toBe('paused');
     const autoresearchNode = data.agentGraph.nodes.find((n) => n.id === 'autoresearch');
     expect(autoresearchNode?.emits).toEqual([]);
     expect(autoresearchNode?.role).toContain('read-only evaluation');
     expect(autoresearchNode?.role).toContain('never mutates prompts automatically');
+    const voiceNode = data.agentGraph.nodes.find((n) => n.id === 'voice_evolution');
+    expect(voiceNode?.consumes).toEqual(['book_knowledge']);
+    expect(voiceNode?.emits).toEqual([
+      'voice_pattern',
+      'voice_phrase_trend',
+      'voice_analysis_fingerprint',
+    ]);
+    expect(voiceNode?.role).toContain('agent-draft to creator-revision pairs');
+    expect(data.agentGraph.nodes.find((n) => n.id === 'channel_learner')?.emits)
+      .toEqual(['channel_dna']);
+    expect(data.agentGraph.nodes.find((n) => n.id === 'content_discovery'))
+      .toMatchObject({ emits: [], consumes: [] });
+    expect(data.agentGraph.nodes.find((n) => n.id === 'content_workflow'))
+      .toMatchObject({
+        emits: [],
+        consumes: ['book_knowledge', 'trending_spike', 'competitor_upload', 'reaction_opportunity'],
+      });
+    expect(pipelineNode).toMatchObject({
+      emits: ['pipeline_bottleneck', 'pipeline_capacity'],
+      consumes: [
+        'keyword_opportunity',
+        'hook_effectiveness',
+        'pillar_performance',
+        'content_formula',
+        'content_sprint_mode',
+      ],
+    });
+    for (const pausedId of ['performance_agent', 'reaction_radar', 'seo_agent']) {
+      const pausedNode = data.agentGraph.nodes.find((node) => node.id === pausedId);
+      expect(pausedNode).toMatchObject({
+        lifecycle: 'paused',
+        emits: [],
+        lastRun: null,
+        lastStatus: 'paused',
+        totalRuns: 0,
+        signalsProduced: 0,
+      });
+      expect(pausedNode?.role).toContain('Paused');
+      expect(data.agentGraph.edges.some((edge) => edge.from === pausedId || edge.to === pausedId)).toBe(false);
+    }
 
-    // Triggers — only content-domain jobs, sorted with failed first
-    expect(data.triggers.length).toBe(3);
-    expect(data.triggers[0].status).toBe('failed');
+    // Triggers — only content-domain jobs, with paused jobs projected truthfully.
+    expect(data.triggers.length).toBe(5);
     expect(data.triggers.map((t) => t.name)).toEqual(
       expect.arrayContaining(['pipeline_agent', 'reaction_radar', 'voice_evolution']),
     );
@@ -486,18 +646,71 @@ describe('content-dashboard route', () => {
     // Cron-parser should populate nextFireAt for parseable expressions
     const pipelineTrigger = data.triggers.find((t) => t.name === 'pipeline_agent');
     expect(pipelineTrigger?.nextFireAt).toBeTruthy();
+    for (const pausedId of ['performance_agent', 'reaction_radar', 'seo_agent']) {
+      expect(data.triggers.find((trigger) => trigger.name === pausedId)).toMatchObject({
+        lifecycle: 'paused',
+        status: 'paused',
+        lastRunAt: null,
+        lastResult: 'paused',
+        lastDurationMs: null,
+        nextFireAt: null,
+      });
+    }
 
-    // Reaction radar — only reaction_opportunity + trending_spike, not the bottleneck
-    expect(data.reactionRadar.recentSignals.length).toBe(2);
-    expect(data.reactionRadar.recentSignals.every((s) =>
-      ['reaction_opportunity', 'trending_spike', 'competitor_upload'].includes(s.type),
-    )).toBe(true);
-    expect(data.reactionRadar.activeSignals).toBe(2);
+    // Paused Reaction Radar does not expose historical runs or signals.
+    expect(data.reactionRadar.recentSignals).toEqual([]);
+    expect(data.reactionRadar.activeSignals).toBe(0);
+    expect(data.reactionRadar.lastStatus).toBe('paused');
+    expect(data.reactionRadar.lastRunAt).toBeNull();
 
     // Top-level counters
     expect(data.referenceChannels).toBe(3);
     expect(data.activeSignals).toBe(3);
+    expect(mockDashboardActiveSignalCount).toHaveBeenCalledWith(1, 1, {
+      excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
+      excludeIneligibleContentLearningDigests: true,
+      strict: true,
+    });
     expect(data.knowledgeStats.length).toBe(2);
+  });
+
+  it('excludes paused producers before applying the reaction signal-log limit', async () => {
+    dashboardLifecycleState.reactionRadarActive = true;
+    const { buildContentDashboard } = await import('../../src/api/routes/content-dashboard');
+
+    buildContentDashboard({ tenantId: 1, userId: 1 });
+
+    expect(mockDashboardSignalLog).toHaveBeenCalledWith(40, undefined, undefined, {
+      excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
+    });
+  });
+
+  it('marks an active-signal read failure instead of presenting the zero fallback as available', async () => {
+    mockDashboardActiveSignalCount.mockImplementationOnce(() => {
+      throw new Error('sensitive storage failure details');
+    });
+    const { buildContentDashboard } = await import('../../src/api/routes/content-dashboard');
+
+    const data = buildContentDashboard({ tenantId: 1, userId: 1 });
+
+    expect(data.ok).toBe(true);
+    expect(data.activeSignals).toBe(0);
+    expect(data.availability).toBe('partial');
+    expect(data.unavailableSections).toEqual(['activeSignals']);
+  });
+
+  it('marks agent runtime stats unavailable instead of presenting fallback never-runs as confirmed', async () => {
+    mockDashboardAgentStats.mockImplementationOnce(() => {
+      throw new Error('sensitive runtime storage failure details');
+    });
+    const { buildContentDashboard } = await import('../../src/api/routes/content-dashboard');
+
+    const data = buildContentDashboard({ tenantId: 1, userId: 1 });
+
+    expect(data.ok).toBe(true);
+    expect(data.agentGraph.nodes.find((node) => node.id === 'pipeline_agent')?.lastStatus).toBe('never');
+    expect(data.availability).toBe('partial');
+    expect(data.unavailableSections).toEqual(['agentStats']);
   });
 
   it('requires a portal token when one is configured', async () => {
@@ -636,6 +849,8 @@ describe('content-dashboard route', () => {
     const { buildContentDashboard } = await import('../../src/api/routes/content-dashboard');
     const data = buildContentDashboard();
     expect(data.ok).toBe(true);
+    expect(data.availability).toBe('partial');
+    expect(data.unavailableSections).toEqual(['activeSignals']);
     expect(data.books.total).toBe(0);
     expect(data.pipeline.totalActive).toBe(0);
     expect(data.youtube.totals.channels).toBe(0);

@@ -17,6 +17,8 @@ import { buildScreenContractMeta } from '../../services/screen-contract-meta';
 import type { Lang } from '../../utils/i18n';
 import {
   buildUnavailableSection,
+  CONTENT_DASHBOARD_BUCKET_SEMANTICS,
+  CONTENT_DASHBOARD_PUBLICATION_TRACKING,
   CONTENT_DASHBOARD_STAGE_TRACKING,
   fetchCalendar,
   fetchContent,
@@ -101,10 +103,31 @@ function sanitizeDashboardQuotaForClient(quota: any): any {
 export function sanitizeDashboardPayloadForClient<T>(payload: T): T {
   if (!payload || typeof payload !== 'object') return payload;
   const maybeDashboard = payload as any;
-  if (!('quota' in maybeDashboard)) return payload;
+  const content = maybeDashboard.content?.pipelineCount
+    ? {
+      ...maybeDashboard.content,
+      pipelineCount: {
+        ...maybeDashboard.content.pipelineCount,
+        published: maybeDashboard.content.status === 'unavailable'
+          ? null
+          : (maybeDashboard.content.pipelineCount.published ?? 0),
+      },
+      stageTracking: {
+        ...CONTENT_DASHBOARD_STAGE_TRACKING,
+        ...(maybeDashboard.content.stageTracking ?? {}),
+        published: CONTENT_DASHBOARD_STAGE_TRACKING.published,
+      },
+      bucketSemantics: CONTENT_DASHBOARD_BUCKET_SEMANTICS,
+      publicationTracking: CONTENT_DASHBOARD_PUBLICATION_TRACKING,
+      publicationExecution: 'not_supported',
+    }
+    : maybeDashboard.content;
   return {
     ...maybeDashboard,
-    quota: sanitizeDashboardQuotaForClient(maybeDashboard.quota),
+    ...(content ? { content } : {}),
+    ...('quota' in maybeDashboard
+      ? { quota: sanitizeDashboardQuotaForClient(maybeDashboard.quota) }
+      : {}),
   };
 }
 
@@ -307,8 +330,11 @@ async function buildDashboardPayload(userId: number, tenantId: number, language:
     ? contentResult.value
     : buildUnavailableSection(
       {
-        pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 },
+        pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: null },
         stageTracking: CONTENT_DASHBOARD_STAGE_TRACKING,
+        bucketSemantics: CONTENT_DASHBOARD_BUCKET_SEMANTICS,
+        publicationTracking: CONTENT_DASHBOARD_PUBLICATION_TRACKING,
+        publicationExecution: 'not_supported' as const,
         nextDeadline: null,
       },
       ['CONTENT_UNAVAILABLE'],

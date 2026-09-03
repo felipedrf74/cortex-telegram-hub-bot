@@ -3,29 +3,36 @@
   "expected_pass_rate": 0.97,
   "scenarios": [
     {
-      "id": "content-pipeline-filmed-en",
-      "user_text": "Mark the recovery reel as filmed",
+      "id": "content-pipeline-scripted-en",
+      "user_text": "Mark the recovery reel as scripted",
       "locale": "en-US",
       "expected_action": "content_pipeline_stage_transition",
       "expected_slots": {
         "topicTitle": "recovery reel",
-        "targetStage": "filmed"
+        "targetStage": "scripted"
       },
       "expected_verifier": "verified_success",
-      "expected_response_substring": ["recovery reel", "pipeline"],
+      "expected_response_substring": ["recovery reel", "workspace"],
       "forbidden_response_substring": ["Telegram", "filmed command"]
     },
     {
-      "id": "content-pipeline-editing-en",
-      "user_text": "Move the morning routine reel to editing",
-      "locale": "en-US",
+      "id": "content-pipeline-scripted-pt",
+      "user_text": "Marca o reel de rotina matinal como roteiro pronto",
+      "locale": "pt-PT",
       "expected_action": "content_pipeline_stage_transition",
       "expected_slots": {
-        "topicTitle": "morning routine reel",
-        "targetStage": "editing"
+        "topicTitle": "reel de rotina matinal",
+        "targetStage": "scripted"
       },
       "expected_verifier": "verified_success",
-      "expected_response_substring": ["morning routine reel", "editing"]
+      "expected_response_substring": ["reel de rotina matinal", "roteiro"]
+    },
+    {
+      "id": "content-pipeline-editing-unmodeled-en",
+      "user_text": "Move the morning routine reel to editing",
+      "locale": "en-US",
+      "expected_action_NOT": "content_pipeline_stage_transition",
+      "forbidden_response_substring": ["verified_success", "moved to editing"]
     },
     {
       "id": "content-pipeline-published-pt",

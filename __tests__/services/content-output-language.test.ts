@@ -128,6 +128,37 @@ describe('content output language', () => {
   });
 
   it.each([
+    'Você pode rever este roteiro amanhã com fontes e uma proposta concreta.',
+    'Este roteiro descreve uma rota clara com fontes e uma proposta concreta.',
+  ])('does not treat shared pt-PT words as pt-BR-exclusive dialect markers: %s', (field) => {
+    expect(assertContentOutputLanguageFields(
+      'pt-PT',
+      [field],
+      'portuguese-dialect-shared-word',
+    )).toBe('pt-PT');
+  });
+
+  it.each([
+    ['pt-BR', 'Guarde este guião no telemóvel para rever com a equipa.', 'pt-PT'],
+    ['pt-PT', 'Salve este roteiro no celular para rever com sua equipe.', 'pt-BR'],
+  ] as const)('rejects unambiguous %s dialect leakage from %s output', (
+    expectedLocale,
+    text,
+    detectedLocale,
+  ) => {
+    expect(() => assertContentOutputLanguageFields(
+      expectedLocale,
+      [text],
+      'portuguese-dialect-field',
+    )).toThrowError(expect.objectContaining({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      expectedLocale,
+      detectedLocale,
+      boundary: 'portuguese-dialect-field',
+    }));
+  });
+
+  it.each([
     'Vida saludable',
     'Estrategia digital',
     'Aprende algo nuevo',
@@ -188,6 +219,24 @@ describe('content output language', () => {
     }, 'metadata-test')).toThrowError(expect.objectContaining({
       code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
       boundary: 'metadata-test',
+    }));
+  });
+
+  it('treats stable provider warning codes as metadata while still validating warning prose', () => {
+    expect(assertContentScriptOutputLanguage('pt-PT', {
+      script: 'Este guião apresenta uma proposta concreta e termina com uma ação útil.',
+      hook: 'Comece pelo resultado que pretende alcançar.',
+      title_options: ['Um guião claro para esta semana'],
+      warnings: ['source_grounding_review_required'],
+      quality_warnings: ['provider_fallback_review_required'],
+    }, 'provider-warning-code-test')).toBe('pt-PT');
+
+    expect(() => assertContentScriptOutputLanguage('pt-PT', {
+      script: 'Este guião apresenta uma proposta concreta e termina com uma ação útil.',
+      warnings: ['This warning requires review before publishing.'],
+    }, 'provider-warning-prose-test')).toThrowError(expect.objectContaining({
+      code: 'CONTENT_OUTPUT_LOCALE_MISMATCH',
+      boundary: 'provider-warning-prose-test',
     }));
   });
 

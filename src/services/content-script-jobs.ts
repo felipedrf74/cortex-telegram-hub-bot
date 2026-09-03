@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
+import { safeContentLogErrorFields } from './content-log-safety';
 import { getEffectiveEntitlement } from './entitlement';
 import {
   type ScriptResponse as EngineScriptResponse,
@@ -19,7 +20,13 @@ import {
   resolveScriptStyle,
   resolveScriptTargetLanguage,
 } from '../api/routes/content-script-route-utils';
-import { normalizeScriptFormat, resolveScriptDurationPreset } from '../api/routes/content-script-utils';
+import {
+  CONTENT_SCRIPT_MAX_NICHE_CHARS,
+  CONTENT_SCRIPT_MAX_TOPIC_CHARS,
+  hasUnsupportedContentControlCharacters,
+  normalizeScriptFormat,
+  resolveScriptDurationPreset,
+} from '../api/routes/content-script-utils';
 import {
   assertContentOutputLanguageFields,
   ContentOutputLanguageMismatchError,
@@ -31,10 +38,11 @@ import {
 } from './content-script-job-encryption';
 import { getLocalInferenceRuntimeControl } from './local-inference-runtime-control';
 import {
+  captureContentScriptJobCreditsForCompletion,
+  ContentScriptJobCreditSettlementError,
+  releaseContentScriptJobCreditsForTerminal,
   reserveContentScriptJobCredits,
-  settleContentScriptJobCredits,
 } from './content-script-job-credits';
-import { recordOperatorAlert } from './operator-alerts';
 import type { BillingPlan } from './plan-quotas';
 import {
   assertReleaseDataMaintenanceIdentity,
@@ -69,9 +77,15 @@ import {
   markContentScriptBatchesCancellationRequested,
   requestContentScriptBatchCancellationReconciliation,
 } from './content-script-provider-batches';
+import {
+  assertContentResearchGenerationAllowed,
+  buildContentResearchSubject,
+  ContentResearchPolicyError,
+} from './content-research-generation-policy';
 export { cancelContentScriptJobsForAccountDeletion } from './content-script-job-account-lifecycle';
 
 export const CONTENT_SCRIPT_JOB_SCHEMA_VERSION = 'nexus-content-script-job-v1';
+export const CONTENT_SCRIPT_JOB_IDEMPOTENCY_KEY_MAX_CHARS = 200;
 const LEASE_MS = 15 * 60 * 1000;
 const STALE_HEARTBEAT_MS = 3 * 60 * 1000;
 const MAX_CONTENT_SCRIPT_GENERATION_ATTEMPTS = 2;
@@ -102,9 +116,7 @@ function requestContentScriptJobRecovery(db: Database.Database): void {
     try {
       recoverContentScriptJobs(db);
     } catch (error) {
-      logger.warn({
-        errorName: error instanceof Error ? error.name : typeof error,
-      }, 'Content script on-demand recovery failed');
+      logger.warn(safeContentLogErrorFields(error), 'Content script on-demand recovery failed');
     }
   });
 }
@@ -221,7 +233,12 @@ interface ValidatedSection {
 }
 
 export class ContentScriptJobError extends Error {
-  constructor(readonly code: string, message: string, readonly status = 400) {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status = 400,
+    readonly details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = 'ContentScriptJobError';
   }
@@ -236,6 +253,19 @@ class ContentScriptFinalValidationError extends ContentScriptJobError {
     );
     this.name = 'ContentScriptFinalValidationError';
   }
+}
+
+function contentScriptJobFailureCode(error: unknown, failureReason: string | null): string {
+  if (failureReason === 'SCRIPT_JOB_CANCELLED'
+      || (failureReason != null && isLocalFairUseExemptFailureReason(failureReason))) {
+    return failureReason;
+  }
+  if (error instanceof ContentScriptJobError
+      || error instanceof ContentOutputLanguageMismatchError
+      || error instanceof ContentScriptJobCreditSettlementError) {
+    return safeContentLogErrorFields(error).errorCode ?? 'CONTENT_SCRIPT_JOB_FAILED';
+  }
+  return 'CONTENT_SCRIPT_JOB_FAILED';
 }
 
 function stableJson(value: unknown): string {
@@ -283,27 +313,84 @@ export function scheduledBatchWindowStart(now: Date): string {
 }
 
 function normalizeRequest(input: Record<string, unknown>, userId: number): ContentScriptPublicRequest {
+  if (input.style !== undefined) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'style is not supported for script jobs; use scriptStyle.',
+      400,
+      { field: 'style' },
+    );
+  }
   const topic = typeof input.topic === 'string' ? input.topic.trim() : '';
-  if (!topic || topic.length > 2_000) {
-    throw new ContentScriptJobError('VALIDATION', 'topic is required and must be at most 2,000 characters');
+  if (!topic || topic.length > CONTENT_SCRIPT_MAX_TOPIC_CHARS) {
+    throw new ContentScriptJobError('VALIDATION', `topic is required and must be at most ${CONTENT_SCRIPT_MAX_TOPIC_CHARS.toLocaleString('en-US')} characters`);
+  }
+  if (hasUnsupportedContentControlCharacters(topic)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'topic contains unsupported control characters',
+      400,
+      { field: 'topic', reason: 'unsupported_control_characters' },
+    );
   }
   const format = normalizeScriptFormat(input.format);
   if (!format) throw new ContentScriptJobError('VALIDATION', 'format must be YouTube or Reel');
   const duration = resolveScriptDurationPreset(format, input.maxDurationMinutes, input.targetDurationSeconds);
   if ('error' in duration) throw new ContentScriptJobError('VALIDATION', duration.error);
-  return {
+  if (input.niche !== undefined && typeof input.niche !== 'string') {
+    throw new ContentScriptJobError('VALIDATION', 'niche must be a string');
+  }
+  const niche = typeof input.niche === 'string' && input.niche.trim()
+    ? input.niche.trim()
+    : 'general';
+  if (niche.length > CONTENT_SCRIPT_MAX_NICHE_CHARS) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      `niche must be at most ${CONTENT_SCRIPT_MAX_NICHE_CHARS} characters`,
+    );
+  }
+  if (hasUnsupportedContentControlCharacters(niche)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'niche contains unsupported control characters',
+      400,
+      { field: 'niche', reason: 'unsupported_control_characters' },
+    );
+  }
+  const normalized: ContentScriptPublicRequest = {
     topic,
-    niche: typeof input.niche === 'string' && input.niche.trim() ? input.niche.trim().slice(0, 160) : 'general',
+    niche,
     format,
     mode: resolveScriptGenerationMode(input.mode),
     deliveryMode: resolveScriptDeliveryMode(input.deliveryMode),
     language: resolveScriptTargetLanguage(input.language, userId, getUserLanguageById),
     renderMode: resolveScriptRenderMode(input.renderMode),
-    scriptStyle: resolveScriptStyle(input.scriptStyle ?? input.style),
+    scriptStyle: resolveScriptStyle(input.scriptStyle),
     maxDurationMinutes: duration.maxDurationMinutes,
     targetDurationSeconds: duration.targetDurationSeconds,
     forceRefresh: input.forceRefresh === true,
   };
+  assertContentScriptJobRequestAllowed(normalized);
+  return normalized;
+}
+
+function assertContentScriptJobRequestAllowed(
+  request: Pick<ContentScriptJobRequest, 'topic' | 'niche' | 'mode' | 'forceRefresh'>,
+): void {
+  try {
+    assertContentResearchGenerationAllowed({
+      subject: buildContentResearchSubject([
+        { label: 'Topic', value: request.topic },
+        { label: 'Niche', value: request.niche },
+      ]),
+      semanticValues: [request.topic, request.niche],
+      mode: request.mode,
+      forceRefresh: request.forceRefresh,
+    });
+  } catch (error) {
+    if (!(error instanceof ContentResearchPolicyError)) throw error;
+    throw new ContentScriptJobError(error.code, error.message, error.status, error.details);
+  }
 }
 
 function hashablePublicRequest(
@@ -321,29 +408,141 @@ function hashablePublicRequest(
 }
 
 function pinnedSources(input: Record<string, unknown>): ContentScriptJobRequest['pinnedSources'] {
-  const candidates = Array.isArray(input.sources)
-    ? input.sources
-    : Array.isArray(input.sourceContext)
-      ? input.sourceContext
-      : [];
+  const hasSources = input.sources !== undefined;
+  const hasSourceContext = input.sourceContext !== undefined;
+  if (hasSources && hasSourceContext) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'Use either sources or sourceContext, not both.',
+      400,
+      { field: 'sources', reason: 'source_alias_conflict' },
+    );
+  }
+  const supplied = hasSources ? input.sources : hasSourceContext ? input.sourceContext : [];
+  if (!Array.isArray(supplied)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      `${hasSources ? 'sources' : 'sourceContext'} must be an array.`,
+      400,
+      { field: hasSources ? 'sources' : 'sourceContext', reason: 'invalid_type' },
+    );
+  }
+  if (supplied.length > 20) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'sources must contain at most 20 entries; none were truncated.',
+      400,
+      { field: hasSourceContext ? 'sourceContext' : 'sources', maxItems: 20, actualItems: supplied.length, truncated: false },
+    );
+  }
+  const candidates = supplied;
   const output: ContentScriptJobRequest['pinnedSources'] = [];
-  for (const candidate of candidates.slice(0, 20)) {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+  for (const [index, candidate] of candidates.entries()) {
+    const fieldPrefix = `${hasSourceContext ? 'sourceContext' : 'sources'}[${index}]`;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix} must be an object.`,
+        400,
+        { field: fieldPrefix, reason: 'invalid_type' },
+      );
+    }
     const row = candidate as Record<string, unknown>;
-    const title = typeof row.title === 'string' ? row.title.trim().slice(0, 500) : '';
-    const url = typeof row.url === 'string' ? row.url.trim().slice(0, 2_000) : '';
+    if (row.source_type !== undefined && row.sourceType !== undefined
+        && row.source_type !== row.sourceType) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix}.source_type conflicts with sourceType.`,
+        400,
+        { field: `${fieldPrefix}.source_type`, reason: 'source_alias_conflict' },
+      );
+    }
+    if (row.relevance_note !== undefined && row.relevanceNote !== undefined
+        && row.relevance_note !== row.relevanceNote) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix}.relevance_note conflicts with relevanceNote.`,
+        400,
+        { field: `${fieldPrefix}.relevance_note`, reason: 'source_alias_conflict' },
+      );
+    }
+    const rawSourceType = row.source_type !== undefined ? row.source_type : row.sourceType;
+    const rawRelevanceNote = row.relevance_note !== undefined
+      ? row.relevance_note
+      : row.relevanceNote;
+    const rawSourceStrings = [
+      ['title', row.title, 500],
+      ['url', row.url, 2_000],
+      [row.source_type !== undefined ? 'source_type' : 'sourceType', rawSourceType, 120],
+      [row.relevance_note !== undefined ? 'relevance_note' : 'relevanceNote', rawRelevanceNote, 1_500],
+    ] as const;
+    const invalidType = rawSourceStrings.find(([, value]) => (
+      value !== undefined && typeof value !== 'string'
+    ));
+    if (invalidType) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix}.${invalidType[0]} must be a string.`,
+        400,
+        { field: `${fieldPrefix}.${invalidType[0]}`, reason: 'invalid_type' },
+      );
+    }
+    const invalidSourceField = rawSourceStrings.find(([, value]) => (
+      typeof value === 'string' && hasUnsupportedContentControlCharacters(value)
+    ));
+    if (invalidSourceField) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix}.${invalidSourceField[0]} contains unsupported control characters`,
+        400,
+        { field: `${fieldPrefix}.${invalidSourceField[0]}`, reason: 'unsupported_control_characters' },
+      );
+    }
+    const oversizedSourceField = rawSourceStrings.find(([, value, maxChars]) => (
+      typeof value === 'string' && value.trim().length > maxChars
+    ));
+    if (oversizedSourceField) {
+      const [, value, maxChars] = oversizedSourceField;
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix}.${oversizedSourceField[0]} exceeds its safe limit; it was not truncated.`,
+        400,
+        {
+          field: `${fieldPrefix}.${oversizedSourceField[0]}`,
+          maxChars,
+          actualChars: (value as string).trim().length,
+          truncated: false,
+        },
+      );
+    }
+    const title = typeof row.title === 'string' ? row.title.trim() : '';
+    const url = typeof row.url === 'string' ? row.url.trim() : '';
     const sourceType = typeof row.source_type === 'string'
-      ? row.source_type.trim().slice(0, 120)
+      ? row.source_type.trim()
       : typeof row.sourceType === 'string'
-        ? row.sourceType.trim().slice(0, 120)
+        ? row.sourceType.trim()
         : 'user_supplied';
     const relevance = typeof row.relevance_note === 'string'
-      ? row.relevance_note.trim().slice(0, 1_500)
+      ? row.relevance_note.trim()
       : typeof row.relevanceNote === 'string'
-        ? row.relevanceNote.trim().slice(0, 1_500)
+        ? row.relevanceNote.trim()
         : '';
-    if (!title && !relevance) continue;
-    if (url && !/^https?:\/\//i.test(url)) continue;
+    if (!title && !relevance && !url) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix} must include a title, URL, or relevance note.`,
+        400,
+        { field: fieldPrefix, reason: 'empty_source' },
+      );
+    }
+    if (url && !isValidPinnedSourceUrl(url)) {
+      throw new ContentScriptJobError(
+        'VALIDATION',
+        `${fieldPrefix}.url must be a valid http or https URL without credentials.`,
+        400,
+        { field: `${fieldPrefix}.url`, reason: 'invalid_url' },
+      );
+    }
     output.push({
       title: title || 'User-supplied source',
       url,
@@ -352,6 +551,18 @@ function pinnedSources(input: Record<string, unknown>): ContentScriptJobRequest[
     });
   }
   return output;
+}
+
+function isValidPinnedSourceUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+      && parsed.hostname.length > 0
+      && parsed.username.length === 0
+      && parsed.password.length === 0;
+  } catch {
+    return false;
+  }
 }
 
 function requireScope(tenantId: number, userId: number): void {
@@ -627,9 +838,12 @@ function pinnedCloudBinding(deliveryMode: 'standard' | 'scheduled' | 'priority')
 function assertRuntimeAdmitsJob(db: Database.Database, userId: number): void {
   const control = getLocalInferenceRuntimeControl(db);
   if (!runtimeAdmitsContentScriptUser(control, userId)) {
+    const cloudPrimary = localPrimaryInferenceConfig.scriptJobsCloudPrimaryEnabled;
     throw new ContentScriptJobError(
-      'LOCAL_INFERENCE_NOT_ADMITTING',
-      'Local Content generation is not currently admitting new jobs.',
+      cloudPrimary ? 'CONTENT_SCRIPT_RUNTIME_NOT_ADMITTING' : 'LOCAL_INFERENCE_NOT_ADMITTING',
+      cloudPrimary
+        ? 'Content script generation is not currently admitting new jobs.'
+        : 'Local Content generation is not currently admitting new jobs.',
       503,
     );
   }
@@ -649,8 +863,23 @@ export function createContentScriptJob(input: {
       409,
     );
   }
-  const idempotencyKey = input.idempotencyKey.trim().slice(0, 200);
+  const idempotencyKey = input.idempotencyKey.trim();
   if (!idempotencyKey) throw new ContentScriptJobError('IDEMPOTENCY_KEY_REQUIRED', 'An idempotency key is required.', 400);
+  if (idempotencyKey.length > CONTENT_SCRIPT_JOB_IDEMPOTENCY_KEY_MAX_CHARS) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      `idempotencyKey must be at most ${CONTENT_SCRIPT_JOB_IDEMPOTENCY_KEY_MAX_CHARS} characters.`,
+      400,
+    );
+  }
+  if (hasUnsupportedContentControlCharacters(idempotencyKey)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'idempotencyKey contains unsupported control characters.',
+      400,
+      { field: 'idempotencyKey', reason: 'unsupported_control_characters' },
+    );
+  }
   const publicRequest = normalizeRequest(input.request, input.userId);
   const sourceSnapshot = pinnedSources(input.request);
   const requestHash = crypto.createHash('sha256')
@@ -797,7 +1026,7 @@ export function createContentScriptJob(input: {
       plan: limits.plan as BillingPlan,
       longForm: isLongFormScriptDuration(request.targetDurationSeconds),
       deliveryMode: request.deliveryMode,
-    });
+    }, db);
     if (credits.kind === 'denied') {
       throw new ContentScriptJobError(credits.code, credits.message, credits.statusCode);
     }
@@ -939,12 +1168,11 @@ function requeueInfrastructureFailure(
       // Infrastructure-retry exhaustion is a terminal failure: release the
       // job's credit reservation. Non-terminal requeues keep it held so the
       // resumed attempt never charges twice.
-      settleContentScriptJobCredits({
+      releaseContentScriptJobCreditsForTerminal({
         tenantId: row.tenant_id,
         userId: row.owner_user_id,
         jobId,
-        outcome: 'released',
-      });
+      }, db);
     }
     const updated = db.prepare('SELECT * FROM content_script_jobs WHERE job_id = ?')
       .get(jobId) as JobRow;
@@ -1557,7 +1785,7 @@ function settleInFlightCheckpoint(
     logger.warn({
       jobId,
       state,
-      errorName: error instanceof Error ? error.name : typeof error,
+      ...safeContentLogErrorFields(error),
     }, 'Content script checkpoint lifecycle update failed');
   }
 }
@@ -2083,7 +2311,7 @@ export async function runContentScriptJob(
         controller.abort(createContentScriptInfrastructureAbort('CONTENT_SCRIPT_JOB_LEASE_LOST'));
       }
     } catch (error) {
-      logger.warn({ jobId, errorName: error instanceof Error ? error.name : typeof error }, 'Content script lease heartbeat failed');
+      logger.warn({ jobId, ...safeContentLogErrorFields(error) }, 'Content script lease heartbeat failed');
       recoverableAbortCodes.set(token, 'CONTENT_SCRIPT_HEARTBEAT_FAILED');
       controller.abort(createContentScriptInfrastructureAbort('CONTENT_SCRIPT_HEARTBEAT_FAILED'));
     }
@@ -2101,6 +2329,7 @@ export async function runContentScriptJob(
         : null,
       pinnedSources: Array.isArray(storedRequest.pinnedSources) ? storedRequest.pinnedSources : [],
     };
+    assertContentScriptJobRequestAllowed(request);
     assertPinnedRoutingIsActive(request);
     let outline = readOutlineCheckpoint(db, row);
     let modelDigest: string | null = request.pinnedModelDigest ?? null;
@@ -2383,36 +2612,48 @@ export async function runContentScriptJob(
       );
     }
     const completedAt = new Date().toISOString();
-    const completed = db.prepare(`UPDATE content_script_jobs
-      SET status = 'completed', stage = 'completed', progress_percent = 100,
-          warning_codes_json = ?, result_json = ?, route = ?, model_digest = ?,
-          completed_release_id = ?, completed_release_source_sha = ?,
-          completed_release_backend_digest = ?,
-          lease_token = NULL, lease_expires_at = NULL,
-          infrastructure_requeue_count = 0, next_attempt_at = NULL,
-          completed_at = ?, updated_at = ?
-      WHERE job_id = ? AND status = 'running' AND lease_token = ?
-        AND cancellation_requested_at IS NULL AND lease_expires_at > ?`)
-      .run(
-        JSON.stringify(warnings),
-        encryptContentScriptJobJson(publicResult, row.owner_user_id),
-        finalRoute,
-        finalModelDigest,
-        completedRelease?.releaseId ?? null,
-        completedRelease?.sourceSha ?? null,
-        completedRelease?.backendImageDigest ?? null,
-        completedAt,
-        completedAt,
+    const completion = db.transaction(() => {
+      const completed = db.prepare(`UPDATE content_script_jobs
+        SET status = 'completed', stage = 'completed', progress_percent = 100,
+            warning_codes_json = ?, result_json = ?, route = ?, model_digest = ?,
+            completed_release_id = ?, completed_release_source_sha = ?,
+            completed_release_backend_digest = ?,
+            lease_token = NULL, lease_expires_at = NULL,
+            infrastructure_requeue_count = 0, next_attempt_at = NULL,
+            completed_at = ?, updated_at = ?
+        WHERE job_id = ? AND status = 'running' AND lease_token = ?
+          AND cancellation_requested_at IS NULL AND lease_expires_at > ?`)
+        .run(
+          JSON.stringify(warnings),
+          encryptContentScriptJobJson(publicResult, row.owner_user_id),
+          finalRoute,
+          finalModelDigest,
+          completedRelease?.releaseId ?? null,
+          completedRelease?.sourceSha ?? null,
+          completedRelease?.backendImageDigest ?? null,
+          completedAt,
+          completedAt,
+          jobId,
+          token,
+          completedAt,
+        );
+      if (completed.changes !== 1) {
+        const current = db.prepare(`SELECT status, cancellation_requested_at FROM content_script_jobs
+          WHERE job_id = ?`).get(jobId) as {
+            status: ContentScriptJobStatus;
+            cancellation_requested_at: string | null;
+          } | undefined;
+        return { kind: 'not_committed' as const, current };
+      }
+      captureContentScriptJobCreditsForCompletion({
+        tenantId: row.tenant_id,
+        userId: row.owner_user_id,
         jobId,
-        token,
-        completedAt,
-      );
-    if (completed.changes !== 1) {
-      const current = db.prepare(`SELECT status, cancellation_requested_at FROM content_script_jobs
-        WHERE job_id = ?`).get(jobId) as {
-          status: ContentScriptJobStatus;
-          cancellation_requested_at: string | null;
-        } | undefined;
+      }, db);
+      return { kind: 'completed' as const };
+    }).immediate();
+    if (completion.kind === 'not_committed') {
+      const { current } = completion;
       if (current?.status === 'completed') {
         return mapJob(db.prepare('SELECT * FROM content_script_jobs WHERE job_id = ?').get(jobId) as JobRow);
       }
@@ -2426,37 +2667,10 @@ export async function runContentScriptJob(
         409,
       );
     }
-    // Validated user-visible result: capture the job's credit reservation
-    // exactly once. Sections, repairs, and continuations never charged.
-    const captureOutcome = settleContentScriptJobCredits({
-      tenantId: row.tenant_id,
-      userId: row.owner_user_id,
-      jobId,
-      outcome: 'captured',
-    });
-    if (captureOutcome.kind !== 'captured' && captureOutcome.kind !== 'no_reservation') {
-      // A delivered script whose credits never captured is revenue leaked
-      // (e.g. the sweeper expired a long-requeued reservation).
-      logger.error(
-        { jobId, settlement: captureOutcome.kind },
-        'Content script completed without capturing its credit reservation',
-      );
-      recordOperatorAlert({
-        source: 'ai_credits',
-        severity: 'warning',
-        dedupeKey: `content_script_uncaptured:${jobId}`,
-        title: 'Delivered script did not capture credits',
-        metadata: { jobId, settlement: captureOutcome.kind },
-      });
-    }
     return mapJob(db.prepare('SELECT * FROM content_script_jobs WHERE job_id = ?').get(jobId) as JobRow);
   } catch (error) {
     const failureReason = localInferenceFailureReason(error);
-    const code = failureReason
-      ? failureReason.slice(0, 160)
-      : error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'string'
-      ? String((error as { code: string }).code).slice(0, 160)
-      : error instanceof Error ? error.name.slice(0, 160) : 'CONTENT_SCRIPT_JOB_FAILED';
+    const code = contentScriptJobFailureCode(error, failureReason);
     const timestamp = new Date().toISOString();
     if (failureReason !== 'ACCOUNT_DELETION_IN_PROGRESS'
         && isLocalFairUseExemptFailureReason(failureReason)) {
@@ -2482,32 +2696,34 @@ export async function runContentScriptJob(
     }
     const explicitlyCancelled = current?.status === 'cancelled' || Boolean(current?.cancellation_requested_at);
     const status = explicitlyCancelled || code === 'SCRIPT_JOB_CANCELLED' ? 'cancelled' : 'failed';
-    settleInFlightCheckpoint(db, jobId, token, status === 'cancelled' ? 'cancelled' : 'invalid');
     const warningCodes = error instanceof ContentScriptFinalValidationError
       ? error.warningCodes
       : [];
-    const stopped = db.prepare(`UPDATE content_script_jobs
-      SET status = ?, stage = ?, last_error_code = ?, lease_token = NULL,
-          lease_expires_at = NULL,
-          warning_codes_json = ?,
-          cancellation_requested_at = CASE WHEN ? = 'cancelled' THEN COALESCE(cancellation_requested_at, ?) ELSE cancellation_requested_at END,
-          updated_at = ?
-      WHERE job_id = ? AND status = 'running' AND lease_token = ?`)
-      .run(status, status, code, JSON.stringify(warningCodes), status, timestamp, timestamp, jobId, token);
-    if (stopped.changes === 1) {
-      markContentScriptBatchesCancellationRequested(db, {
-        jobId,
-        tenantId: row.tenant_id,
-        userId: row.owner_user_id,
-        timestamp,
-      });
-      settleContentScriptJobCredits({
-        tenantId: row.tenant_id,
-        userId: row.owner_user_id,
-        jobId,
-        outcome: 'released',
-      });
-    }
+    db.transaction(() => {
+      settleInFlightCheckpoint(db, jobId, token, status === 'cancelled' ? 'cancelled' : 'invalid');
+      const terminal = db.prepare(`UPDATE content_script_jobs
+        SET status = ?, stage = ?, last_error_code = ?, lease_token = NULL,
+            lease_expires_at = NULL,
+            warning_codes_json = ?,
+            cancellation_requested_at = CASE WHEN ? = 'cancelled' THEN COALESCE(cancellation_requested_at, ?) ELSE cancellation_requested_at END,
+            updated_at = ?
+        WHERE job_id = ? AND status = 'running' AND lease_token = ?`)
+        .run(status, status, code, JSON.stringify(warningCodes), status, timestamp, timestamp, jobId, token);
+      if (terminal.changes === 1) {
+        markContentScriptBatchesCancellationRequested(db, {
+          jobId,
+          tenantId: row.tenant_id,
+          userId: row.owner_user_id,
+          timestamp,
+        });
+        releaseContentScriptJobCreditsForTerminal({
+          tenantId: row.tenant_id,
+          userId: row.owner_user_id,
+          jobId,
+        }, db);
+      }
+      return terminal.changes;
+    }).immediate();
     logger.warn({ jobId, code, status }, 'Content script job stopped');
     throw error;
   } finally {
@@ -2525,7 +2741,7 @@ export async function runContentScriptJob(
         } catch (recoveryError) {
           logger.warn({
             jobId,
-            errorName: recoveryError instanceof Error ? recoveryError.name : typeof recoveryError,
+            ...safeContentLogErrorFields(recoveryError),
           }, 'Content script post-worker recovery failed');
         }
       });
@@ -2557,7 +2773,7 @@ export function cancelContentScriptJob(input: {
       userId: input.userId,
       timestamp,
     });
-    return db.prepare(`UPDATE content_script_jobs
+    const changes = db.prepare(`UPDATE content_script_jobs
       SET status = 'cancelled', stage = 'cancelled',
           cancellation_requested_at = COALESCE(cancellation_requested_at, ?),
           lease_token = NULL, lease_expires_at = NULL,
@@ -2574,14 +2790,16 @@ export function cancelContentScriptJob(input: {
         row.lease_token,
         row.lease_token,
       ).changes;
+    if (changes > 0) {
+      releaseContentScriptJobCreditsForTerminal({
+        tenantId: input.tenantId,
+        userId: input.userId,
+        jobId: input.jobId,
+      }, db);
+    }
+    return changes;
   }).immediate();
   if (changed > 0) {
-    settleContentScriptJobCredits({
-      tenantId: input.tenantId,
-      userId: input.userId,
-      jobId: input.jobId,
-      outcome: 'released',
-    });
     controllers.get(input.jobId)?.controller.abort(Object.assign(new Error('script_job_cancelled'), {
       name: 'AbortError',
       code: 'SCRIPT_JOB_CANCELLED',
@@ -2619,6 +2837,9 @@ export function retryContentScriptJob(input: {
       409,
     );
   }
+  assertContentScriptJobRequestAllowed(
+    decryptContentScriptJobJson<ContentScriptJobRequest>(existing.request_json, existing.owner_user_id),
+  );
   if (existing.status === 'queued' || existing.status === 'running' || existing.status === 'waiting_capacity') {
     // Retry is idempotent for an already-active operation even if new local
     // admission has since been disabled, but never after private cleanup began.
@@ -2655,6 +2876,9 @@ export function retryContentScriptJob(input: {
         409,
       );
     }
+    assertContentScriptJobRequestAllowed(
+      decryptContentScriptJobJson<ContentScriptJobRequest>(row.request_json, row.owner_user_id),
+    );
     if (row.status === 'queued' || row.status === 'running' || row.status === 'waiting_capacity') {
       return { row, changed: false };
     }
@@ -2758,7 +2982,7 @@ export function retryContentScriptJob(input: {
       plan: limits.plan as BillingPlan,
       longForm: isLongFormScriptDuration(row.target_duration_seconds),
       deliveryMode: retryDeliveryMode,
-    });
+    }, db);
     if (credits.kind === 'denied') {
       throw new ContentScriptJobError(credits.code, credits.message, credits.statusCode);
     }
@@ -2910,7 +3134,7 @@ export function startContentScriptJobRecoveryLoop(
       recoverContentScriptJobs(runtimeDb, options);
     } catch (error) {
       logger.warn({
-        errorName: error instanceof Error ? error.name : typeof error,
+        ...safeContentLogErrorFields(error),
       }, 'Content script job idle-capacity recovery failed');
     }
   });
@@ -2918,7 +3142,7 @@ export function startContentScriptJobRecoveryLoop(
     try {
       recoverContentScriptJobs(runtimeDb, options);
     } catch (error) {
-      logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, 'Content script job recovery failed');
+      logger.warn(safeContentLogErrorFields(error), 'Content script job recovery failed');
     }
   }, 60_000);
   recoveryTimer.unref?.();
@@ -2959,7 +3183,7 @@ export function stopContentScriptJobRecoveryLoop(db: Database.Database = getDb()
       } catch (error) {
         logger.error({
           jobId,
-          errorName: error instanceof Error ? error.name : typeof error,
+          ...safeContentLogErrorFields(error),
         }, 'Unable to durably settle an active Content script job during shutdown');
       }
     }

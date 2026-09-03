@@ -35,6 +35,7 @@ import { priorityToImportance } from '../../services/task-store/task-priority';
 import type { NormalizedTask } from '../../services/task-store/types';
 import { ensureCachedRouteTenantScope, handleCachedRoute, routeCacheKey } from '../route-helpers/cached-route-handler';
 import { invalidateNotificationInboxCaches } from '../../services/notification-cache-invalidation';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import {
   buildSkillNotificationFixtureIntent,
   countUnreadNotificationCenterItems,
@@ -1544,6 +1545,7 @@ export function notificationRoutes(): Router {
       return;
     }
     invalidateNotificationInboxCaches(userId, tenantId);
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { marked: true });
   }));
 
@@ -1558,7 +1560,10 @@ export function notificationRoutes(): Router {
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_all_read')) return;
     const tenantId = routeTenantId(authReq, userId);
     const count = markAllRead(userId, tenantId);
-    invalidateNotificationInboxCaches(userId, tenantId);
+    if (count > 0) {
+      invalidateNotificationInboxCaches(userId, tenantId);
+      invalidateContentDerivedCaches(userId);
+    }
     sendSuccess(res, { markedCount: count });
   }));
 
@@ -1579,6 +1584,7 @@ export function notificationRoutes(): Router {
       return;
     }
     invalidateNotificationInboxCaches(userId, tenantId);
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { resolved: true });
   }));
 

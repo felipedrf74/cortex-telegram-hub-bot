@@ -3,6 +3,9 @@ import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 
 let testDb: Database.Database;
+const cacheMocks = vi.hoisted(() => ({
+  invalidateContentDerivedCaches: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -35,6 +38,11 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => cacheMocks.invalidateContentDerivedCaches(...args),
+}));
+
 import {
   buildSkillDecisionFixtureIntent,
   createDecisionIntent,
@@ -52,6 +60,7 @@ import { getContentDecisionWorkspaceObject } from '../../src/services/content-wo
 
 describe('Decision Center Command Bus equivalence', () => {
   beforeEach(() => {
+    cacheMocks.invalidateContentDerivedCaches.mockClear();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-03T10:00:00.000Z'));
     testDb = new Database(':memory:');
@@ -219,6 +228,7 @@ describe('Decision Center Command Bus equivalence', () => {
     expect(outcomeCountFor(bus.item!.decisionId)).toBe(1);
     expect(commandEventTypesForScope(73, 73)).toContain(`content.${actionId}`);
     expect(JSON.stringify(commandEventsForScope(73, 73))).not.toContain('Bus private draft');
+    expect(cacheMocks.invalidateContentDerivedCaches.mock.calls).toEqual([[72], [73]]);
   });
 
   it('fails closed instead of recreating tenant-shared content on a legacy executor', () => {

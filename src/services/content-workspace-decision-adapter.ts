@@ -95,10 +95,13 @@ export function decideContentWorkspaceReview(input: {
   if (input.approvalType !== 'content_review') {
     return { ok: false, status: 'invalid_transition', object, reasonCodes: ['explicit_content_review_approval_required'] };
   }
-  if (!Number.isInteger(input.expectedWorkflowVersion) || Number(input.expectedWorkflowVersion) <= 0) {
+  if (!Number.isSafeInteger(input.expectedWorkflowVersion) || Number(input.expectedWorkflowVersion) <= 0) {
     return { ok: false, status: 'version_conflict', object, reasonCodes: ['workflow_version_conflict'] };
   }
-  if (typeof input.idempotencyKey !== 'string' || input.idempotencyKey.trim().length < 8) {
+  if (typeof input.idempotencyKey !== 'string'
+    || input.idempotencyKey.trim().length < 8
+    || input.idempotencyKey.trim().length > 200
+    || /[\u0000-\u001F\u007F-\u009F]/u.test(input.idempotencyKey.trim())) {
     return { ok: false, status: 'invalid_transition', object, reasonCodes: ['idempotency_key_required'] };
   }
   if (input.decision === 'approved' && object.productionState === 'approved') {

@@ -65,6 +65,7 @@ describe('Content domain ontology', () => {
 
     for (const definition of formats) {
       expect(validatePlatformFormatDefinition(definition).valid).toBe(true);
+      expect(definition.lengthExpectation).not.toMatch(/\b\d+\s*(?:-|to)\s*\d+\s*(?:seconds?|minutes?|words?|posts?|slides?)\b/i);
     }
   });
 

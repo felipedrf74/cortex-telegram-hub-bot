@@ -31,6 +31,7 @@ import {
   reserveAiCredits,
 } from './ai-credit-ledger';
 import { ensureMonthlyAiCreditsForUser } from './ai-credit-provisioning';
+import { getDb } from './database';
 
 export interface AiCreditAdmissionInput {
   userId: number;
@@ -130,6 +131,7 @@ export async function withAiCreditAdmission<T>(
     return run({ reservationId: null });
   }
 
+  const database = getDb();
   const plan = resolveBillingPlanForUser(input.userId);
   // Included monthly credits are provisioned lazily, immediately before the
   // first reservation of a period. Without this, admission denies every paid
@@ -148,7 +150,7 @@ export async function withAiCreditAdmission<T>(
     operationClass: input.operationClass,
     replayScope,
     now: input.now,
-  });
+  }, database);
 
   let reservation: AiCreditReservation;
   if (admitted.kind === 'reserved') {
@@ -171,7 +173,7 @@ export async function withAiCreditAdmission<T>(
 
   try {
     const result = await run({ reservationId: reservation.id });
-    const settled = captureAiCreditReservation({ reservationId: reservation.id, now: input.now });
+    const settled = captureAiCreditReservation({ reservationId: reservation.id, now: input.now }, database);
     if (settled.kind !== 'captured' && !(settled.kind === 'invalid_state' && settled.state === 'captured')) {
       logger.warn(
         { reservationId: reservation.id, settled: settled.kind },
@@ -180,7 +182,7 @@ export async function withAiCreditAdmission<T>(
     }
     return result;
   } catch (error) {
-    const released = releaseAiCreditReservation({ reservationId: reservation.id, now: input.now });
+    const released = releaseAiCreditReservation({ reservationId: reservation.id, now: input.now }, database);
     if (released.kind !== 'released' && !(released.kind === 'invalid_state' && released.state !== 'reserved')) {
       logger.warn(
         { reservationId: reservation.id, released: released.kind },

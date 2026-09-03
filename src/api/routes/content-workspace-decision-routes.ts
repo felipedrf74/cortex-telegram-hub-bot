@@ -8,6 +8,7 @@ import {
   ensureContentWorkspaceReviewDecision,
 } from '../../services/content-workspace-decision-projection';
 import { logger } from '../../utils/logger';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -56,7 +57,7 @@ export function registerContentWorkspaceDecisionRoutes(
       logger.error({
         operation: 'content_workspace_review_decision_project',
         itemId,
-        errorName: error instanceof Error ? error.name : typeof error,
+        ...safeContentLogErrorFields(error),
       }, 'Content review decision projection failed');
       sendInternalError(res, 'The content item is still safe in review, but Decision Center could not be updated. Retry from the content item.');
     }

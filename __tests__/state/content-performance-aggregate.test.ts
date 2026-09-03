@@ -33,6 +33,16 @@ vi.mock('../../src/config', () => ({
 
 import { getContentPerformanceAggregate } from '../../src/state/content-performance-aggregate';
 import { recordRadarFeedback } from '../../src/state/content-radar-feedback';
+import {
+  createContentArtifact,
+  createContentWorkspaceItem,
+  getContentWorkspaceItem,
+  transitionContentWorkspaceItem,
+} from '../../src/services/content-workspace';
+import {
+  confirmContentSchedulePreview,
+  createContentSchedulePreview,
+} from '../../src/services/content-workspace-scheduling';
 
 
 const USER_A = 3001;
@@ -114,6 +124,64 @@ function insertScript(userId: number, tenantId: number, daysAgo = 0): void {
   `).run(Number(revision.lastInsertRowid), Number(artifact.lastInsertRowid));
 }
 
+function insertConfirmedWorkSchedule(suffix: string): number {
+  const scope = { tenantId: USER_A, userId: USER_A };
+  const created = createContentWorkspaceItem({
+    scope,
+    itemType: 'content_item',
+    title: `Scheduled ${suffix}`,
+    idempotencyKey: `performance-item-${suffix}`,
+  }, testDb).value;
+  createContentArtifact({
+    scope,
+    itemId: created.id,
+    expectedWorkflowVersion: created.workflowVersion,
+    artifactType: 'script',
+    initialContent: { format: 'plain_text', text: `Script ${suffix}` },
+    idempotencyKey: `performance-artifact-${suffix}`,
+  }, testDb);
+  let item = getContentWorkspaceItem(scope, created.id, testDb)!;
+  item = transitionContentWorkspaceItem({
+    scope,
+    itemId: item.id,
+    targetState: 'review',
+    expectedWorkflowVersion: item.workflowVersion,
+    idempotencyKey: `performance-review-${suffix}`,
+  }, testDb).value;
+  item = transitionContentWorkspaceItem({
+    scope,
+    itemId: item.id,
+    targetState: 'approved',
+    expectedWorkflowVersion: item.workflowVersion,
+    idempotencyKey: `performance-approve-${suffix}`,
+  }, testDb).value;
+  const now = new Date();
+  const offsetDays = suffix === 'current' ? 2 : suffix === 'sync-failed' ? 5 : 8;
+  const start = new Date(now);
+  start.setUTCDate(start.getUTCDate() + offsetDays);
+  while (start.getUTCDay() === 0 || start.getUTCDay() === 6) {
+    start.setUTCDate(start.getUTCDate() + 1);
+  }
+  start.setUTCHours(9, 0, 0, 0);
+  const end = new Date(start.getTime() + (60 * 60 * 1000));
+  const preview = createContentSchedulePreview({
+    scope,
+    itemId: item.id,
+    workKind: 'record',
+    durationMinutes: 60,
+    preferredWindows: [{ start: start.toISOString(), end: end.toISOString() }],
+    idempotencyKey: `performance-preview-${suffix}`,
+    now: now.toISOString(),
+  }, testDb);
+  confirmContentSchedulePreview({
+    scope,
+    previewKey: preview.value.previewKey,
+    idempotencyKey: `performance-confirm-${suffix}`,
+    now: now.toISOString(),
+  }, testDb);
+  return item.id;
+}
+
 function insertPerformance(
   userId: number,
   tenantId: number,
@@ -166,11 +234,56 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
   it('returns the empty aggregate for a user with no data', () => {
     const a = getContentPerformanceAggregate(USER_A, USER_A);
     expect(a.topics.total).toBe(0);
+    expect(a.topics.publishedLast30d).toBeNull();
+    expect(a.topics.publicationTracking).toEqual({
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    });
+    expect(a.topics.scheduledNext14d).toBe(0);
+    expect(a.topics.scheduleAttentionNext14d).toBe(0);
     expect(a.scripts.total).toBe(0);
     expect(a.ideas.total).toBe(0);
     expect(a.radarFeedback.total).toBe(0);
     expect(a.performance.total).toBe(0);
     expect(a.highlights).toEqual([]);
+  });
+
+  it('separates current confirmed private work from schedule-attention states', () => {
+    insertConfirmedWorkSchedule('current');
+    const syncFailedItemId = insertConfirmedWorkSchedule('sync-failed');
+    const cancelFailedItemId = insertConfirmedWorkSchedule('cancel-failed');
+    const syncFailedAgendaId = (testDb.prepare(`
+      SELECT secretary_agenda_item_id FROM content_schedule_bindings WHERE item_id = ?
+    `).get(syncFailedItemId) as { secretary_agenda_item_id: string }).secretary_agenda_item_id;
+    const cancelFailedAgendaId = (testDb.prepare(`
+      SELECT secretary_agenda_item_id FROM content_schedule_bindings WHERE item_id = ?
+    `).get(cancelFailedItemId) as { secretary_agenda_item_id: string }).secretary_agenda_item_id;
+    testDb.prepare(`
+      UPDATE secretary_agenda_items SET provider_sync_state = 'create_failed' WHERE agenda_item_id = ?
+    `).run(syncFailedAgendaId);
+    testDb.prepare(`
+      UPDATE content_schedule_bindings
+         SET state = 'cancel_pending',
+             cancellation_idempotency_key = 'performance-cancel-failed-key',
+             cancellation_request_hash = ?,
+             provider_sync_state = 'delete_failed'
+       WHERE item_id = ?
+    `).run('0'.repeat(64), cancelFailedItemId);
+    testDb.prepare(`
+      UPDATE content_schedule_bindings SET state = 'cancel_failed' WHERE item_id = ?
+    `).run(cancelFailedItemId);
+    testDb.prepare(`
+      UPDATE secretary_agenda_items
+         SET lifecycle_state = 'completed', provider_sync_state = 'delete_failed'
+       WHERE agenda_item_id = ?
+    `).run(cancelFailedAgendaId);
+
+    const aggregate = getContentPerformanceAggregate(USER_A, USER_A);
+
+    expect(aggregate.topics.scheduledNext14d).toBe(2);
+    expect(aggregate.topics.scheduleAttentionNext14d).toBe(2);
+    expect(aggregate.topics.scheduleSemantics).toBe('private_work_session');
   });
 
   it('counts canonical workspace items by production state', () => {
@@ -185,11 +298,16 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.topics.byStatus.published).toBe(1);
   });
 
-  it('counts publishedLast30d but excludes older publishes', () => {
+  it('does not infer external publication tracking from internal published states', () => {
     insertTopic(USER_A, USER_A, 'published', null, 5);   // within 30d
     insertTopic(USER_A, USER_A, 'published', null, 50);  // older — outside window
     const a = getContentPerformanceAggregate(USER_A, USER_A);
-    expect(a.topics.publishedLast30d).toBe(1);
+    expect(a.topics.publishedLast30d).toBeNull();
+    expect(a.topics.publicationTracking).toMatchObject({
+      availability: 'unavailable',
+      publicationExecution: 'not_supported',
+    });
+    expect(a.highlights.some((highlight) => /publishing cadence|publication event/i.test(highlight))).toBe(false);
   });
 
   it('aggregates radar feedback by action', () => {
@@ -235,14 +353,14 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.warnings.some(w => w.toLowerCase().includes('under-fitting'))).toBe(true);
   });
 
-  it('warning fires when topics exist but no scripts and no published', () => {
+  it('warns about missing script artifacts without inferring publication state', () => {
     for (let i = 0; i < 6; i++) {
       insertTopic(USER_A, USER_A, 'planned');
     }
     const a = getContentPerformanceAggregate(USER_A, USER_A);
     expect(a.warnings.length).toBeGreaterThanOrEqual(1);
-    // Either the verified-publication or current-script-artifact warning.
-    expect(a.warnings.some(w => /no verified publication|no current script artifacts/i.test(w))).toBe(true);
+    expect(a.warnings.some(w => /no current script artifacts/i.test(w))).toBe(true);
+    expect(a.warnings.some(w => /verified publication|publication event/i.test(w))).toBe(false);
   });
 
   it('counts scripts from canonical artifacts and immutable revisions', () => {
@@ -307,10 +425,10 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
       views: 9000,
       retentionPct: 70,
     });
-    expect(a.highlights.some(h => h.includes('Published content is holding attention'))).toBe(true);
+    expect(a.highlights.some(h => h.includes('User-reported performance is holding attention'))).toBe(true);
   });
 
-  it('warns when recent published performance is under-retaining viewers', () => {
+  it('warns when recent user-reported performance is under-retaining viewers', () => {
     insertPerformance(USER_A, USER_A, {
       title: 'Weak hook test',
       views: 800,
@@ -331,7 +449,7 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     expect(a.warnings.some(w => w.includes('under-retaining viewers'))).toBe(true);
   });
 
-  it('warns when recent published performance has true zero retention', () => {
+  it('warns when recent user-reported performance has true zero retention', () => {
     insertPerformance(USER_A, USER_A, {
       title: 'Zero-retention hook test',
       views: 800,
@@ -364,5 +482,18 @@ describe('content-performance-aggregate (CONTENT-UI-O3)', () => {
     const a = getContentPerformanceAggregate(0);
     expect(a.topics.total).toBe(0);
     expect(a.tenantId).toBe(0);
+    expect(a.availability).toBe('unavailable');
+    expect(a.unavailableSections).toHaveLength(5);
+  });
+
+  it('marks a failed aggregate section unavailable instead of presenting its zeros as complete', () => {
+    testDb.exec('DROP TABLE content_performance');
+
+    const aggregate = getContentPerformanceAggregate(USER_A, USER_A);
+
+    expect(aggregate.availability).toBe('partial');
+    expect(aggregate.unavailableSections).toEqual(['performance']);
+    expect(aggregate.highlights.some((value) => value.includes('performance'))).toBe(false);
+    expect(aggregate.warnings.some((value) => value.includes('performance'))).toBe(false);
   });
 });

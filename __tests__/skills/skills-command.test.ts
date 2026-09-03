@@ -215,8 +215,9 @@ describe('skills command — formatting data correctness', () => {
     for (const skill of skills) {
       const activeSubs = skill.subSkills.filter(s => s.enabled).length;
       if (skill.name === 'content') {
-        // meme-scout is disabled by default → 10 of 11 enabled
-        expect(activeSubs).toBe(skill.subSkills.length - 1);
+        // meme-scout plus SEO/reaction/performance stay paused until their
+        // storage and signals are tenant-user scoped.
+        expect(activeSubs).toBe(skill.subSkills.length - 4);
       } else {
         // All other skills have all sub-skills enabled by default
         expect(activeSubs).toBe(skill.subSkills.length);
@@ -260,15 +261,20 @@ describe('skills command — formatting data correctness', () => {
     expect(tasksStatus.enabled).toBe(false);
   });
 
-  it('empty database defaults all skills to ENABLED (fail-open)', () => {
-    // Clear the skills table — skills should default to enabled, not disabled
+  it('empty database preserves parent availability and declarative sub-skill defaults', () => {
     testDb.exec('DELETE FROM skill_submodules');
     testDb.exec('DELETE FROM installed_skills');
 
     const skills = getAllSkillStatuses();
     expect(skills).toHaveLength(8);
     for (const skill of skills) {
-      expect(skill.enabled).toBe(true); // Default to enabled when not in DB
+      expect(skill.enabled).toBe(true);
+      const definition = DEFAULT_SKILLS[skill.name as keyof typeof DEFAULT_SKILLS];
+      for (const subSkill of skill.subSkills) {
+        expect(subSkill.enabled).toBe(
+          definition.subSkills.find((candidate) => candidate.name === subSkill.name)?.enabledByDefault,
+        );
+      }
     }
   });
 });

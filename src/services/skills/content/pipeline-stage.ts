@@ -1,15 +1,17 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-export const CONTENT_PIPELINE_TRANSITION_STAGES = ['scripted', 'filmed', 'editing', 'published'] as const;
+// The canonical workspace currently proves only a saved script revision.
+// Filming/editing need their own canonical evidence model, and publication has
+// a separate explicit refusal path rather than a stage transition.
+export const CONTENT_PIPELINE_TRANSITION_STAGES = ['scripted'] as const;
 
 export type ContentPipelineTransitionStage = typeof CONTENT_PIPELINE_TRANSITION_STAGES[number];
 
 const STAGE_PATTERN_BY_STAGE: Record<ContentPipelineTransitionStage, string> = {
   scripted: 'scripted|script\\s+ready|roteiro\\s+pronto|gui[oó]n\\s+listo|guion\\s+listo',
-  filmed: 'filmed|filming|ready\\s+to\\s+film|filmado|filmada|gravado|gravada|filmagem|grabado|grabada',
-  editing: 'editing|edited|ready\\s+to\\s+edit|edi[cç][aã]o|editar|editado|editada|edici[oó]n|editarlo',
-  published: 'published|posted|publicado|publicada|publicaci[oó]n',
 };
+
+const PUBLISHED_STAGE_PATTERN = 'published|posted|publicado|publicada|publicaci[oó]n';
 
 const STAGE_ALIASES: Array<{ stage: ContentPipelineTransitionStage; pattern: RegExp }> = CONTENT_PIPELINE_TRANSITION_STAGES.map((stage) => ({
   stage,
@@ -25,6 +27,13 @@ const YOUTUBE_URL = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\S+)/i;
 export interface ContentPipelineStageSlots {
   topicTitle: string | null;
   targetStage: ContentPipelineTransitionStage | null;
+  youtubeUrl?: string | null;
+  rawRequest?: string;
+}
+
+export interface ContentPublicationTrackingSlots {
+  topicTitle: string | null;
+  targetStage: 'published' | null;
   youtubeUrl?: string | null;
   rawRequest?: string;
 }
@@ -45,13 +54,33 @@ export function parseContentPipelineStageTransition(text: string): ContentPipeli
   const targetStage = normalizeContentPipelineTransitionStage(text);
   if (!targetStage) return { topicTitle: null, targetStage: null };
   if (!TRANSITION_VERB_SIGNAL.test(text)) return { topicTitle: null, targetStage: null };
-  if (targetStage === 'published' && !PUBLISHED_TRACKING_VERB.test(text)) {
+
+  return parseContentPipelineStageSlots(text, targetStage, STAGE_PATTERN_BY_STAGE[targetStage]);
+}
+
+export function parseContentPublicationTrackingRequest(text: string): ContentPublicationTrackingSlots {
+  if (!new RegExp(`\\b(?:${PUBLISHED_STAGE_PATTERN})\\b`, 'i').test(text)) {
     return { topicTitle: null, targetStage: null };
   }
+  if (!TRANSITION_VERB_SIGNAL.test(text) || !PUBLISHED_TRACKING_VERB.test(text)) {
+    return { topicTitle: null, targetStage: null };
+  }
+  return parseContentPipelineStageSlots(text, 'published', PUBLISHED_STAGE_PATTERN);
+}
+
+function parseContentPipelineStageSlots<TStage extends ContentPipelineTransitionStage | 'published'>(
+  text: string,
+  targetStage: TStage,
+  stageWords: string,
+): {
+  topicTitle: string | null;
+  targetStage: TStage;
+  youtubeUrl: string | null;
+  rawRequest: string;
+} {
 
   const youtubeUrl = text.match(YOUTUBE_URL)?.[1] ?? null;
   const withoutUrl = youtubeUrl ? text.replace(youtubeUrl, '').trim() : text;
-  const stageWords = STAGE_PATTERN_BY_STAGE[targetStage];
 
   const patterns = [
     new RegExp(`${TRANSITION_VERB}\\s+${ARTICLE}\\s*(.+?)\\s+(?:as|to|into|for|para|como|a|em|en)\\s+(?:${stageWords})\\b`, 'i'),

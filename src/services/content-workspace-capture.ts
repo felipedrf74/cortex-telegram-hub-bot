@@ -584,6 +584,11 @@ interface NormalizedGeneratedSource {
   title: string;
   url: string;
   sourceType: string | null;
+  relevanceNote: string | null;
+  publisher: string | null;
+  author: string | null;
+  publishedAt: string | null;
+  accessedAt: string | null;
 }
 
 /**
@@ -598,26 +603,47 @@ function ensureGeneratedScriptLineage(input: {
   generatedClaims: NormalizedGeneratedClaim[];
   ingressIdentity: string;
 }, db: Database.Database): void {
-  const referenceIds = input.generatedSources.map((source) => registerContentWorkspaceSource({
-    scope: input.scope,
-    referenceType: 'external_research_result',
-    title: source.title,
-    url: source.url,
-    idempotencyKey: `capture-script-source:${input.ingressIdentity}:${digest(source.url).slice(0, 16)}`,
-  }, db).source.referenceId);
+  const referenceIdsByUrl = new Map<string, string>();
+  for (const source of input.generatedSources) {
+    const registered = registerContentWorkspaceSource({
+      scope: input.scope,
+      referenceType: 'external_research_result',
+      title: source.title,
+      url: source.url,
+      summary: source.relevanceNote,
+      metadata: {
+        provider: source.sourceType,
+        publisher: source.publisher,
+        author: source.author,
+        publishedAt: source.publishedAt,
+        accessedAt: source.accessedAt,
+      },
+      idempotencyKey: `capture-script-source:${input.ingressIdentity}:${digest(source.url).slice(0, 16)}`,
+    }, db).source;
+    referenceIdsByUrl.set(source.url, registered.referenceId);
+  }
+  const referenceIds = [...referenceIdsByUrl.values()];
 
   // With neither evidence nor extracted claims there is nothing truthful to
   // freeze yet. Leaving lineage unrecorded keeps agent/import approval closed
   // and lets the user attach sources or save a reviewed user revision later.
   if (referenceIds.length === 0 && input.generatedClaims.length === 0) return;
 
-  const claims: ContentWorkspaceClaimInput[] = input.generatedClaims.map((claim) => ({
-    id: `generated:${digest(claim.text).slice(0, 24)}`,
-    text: claim.text,
-    supportedBy: claim.support === 'source_backed' ? referenceIds : [],
-    confidence: claim.support === 'source_backed' ? 0.7 : 0.3,
-    riskLevel: generatedClaimRiskLevel(claim.text),
-  }));
+  const claims: ContentWorkspaceClaimInput[] = input.generatedClaims.map((claim) => {
+    const supportedBy = claim.support === 'source_backed'
+      ? claim.sourceRefs.flatMap((sourceRef) => {
+        const referenceId = referenceIdsByUrl.get(sourceRef);
+        return referenceId ? [referenceId] : [];
+      })
+      : [];
+    return {
+      id: `generated:${digest(claim.text).slice(0, 24)}`,
+      text: claim.text,
+      supportedBy: [...new Set(supportedBy)],
+      confidence: supportedBy.length > 0 ? 0.7 : 0.3,
+      riskLevel: generatedClaimRiskLevel(claim.text),
+    };
+  });
 
   recordContentRevisionLineage({
     scope: input.scope,
@@ -631,6 +657,7 @@ function ensureGeneratedScriptLineage(input: {
 interface NormalizedGeneratedClaim {
   text: string;
   support: 'source_backed' | 'creator_memory_backed' | 'unverified';
+  sourceRefs: string[];
 }
 
 function normalizeGeneratedClaims(value: unknown, scriptText: string): NormalizedGeneratedClaim[] {
@@ -646,8 +673,19 @@ function normalizeGeneratedClaims(value: unknown, scriptText: string): Normalize
       || record.support === 'unverified'
       ? record.support
       : 'unverified';
+    const sourceRefs = [
+      record.sourceRef,
+      ...(Array.isArray(record.sourceRefs) ? record.sourceRefs : []),
+    ].flatMap((sourceRef) => {
+      const normalized = normalizeGeneratedSourceUrl(sourceRef);
+      return normalized ? [normalized] : [];
+    });
     const key = text.toLocaleLowerCase();
-    if (!providerClaims.has(key)) providerClaims.set(key, { text, support });
+    if (!providerClaims.has(key)) providerClaims.set(key, {
+      text,
+      support,
+      sourceRefs: [...new Set(sourceRefs)],
+    });
   }
   // Treat provider claim ledgers as untrusted hints. A provider can omit a
   // claim, label it standard, or hide domain words behind separators. Derive
@@ -656,7 +694,7 @@ function normalizeGeneratedClaims(value: unknown, scriptText: string): Normalize
   const byText = new Map<string, NormalizedGeneratedClaim>();
   for (const text of extractHighRiskContentClaims(scriptText, 100)) {
     const key = text.toLocaleLowerCase();
-    byText.set(key, providerClaims.get(key) ?? { text, support: 'unverified' });
+    byText.set(key, providerClaims.get(key) ?? { text, support: 'unverified', sourceRefs: [] });
   }
   // High-risk server-derived claims take capacity precedence, so a hostile or
   // malformed 100-entry provider ledger cannot crowd them out.
@@ -691,7 +729,16 @@ function normalizeGeneratedSource(value: unknown): NormalizedGeneratedSource | n
   if (typeof value === 'string') {
     const url = normalizeGeneratedSourceUrl(value);
     if (!url) return null;
-    return { title: sourceTitleFromUrl(url), url, sourceType: null };
+    return {
+      title: sourceTitleFromUrl(url),
+      url,
+      sourceType: null,
+      relevanceNote: null,
+      publisher: null,
+      author: null,
+      publishedAt: null,
+      accessedAt: null,
+    };
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -703,7 +750,27 @@ function normalizeGeneratedSource(value: unknown): NormalizedGeneratedSource | n
     title: requestedTitle ?? sourceTitleFromUrl(url),
     url,
     sourceType,
+    relevanceNote: normalizeGeneratedSourceRelevanceNote(record.relevance_note ?? record.relevanceNote),
+    publisher: normalizeGeneratedSourceText(record.publisher, 240),
+    author: normalizeGeneratedSourceText(record.author, 240),
+    publishedAt: normalizeGeneratedSourceDate(record.published_at ?? record.publishedAt),
+    accessedAt: normalizeGeneratedSourceDate(record.accessed_at ?? record.accessedAt),
   };
+}
+
+function normalizeGeneratedSourceRelevanceNote(value: unknown): string | null {
+  const normalized = normalizeGeneratedSourceText(value, 500);
+  if (!normalized) return null;
+  return /ignore (?:the |all |previous |above )*instructions|disregard (?:the |all |previous |above )*instructions|you are now|<\|im_start\|>|<system>/iu.test(normalized)
+    ? null
+    : normalized;
+}
+
+function normalizeGeneratedSourceDate(value: unknown): string | null {
+  const normalized = normalizeGeneratedSourceText(value, 80);
+  if (!normalized) return null;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 function normalizeGeneratedSourceUrl(value: unknown): string | null {
@@ -973,8 +1040,7 @@ function optionalCaptureText(value: unknown, field: string, maxLength: number): 
 
 function optionalCaptureIdempotencyKey(value: unknown): string | null {
   if (value == null) return null;
-  const normalized = optionalCaptureText(value, 'idempotencyKey', 200);
-  return normalized;
+  return requireCaptureIdempotencyKey(value);
 }
 
 function normalizeGeneratedScriptTarget(
@@ -1004,6 +1070,14 @@ function requireCaptureIdempotencyKey(value: unknown): string {
     throw new ContentWorkspaceError(
       'CONTENT_VALIDATION_FAILED',
       'idempotencyKey must contain at least 8 characters.',
+      400,
+      { field: 'idempotencyKey' },
+    );
+  }
+  if (/[\u0000-\u001F\u007F-\u009F]/u.test(key)) {
+    throw new ContentWorkspaceError(
+      'CONTENT_VALIDATION_FAILED',
+      'idempotencyKey contains unsupported control characters.',
       400,
       { field: 'idempotencyKey' },
     );

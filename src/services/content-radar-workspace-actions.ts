@@ -277,10 +277,10 @@ function buildResult(
 }
 
 function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
-  if (!Number.isInteger(scope?.tenantId) || scope.tenantId <= 0) {
+  if (!Number.isSafeInteger(scope?.tenantId) || scope.tenantId <= 0) {
     throw validationError('tenantId', 'tenantId must be a positive integer.');
   }
-  if (!Number.isInteger(scope?.userId) || scope.userId <= 0) {
+  if (!Number.isSafeInteger(scope?.userId) || scope.userId <= 0) {
     throw validationError('userId', 'userId must be a positive integer.');
   }
   return { tenantId: scope.tenantId, userId: scope.userId };

@@ -18,7 +18,6 @@ import type {
 } from '../../services/content-token-economy';
 import {
   buildClaimLedger,
-  buildContentAgentSignalDigest,
   buildContentArtifactRefs,
   buildContentNextActions,
   buildContentOperationTrace,
@@ -45,6 +44,10 @@ export interface ScriptSourceUsed {
   url?: string;
   source_type?: string;
   relevance_note?: string;
+  publisher?: string | null;
+  author?: string | null;
+  published_at?: string | null;
+  accessed_at?: string | null;
 }
 
 export interface ContentScriptEngineResult {
@@ -60,19 +63,20 @@ export interface ContentScriptEngineResult {
   cta?: string;
   degraded?: boolean;
   warnings?: string[];
-  generation_mode?: string;
-  cache_status?: string;
-  research_artifact_id?: string;
-  source_package_id?: string;
-  voice_card_version?: string;
-  quality_score?: number;
+  generation_mode?: string | null;
+  cache_status?: string | null;
+  research_artifact_id?: string | null;
+  source_package_id?: string | null;
+  voice_card_version?: string | null;
+  quality_score?: number | null;
   quality_warnings?: string[];
-  budget_state?: string;
+  budget_state?: string | null;
   expand_options?: Array<{ id: string; label: string; action: string }>;
-  estimated_cost?: Record<string, unknown>;
-  actual_cost?: Record<string, unknown>;
-  prompt_budget?: Record<string, unknown>;
-  research_route?: Record<string, unknown>;
+  estimated_cost?: Record<string, unknown> | null;
+  actual_cost?: Record<string, unknown> | null;
+  prompt_budget?: Record<string, unknown> | null;
+  research_route?: Record<string, unknown> | null;
+  agent_signals_used?: Array<{ type?: unknown; source?: unknown }>;
 }
 
 export type ContentModeDowngradeReason =
@@ -81,8 +85,7 @@ export type ContentModeDowngradeReason =
   | 'force_draft_only'
   | 'deep_research_disabled'
   | 'fresh_research_disabled'
-  | 'longform_disabled'
-  | 'high_risk_draft_only';
+  | 'longform_disabled';
 
 export function resolveScriptGenerationMode(mode: unknown): GenerationMode {
   if (typeof mode !== 'string') return 'draft';
@@ -122,9 +125,9 @@ export function resolveScriptTargetLanguage(
   }
 
   try {
-    return normalizeSupportedLang(readUserLanguage(userId), 'pt-BR');
+    return normalizeSupportedLang(readUserLanguage(userId), 'en-US');
   } catch {
-    return 'pt-BR';
+    return 'en-US';
   }
 }
 
@@ -173,7 +176,7 @@ export function buildScriptCreatorProfile(params: {
   niche?: string | null;
   voiceMemory?: string | null;
 }): string {
-  const language = params.language?.trim() || 'pt-BR';
+  const language = params.language?.trim() || 'en-US';
   const niche = params.niche?.trim() || 'general';
   const lines = [
     'Creator scope: current authenticated Nexus Hub user only.',
@@ -296,7 +299,7 @@ export function buildScriptSuccessResponse(params: {
     ? Math.min(rawQualityScore, 49)
     : rawQualityScore;
   const expandOptions = result.expand_options ?? defaultExpandOptions(generationMode, language);
-  const enginePromptBudget = normalizeEnginePromptBudget(result.prompt_budget);
+  const enginePromptBudget = normalizeEnginePromptBudget(result.prompt_budget ?? undefined);
   const publicPromptBudget = enginePromptBudget ?? (promptBudget ? {
     tokenEstimate: promptBudget.tokenEstimate,
     maxTokens: promptBudget.maxTokens,
@@ -324,7 +327,16 @@ export function buildScriptSuccessResponse(params: {
   }));
   const artifactRefs = buildContentArtifactRefs({
     voiceCard: creatorVoiceCard ?? null,
-    sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
+    // A generated in-memory source package is useful response context, but it
+    // is not a durable artifact. Publish stored refs only when the caller has
+    // supplied IDs from a successful persistence boundary.
+    sourcePackage: hasSourcePackageContents && publicSourcePackageIds
+      ? {
+        ...(sourcePackage as SourcePackage),
+        sourcePackageId: publicSourcePackageIds.sourcePackageId,
+        researchArtifactId: publicSourcePackageIds.researchArtifactId,
+      }
+      : null,
   });
   const operationKind: ContentOperationKind = generationMode === 'draft' ? 'script_draft' : 'script_expand';
   const operationTrace = buildContentOperationTrace({
@@ -343,23 +355,21 @@ export function buildScriptSuccessResponse(params: {
     sourcePackage: hasSourcePackageContents ? (sourcePackage ?? null) : null,
     voiceCard: creatorVoiceCard ?? null,
   });
-  // 2026-05-18 phase2-qa P1: `agentSignalsUsed` previously synthesized a
-  // digest from the script's OWN output (its hook + title_options), which
-  // is a misleading label — those aren't input signals consumed, they're
-  // the artefacts that were just produced. The real intelligence-bus
-  // signals (`context_signals`) that flow INTO the Python engine are not
-  // currently returned in `result`, so we cannot honestly populate this
-  // field yet. Return an empty digest; iOS already renders this as a
-  // count-only row so the visible change is "0 signals" instead of a
-  // fabricated count. Follow-up: plumb the actual `contextSignals` array
-  // back from `content-engine.ts:560` so the count reflects reality.
-  const agentSignalDigest = { signals: [] as ReturnType<typeof buildContentAgentSignalDigest>['signals'] };
-  // 2026-05-18 phase2-qa P2: previously defaulted to 'reused' even when
-  // nothing was reused (no source package, non-deep mode). Now honestly
-  // reports 'fresh' for that case.
+  // The engine adds this payload-free digest after it has selected the exact
+  // intelligence inputs. Never synthesize usage from output text and never
+  // expose signal payloads through the public response.
+  const agentSignalsUsed = (result.agent_signals_used ?? []).slice(0, 10).flatMap((signal) => {
+    const type = typeof signal.type === 'string' ? signal.type.trim().toLowerCase() : '';
+    const source = typeof signal.source === 'string' ? signal.source.trim().toLowerCase() : '';
+    if (!/^[a-z0-9][a-z0-9._:-]{0,79}$/.test(type)
+        || !/^[a-z0-9][a-z0-9._:-]{0,119}$/.test(source)) return [];
+    return [{ type, source }];
+  });
+  // A provider-created package is fresh until durable IDs prove that a stored
+  // package was reused. Merely having in-memory research is not reuse.
   const reuseStatus = cacheHit
     ? 'cached'
-    : hasReusableSourcePackage
+    : publicSourcePackageIds
       ? 'reused'
       : 'fresh';
 
@@ -376,6 +386,10 @@ export function buildScriptSuccessResponse(params: {
       url: source.url,
       sourceType: source.source_type,
       relevanceNote: source.relevance_note,
+      publisher: source.publisher ?? null,
+      author: source.author ?? null,
+      publishedAt: source.published_at ?? null,
+      accessedAt: source.accessed_at ?? null,
     })),
     estimatedDuration: result.estimated_duration,
     format,
@@ -410,7 +424,10 @@ export function buildScriptSuccessResponse(params: {
       } : {}),
       sourceSummary: hasSourcePackageContents ? (sourcePackage?.sourceSummaries ?? []) : [],
     },
-    voiceCardVersion: result.voice_card_version ?? creatorVoiceCard?.voiceCardVersion ?? null,
+    // Only the TypeScript artifact boundary can prove the stored Voice Card
+    // version. The Python engine may echo prompt metadata, but it cannot
+    // authoritatively version the persisted creator artifact.
+    voiceCardVersion: creatorVoiceCard?.voiceCardVersion ?? null,
     qualityScore: effectiveQualityScore,
     qualityWarnings: publicQualityWarnings,
     budgetState: result.budget_state ?? budgetState ?? 'healthy',
@@ -419,7 +436,7 @@ export function buildScriptSuccessResponse(params: {
     artifactRefs,
     operationTrace,
     claimLedger,
-    agentSignalsUsed: agentSignalDigest.signals,
+    agentSignalsUsed,
     reuseStatus,
     costTier: operationTrace.costTier,
     qualityReport: {
@@ -439,6 +456,7 @@ export function buildScriptSuccessResponse(params: {
       startMs,
       cacheHit,
       provider: 'content-engine',
+      providerSemantics: 'service_boundary',
       researchUsed: generationMode !== 'draft' && generationMode !== 'quick' && !cacheHit,
     }),
     // Backward compat — keep old fields until iOS migrates.
@@ -516,7 +534,64 @@ function publicPromptSectionSource(source: string | undefined): string {
 }
 
 function publicQualityWarningText(code: string, language: string): string {
-  if (language.startsWith('pt')) {
+  if (language === 'pt-BR') {
+    switch (code) {
+      case 'output_too_thin':
+      case 'needs_expansion':
+        return 'O rascunho precisa ser expandido antes da publicação.';
+      case 'weak_hook':
+        return 'O gancho pode precisar de uma abertura mais forte.';
+      case 'missing_clear_cta':
+        return 'Adicione uma próxima ação mais clara.';
+      case 'high_risk_without_sources':
+        return 'As alegações sensíveis precisam de revisão das fontes.';
+      case 'unsupported_absolute_claim_review':
+        return 'Evite alegações absolutas sem fontes.';
+      case 'unsafe_prompt_artifact_review':
+        return 'A formulação insegura foi removida do fluxo de revisão.';
+      case 'no_source_package_available':
+        return 'Nenhum pacote de fontes reutilizável estava disponível.';
+      case 'source_package_over_budget':
+        return 'O pacote de fontes foi comprimido para respeitar o orçamento.';
+      case 'duplicate_source_removed_or_review_required':
+        return 'A evidência duplicada precisa de revisão.';
+      case 'source_note_too_long':
+        return 'As notas das fontes foram encurtadas para respeitar o orçamento.';
+      case 'provider_fallback_review_required':
+        return 'A saída alternativa do modelo precisa de revisão humana antes da publicação.';
+      case 'provider_fallback_research_claims_withheld':
+        return 'As alegações da pesquisa alternativa foram ocultadas; revise as fontes antes de usar o roteiro.';
+      case 'source_grounding_review_required':
+        return 'A fundamentação das fontes não foi suficiente para uma versão pronta para publicação.';
+      case 'mock_sources_excluded':
+        return 'As fontes simuladas locais foram excluídas da proveniência publicável.';
+      case 'provider_fallback_voice_dna_not_applied':
+        return 'A saída alternativa não conseguiu aplicar o Voice DNA salvo; revise o tom antes da publicação.';
+      case 'script_metadata_recovered':
+        return 'Os metadados do roteiro foram recuperados de uma saída incompleta.';
+      case 'compact_research_used':
+        return 'Foi usada pesquisa compacta sem síntese aprofundada.';
+      case 'research_degraded_review_required':
+        return 'A pesquisa ficou degradada e precisa de revisão antes da publicação.';
+      case 'prompt_budget_compacted_review_required':
+        return 'O contexto foi comprimido para respeitar o orçamento; revise a especificidade.';
+      case 'script_repaired_after_incomplete':
+        return 'Um roteiro incompleto foi regenerado com uma reparação compacta.';
+      case 'script_repair_incomplete_review_required':
+        return 'O roteiro continuou incompleto após a reparação e precisa de revisão.';
+      case 'script_repair_unavailable_review_required':
+        return 'A reparação automática do roteiro não ficou disponível; revise-o antes da publicação.';
+      case 'unsupported_or_overconfident_claim_review_required':
+        return 'As alegações absolutas ou excessivamente confiantes precisam de revisão.';
+      case 'platform_mismatch_review_required':
+        return 'A estrutura do roteiro precisa ser ajustada à plataforma.';
+      case 'short_form_script_too_long_for_platform':
+        return 'Revise o tamanho do roteiro em relação ao tempo explicitamente solicitado; sem tempo definido, trate a duração como hipótese.';
+      default:
+        return code;
+    }
+  }
+  if (language === 'pt-PT') {
     switch (code) {
       case 'output_too_thin':
       case 'needs_expansion':
@@ -541,16 +616,34 @@ function publicQualityWarningText(code: string, language: string): string {
         return 'As notas das fontes foram encurtadas para respeitar o orçamento.';
       case 'provider_fallback_review_required':
         return 'A saída alternativa do modelo precisa de revisão humana antes da publicação.';
+      case 'provider_fallback_research_claims_withheld':
+        return 'As alegações da investigação alternativa foram ocultadas; reveja as fontes antes de usar o guião.';
       case 'source_grounding_review_required':
         return 'A fundamentação das fontes não foi suficiente para uma versão pronta a publicar.';
       case 'mock_sources_excluded':
         return 'As fontes simuladas locais foram excluídas da proveniência publicável.';
+      case 'provider_fallback_voice_dna_not_applied':
+        return 'A saída alternativa não conseguiu aplicar o Voice DNA guardado; reveja o tom antes da publicação.';
+      case 'script_metadata_recovered':
+        return 'Os metadados do guião foram recuperados de uma saída incompleta.';
+      case 'compact_research_used':
+        return 'Foi usada investigação compacta sem síntese aprofundada.';
+      case 'research_degraded_review_required':
+        return 'A investigação ficou degradada e precisa de revisão antes da publicação.';
+      case 'prompt_budget_compacted_review_required':
+        return 'O contexto foi comprimido para respeitar o orçamento; reveja a especificidade.';
+      case 'script_repaired_after_incomplete':
+        return 'Um guião incompleto foi regenerado com uma reparação compacta.';
+      case 'script_repair_incomplete_review_required':
+        return 'O guião continuou incompleto após a reparação e precisa de revisão.';
+      case 'script_repair_unavailable_review_required':
+        return 'A reparação automática do guião não ficou disponível; reveja-o antes da publicação.';
       case 'unsupported_or_overconfident_claim_review_required':
         return 'As alegações absolutas ou excessivamente confiantes precisam de revisão.';
       case 'platform_mismatch_review_required':
         return 'A estrutura do guião precisa de ser ajustada à plataforma.';
       case 'short_form_script_too_long_for_platform':
-        return 'O guião curto é demasiado longo para a plataforma.';
+        return 'Revê o tamanho do guião em relação ao tempo explicitamente pedido; sem tempo definido, trata a duração como hipótese.';
       default:
         return code;
     }
@@ -579,10 +672,34 @@ function publicQualityWarningText(code: string, language: string): string {
       return 'Source notes were shortened for budget.';
     case 'provider_fallback_review_required':
       return 'Model fallback output needs human review before publishing.';
+    case 'provider_fallback_research_claims_withheld':
+      return 'Fallback research claims were withheld; review the sources before using the script.';
     case 'source_grounding_review_required':
       return 'Source grounding was not strong enough for a publish-ready score.';
     case 'mock_sources_excluded':
       return 'Local mock research sources were excluded from publishable provenance.';
+    case 'provider_fallback_voice_dna_not_applied':
+      return 'The fallback output could not apply saved Voice DNA; review its tone before publishing.';
+    case 'script_metadata_recovered':
+      return 'Script metadata was recovered from an incomplete provider response.';
+    case 'compact_research_used':
+      return 'Compact research was used without deep synthesis.';
+    case 'research_degraded_review_required':
+      return 'Research was degraded and needs review before publishing.';
+    case 'prompt_budget_compacted_review_required':
+      return 'Context was compacted to fit the prompt budget; review specificity.';
+    case 'script_repaired_after_incomplete':
+      return 'An incomplete script was regenerated with a compact repair pass.';
+    case 'script_repair_incomplete_review_required':
+      return 'The script remained incomplete after repair and needs review.';
+    case 'script_repair_unavailable_review_required':
+      return 'Automatic script repair was unavailable; review before publishing.';
+    case 'unsupported_or_overconfident_claim_review_required':
+      return 'Absolute or overconfident claims need review.';
+    case 'platform_mismatch_review_required':
+      return 'The script structure needs adjustment for the platform.';
+    case 'short_form_script_too_long_for_platform':
+      return 'Review script length against the explicitly requested runtime; without one, treat duration as a hypothesis.';
     default:
       return code.replace(/[_-]+/g, ' ');
   }
@@ -612,7 +729,19 @@ function defaultExpandOptions(
 }
 
 function contentActionLabel(id: string, fallback: string, language: string): string {
-  if (!language.startsWith('pt')) return fallback;
+  if (language === 'pt-BR') {
+    return ({
+      'expand-full': 'Expandir para o roteiro completo',
+      'expand-intro': 'Expandir a introdução',
+      'rewrite-hook': 'Reescrever o gancho',
+      'hook-pack': 'Pacote de ganchos',
+      'title-pack': 'Pacote de títulos',
+      'thumbnail-pack': 'Pacote de miniaturas',
+      'caption-pack': 'Pacote de legendas',
+      'refresh-research': 'Atualizar a pesquisa',
+    } as Record<string, string>)[id] ?? fallback;
+  }
+  if (language !== 'pt-PT') return fallback;
   return ({
     'expand-full': 'Expandir para o guião completo',
     'expand-intro': 'Expandir a introdução',

@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CONTENT_DERIVED_CACHE_SIGNAL_TYPES,
   dismissSignal,
   expireStaleSignals,
   getActiveSignalCount,
   getAgentStats,
   getSignalLog,
   GovernedSignalWriteError,
+  IntelligenceBusReadUnavailableError,
   isAllowedSignalSourceAgent,
   logAgentRun,
   markConsumed,
   readRankedSignals,
   readSignals,
   setDbProvider,
+  setContentDerivedInvalidator,
   setPlanningInvalidator,
   setScopeAnomalyReporter,
   type AgentSignal,
@@ -67,6 +70,8 @@ class RecordingDb {
   tenantColumn = true;
   calls: DbCall[] = [];
   selectedRows: Record<string, unknown>[] = [];
+  expiringRows: Record<string, unknown>[] = [];
+  signalMetadataRow: Record<string, unknown> | undefined;
   statsRows: Record<string, unknown>[] = [];
   consumedRow: Record<string, unknown> | undefined;
   countRow: Record<string, unknown> | undefined = { cnt: 0 };
@@ -93,6 +98,9 @@ class RecordingDb {
       get: (...args: unknown[]) => {
         this.calls.push({ kind: 'get', sql, args });
         if (this.throwOnGet?.test(sql)) throw new Error('get failed');
+        if (sql.startsWith('SELECT signal_type,') && sql.includes("status = 'active'")) {
+          return this.signalMetadataRow;
+        }
         if (sql.startsWith('SELECT consumed_by FROM agent_signals')) return this.consumedRow;
         if (sql.startsWith('SELECT COUNT(*) as cnt FROM agent_signals')) return this.countRow;
         return undefined;
@@ -104,6 +112,9 @@ class RecordingDb {
           return this.tenantColumn
             ? [{ name: 'id' }, { name: 'tenant_id' }, { name: 'user_id' }]
             : [{ name: 'id' }, { name: 'user_id' }];
+        }
+        if (sql.includes('julianday(expires_at) <=') && sql.includes('signal_type IN')) {
+          return this.expiringRows;
         }
         if (sql.includes('FROM agent_runs r1')) return this.statsRows;
         if (sql.includes('FROM agent_signals')) return this.selectedRows;
@@ -139,6 +150,7 @@ describe('intelligence-bus direct contract without native database workers', () 
   let database: RecordingDb;
   let anomalies: ScopeAnomalyReport[];
   let planningInvalidations: Array<number | undefined>;
+  let contentInvalidations: Array<number | undefined>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -146,14 +158,17 @@ describe('intelligence-bus direct contract without native database workers', () 
     database = new RecordingDb();
     anomalies = [];
     planningInvalidations = [];
+    contentInvalidations = [];
     setDbProvider(() => database as any);
     setScopeAnomalyReporter((report) => anomalies.push(report));
     setPlanningInvalidator((userId) => planningInvalidations.push(userId));
+    setContentDerivedInvalidator((userId) => contentInvalidations.push(userId));
   });
 
   afterEach(() => {
     setScopeAnomalyReporter(null);
     setPlanningInvalidator(() => undefined);
+    setContentDerivedInvalidator(() => undefined);
     vi.useRealTimers();
   });
 
@@ -237,8 +252,11 @@ describe('intelligence-bus direct contract without native database workers', () 
       expect(dismissSignal(1, 42)).toBe(0);
       expect(expireStaleSignals()).toBe(0);
       expect(getActiveSignalCount(42)).toBe(0);
+      expect(() => getActiveSignalCount(42, 42, { strict: true }))
+        .toThrow(IntelligenceBusReadUnavailableError);
       expect(getSignalLog(3, 42)).toEqual([]);
       expect(getAgentStats()).toEqual([]);
+      expect(() => getAgentStats({ strict: true })).toThrow(IntelligenceBusReadUnavailableError);
       expect(() => logAgentRun('agent', 'success', 1, 2, 3)).not.toThrow();
       expect(readRankedSignals('consumer', ['voice_pattern'], { userId: 42 })).toEqual([]);
     }
@@ -308,6 +326,29 @@ describe('intelligence-bus direct contract without native database workers', () 
 
     expect(thrown).toBeInstanceOf(GovernedSignalWriteError);
     expect(thrown).toMatchObject(expectedGovernedError('invalid_provenance', 'voice_pattern'));
+    expect(database.nonPragmaCalls()).toEqual([]);
+  });
+
+  it.each([
+    'performance-agent',
+    'performance_agent',
+    ' Performance-Agent ',
+    'reaction-radar',
+    'reaction-radar-agent',
+    'reaction_radar',
+    'reaction_radar_agent',
+    ' Reaction-Radar ',
+    'seo-agent',
+    'seo_agent',
+  ])('rejects governed persistence from paused Content producer identity %s', (sourceAgent) => {
+    expect(() => writeGovernedSignal({
+      source_agent: sourceAgent,
+      signal_type: 'content_formula',
+      payload: {},
+      provenance: validProvenance(),
+    })).toThrowError(expect.objectContaining(
+      expectedGovernedError('paused_source_agent', 'content_formula', sourceAgent),
+    ));
     expect(database.nonPragmaCalls()).toEqual([]);
   });
 
@@ -423,6 +464,25 @@ describe('intelligence-bus direct contract without native database workers', () 
     })).toThrowError(expect.objectContaining(expectedGovernedError('write_rejected', 'voice_pattern')));
   });
 
+  it('rejects the retired content_published signal and excludes historical rows from reads', () => {
+    const retiredSignal = {
+      source_agent: 'test-agent',
+      signal_type: 'content_published',
+      payload: {},
+      provenance: validProvenance(),
+    } as unknown as Parameters<typeof writeGovernedSignal>[0];
+
+    expect(() => writeGovernedSignal(retiredSignal)).toThrowError(expect.objectContaining({
+      code: 'invalid_signal_type',
+      signalType: 'content_published',
+    }));
+    expect(writeSignal(retiredSignal)).toBe(-1);
+
+    database.selectedRows = [signalRow({ signal_type: 'content_published' })];
+    expect(getSignalLog()).toEqual([]);
+    expect(database.nonPragmaCalls().at(-1)?.args).not.toContain('content_published');
+  });
+
   it('uses the exact default expiry contract for every signal type and preserves global versus private scope', () => {
     const expiryContract: Array<[SignalType, number, boolean]> = [
       ['trending_spike', 24, true],
@@ -442,7 +502,6 @@ describe('intelligence-bus direct contract without native database workers', () 
       ['pipeline_capacity', 7 * 24, false],
       ['content_sprint_mode', 7 * 24, true],
       ['reaction_opportunity', 48, true],
-      ['content_published', 30 * 24, true],
       ['learning_digest', 7 * 24, true],
       ['creator_learning_digest', 7 * 24, false],
       ['content_formula', 90 * 24, true],
@@ -564,7 +623,66 @@ describe('intelligence-bus direct contract without native database workers', () 
       ],
     }]);
     expect(planningInvalidations).toEqual([42]);
+    expect(contentInvalidations).toEqual([]);
     expect(anomalies).toEqual([]);
+  });
+
+  it('invalidates Content derived caches only for successful Home or plan signal writes', () => {
+    expect(writeGovernedSignal({
+      source_agent: 'pipeline-agent',
+      signal_type: 'pipeline_bottleneck',
+      payload: { stage: 'scripted' },
+      user_id: 42,
+      tenant_id: 99,
+      provenance: validProvenance(),
+    })).toBe(101);
+    expect(contentInvalidations).toEqual([42]);
+
+    expect(writeGovernedSignal({
+      source_agent: 'test-agent',
+      signal_type: 'reaction_opportunity',
+      payload: { title: 'Global opportunity' },
+      provenance: validProvenance(),
+    })).toBe(101);
+    expect(contentInvalidations).toEqual([42, undefined]);
+
+    expect(writeGovernedSignal({
+      source_agent: 'voice-evolution',
+      signal_type: 'voice_pattern',
+      payload: { pattern: 'concise' },
+      user_id: 42,
+      tenant_id: 99,
+      provenance: validProvenance(),
+    })).toBe(101);
+    expect(contentInvalidations).toEqual([42, undefined]);
+
+    database.insertResult = {};
+    expect(writeSignal({
+      source_agent: 'pipeline-agent',
+      signal_type: 'pipeline_bottleneck',
+      payload: {},
+      user_id: 42,
+      tenant_id: 99,
+    })).toBe(-1);
+    expect(contentInvalidations).toEqual([42, undefined]);
+    expect(CONTENT_DERIVED_CACHE_SIGNAL_TYPES).toContain('pipeline_bottleneck');
+  });
+
+  it('still reports the committed write and invalidates Content when planning invalidation fails', () => {
+    setPlanningInvalidator(() => {
+      throw new Error('planning cache unavailable');
+    });
+
+    expect(writeGovernedSignal({
+      source_agent: 'pipeline-agent',
+      signal_type: 'pipeline_bottleneck',
+      payload: { stage: 'scripted' },
+      user_id: 42,
+      tenant_id: 99,
+      meshPriority: 1,
+      provenance: validProvenance(),
+    })).toBe(101);
+    expect(contentInvalidations).toEqual([42]);
   });
 
   it('uses the legacy insert shape when tenant_id is unavailable and applies exact defaults', () => {
@@ -728,6 +846,70 @@ describe('intelligence-bus direct contract without native database workers', () 
     }]);
   });
 
+  it('normalizes paused source aliases into the flat-read SQL before ordering and limiting', () => {
+    database.selectedRows = [];
+
+    expect(readSignals(
+      'reader',
+      ['voice_pattern'],
+      1,
+      42,
+      undefined,
+      99,
+      { excludeSourceAgents: ['performance-agent', 'seo_agent', 'SEO-Agent'] },
+    )).toEqual([]);
+
+    expect(database.nonPragmaCalls()).toEqual([{
+      kind: 'all',
+      sql: normalizeSql(`
+        SELECT * FROM agent_signals
+        WHERE status = 'active'
+          AND julianday(expires_at) > julianday(?)
+          AND signal_type IN (?)
+          AND (tenant_id IS NULL OR tenant_id = ?)
+          AND (user_id IS NULL OR user_id = ?)
+          AND LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (?,?)
+        ORDER BY
+          CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+          created_at DESC
+        LIMIT ?
+      `),
+      args: [NOW.toISOString(), 'voice_pattern', 99, 42, 'performance_agent', 'seo_agent', 1],
+    }]);
+  });
+
+  it('expands the historical reaction-radar runtime alias before the flat-read limit', () => {
+    database.selectedRows = [];
+
+    expect(readSignals(
+      'reader',
+      ['voice_pattern'],
+      1,
+      42,
+      undefined,
+      99,
+      { excludeSourceAgents: ['reaction-radar'] },
+    )).toEqual([]);
+
+    expect(database.nonPragmaCalls()).toEqual([{
+      kind: 'all',
+      sql: normalizeSql(`
+        SELECT * FROM agent_signals
+        WHERE status = 'active'
+          AND julianday(expires_at) > julianday(?)
+          AND signal_type IN (?)
+          AND (tenant_id IS NULL OR tenant_id = ?)
+          AND (user_id IS NULL OR user_id = ?)
+          AND LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (?,?)
+        ORDER BY
+          CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+          created_at DESC
+        LIMIT ?
+      `),
+      args: [NOW.toISOString(), 'voice_pattern', 99, 42, 'reaction_radar', 'reaction_radar_agent', 1],
+    }]);
+  });
+
   it.each([
     ['tenant global', true, undefined, 99, [NOW.toISOString(), 'voice_pattern', 99, 4], 'AND (tenant_id IS NULL OR tenant_id = ?) AND user_id IS NULL'],
     ['platform global', true, undefined, undefined, [NOW.toISOString(), 'voice_pattern', 4], 'AND tenant_id IS NULL AND user_id IS NULL'],
@@ -837,9 +1019,69 @@ describe('intelligence-bus direct contract without native database workers', () 
     database.tenantColumn = tenantColumn;
     database.dismissResult = { changes: 3 };
     expect(dismissSignal(7, userId, tenantId)).toBe(3);
-    const update = database.nonPragmaCalls()[0];
+    const update = database.nonPragmaCalls().find((call) => call.kind === 'run')!;
     expect(update.args).toEqual(args);
     expect(update.sql).toContain(sqlFragment);
+  });
+
+  it('invalidates the exact Content cache owner after a ranked signal is dismissed', () => {
+    database.signalMetadataRow = {
+      signal_type: 'pipeline_bottleneck',
+      tenant_id: 99,
+      user_id: 42,
+      mesh_priority: 2,
+    };
+    database.dismissResult = { changes: 1 };
+    expect(dismissSignal(7, 42, 99)).toBe(1);
+    expect(contentInvalidations).toEqual([42]);
+
+    database.dismissResult = { changes: 0 };
+    expect(dismissSignal(7, 42, 99)).toBe(0);
+    expect(contentInvalidations).toEqual([42]);
+
+    database.signalMetadataRow = {
+      signal_type: 'reaction_opportunity',
+      tenant_id: null,
+      user_id: null,
+      mesh_priority: 2,
+    };
+    database.dismissResult = { changes: 1 };
+    expect(dismissSignal(8)).toBe(1);
+    expect(contentInvalidations).toEqual([42, undefined]);
+
+    contentInvalidations = [];
+    database.throwOnGet = /SELECT signal_type,/;
+    database.dismissResult = { changes: 1 };
+    expect(dismissSignal(9)).toBe(1);
+    expect(contentInvalidations).toEqual([undefined]);
+    expect(planningInvalidations).toEqual([undefined]);
+  });
+
+  it('invalidates the exact planning cache owner only for changed priority-1 dismissals', () => {
+    database.signalMetadataRow = {
+      signal_type: 'voice_pattern',
+      tenant_id: 99,
+      user_id: 42,
+      mesh_priority: 1,
+    };
+    database.dismissResult = { changes: 1 };
+    expect(dismissSignal(7, 42, 99)).toBe(1);
+    expect(planningInvalidations).toEqual([42]);
+    expect(contentInvalidations).toEqual([]);
+
+    database.dismissResult = { changes: 0 };
+    expect(dismissSignal(7, 42, 99)).toBe(0);
+    expect(planningInvalidations).toEqual([42]);
+
+    database.signalMetadataRow = {
+      signal_type: 'reaction_opportunity',
+      tenant_id: null,
+      user_id: null,
+      mesh_priority: 1,
+    };
+    database.dismissResult = { changes: 1 };
+    expect(dismissSignal(8)).toBe(1);
+    expect(planningInvalidations).toEqual([42, undefined]);
   });
 
   it('rejects invalid dismiss scope and maps database failures or missing change counts to zero', () => {
@@ -855,36 +1097,151 @@ describe('intelligence-bus direct contract without native database workers', () 
   });
 
   it('expires stale signals and exposes active counts for every tenant schema branch', () => {
+    database.expiringRows = [
+      { signal_type: 'pipeline_bottleneck', tenant_id: 42, user_id: 42, mesh_priority: 2 },
+      { signal_type: 'pipeline_bottleneck', tenant_id: 42, user_id: 42, mesh_priority: 2 },
+      { signal_type: 'creator_learning_digest', tenant_id: 99, user_id: 99, mesh_priority: 2 },
+      { signal_type: 'voice_pattern', tenant_id: 42, user_id: 42, mesh_priority: 2 },
+    ];
     expect(expireStaleSignals()).toBe(2);
-    expect(database.nonPragmaCalls()[0]).toEqual({
+    expect(database.nonPragmaCalls().find((call) => call.kind === 'run')).toEqual({
       kind: 'run',
       sql: normalizeSql(`
         UPDATE agent_signals
         SET status = 'expired'
         WHERE status = 'active'
-          AND julianday(expires_at) <= julianday('now')
+          AND (julianday(expires_at) <= julianday('now') OR julianday(expires_at) IS NULL)
       `),
       args: [],
     });
+    expect(contentInvalidations).toEqual([42, 99]);
+
+    database.calls = [];
+    contentInvalidations = [];
+    database.expireResult = { changes: 1 };
+    database.expiringRows = [
+      { signal_type: 'reaction_opportunity', tenant_id: null, user_id: null, mesh_priority: 2 },
+      { signal_type: 'pipeline_bottleneck', tenant_id: 42, user_id: 42, mesh_priority: 2 },
+    ];
+    expect(expireStaleSignals()).toBe(1);
+    expect(contentInvalidations).toEqual([undefined]);
+
+    database.calls = [];
+    contentInvalidations = [];
+    database.expireResult = { changes: 0 };
+    expect(expireStaleSignals()).toBe(0);
+    expect(contentInvalidations).toEqual([]);
 
     const cases: Array<[boolean, number | undefined, number | undefined, unknown[], string]> = [
-      [true, 42, 99, [99, 42], "status = 'active' AND julianday(expires_at) > julianday('now') AND tenant_id = ? AND (user_id IS NULL OR user_id = ?)"],
-      [true, undefined, 99, [99], "status = 'active' AND julianday(expires_at) > julianday('now') AND tenant_id = ? AND user_id IS NULL"],
-      [true, undefined, undefined, [], "status = 'active' AND julianday(expires_at) > julianday('now') AND tenant_id IS NULL AND user_id IS NULL"],
-      [false, 42, undefined, [42], "status = 'active' AND julianday(expires_at) > julianday('now') AND (user_id IS NULL OR user_id = ?)"],
-      [false, undefined, undefined, [], "status = 'active' AND julianday(expires_at) > julianday('now') AND user_id IS NULL"],
+      [true, 42, 99, [99, 42], 'tenant_id = ? AND (user_id IS NULL OR user_id = ?)'],
+      [true, undefined, 99, [99], 'tenant_id = ? AND user_id IS NULL'],
+      [true, undefined, undefined, [], 'tenant_id IS NULL AND user_id IS NULL'],
+      [false, 42, undefined, [42], '(user_id IS NULL OR user_id = ?)'],
+      [false, undefined, undefined, [], 'user_id IS NULL'],
     ];
     for (const [tenantColumn, userId, tenantId, args, whereClause] of cases) {
       database.calls = [];
       database.tenantColumn = tenantColumn;
       database.countRow = { cnt: 6 };
       expect(getActiveSignalCount(userId, tenantId)).toBe(6);
-      expect(database.nonPragmaCalls()[0]).toEqual({
+      const query = database.nonPragmaCalls()[0];
+      expect(query).toMatchObject({
         kind: 'get',
-        sql: `SELECT COUNT(*) as cnt FROM agent_signals WHERE ${whereClause}`,
-        args,
       });
+      expect(query.sql).toContain(whereClause);
+      expect(query.sql).toContain('signal_type IN (');
+      expect(args.length === 0 ? [] : query.args.slice(-args.length)).toEqual(args);
     }
+
+    database.calls = [];
+    database.tenantColumn = true;
+    database.countRow = { cnt: 4 };
+    expect(getActiveSignalCount(42, 99, {
+      excludeSourceAgents: ['performance-agent', 'seo_agent', 'SEO-Agent'],
+    })).toBe(4);
+    expect(database.nonPragmaCalls()[0]).toMatchObject({
+      kind: 'get',
+    });
+    expect(database.nonPragmaCalls()[0].sql).toContain("status = 'active' AND julianday(expires_at) > julianday('now') AND signal_type IN (");
+    expect(database.nonPragmaCalls()[0].sql).toContain("tenant_id = ? AND (user_id IS NULL OR user_id = ?) AND LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (?,?)");
+    expect(database.nonPragmaCalls()[0].args.slice(-4)).toEqual([99, 42, 'performance_agent', 'seo_agent']);
+
+    database.calls = [];
+    database.selectedRows = [
+      signalRow({ id: 11, signal_type: 'voice_pattern' }),
+      signalRow({ id: 10, signal_type: 'voice_pattern', payload: '{malformed-json' }),
+      signalRow({
+        id: 12,
+        signal_type: 'learning_digest',
+        payload: JSON.stringify({
+          inputEligibility: {
+            policyVersion: 'active-content-agent-sources.v1',
+            sourceAgents: ['performance-agent'],
+            sourceSignalIds: [1],
+          },
+          _signalProvenance: {
+            producerVersion: 'cross-agent-learning.v3',
+            source: 'runtime',
+            observedAt: NOW.toISOString(),
+          },
+        }),
+      }),
+      signalRow({
+        id: 13,
+        signal_type: 'learning_digest',
+        payload: JSON.stringify({
+          inputEligibility: {
+            policyVersion: 'active-content-agent-sources.v1',
+            sourceAgents: ['voice-evolution'],
+            sourceSignalIds: [11],
+          },
+          _signalProvenance: {
+            producerVersion: 'cross-agent-learning.v3',
+            source: 'runtime',
+            observedAt: NOW.toISOString(),
+          },
+        }),
+      }),
+    ];
+    expect(getActiveSignalCount(42, 99, {
+      excludeIneligibleContentLearningDigests: true,
+    })).toBe(2);
+    expect(database.nonPragmaCalls()[0]).toMatchObject({
+      kind: 'all',
+    });
+    expect(database.nonPragmaCalls()[0].sql).toContain("status = 'active' AND julianday(expires_at) > julianday('now') AND signal_type IN (");
+    expect(database.nonPragmaCalls()[0].args.slice(-2)).toEqual([99, 42]);
+  });
+
+  it('invalidates deduplicated planning cache owners when priority-1 signals expire', () => {
+    database.expiringRows = [
+      { signal_type: 'voice_pattern', tenant_id: 99, user_id: 42, mesh_priority: 1 },
+      { signal_type: 'shoot_day_locked', tenant_id: 99, user_id: 42, mesh_priority: 1 },
+      { signal_type: 'voice_pattern', tenant_id: 100, user_id: 43, mesh_priority: 2 },
+    ];
+    database.expireResult = { changes: 3 };
+    expect(expireStaleSignals()).toBe(3);
+    expect(planningInvalidations).toEqual([42]);
+    expect(contentInvalidations).toEqual([]);
+    expect(database.nonPragmaCalls().find((call) => call.kind === 'all')).toEqual(expect.objectContaining({
+      sql: expect.stringContaining('OR mesh_priority = 1'),
+    }));
+
+    database.calls = [];
+    planningInvalidations = [];
+    database.expiringRows = [
+      { signal_type: 'reaction_opportunity', tenant_id: null, user_id: null, mesh_priority: 1 },
+      { signal_type: 'voice_pattern', tenant_id: 99, user_id: 42, mesh_priority: 1 },
+    ];
+    database.expireResult = { changes: 2 };
+    expect(expireStaleSignals()).toBe(2);
+    expect(planningInvalidations).toEqual([undefined]);
+
+    database.calls = [];
+    planningInvalidations = [];
+    database.expireResult = { changes: 0 };
+    expect(expireStaleSignals()).toBe(0);
+    expect(planningInvalidations).toEqual([]);
   });
 
   it('maps expiry/count failures and absent result fields to zero', () => {
@@ -915,11 +1272,23 @@ describe('intelligence-bus direct contract without native database workers', () 
       expect(getSignalLog(5, userId, tenantId)).toHaveLength(1);
       expect(database.nonPragmaCalls()[0]).toMatchObject({
         kind: 'all',
-        args,
       });
-      expect(database.nonPragmaCalls()[0].sql).toContain(`WHERE ${whereClause}`);
+      expect(database.nonPragmaCalls()[0].args.slice(-args.length)).toEqual(args);
+      expect(database.nonPragmaCalls()[0].sql).toContain('signal_type IN (');
+      expect(database.nonPragmaCalls()[0].sql).toContain(whereClause);
       expect(database.nonPragmaCalls()[0].sql).toContain('ORDER BY created_at DESC LIMIT ?');
     }
+
+    database.calls = [];
+    database.tenantColumn = true;
+    database.selectedRows = [];
+    expect(getSignalLog(1, 42, 99, {
+      excludeSourceAgents: ['performance-agent', 'seo_agent', 'SEO-Agent'],
+    })).toEqual([]);
+    expect(database.nonPragmaCalls()[0]).toMatchObject({ kind: 'all' });
+    expect(database.nonPragmaCalls()[0].sql).toContain('signal_type IN (');
+    expect(database.nonPragmaCalls()[0].sql).toContain("tenant_id = ? AND (user_id IS NULL OR user_id = ?) AND LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (?,?) ORDER BY created_at DESC LIMIT ?");
+    expect(database.nonPragmaCalls()[0].args.slice(-5)).toEqual([99, 42, 'performance_agent', 'seo_agent', 1]);
 
     database.throwOnAll = /SELECT \* FROM agent_signals/;
     expect(getSignalLog()).toEqual([]);
@@ -972,6 +1341,7 @@ describe('intelligence-bus direct contract without native database workers', () 
   it('maps agent stats and run-log database failures to fail-safe outputs', () => {
     database.throwOnAll = /FROM agent_runs r1/;
     expect(getAgentStats()).toEqual([]);
+    expect(() => getAgentStats({ strict: true })).toThrow(IntelligenceBusReadUnavailableError);
     database.throwOnRun = /INSERT INTO agent_runs/;
     expect(() => logAgentRun('agent', 'error', 0, 0, 1, 'private detail')).not.toThrow();
   });
@@ -1047,6 +1417,54 @@ describe('intelligence-bus direct contract without native database workers', () 
     const query = database.nonPragmaCalls()[0];
     expect(query.args).toEqual(args);
     expect(query.sql).toContain(sqlFragment);
+  });
+
+  it('excludes normalized source identities in SQL before ranked limiting', () => {
+    database.selectedRows = [];
+
+    expect(readRankedSignals('reader', ['voice_pattern'], {
+      userId: 42,
+      tenantId: 99,
+      excludeSourceAgents: ['performance-agent', 'seo_agent', 'SEO-Agent'],
+    })).toEqual([]);
+
+    expect(database.nonPragmaCalls()[0]).toEqual({
+      kind: 'all',
+      sql: normalizeSql(`
+        SELECT * FROM agent_signals
+        WHERE status = 'active' AND julianday(expires_at) > julianday('now') AND signal_type IN (?) AND confidence >= ? AND tenant_id = ? AND (user_id IS NULL OR user_id = ?) AND LOWER(REPLACE(TRIM(source_agent), '-', '_')) NOT IN (?,?)
+        ORDER BY confidence DESC, created_at DESC
+        LIMIT ?
+      `),
+      args: ['voice_pattern', 0.1, 99, 42, 'performance_agent', 'seo_agent', 60],
+    });
+  });
+
+  it('rejects historical and paused-input learning digests on every signal read path', () => {
+    const digestPayload = (producerVersion: string, sourceAgents?: string[]) => JSON.stringify({
+      summary: 'digest',
+      ...(sourceAgents ? {
+        inputEligibility: {
+          policyVersion: 'active-content-agent-sources.v1',
+          sourceAgents,
+          sourceSignalIds: [3],
+        },
+      } : {}),
+      _signalProvenance: {
+        producerVersion,
+        source: 'runtime',
+        observedAt: NOW.toISOString(),
+      },
+    });
+    database.selectedRows = [
+      signalRow({ id: 1, signal_type: 'learning_digest', source_agent: 'learning-digest', payload: digestPayload('cross-agent-learning.v2') }),
+      signalRow({ id: 2, signal_type: 'learning_digest', source_agent: 'learning-digest', payload: digestPayload('cross-agent-learning.v3', ['performance-agent']) }),
+      signalRow({ id: 3, signal_type: 'learning_digest', source_agent: 'learning-digest', payload: digestPayload('cross-agent-learning.v3', ['voice_evolution']) }),
+    ];
+
+    expect(readSignals('reader', ['learning_digest']).map((signal) => signal.id)).toEqual([3]);
+    expect(getSignalLog().map((signal) => signal.id)).toEqual([3]);
+    expect(readRankedSignals('ranker', ['learning_digest']).map((signal) => signal.id)).toEqual([3]);
   });
 
   it('respects ranked limit, sorts equal scores by confidence, and maps query/parse failures to empty', () => {

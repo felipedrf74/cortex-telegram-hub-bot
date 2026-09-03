@@ -61,6 +61,41 @@ function makeDay(overrides: Partial<WeeklyPlanDay> = {}): WeeklyPlanDay {
   };
 }
 
+function confirmedContent(
+  overrides: Partial<NonNullable<WeeklyPlanDay['content']>> = {},
+): NonNullable<WeeklyPlanDay['content']> {
+  return {
+    status: 'scheduled',
+    planStatus: 'confirmed',
+    scheduleAuthority: 'secretary',
+    scheduleAuthorityStatus: 'current',
+    scheduleSemantics: 'private_work_session',
+    title: 'Confirmed Content work block',
+    note: 'Secretary-confirmed private work session; this is not a publication commitment.',
+    blockStart: '2026-04-20T13:30:00.000Z',
+    blockEnd: '2026-04-20T15:00:00.000Z',
+    confirmedBlocks: [{
+      itemId: 41,
+      title: 'Confirmed Content work block',
+      authorityStatus: 'current',
+      confirmationStatus: 'confirmed',
+      itemStatus: 'approved',
+      outcome: 'Record the approved Content item.',
+      estimatedEffortMinutes: 90,
+      dependency: null,
+      approvalState: 'approved',
+      nextAction: { action: 'none', label: 'No further action', reason: 'The block is ready.' },
+      startsAt: '2026-04-20T13:30:00.000Z',
+      endsAt: '2026-04-20T15:00:00.000Z',
+      workKind: 'record',
+      state: 'provider_synced',
+      contentChangedSinceScheduling: false,
+    }],
+    decisions: [],
+    ...overrides,
+  };
+}
+
 function makeInput(overrides: Partial<SecretaryOrchestrationInput> = {}): SecretaryOrchestrationInput {
   const day = makeDay();
   return {
@@ -90,14 +125,12 @@ describe('secretary-orchestrator', () => {
         reason: 'High-value training block today.',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
-        title: 'Publicar recap',
-        note: 'Ship the recap today.',
+      content: confirmedContent({
+        title: 'Work on the recap',
+        note: 'Use the confirmed private block for the recorded Content work.',
         blockStart: '2026-04-20T15:00:00.000Z',
         blockEnd: '2026-04-20T16:00:00.000Z',
-        decisions: [],
-      },
+      }),
       secretary: {
         ...makeDay().secretary,
         focusBlock: {
@@ -151,6 +184,8 @@ describe('secretary-orchestrator', () => {
     expect(result.blockers[0]?.kind).toBe('calendar_overload');
     expect(result.nextBestAction?.kind).toBe('salvage_day');
     expect(result.suggestedMoves[0]?.action).toBe('protect');
+    expect(result.suggestedMoves.length).toBeLessThanOrEqual(2);
+    expect(result.executionOrder.length).toBeLessThanOrEqual(3);
   });
 
   it('protects recovery when training load and content pressure collide', () => {
@@ -164,14 +199,12 @@ describe('secretary-orchestrator', () => {
         reason: 'Recovery is strained, so keep the day lighter.',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
+      content: confirmedContent({
         title: 'Filmar revisão',
-        note: 'Creative window is open in the afternoon.',
+        note: 'Secretary confirmed this private filming work session.',
         blockStart: '2026-04-20T14:00:00.000Z',
         blockEnd: '2026-04-20T15:30:00.000Z',
-        decisions: [],
-      },
+      }),
       meals: [
         {
           mealType: 'lunch',
@@ -218,14 +251,12 @@ describe('secretary-orchestrator', () => {
         reason: 'Recovery is low, so keep the day lighter and avoid extra friction.',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
-        title: 'Fechar publicação leve',
-        note: 'There is still a small creative slot later.',
+      content: confirmedContent({
+        title: 'Review the draft',
+        note: 'There is a confirmed private work block later.',
         blockStart: '2026-04-20T15:00:00.000Z',
         blockEnd: '2026-04-20T16:00:00.000Z',
-        decisions: [],
-      },
+      }),
       finance: {
         budgetNote: 'Finance/admin needs the first protected slot today.',
         taxNote: 'Tax payment is due today.',
@@ -268,14 +299,12 @@ describe('secretary-orchestrator', () => {
         reason: '',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
+      content: confirmedContent({
         title: 'Validar ângulo e fechar roteiro',
-        note: 'This is the best clean creative slot of the day.',
+        note: 'This private Content work block was confirmed by Secretary.',
         blockStart: '2026-04-20T11:00:00.000Z',
         blockEnd: '2026-04-20T12:30:00.000Z',
-        decisions: [],
-      },
+      }),
       meals: [],
       finance: null,
       secretary: {
@@ -298,9 +327,163 @@ describe('secretary-orchestrator', () => {
     }));
 
     expect(result.dayOrchestration.posture).toBe('high_output_day');
-    expect(result.nextBestAction?.kind).toBe('ship_content');
+    expect(result.nextBestAction?.kind).toBe('work_content');
+    expect(result.nextBestAction?.summary).toContain('não é uma promessa de publicação');
     expect(result.crossSkillImpacts.every((impact) => impact.skillId === 'content' || impact.skillId === 'secretary')).toBe(true);
     expect(result.protectedBlocks.some((block) => block.type == 'content')).toBe(true);
+  });
+
+  it('protects a current confirmed block when the bounded day projection is partial', () => {
+    const partialDay = makeDay({
+      content: confirmedContent({
+        planStatus: 'partial',
+        scheduleAuthorityStatus: 'partially_unavailable',
+      }),
+    });
+
+    const result = buildSecretaryCoordination(makeInput({
+      day: partialDay,
+      weekPlan: {
+        days: [partialDay],
+        conflicts: [],
+        variant: 'steady',
+      },
+    }));
+
+    expect(result.protectedBlocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'content' }),
+    ]));
+  });
+
+  it.each([
+    ['current authority', { authorityStatus: 'unavailable' }],
+    ['confirmed status', { confirmationStatus: 'unconfirmed' }],
+  ] as const)('does not trust a partial aggregate without per-block %s', (_label, invalidMarker) => {
+    const partialContent = confirmedContent({
+      planStatus: 'partial',
+      scheduleAuthorityStatus: 'partially_unavailable',
+    });
+    const invalidBlock = {
+      ...partialContent.confirmedBlocks[0],
+      ...invalidMarker,
+    } as unknown as NonNullable<WeeklyPlanDay['content']>['confirmedBlocks'][number];
+    const partialDay = makeDay({
+      content: {
+        ...partialContent,
+        confirmedBlocks: [invalidBlock],
+      },
+    });
+
+    const result = buildSecretaryCoordination(makeInput({
+      day: partialDay,
+      weekPlan: {
+        days: [partialDay],
+        conflicts: [],
+        variant: 'steady',
+      },
+    }));
+
+    expect(result.protectedBlocks.some((block) => block.type === 'content')).toBe(false);
+    expect(result.nextBestAction?.kind).not.toBe('work_content');
+  });
+
+  it('never protects an advisory Content proposal even when it includes suggested times', () => {
+    const proposalDay = makeDay({
+      training: {
+        title: '',
+        type: 'none',
+        status: 'gated',
+        durationMinutes: null,
+        intensity: null,
+        reason: '',
+        decisions: [],
+      },
+      content: {
+        // A legacy-looking top-level status must not override the structured
+        // proposal semantics and current Secretary authority contract.
+        status: 'scheduled',
+        planStatus: 'proposed',
+        scheduleAuthority: 'secretary',
+        scheduleAuthorityStatus: 'current',
+        scheduleSemantics: 'proposal_not_calendar_reservation',
+        title: 'Proposed filming session',
+        note: 'Recommendation only; Secretary has not confirmed a private work block.',
+        blockStart: '2026-04-20T11:00:00.000Z',
+        blockEnd: '2026-04-20T12:30:00.000Z',
+        confirmedBlocks: [],
+        decisions: [],
+      },
+      meals: [],
+      finance: null,
+      secretary: {
+        ...makeDay().secretary,
+        focusBlock: null,
+        pendingTasks: 0,
+        sequence: [],
+        priorityNote: null,
+      },
+    });
+    const secondProposalDay = {
+      ...proposalDay,
+      date: '2026-04-21',
+      weekday: 'Tuesday',
+    };
+
+    const result = buildSecretaryCoordination(makeInput({
+      day: proposalDay,
+      weekPlan: {
+        days: [proposalDay, secondProposalDay],
+        conflicts: [],
+        variant: 'steady',
+      },
+    }));
+
+    expect(result.protectedBlocks.some((block) => block.type === 'content')).toBe(false);
+    expect(result.nextBestAction?.kind).not.toBe('work_content');
+    expect(result.dayOrchestration.posture).not.toBe('high_output_day');
+    expect(result.weekOrchestration.posture).not.toBe('output');
+    expect(result.weekOrchestration.title).not.toContain('confirmados');
+  });
+
+  it('never protects a Content block when Secretary authority is unavailable', () => {
+    const unavailableDay = makeDay({
+      training: {
+        title: '',
+        type: 'none',
+        status: 'gated',
+        durationMinutes: null,
+        intensity: null,
+        reason: '',
+        decisions: [],
+      },
+      content: confirmedContent({
+        planStatus: 'unavailable',
+        scheduleAuthorityStatus: 'unavailable',
+        note: 'Stale-looking times without current Secretary authority.',
+      }),
+      meals: [],
+      finance: null,
+      secretary: {
+        ...makeDay().secretary,
+        focusBlock: null,
+        pendingTasks: 0,
+        sequence: [],
+        priorityNote: null,
+      },
+    });
+
+    const result = buildSecretaryCoordination(makeInput({
+      day: unavailableDay,
+      weekPlan: {
+        days: [unavailableDay],
+        conflicts: [],
+        variant: 'steady',
+      },
+    }));
+
+    expect(result.protectedBlocks.some((block) => block.type === 'content')).toBe(false);
+    expect(result.nextBestAction?.kind).not.toBe('work_content');
+    expect(result.dayOrchestration.posture).not.toBe('high_output_day');
   });
 
   it('stays coherent for a training-only user and keeps content/cooking out of the stack', () => {
@@ -337,7 +520,7 @@ describe('secretary-orchestrator', () => {
     expect(result.nextBestAction?.kind).toBe('protect_training');
   });
 
-  it('treats a hard delivery conflict as the top blocker on a deadline-heavy content day', () => {
+  it('treats a collision with a confirmed private Content block as a real blocker', () => {
     const deadlineDay = makeDay({
       training: {
         title: '',
@@ -348,14 +531,12 @@ describe('secretary-orchestrator', () => {
         reason: '',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
-        title: 'Fechar roteiro e publicar recap',
-        note: 'A única janela de entrega útil fica entre almoço e tarde.',
+      content: confirmedContent({
+        title: 'Fechar o roteiro do recap',
+        note: 'A Secretary confirmou esta sessão privada de trabalho.',
         blockStart: '2026-04-20T13:30:00.000Z',
         blockEnd: '2026-04-20T15:00:00.000Z',
-        decisions: [],
-      },
+      }),
       secretary: {
         ...makeDay().secretary,
         focusBlock: null,
@@ -376,11 +557,11 @@ describe('secretary-orchestrator', () => {
         {
           id: 'deadline-1',
           date: '2026-04-20',
-          target: 'publishing-window',
+          target: 'primary-commitment',
           signalIds: [1 as any],
-          signalTypes: ['publishing_commitment'],
+          signalTypes: ['shoot_day_locked', 'tax_deadline'],
           meshPriority: 1,
-          message: 'A entrega de conteúdo está a competir com a única janela útil da tarde.',
+          message: 'O bloco privado de Content está a competir com outro compromisso confirmado.',
         },
       ],
       weekPlan: {
@@ -389,11 +570,11 @@ describe('secretary-orchestrator', () => {
           {
             id: 'deadline-1',
             date: '2026-04-20',
-            target: 'publishing-window',
+            target: 'primary-commitment',
             signalIds: [1 as any],
-            signalTypes: ['publishing_commitment'],
+            signalTypes: ['shoot_day_locked', 'tax_deadline'],
             meshPriority: 1,
-            message: 'A entrega de conteúdo está a competir com a única janela útil da tarde.',
+            message: 'O bloco privado de Content está a competir com outro compromisso confirmado.',
           },
         ],
         variant: 'push',
@@ -402,11 +583,12 @@ describe('secretary-orchestrator', () => {
 
     expect(result.blockers[0]?.kind).toBe('deadline_collision');
     expect(result.suggestedMoves[0]?.targetWindow).toBe('14:30–16:00');
-    expect(result.nextBestAction?.kind).toBe('ship_content');
+    expect(result.nextBestAction?.kind).toBe('work_content');
     expect(result.nextBestAction?.targetWindow).toBe('14:30–16:00');
+    expect(result.nextBestAction?.summary).toContain('sem inferir publicação');
   });
 
-  it('does not let finance pressure steal the next action from a real shipping collision', () => {
+  it('does not let finance pressure hide a real confirmed-work collision', () => {
     const financeAndDeadlineDay = makeDay({
       training: {
         title: '',
@@ -417,14 +599,12 @@ describe('secretary-orchestrator', () => {
         reason: '',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
-        title: 'Fechar roteiro e publicar recap',
-        note: 'This is still the only useful shipping slot of the day.',
+      content: confirmedContent({
+        title: 'Fechar o roteiro do recap',
+        note: 'This private Content work block was confirmed by Secretary.',
         blockStart: '2026-04-20T13:30:00.000Z',
         blockEnd: '2026-04-20T15:00:00.000Z',
-        decisions: [],
-      },
+      }),
       finance: {
         budgetNote: 'Admin needs a reliable slot today.',
         taxNote: 'Tax follow-up is due today.',
@@ -451,11 +631,11 @@ describe('secretary-orchestrator', () => {
         {
           id: 'deadline-finance-1',
           date: '2026-04-20',
-          target: 'publishing-window',
+          target: 'primary-commitment',
           signalIds: [1 as any],
-          signalTypes: ['publishing_commitment'],
+          signalTypes: ['shoot_day_locked', 'tax_deadline'],
           meshPriority: 1,
-          message: 'A entrega de conteúdo está a competir com a única janela útil da tarde.',
+          message: 'O bloco privado de Content está a competir com outro compromisso confirmado.',
         },
       ],
       weekPlan: {
@@ -464,11 +644,11 @@ describe('secretary-orchestrator', () => {
           {
             id: 'deadline-finance-1',
             date: '2026-04-20',
-            target: 'publishing-window',
+            target: 'primary-commitment',
             signalIds: [1 as any],
-            signalTypes: ['publishing_commitment'],
+            signalTypes: ['shoot_day_locked', 'tax_deadline'],
             meshPriority: 1,
-            message: 'A entrega de conteúdo está a competir com a única janela útil da tarde.',
+            message: 'O bloco privado de Content está a competir com outro compromisso confirmado.',
           },
         ],
         variant: 'push',
@@ -476,7 +656,7 @@ describe('secretary-orchestrator', () => {
     }));
 
     expect(result.blockers[0]?.kind).toBe('deadline_collision');
-    expect(result.nextBestAction?.kind).toBe('ship_content');
+    expect(result.nextBestAction?.kind).toBe('work_content');
     expect(result.nextBestAction?.targetWindow).toBe('14:30–16:00');
   });
 
@@ -537,14 +717,12 @@ describe('secretary-orchestrator', () => {
         reason: '',
         decisions: [],
       },
-      content: {
-        status: 'scheduled',
+      content: confirmedContent({
         title: 'Escrever argumento final',
-        note: 'Ainda há uma boa janela criativa a meio do dia.',
+        note: 'A Secretary confirmou esta sessão privada de trabalho a meio do dia.',
         blockStart: '2026-04-20T12:00:00.000Z',
         blockEnd: '2026-04-20T13:15:00.000Z',
-        decisions: [],
-      },
+      }),
       secretary: {
         ...makeDay().secretary,
         focusBlock: null,

@@ -4,6 +4,7 @@ import type { Response, Router } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import {
+  CONTENT_SCRIPT_JOB_IDEMPOTENCY_KEY_MAX_CHARS,
   ContentScriptJobError,
   cancelContentScriptJob,
   createContentScriptJob,
@@ -12,6 +13,12 @@ import {
 } from '../../services/content-script-jobs';
 import { logger } from '../../utils/logger';
 import { ContentScriptJobEncryptionError } from '../../services/content-script-job-encryption';
+import { ContentScriptJobCreditSettlementError } from '../../services/content-script-job-credits';
+import {
+  hasUnsupportedContentControlCharacters,
+  validateExplicitContentScriptRequestFields,
+} from './content-script-utils';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -28,10 +35,40 @@ export function registerContentScriptJobRoutes(
     const scope = routeScope(req as AuthenticatedRequest, res, ensureValidContentRouteScope, 'content_script_job_create');
     if (!scope) return;
     try {
+      const request = readScriptJobRequestBody(req.body);
+      const explicitContractViolation = validateExplicitContentScriptRequestFields(request, {
+        booleanFields: ['forceRefresh'],
+      });
+      if (explicitContractViolation) {
+        throw new ContentScriptJobError(
+          'VALIDATION',
+          explicitContractViolation.message,
+          400,
+          { field: explicitContractViolation.field },
+        );
+      }
+      if (request.style !== undefined) {
+        throw new ContentScriptJobError(
+          'VALIDATION',
+          'style is not supported for script jobs; use scriptStyle.',
+          400,
+          { field: 'style' },
+        );
+      }
+      if (request.deliveryMode !== undefined
+          && (typeof request.deliveryMode !== 'string'
+            || !['standard', 'scheduled', 'priority'].includes(request.deliveryMode))) {
+        throw new ContentScriptJobError(
+          'VALIDATION',
+          'deliveryMode must be one of: standard, scheduled, priority.',
+          400,
+          { field: 'deliveryMode' },
+        );
+      }
       const result = createContentScriptJob({
         ...scope,
-        idempotencyKey: readIdempotencyKey(req),
-        request: req.body && typeof req.body === 'object' ? req.body : {},
+        idempotencyKey: readIdempotencyKey(request, req.header('x-idempotency-key')),
+        request,
       });
       sendSuccess(res, result.job, { status: result.replayed ? 200 : 202 });
     } catch (error) {
@@ -89,10 +126,60 @@ function routeScope(
   return { tenantId: Number(req.tenantId), userId: req.userId };
 }
 
-function readIdempotencyKey(req: { body?: unknown; header(name: string): string | undefined }): string {
-  const body = req.body as { idempotencyKey?: unknown } | undefined;
-  const bodyKey = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey.trim() : '';
-  const headerKey = (req.header('x-idempotency-key') ?? '').trim();
+function readScriptJobRequestBody(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'Body must be an object.',
+      400,
+      { field: 'body' },
+    );
+  }
+  return body as Record<string, unknown>;
+}
+
+function readIdempotencyKey(
+  body: Record<string, unknown>,
+  rawHeaderKey: string | undefined,
+): string {
+  const bodyValue = body.idempotencyKey;
+  if (bodyValue !== undefined && typeof bodyValue !== 'string') {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'idempotencyKey must be a string.',
+      400,
+      { field: 'idempotencyKey' },
+    );
+  }
+  const bodyKey = typeof bodyValue === 'string' ? bodyValue.trim() : '';
+  const headerKey = (rawHeaderKey ?? '').trim();
+  const suppliedKeys = [
+    ...(bodyValue !== undefined ? [bodyKey] : []),
+    ...(rawHeaderKey !== undefined ? [headerKey] : []),
+  ];
+  if (suppliedKeys.some((value) => value.length === 0)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'idempotencyKey must not be empty.',
+      400,
+      { field: 'idempotencyKey' },
+    );
+  }
+  if (suppliedKeys.some((value) => value.length > CONTENT_SCRIPT_JOB_IDEMPOTENCY_KEY_MAX_CHARS)) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      `idempotencyKey must be at most ${CONTENT_SCRIPT_JOB_IDEMPOTENCY_KEY_MAX_CHARS} characters.`,
+      400,
+    );
+  }
+  if (suppliedKeys.some((value) => hasUnsupportedContentControlCharacters(value))) {
+    throw new ContentScriptJobError(
+      'VALIDATION',
+      'idempotencyKey contains unsupported control characters.',
+      400,
+      { field: 'idempotencyKey', reason: 'unsupported_control_characters' },
+    );
+  }
   if (bodyKey && headerKey && bodyKey !== headerKey) {
     throw new ContentScriptJobError(
       'IDEMPOTENCY_CONFLICT',
@@ -100,7 +187,8 @@ function readIdempotencyKey(req: { body?: unknown; header(name: string): string 
       409,
     );
   }
-  return bodyKey || headerKey;
+  const key = bodyKey || headerKey;
+  return key;
 }
 
 function singleParam(value: string | string[] | undefined): string {
@@ -112,10 +200,14 @@ function sendJobError(res: Response, error: unknown, operation: string): void {
     sendError(res, error.code, 'Content script job encryption material is temporarily unavailable.', error.status);
     return;
   }
-  if (error instanceof ContentScriptJobError) {
+  if (error instanceof ContentScriptJobCreditSettlementError) {
     sendError(res, error.code, error.message, error.status);
     return;
   }
-  logger.error({ operation, errorName: error instanceof Error ? error.name : typeof error }, 'Content script job operation failed');
+  if (error instanceof ContentScriptJobError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
+  logger.error({ operation, ...safeContentLogErrorFields(error) }, 'Content script job operation failed');
   sendInternalError(res, 'Content script job is temporarily unavailable.');
 }

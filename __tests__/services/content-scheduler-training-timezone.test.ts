@@ -8,18 +8,13 @@ const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
 const mockGetEventsWithDiagnostics = vi.fn();
 const mockHasWritableCalendarForUser = vi.fn();
+const mockGetUserTimezoneById = vi.fn();
+const mockLoggerInfo = vi.fn();
 
 vi.mock('../../src/config', () => ({
   config: {
     app: { timezone: 'Europe/Lisbon' },
   },
-}));
-
-vi.mock('../../src/services/user-service', async () => ({
-  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
-    '../../src/services/user-service',
-  )),
-  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
 }));
 
 vi.mock('../../src/services/database', async () => ({
@@ -31,7 +26,7 @@ vi.mock('../../src/services/database', async () => ({
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
-    info: vi.fn(),
+    info: (...args: unknown[]) => mockLoggerInfo(...args),
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
@@ -74,6 +69,14 @@ vi.mock('../../src/services/unified-calendar', async () => ({
   )),
   getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
   hasWritableCalendarForUser: (...args: unknown[]) => mockHasWritableCalendarForUser(...args),
+}));
+
+vi.mock('../../src/services/user-service', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/user-service')>(
+    '../../src/services/user-service',
+  )),
+  getUserTimezone: (...args: unknown[]) => mockGetUserTimezoneById(...args),
+  getUserTimezoneById: (...args: unknown[]) => mockGetUserTimezoneById(...args),
 }));
 
 vi.mock('../../src/services/content-topic-workspace-compat', async () => ({
@@ -135,6 +138,7 @@ describe('content scheduler training timezone', () => {
       : []);
     mockGetEventsWithDiagnostics.mockResolvedValue(readyCalendarResult([]));
     mockHasWritableCalendarForUser.mockReturnValue(false);
+    mockGetUserTimezoneById.mockReturnValue('Europe/Lisbon');
   });
 
   it('reads the plan week in its persisted zone and keeps the plan lookup tenant-scoped', async () => {
@@ -185,6 +189,38 @@ describe('content scheduler training timezone', () => {
     expect(recommendation?.calendarLoad).toBe('unknown');
     expect(recommendation?.reason).toContain('calendar could not be confirmed');
     expect(mockGetFocusBlockRecommendation).not.toHaveBeenCalled();
+  });
+
+  it('builds the seven-day recommendation window in the authenticated user timezone', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T02:00:00.000Z'));
+    mockGetUserTimezoneById.mockReturnValue('America/New_York');
+    mockGetActivePlans.mockReturnValue([]);
+
+    await getFilmingRecommendation(42, [], 42);
+
+    expect(mockGetUserTimezoneById).toHaveBeenCalledWith(42);
+    expect(mockGetEventsWithDiagnostics).toHaveBeenCalledWith(
+      '2026-04-12T04:00:00.000Z',
+      '2026-04-19T03:59:59.999Z',
+      42,
+    );
+  });
+
+  it('logs only content-free recommendation telemetry', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-13T08:00:00.000Z'));
+
+    await getFilmingRecommendation(42, [], 42);
+
+    expect(mockLoggerInfo).toHaveBeenCalledWith({
+      outcome: 'generated',
+      confidence: 'high',
+      hadCalendarData: true,
+      hadReadinessData: true,
+      hadTrainingData: true,
+      calendarReservationAvailable: false,
+    }, 'Content filming recommendation generated');
   });
 });
 

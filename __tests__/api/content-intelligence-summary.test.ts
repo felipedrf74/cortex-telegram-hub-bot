@@ -27,6 +27,16 @@ let mockJobs = [
     lastError: null,
   },
   {
+    name: 'seo_agent',
+    label: 'SEO Tracker',
+    cronExpression: '0 6 * * 1',
+    domain: 'content',
+    lastRunAt: '2026-04-12T06:00:00.000Z',
+    lastResult: 'success',
+    lastDurationMs: 5100,
+    lastError: null,
+  },
+  {
     name: 'autoresearch',
     label: 'Autoresearch',
     cronExpression: '0 3 * * 0',
@@ -160,6 +170,16 @@ describe('Content API — intelligence summary', () => {
         lastError: null,
       },
       {
+        name: 'seo_agent',
+        label: 'SEO Tracker',
+        cronExpression: '0 6 * * 1',
+        domain: 'content',
+        lastRunAt: '2026-04-12T06:00:00.000Z',
+        lastResult: 'success',
+        lastDurationMs: 5100,
+        lastError: null,
+      },
+      {
         name: 'autoresearch',
         label: 'Autoresearch',
         cronExpression: '0 3 * * 0',
@@ -196,23 +216,36 @@ describe('Content API — intelligence summary', () => {
     `).run(user.id, 'https://www.youtube.com/@felipe', 'Felipe', '2026-04-14T08:30:00.000Z');
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id, provenance_json)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, ?, ?)
     `);
 
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'Tariff shift explainer' }), 'urgent', recentDiscoveryAt, user.id);
-    insertSignal.run('performance-agent', 'pillar_performance', JSON.stringify({ pillar: 'training' }), 'normal', recentOptimizationAt, user.id);
-    insertSignal.run('performance-agent', 'learning_digest', JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }), 'normal', recentOptimizationAt, user.id);
+    const learningProvenance = JSON.stringify({
+      producerVersion: 'cross-agent-learning.v3',
+      source: 'runtime',
+      observedAt: recentOptimizationAt,
+    });
+    const inputEligibility = {
+      policyVersion: 'active-content-agent-sources.v1',
+      sourceAgents: ['autoresearch'],
+      sourceSignalIds: [1],
+    };
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'Tariff shift explainer' }), 'urgent', recentDiscoveryAt, user.id, user.id, '{}');
+    insertSignal.run('performance-agent', 'pillar_performance', JSON.stringify({ pillar: 'training' }), 'normal', recentOptimizationAt, user.id, user.id, '{}');
+    insertSignal.run('performance-agent', 'learning_digest', JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }), 'normal', recentOptimizationAt, user.id, user.id, '{}');
+    insertSignal.run('autoresearch', 'creator_learning_digest', JSON.stringify({ summary: 'Keep the current repeatable format.', inputEligibility }), 'normal', recentOptimizationAt, user.id, user.id, learningProvenance);
 
     const response = await dispatch('/intelligence', user.id);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.discovery).toMatchObject({
-      status: 'ready',
-      cadenceHours: 4,
-      activeCount: 1,
-      lastStatus: 'success',
+      status: 'warming_up',
+      reactionRadarLifecycle: 'paused',
+      cadenceHours: null,
+      activeCount: 0,
+      lastRunAt: null,
+      lastStatus: 'paused',
     });
     expect(response.body.data.script).toMatchObject({
       status: 'ready',
@@ -224,8 +257,13 @@ describe('Content API — intelligence summary', () => {
     expect(response.body.data.optimization).toMatchObject({
       status: 'ready',
       cadence: 'weekly',
-      activeInsightCount: 2,
-      performanceLastStatus: 'success',
+      activeInsightCount: 1,
+      performanceLifecycle: 'paused',
+      performanceLastRunAt: null,
+      performanceLastStatus: 'paused',
+      seoLifecycle: 'paused',
+      seoLastRunAt: null,
+      seoLastStatus: 'paused',
       autoresearchLastStatus: 'never',
     });
   });
@@ -263,7 +301,7 @@ describe('Content API — intelligence summary', () => {
     const response = await dispatch('/intelligence', user.id);
 
     expect(response.statusCode).toBe(200);
-    expect(response.body.data.discovery.activeCount).toBe(1);
+    expect(response.body.data.discovery.activeCount).toBe(0);
   });
 
   it('fails closed on invalid tenant scope before building intelligence summary', async () => {

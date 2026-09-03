@@ -2,7 +2,7 @@
 
 import type { Response, Router } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
-import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
+import { sendAiBudgetError, sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import {
   CONTENT_AGENT_WORKFLOW_VERSION,
   ContentAgentJobError,
@@ -21,7 +21,14 @@ import {
   type ContentWorkspaceScope,
 } from '../../services/content-workspace';
 import { ContentWorkspaceWriteDisabledError } from '../../services/content-workspace-capabilities';
+import { invalidateContentDerivedCaches } from '../../services/cache-coherence-registry';
 import { logger } from '../../utils/logger';
+import {
+  ContentIdempotencyKeyError,
+  resolveContentIdempotencyKey,
+} from './content-idempotency-key';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
+import { bindContentRequestCancellation } from './content-request-cancellation';
 
 type EnsureValidContentRouteScope = (
   res: Response,
@@ -76,7 +83,7 @@ export function registerContentAgentJobRoutes(
         scope,
         artifactId: req.body?.artifactId,
         packageId: req.body?.packageId,
-        idempotencyKey: readIdempotencyKey(req),
+        idempotencyKey: resolveContentIdempotencyKey(req),
       });
       sendSuccess(res, {
         schemaVersion: CONTENT_AGENT_WORKFLOW_VERSION,
@@ -137,24 +144,31 @@ async function mutateJob(
 ): Promise<void> {
   const scope = resolveRouteScope(req, res, ensureValidContentRouteScope, `content_agent_job_${action}`);
   if (!scope) return;
+  const requestCancellation = action === 'run'
+    ? bindContentRequestCancellation(req, res, 'content_agent_job_run')
+    : null;
   try {
     const input = {
       scope,
       jobKey: singleRouteParam(req.params.jobKey),
-      idempotencyKey: readIdempotencyKey(req),
+      idempotencyKey: resolveContentIdempotencyKey(req),
     };
     const result = action === 'run'
-      ? await runContentAgentJob(input)
+      ? await runContentAgentJob({ ...input, abortSignal: requestCancellation!.signal })
       : action === 'cancel'
         ? cancelContentAgentJob(input)
         : retryContentAgentJob(input);
+    if (requestCancellation?.signal.aborted) return;
     sendSuccess(res, {
       schemaVersion: CONTENT_AGENT_WORKFLOW_VERSION,
       job: result.value,
       mutation: { replayed: result.replayed, changed: result.changed },
     });
   } catch (error) {
+    if (requestCancellation?.signal.aborted) return;
     sendAgentJobError(res, error, `content agent job ${action} failed`);
+  } finally {
+    requestCancellation?.cleanup();
   }
 }
 
@@ -170,11 +184,14 @@ function mutateProposal(
     const input = {
       scope,
       proposalKey: singleRouteParam(req.params.proposalKey),
-      idempotencyKey: readIdempotencyKey(req),
+      idempotencyKey: resolveContentIdempotencyKey(req),
     };
     const result = action === 'accept'
       ? acceptContentAgentProposal(input)
       : rejectContentAgentProposal(input);
+    if (action === 'accept' && result.changed && !result.replayed) {
+      invalidateContentDerivedCaches(scope.userId);
+    }
     let item;
     if (action === 'accept') {
       const acceptedArtifactId = result.value.acceptedArtifactId;
@@ -210,7 +227,7 @@ function resolveRouteScope(
   operation: string,
 ): ContentWorkspaceScope | null {
   if (!ensureValidContentRouteScope(res, req.userId, operation)) return null;
-  if (!Number.isInteger(req.tenantId) || Number(req.tenantId) <= 0) {
+  if (!Number.isSafeInteger(req.tenantId) || Number(req.tenantId) <= 0) {
     sendError(res, 'CONTENT_TENANT_SCOPE_REQUIRED', 'A valid tenant scope is required.', 401);
     return null;
   }
@@ -221,20 +238,16 @@ function resolveRouteScope(
   return { tenantId: Number(req.tenantId), userId: req.userId };
 }
 
-function readIdempotencyKey(req: {
-  body?: unknown;
-  header(name: string): string | undefined;
-}): string {
-  const body = req.body as { idempotencyKey?: unknown } | undefined;
-  if (typeof body?.idempotencyKey === 'string') return body.idempotencyKey;
-  return req.header('x-idempotency-key') ?? '';
-}
-
 function singleRouteParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
 }
 
 function sendAgentJobError(res: Response, error: unknown, operation: string): void {
+  if (sendAiBudgetError(res, error)) return;
+  if (error instanceof ContentIdempotencyKeyError) {
+    sendError(res, error.code, error.message, error.status, error.details);
+    return;
+  }
   if (error instanceof ContentWorkspaceWriteDisabledError) {
     sendError(res, error.code, error.message, error.status, error.details);
     return;
@@ -243,6 +256,6 @@ function sendAgentJobError(res: Response, error: unknown, operation: string): vo
     sendError(res, error.code, error.message, error.status, error.details);
     return;
   }
-  logger.error({ operation, errorName: error instanceof Error ? error.name : typeof error }, 'content agent operation failed');
+  logger.error({ operation, ...safeContentLogErrorFields(error) }, 'content agent operation failed');
   sendInternalError(res, 'Content specialist review is temporarily unavailable.');
 }

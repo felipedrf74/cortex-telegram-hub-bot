@@ -189,7 +189,12 @@ export interface ChatCoreV2ContentPipelineSummaryData {
   plannedCount: number;
   draftingCount: number;
   readyCount: number;
-  publishedCount: number;
+  publishedCount: null;
+  publicationTracking: {
+    availability: 'unavailable';
+    reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED';
+    publicationExecution: 'not_supported';
+  };
   scheduledCount: number;
   deskReadyCount: number;
   urgentSignalCount: number;

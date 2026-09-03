@@ -71,6 +71,7 @@ describe('content token artifact store', () => {
       testDb,
     );
     expect(fetchedPackage?.sourceSummary).toEqual(sourcePackage.sourceSummaries);
+    expect(fetchedPackage?.topicHash).toBe(sourcePackage.topicHash);
     expect(fetchedPackage?.sources[0].url).toBe('https://www.usatriathlon.org/safety/open-water-swimming');
 
     const fetchedArtifact = getContentResearchArtifact(
@@ -79,6 +80,10 @@ describe('content token artifact store', () => {
       testDb,
     );
     expect(fetchedArtifact?.claims).toEqual(sourcePackage.claims);
+    expect(fetchedArtifact?.claimBinding).toEqual({
+      status: 'unavailable',
+      reasonCode: 'CONTENT_CLAIM_SOURCE_BINDING_NOT_MODELED',
+    });
 
     const memory = listRecentContentIdeaMemory({ tenantId: 44, userId: 7 }, 3, testDb);
     expect(memory).toEqual([
@@ -89,6 +94,38 @@ describe('content token artifact store', () => {
         format: 'YouTube',
       }),
     ]);
+  });
+
+  it('persists reusable research without recording a generated idea', () => {
+    const testDb = openDb();
+    const sourcePackage = buildSourcePackage({
+      topic: 'Current launch research',
+      language: 'en-US',
+      format: 'hooks',
+      mode: 'standard',
+      sources: [{
+        title: 'Current source',
+        url: 'https://example.org/current-source',
+        source_type: 'article',
+        relevance_note: 'Current source context.',
+      }],
+    });
+
+    persistContentArtifacts({
+      tenantId: 44,
+      userId: 7,
+      topic: 'Current launch research',
+      sourcePackage,
+      format: 'hooks',
+      recordIdeaMemory: false,
+    }, testDb);
+
+    expect(getContentSourcePackage(
+      { tenantId: 44, userId: 7 },
+      sourcePackage.sourcePackageId,
+      testDb,
+    )).not.toBeNull();
+    expect(listRecentContentIdeaMemory({ tenantId: 44, userId: 7 }, 5, testDb)).toEqual([]);
   });
 
   it('does not leak artifacts across tenants or users', () => {

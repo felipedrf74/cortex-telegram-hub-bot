@@ -15,6 +15,7 @@ function mapCandidate(candidate: any) {
 
 export function buildGeneratedTopicCandidatesResponse(result: any, format: string, sourceJob: string, startMs: number) {
   const candidates = result?.candidates || [];
+  const generation = result?.generation;
   return {
     format: result?.format || format,
     sourceJob: result?.sourceJob || sourceJob,
@@ -24,8 +25,9 @@ export function buildGeneratedTopicCandidatesResponse(result: any, format: strin
     generation: buildGenerationMeta({
       mode: 'standard',
       startMs,
-      provider: 'gemini-flash',
-      researchUsed: false,
+      provider: typeof generation?.provider === 'string' ? generation.provider : undefined,
+      providerSemantics: 'resolved_provider',
+      researchUsed: generation?.grounded === true,
     }),
   };
 }
@@ -48,6 +50,7 @@ export function buildPendingTopicsResponse(rows: any[]) {
 }
 
 export function buildWeeklyPackageResponse(result: any, startMs: number) {
+  const generation = result?.generation;
   return {
     youtube: {
       count: result.youtube.length,
@@ -60,8 +63,9 @@ export function buildWeeklyPackageResponse(result: any, startMs: number) {
     generation: buildGenerationMeta({
       mode: 'standard',
       startMs,
-      provider: 'gemini-flash',
-      researchUsed: false,
+      provider: typeof generation?.provider === 'string' ? generation.provider : undefined,
+      providerSemantics: 'resolved_provider',
+      researchUsed: generation?.grounded === true,
     }),
   };
 }

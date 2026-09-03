@@ -1215,8 +1215,10 @@ describe('deleteAllUserData', () => {
     `);
     const ownerKeys = [
       'u:1:wearable:summary:2026-08-10',
-      'plan:week:u:1:t:17:2026-08-10',
+      'plan:week:u:1:t:17:2026-08-10:sync:0:content-policy:active-content-agents.v3',
+      'content:home:active-content-agents.v3:u:1:t:17:en-US:tz:Europe/Lisbon',
       'script-v8:private-topic:scope:1:tenant:17',
+      'script-v9:current-private-topic:scope:1:tenant:17',
       'coach-briefing:1',
       'coach-briefing:17:1',
       'dashboard-readiness:1',
@@ -1237,8 +1239,10 @@ describe('deleteAllUserData', () => {
     ];
     const retainedKeys = [
       'u:10:dashboard',
+      'content:home:active-content-agents.v3:u:10:t:17:en-US:tz:Europe/Lisbon',
       'dashboard:1:2:en-US',
       'script-v8:other-topic:scope:10:tenant:17',
+      'script-v9:current-other-topic:scope:10:tenant:17',
       'global:duration:1:value',
     ];
     for (const key of ownerKeys) insert.run(key, JSON.stringify({ private: key }));

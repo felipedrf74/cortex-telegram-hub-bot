@@ -993,10 +993,14 @@ describe('app-facing happy path smoke', () => {
         path: '/content/pipeline',
         assert: (body) => {
           expect(body.data.stages.ideas).toHaveLength(1);
-          expect(body.data.stages.published).toHaveLength(1);
+          expect(body.data.stages.published).toHaveLength(0);
           expect(body.data.stats).toMatchObject({
             totalIdeas: 2,
-            publishedThisMonth: 1,
+            publishedThisMonth: null,
+            publishedThisMonthStatus: {
+              availability: 'unavailable',
+              reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+            },
           });
         },
       },

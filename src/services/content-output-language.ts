@@ -15,6 +15,8 @@ export class ContentOutputLanguageMismatchError extends Error {
     readonly expectedLanguage: DetectedResponseLanguage,
     readonly detectedLanguage: DetectedResponseLanguage,
     readonly boundary: string,
+    readonly expectedLocale?: Lang,
+    readonly detectedLocale?: Lang,
   ) {
     super(
       `Generated content failed the ${boundary} output-language contract `
@@ -54,6 +56,16 @@ export function assertContentOutputLanguage(
 ): Lang {
   const normalizedLanguage = normalizeContentOutputLanguage(language);
   const expectedLanguage = expectedLanguageForLocale(normalizedLanguage);
+  const dialectLeak = detectPortugueseDialectLeak(normalizedLanguage, generatedText);
+  if (dialectLeak) {
+    throw new ContentOutputLanguageMismatchError(
+      expectedLanguage,
+      'pt',
+      boundary,
+      normalizedLanguage,
+      dialectLeak,
+    );
+  }
   const fidelity = checkResponseLocaleFidelity(normalizedLanguage, generatedText);
   const strictLanguage = detectStrictShortResponseLanguage(
     generatedText,
@@ -148,8 +160,8 @@ export function assertContentScriptOutputLanguage(
   ];
   appendGeneratedTextArray(fields, result.title_options, normalizedLanguage, boundary);
   appendGeneratedTextArray(fields, result.hashtags, normalizedLanguage, boundary);
-  appendGeneratedTextArray(fields, result.warnings, normalizedLanguage, boundary);
-  appendGeneratedTextArray(fields, result.quality_warnings, normalizedLanguage, boundary);
+  appendProviderWarningProse(fields, result.warnings, normalizedLanguage, boundary);
+  appendProviderWarningProse(fields, result.quality_warnings, normalizedLanguage, boundary);
   if (!options.sourceMetadataIsRequestEcho) {
     appendGeneratedObjectTextField(
       fields,
@@ -271,6 +283,35 @@ const ENGLISH_CONTENT_WORDS = new Set([
   'reports', 'results', 'review', 'script', 'weather', 'workflow',
 ]);
 
+const PT_BR_CONTENT_DIALECT_WORDS = new Set([
+  'arquivo', 'arquivos', 'celular', 'celulares', 'equipe', 'equipes', 'onibus',
+  'planejamento', 'planejamentos', 'tela', 'telas', 'usuario', 'usuarios',
+]);
+
+const PT_PT_CONTENT_DIALECT_WORDS = new Set([
+  'autocarro', 'autocarros', 'ecra', 'ecras', 'equipa', 'equipas', 'ficheiro',
+  'ficheiros', 'planeamento', 'planeamentos', 'telemovel', 'telemoveis',
+  'utilizador', 'utilizadores',
+]);
+
+function detectPortugueseDialectLeak(
+  expectedLocale: Lang,
+  text: string,
+): 'pt-BR' | 'pt-PT' | null {
+  if (expectedLocale !== 'pt-BR' && expectedLocale !== 'pt-PT') return null;
+  const words = text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .match(/[a-z]+/g) ?? [];
+  const forbidden = expectedLocale === 'pt-BR'
+    ? PT_PT_CONTENT_DIALECT_WORDS
+    : PT_BR_CONTENT_DIALECT_WORDS;
+  return words.some((word) => forbidden.has(word))
+    ? expectedLocale === 'pt-BR' ? 'pt-PT' : 'pt-BR'
+    : null;
+}
+
 function detectStrictContentFieldLanguage(
   text: string,
   expectedLanguage: DetectedResponseLanguage,
@@ -317,6 +358,27 @@ function appendGeneratedTextArray(
   if (value == null) return;
   if (!Array.isArray(value)) throwContentOutputShapeMismatch(language, boundary);
   target.push(...value);
+}
+
+/**
+ * Python warning arrays may contain stable categorical codes. Those codes are
+ * metadata, not rendered language, and are localized later by the TS response
+ * builder. Continue validating any warning that is actual provider prose.
+ */
+function appendProviderWarningProse(
+  target: unknown[],
+  value: unknown,
+  language: Lang,
+  boundary: string,
+): void {
+  if (value == null) return;
+  if (!Array.isArray(value)) throwContentOutputShapeMismatch(language, boundary);
+  for (const warning of value) {
+    if (typeof warning === 'string' && /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/u.test(warning)) {
+      continue;
+    }
+    target.push(warning);
+  }
 }
 
 function appendGeneratedObjectTextField(

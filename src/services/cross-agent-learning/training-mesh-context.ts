@@ -214,7 +214,7 @@ function emptyTrainingFlags(): TrainingContext['flags'] {
     planDrift: false,
     fuelingGap: false,
     budgetConstraint: false,
-    contentCommitment: false,
+    confirmedContentWorkBlock: false,
     otherSportRpeToday: 0,
   };
 }

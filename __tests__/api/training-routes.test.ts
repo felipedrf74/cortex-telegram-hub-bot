@@ -369,7 +369,10 @@ vi.mock('../../src/services/training-agenda-reconciliation', () => ({
 }));
 
 vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  previewSecretarySchedulingIntent: vi.fn(),
   submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
+  getSecretaryAgendaItemById: vi.fn(),
+  cancelSecretaryAgendaItem: vi.fn(),
 }));
 
 vi.mock('../../src/services/training-operation-locks', async () => ({
@@ -3813,7 +3816,28 @@ describe('Training API routes', () => {
     });
     mockReadContentMeshContext.mockResolvedValue({
       filmingRecommendation: {
-        date: '2026-04-18',
+        // Advisory and deliberately different from the canonical block below.
+        date: '2026-04-16',
+      },
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'confirmed',
+        semantics: 'private_work_session',
+        attentionCount: 0,
+        confirmedBlocks: [{
+          itemId: 41,
+          title: 'Record weekly update',
+          date: '2026-04-18',
+          startsAt: '2026-04-18T10:00:00.000Z',
+          endsAt: '2026-04-18T12:00:00.000Z',
+          workKind: 'record',
+          state: 'provider_synced',
+          authority: 'secretary',
+          authorityStatus: 'current',
+          semantics: 'private_work_session',
+          contentChangedSinceScheduling: false,
+        }],
       },
       derivedSignals: [],
     });

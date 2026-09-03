@@ -776,7 +776,7 @@ export const CONTENT_SCENARIO_BANK: ContentEvalScenario[] = [
     description: 'User provides a weak script and expects practical creative editing, not generic motivation.',
     personaIds: ['solo_creator', 'voice_correction_user'],
     turns: [
-      'This script is weak. Improve the first three seconds.',
+      'This script is weak. Improve the opening beat without assuming a fixed timing window.',
       'Make the promise clearer and add emotional stakes.',
       'Tighten pacing, proof, CTA, and retention devices.',
     ],
@@ -1308,7 +1308,7 @@ function runtimeLaneEvaluation(options: Pick<
       }),
       analyzeAndImproveScript({
         topic: 'YouTube retention diagnosis',
-        script: 'The thumbnail won the click, but the first 30 seconds lost the promise. Show the proof before the second section and ask viewers to test one intro change.',
+        script: 'The thumbnail won the click, but the opening sequence lost the promise. Show the proof before the second section and ask viewers to test one intro change.',
         hook: 'Your thumbnail did its job. Your intro broke the promise.',
         format: 'YouTube',
         cta: 'Test one intro change and compare retention.',

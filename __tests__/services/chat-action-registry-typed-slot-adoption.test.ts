@@ -220,14 +220,39 @@ describe('typed slot adoption — content pipeline stage transition', () => {
   it('extracts target stage and topic title from content pipeline phrasings', () => {
     const entry = findChatActionDefinition('content', 'content_pipeline_stage_transition')!;
     const result = getSlotExtractors(entry)[0].extract(
-      'Move the morning routine reel to editing',
+      'Mark the morning routine reel as scripted',
       { locale: 'en-US' },
     );
     expect(result.slots).toMatchObject({
       topicTitle: 'morning routine reel',
-      targetStage: 'editing',
+      targetStage: 'scripted',
     });
     expect(result.confidence).toBeGreaterThan(0.8);
+
+    const unmodeled = getSlotExtractors(entry)[0].extract(
+      'Move the morning routine reel to editing',
+      { locale: 'en-US' },
+    );
+    expect(unmodeled.slots).toEqual({});
+  });
+});
+
+describe('typed slot adoption — content rewrite', () => {
+  it('extracts available one-turn rewrite inputs and leaves missing source absent', () => {
+    const entry = findChatActionDefinition('content', 'content_rewrite')!;
+    const extractor = getSlotExtractors(entry)[0];
+    const complete = extractor.extract(
+      'Rewrite this caption to be punchier: Morning routines start the night before.',
+      { locale: 'en-US' },
+    );
+    expect(complete.slots).toEqual({
+      sourceText: 'Morning routines start the night before.',
+      objective: 'punchier',
+    });
+    expect(complete.confidence).toBeGreaterThan(0.8);
+
+    const incomplete = extractor.extract('Make this caption shorter', { locale: 'en-US' });
+    expect(incomplete.slots).toEqual({ objective: 'shorter' });
   });
 });
 

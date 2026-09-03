@@ -455,7 +455,7 @@ export function buildChatSkillRoutingPromptBlock(
   lines.push('- Training owns training content and coaching-plan changes.');
   lines.push('- Cooking owns meals, recipes, grocery lists, meal prep, and fueling content.');
   lines.push('- Finance owns financial analysis, budgets, bills, subscriptions, and purchase constraints.');
-  lines.push('- Content owns content workflows, references, scripts, publishing cadence, and content ideas.');
+  lines.push('- Content owns content workflows, references, scripts, production cadence, and content ideas; external publication tracking is not supported.');
   lines.push('</ownership_rules>');
   if (decision.safety.requiresConfirmation) {
     lines.push(`<action_safety destructive="true" explicit_confirmation="${decision.safety.explicitConfirmation}" reason_codes="${decision.safety.confirmationReasonCodes.join(',')}">`);

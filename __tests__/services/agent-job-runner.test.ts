@@ -18,7 +18,7 @@ type TestInput = { promptState: string };
 type TestOutput = { accepted: boolean; score: number };
 
 const AUTORESEARCH_ROUTE = 'gemini-or-openai-primary-anthropic-fallback';
-const CONTENT_ROUTE = 'grounded-provider-fallback-route';
+const CONTENT_ROUTE = 'grounded-provider-configuration-fallthrough-single-attempt';
 
 async function passThroughAccountAdmission<T>(
   _input: { userId: number; abortSignal?: AbortSignal },

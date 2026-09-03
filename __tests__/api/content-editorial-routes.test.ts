@@ -125,7 +125,7 @@ describe('deprecated content editorial HTTP compatibility routes', () => {
       code: 'CONTENT_PUBLICATION_CONFIRMATION_REQUIRED',
       details: {
         publicationExecution: 'not_performed',
-        recovery: 'confirm_external_publication_in_a_dedicated_tracking_flow',
+        recovery: 'publication_tracking_not_supported',
       },
     });
     expect(getContentWorkflowObject(OWNER.userId, review.id, OWNER.tenantId)?.productionState).toBe('approved');

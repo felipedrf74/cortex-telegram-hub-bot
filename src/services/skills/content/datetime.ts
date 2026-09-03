@@ -57,7 +57,10 @@ function extractExplicitIsoDateTime(text: string, zone: string): string | null {
   const match = text.match(/\b\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?\b/);
   if (!match) return null;
   const normalized = match[0].replace(' ', 'T');
-  const parsed = DateTime.fromISO(normalized, { setZone: true });
+  // Offset-less ISO input is wall-clock time in the user's zone, not in the
+  // server process zone. Explicit offsets still retain their source zone here
+  // and are converted to the requested user zone below.
+  const parsed = DateTime.fromISO(normalized, { zone, setZone: true });
   if (!parsed.isValid) return null;
   return parsed.setZone(zone).toISO();
 }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
+import { CONTENT_AGENT_LIFECYCLE_POLICY_VERSION } from '../../src/services/content-agent-lifecycle';
 
 const mockGetCached = vi.fn(() => null);
 const mockSetCache = vi.fn();
@@ -16,7 +17,11 @@ vi.mock('../../src/services/cache-store', () => ({
   setCache: (...args: unknown[]) => mockSetCache(...args),
 }));
 
-vi.mock('../../src/services/weekly-plan-orchestrator', () => ({
+vi.mock('../../src/services/weekly-plan-orchestrator', async () => ({
+  ...(await vi.importActual<typeof import('../../src/services/weekly-plan-orchestrator')>(
+    '../../src/services/weekly-plan-orchestrator',
+  )),
+  CONTENT_PLAN_PROJECTION_VERSION: 'content-plan.v4',
   composeWeeklyPlan: (...args: unknown[]) => mockComposeWeeklyPlan(...args),
 }));
 
@@ -114,15 +119,25 @@ describe('daily-brief-orchestrator', () => {
       gated: { skills: [] },
       garmin_stale: false,
       creativeCopy: { headline: 'Balanced week', note: 'Stay steady.' },
+      contentPlan: {
+        authority: 'secretary',
+        authorityStatus: 'partially_unavailable',
+        planStatus: 'partial',
+        semantics: 'private_work_session',
+        confirmedBlockCount: 1,
+        confirmedBlocksComplete: true,
+        attentionCount: 1,
+        deadlineCount: 1,
+      },
       conflicts: [
         {
           id: '2026-04-15:primary-commitment:2',
           date: '2026-04-15',
           target: 'primary-commitment',
           signalIds: [1, 2],
-          signalTypes: ['publishing_commitment', 'shoot_day_locked'],
+          signalTypes: ['shoot_day_locked', 'tax_deadline'],
           meshPriority: 2,
-          message: 'Same-priority conflict on 2026-04-15: publish vs shoot',
+          message: 'A confirmed private Content work block overlaps another fixed commitment.',
         },
       ],
       days: [
@@ -154,10 +169,31 @@ describe('daily-brief-orchestrator', () => {
           },
           content: {
             status: 'scheduled',
-            title: 'Capture + publishing day',
-            note: 'Publishing is due for Race-week recap. Use the filming block as the capture pass, then finish the publishing handoff the same day.',
+            planStatus: 'partial',
+            scheduleAuthority: 'secretary',
+            scheduleAuthorityStatus: 'partially_unavailable',
+            scheduleSemantics: 'private_work_session',
+            title: 'Confirmed Content block needs provider attention',
+            note: 'Use this Secretary-confirmed private session for the recorded Content work. Provider sync needs attention, but the local block remains confirmed; it is not a publication commitment.',
             blockStart: '2026-04-15T11:00:00.000Z',
             blockEnd: '2026-04-15T13:00:00.000Z',
+            confirmedBlocks: [{
+              itemId: 41,
+              title: 'Record the weekly piece',
+              authorityStatus: 'current',
+              confirmationStatus: 'confirmed',
+              itemStatus: 'approved',
+              outcome: 'Record the approved weekly piece.',
+              estimatedEffortMinutes: 120,
+              dependency: null,
+              approvalState: 'approved',
+              nextAction: { action: 'none', label: 'No further action', reason: 'The block is ready.' },
+              startsAt: '2026-04-15T11:00:00.000Z',
+              endsAt: '2026-04-15T13:00:00.000Z',
+              workKind: 'record',
+              state: 'sync_failed',
+              contentChangedSinceScheduling: false,
+            }],
             decisions: [],
           },
           secretary: {
@@ -174,9 +210,9 @@ describe('daily-brief-orchestrator', () => {
             sequence: [
               'Protect the key training window before moving meetings, errands, or filming onto the day.',
               'Lock meal or shopping coverage before the session so training support is not left to chance.',
-              'Reserve a real publish/delivery slot so content ships deliberately instead of becoming leftover work.',
+              'Use the confirmed private Content block only for its recorded work purpose.',
             ],
-            tradeoffNote: 'Training is the anchor, meals need closing before it, publishing still needs a real slot, and filming should only use whatever bandwidth remains after all three are protected.',
+            tradeoffNote: 'Training is the anchor, meals need closing before it, and the confirmed private Content block must not be treated as a publication reservation.',
             decisions: [],
           },
           finance: {
@@ -201,12 +237,11 @@ describe('daily-brief-orchestrator', () => {
     expect(result.coordination.executionOrder).toEqual(
       expect.arrayContaining([
         'Keep the day light and recoverable.',
-        'Batch overdue work into one short block.',
-        'Use 12:00–14:00 to ship.',
-        'Protect the key training window before moving meetings, errands, or filming onto the day.',
-        'Lock meal or shopping coverage before the session so training support is not left to chance.',
+        'Review the Content-block conflict at 12:00–14:00.',
       ]),
     );
+    expect(result.coordination.executionOrder.length).toBeLessThanOrEqual(3);
+    expect(result.coordination.suggestedMoves.length).toBeLessThanOrEqual(2);
     expect(result.coordination.dayOrchestration.posture).toBe('recovery_protected_day');
     expect(result.coordination.weekOrchestration.posture).toBe('consistency');
     expect(result.coordination.nextBestAction?.kind).toBe('lighten_day');
@@ -216,16 +251,33 @@ describe('daily-brief-orchestrator', () => {
     expect(result.coordination.watchouts).toEqual(
       expect.arrayContaining([
         'There are 1 overdue tasks, 0 due today, and 0 unread emails in play.',
-        'Same-priority conflict on 2026-04-15: publish vs shoot',
+        'A confirmed private Content work block overlaps another fixed commitment.',
       ]),
     );
     expect(result.coordination.handoffs).toEqual(
       expect.arrayContaining([
         'Training is pulling the day toward less friction and less load.',
-        'Content has a good window, but it needs shipping, not more prep.',
+        'Content has a confirmed private session for its recorded work; this does not imply publication.',
         'The aligned meal helps keep training and schedule more executable.',
       ]),
     );
+    expect(result.contentPlan).toEqual(expect.objectContaining({
+      authority: 'secretary',
+      authorityStatus: 'partially_unavailable',
+      planStatus: 'partial',
+      confirmedBlockCount: 1,
+      attentionCount: 1,
+    }));
+    expect(result.day.content?.note).toContain('Provider sync needs attention, but the local block remains confirmed');
+    expect(result.coordination.protectedBlocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'content' }),
+    ]));
+    expect(mockSetCache).toHaveBeenCalledWith(
+      expect.stringContaining(`:content-policy:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}`),
+      expect.anything(),
+      1800,
+    );
+    expect(JSON.stringify(result.coordination)).not.toMatch(/\b(ship|shipping|publish|publishing)\b/i);
   });
 
   it('reads Secretary Today decision signals with the exact authenticated tenant scope', async () => {
@@ -234,6 +286,16 @@ describe('daily-brief-orchestrator', () => {
       gated: { skills: [] },
       garmin_stale: false,
       creativeCopy: { headline: 'Quiet day', note: 'Stay steady.' },
+      contentPlan: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'unplanned',
+        semantics: 'private_work_session',
+        confirmedBlockCount: 0,
+        confirmedBlocksComplete: true,
+        attentionCount: 0,
+        deadlineCount: 0,
+      },
       conflicts: [],
       days: [
         {
@@ -457,6 +519,16 @@ describe('daily-brief-orchestrator', () => {
       garmin_stale: false,
       conflicts: [],
       creativeCopy: { headline: '', note: '' },
+      contentPlan: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'unplanned',
+        semantics: 'private_work_session',
+        confirmedBlockCount: 0,
+        confirmedBlocksComplete: true,
+        attentionCount: 0,
+        deadlineCount: 0,
+      },
       day: { date: '2026-04-15' },
       coordination: {
         topPriority: 'cached',
@@ -499,6 +571,9 @@ describe('daily-brief-orchestrator', () => {
     expect(result.warningCodes).toContain('PLANNING_SOURCE_HEALTH_UNAVAILABLE');
     expect(result.sourceHealth.calendar.status).toBe('unavailable');
     expect(result.sourceHealth.decision_center.status).toBe('unavailable');
+    expect(mockGetCached).toHaveBeenCalledWith(
+      expect.stringContaining(`:content-policy:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}`),
+    );
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
   });
 
@@ -555,6 +630,7 @@ describe('daily-brief-orchestrator', () => {
     });
 
     expect(result.degraded).toBe(true);
+    expect(result.contentPlan.planStatus).toBe('unavailable');
     expect(result.date).toBe('2026-04-15');
     expect(result.day.date).toBe('2026-04-15');
     expect(result.day.headline).toContain('temporariamente indisponível');
@@ -568,6 +644,16 @@ describe('daily-brief-orchestrator', () => {
       gated: { skills: [] },
       garmin_stale: false,
       creativeCopy: { headline: 'Balanced week', note: 'Stay steady.' },
+      contentPlan: {
+        authority: 'secretary',
+        authorityStatus: 'partially_unavailable',
+        planStatus: 'partial',
+        semantics: 'private_work_session',
+        confirmedBlockCount: 0,
+        confirmedBlocksComplete: true,
+        attentionCount: 1,
+        deadlineCount: 0,
+      },
       conflicts: [],
       days: [
         {
@@ -613,6 +699,10 @@ describe('daily-brief-orchestrator', () => {
     expect(result.day.date).toBe('2026-04-15');
     expect(result.day.weekday).toBe('Wednesday');
     expect(result.degraded).toBe(true);
+    expect(result.contentPlan).toMatchObject({
+      authorityStatus: 'partially_unavailable',
+      planStatus: 'partial',
+    });
     expect(result.coordination.dayOrchestration.title).toBe('Daily orchestration temporarily unavailable.');
   });
 });

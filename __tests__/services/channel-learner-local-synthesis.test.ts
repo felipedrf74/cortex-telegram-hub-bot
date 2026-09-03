@@ -14,12 +14,14 @@ const {
   completeLocalReasoningOneShot,
   isOllamaConfigured,
   withAiBudgetReservation,
+  invalidateContentDerivedCaches,
 } = vi.hoisted(() => ({
   completeOneShotWithFallback: vi.fn(),
   writeSignal: vi.fn(),
   completeLocalReasoningOneShot: vi.fn(),
   isOllamaConfigured: vi.fn(),
   withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
+  invalidateContentDerivedCaches: vi.fn(),
 }));
 vi.hoisted(() => {
   process.env.YOUTUBE_API_KEY = 'test-youtube-key';
@@ -86,15 +88,21 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   writeGovernedSignal: writeSignal,
 }));
 
+vi.mock('../../src/services/cache-coherence-registry', () => ({
+  invalidateContentDerivedCaches,
+}));
+
 
 import {
   addSystemChannel,
   createContentReferencesAdminContext,
   getSystemKnowledgeByCategory,
   PATTERN_CATEGORIES,
+  updateChannelStatus,
+  upsertPatterns,
   upsertSystemKnowledge,
 } from '../../src/state/content-references';
-import { processAllChannels } from '../../src/services/channel-learner';
+import { processAllChannels, synthesizeKnowledge } from '../../src/services/channel-learner';
 import { logger } from '../../src/utils/logger';
 
 const adminContext = createContentReferencesAdminContext('channel learner local synthesis test');
@@ -171,6 +179,7 @@ describe('channel-learner: batched cloud synthesis', () => {
     isOllamaConfigured.mockReturnValue(true);
     writeSignal.mockReset();
     writeSignal.mockReturnValue(1);
+    invalidateContentDerivedCaches.mockReset();
     withAiBudgetReservation.mockClear();
     vi.mocked(logger.warn).mockClear();
     videosByChannel = {};
@@ -204,14 +213,14 @@ describe('channel-learner: batched cloud synthesis', () => {
       if (href.startsWith('https://www.googleapis.com/youtube/v3/channels')) {
         const id = parsed.searchParams.get('id') || '';
         if (!resolvableChannels.has(id)) {
-          return { json: async () => ({ items: [] }) } as Response;
+          return { ok: true, status: 200, json: async () => ({ items: [] }) } as Response;
         }
-        return { json: async () => ({ items: [{ id, snippet: { title: `Channel ${id}` } }] }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items: [{ id, snippet: { title: `Channel ${id}` } }] }) } as Response;
       }
       if (href.startsWith('https://www.googleapis.com/youtube/v3/search')) {
         const channelId = parsed.searchParams.get('channelId') || '';
         const vids = videosByChannel[channelId] || [];
-        return { json: async () => ({ items: vids.map((v) => ({ id: { videoId: v.videoId } })) }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items: vids.map((v) => ({ id: { videoId: v.videoId } })) }) } as Response;
       }
       if (href.startsWith('https://www.googleapis.com/youtube/v3/videos')) {
         const ids = (parsed.searchParams.get('id') || '').split(',').filter(Boolean);
@@ -228,7 +237,7 @@ describe('channel-learner: batched cloud synthesis', () => {
             statistics: { viewCount: String(v.viewCount), likeCount: '10', commentCount: '2' },
             contentDetails: { duration: 'PT10M' },
           })));
-        return { json: async () => ({ items }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ items }) } as Response;
       }
       throw new Error(`Unexpected fetch ${href}`);
     }));
@@ -288,6 +297,7 @@ describe('channel-learner: batched cloud synthesis', () => {
     expect(reservations.some((request) => request.jobName?.endsWith(':synthesize'))).toBe(true);
     expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Merged hook guidance (CLOUD)');
     expect(getSystemKnowledgeByCategory('title_pattern', adminContext)?.synthesized_text).toBe('Merged title guidance (CLOUD)');
+    expect(invalidateContentDerivedCaches.mock.calls).toEqual([[undefined], [undefined], [undefined]]);
   });
 
   it('retains the entire latest valid knowledge set when a batch omits a category', async () => {
@@ -329,5 +339,50 @@ describe('channel-learner: batched cloud synthesis', () => {
     expect(cloudCalls('knowledge_synthesis')).toBe(1);
     expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text).toBe('Previous hook guidance');
     expect(getSystemKnowledgeByCategory('title_pattern', adminContext)?.synthesized_text).toBe('Previous title guidance');
+    expect(invalidateContentDerivedCaches.mock.calls).toEqual([[undefined], [undefined]]);
+  });
+
+  it('does not replace knowledge when cancellation lands after synthesis returns', async () => {
+    const firstId = makeSystemChannel('UCcancel1');
+    const secondId = makeSystemChannel('UCcancel2');
+    for (const [channelId, name] of [[firstId, 'Cancel One'], [secondId, 'Cancel Two']] as const) {
+      updateChannelStatus(channelId, 'active', { channel_name: name }, { adminContext });
+      upsertPatterns(channelId, [{
+        category: 'hook_style',
+        pattern_text: `${name} hook`,
+        examples: [`${name} example`],
+        confidence: 0.9,
+        source_videos: [`${name}-video`],
+      }], { adminContext });
+    }
+    upsertSystemKnowledge('hook_style', 'Prior safe hook guidance', ['Prior One', 'Prior Two'], adminContext);
+    const controller = new AbortController();
+    const cancellation = Object.assign(new Error('synthesis request cancelled'), {
+      name: 'AbortError',
+      code: 'CONTENT_CLIENT_DISCONNECTED',
+    });
+    completeOneShotWithFallback.mockImplementationOnce(async () => {
+      controller.abort(cancellation);
+      return {
+        provider: 'gemini',
+        text: JSON.stringify({
+          categories: [{
+            category: 'hook_style',
+            synthesized_text: 'Cancelled replacement',
+            source_channels: ['Cancel One', 'Cancel Two'],
+          }],
+        }),
+      };
+    });
+
+    await expect(synthesizeKnowledge(undefined, {
+      requestSource: 'system',
+      jobName: 'channel_relearn',
+      abortSignal: controller.signal,
+    })).rejects.toBe(cancellation);
+
+    expect(getSystemKnowledgeByCategory('hook_style', adminContext)?.synthesized_text)
+      .toBe('Prior safe hook guidance');
+    expect(invalidateContentDerivedCaches).not.toHaveBeenCalled();
   });
 });

@@ -19,8 +19,14 @@ import { getJobStatuses } from '../../portal/telemetry';
 import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
 import { getPerformanceSummary, type PerformanceFeedback } from '../../services/content-learning-store';
 import { readSignals } from '../../services/intelligence-bus';
+import {
+  isActiveContentAgentSignal,
+  PAUSED_CONTENT_AGENT_IDS,
+} from '../../services/content-agent-lifecycle';
 import { assertTenantScope, requireTenantIdParam, TenantScopeError } from '../../services/tenant-scope';
 import type { Lang } from '../../utils/i18n';
+import { logger } from '../../utils/logger';
+import { safeContentLogErrorFields } from '../../services/content-log-safety';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -46,20 +52,22 @@ export function registerContentIntelligenceRoutes(
     if (!scope) return;
     const { userId, tenantId } = scope;
 
-    const language = resolveContentLanguage(req, userId);
-    const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence', 25);
+    try {
+      const language = resolveContentLanguage(req, userId);
+      const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence', 25);
 
-    sendSuccess(res, buildContentIntelligenceSummary({
-      language,
-      reactionJob: context.reactionJob,
-      performanceJob: context.performanceJob,
-      autoresearchJob: context.autoresearchJob,
-      discoverySignals: context.discoverySignals,
-      optimizationSignals: context.optimizationSignals,
-      performanceSummary: context.performanceSummary,
-      voiceEntries: context.voiceEntries,
-      knowledgeStats: context.knowledgeStats,
-    }));
+      sendSuccess(res, buildContentIntelligenceSummary({
+        language,
+        autoresearchJob: context.autoresearchJob,
+        discoverySignals: context.discoverySignals,
+        optimizationSignals: context.optimizationSignals,
+        performanceSummary: context.performanceSummary,
+        voiceEntries: context.voiceEntries,
+        knowledgeStats: context.knowledgeStats,
+      }));
+    } catch (error) {
+      sendContentIntelligenceUnavailable(res, error, userId, tenantId, 'summary');
+    }
   }));
 
   /** GET /api/v1/content/intelligence/detail — deeper backstage view for iOS */
@@ -73,33 +81,53 @@ export function registerContentIntelligenceRoutes(
     if (!scope) return;
     const { userId, tenantId } = scope;
 
-    const language = resolveContentLanguage(req, userId);
-    const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence-detail', 6);
-    const filmingRecommendation = localizeFilmingRecommendation(
-      await getFilmingRecommendation(userId, undefined, tenantId),
-      language,
-    );
-    const monitoredPillars = context.radarPreferences.topics.length > 0
-      ? buildRadarTopicSummaries(context.radarPreferences.topics, context.discoverySignals)
-      : getActiveContentPillars(userId, tenantId);
-    const deskItems = getContentDeskItems(userId, 3, tenantId);
+    try {
+      const language = resolveContentLanguage(req, userId);
+      const context = readContentIntelligenceContext(userId, tenantId, 'ios-content-intelligence-detail', 6);
+      const filmingRecommendation = localizeFilmingRecommendation(
+        await getFilmingRecommendation(userId, undefined, tenantId),
+        language,
+      );
+      const monitoredPillars = context.radarPreferences.topics.length > 0
+        ? buildRadarTopicSummaries(context.radarPreferences.topics, context.discoverySignals)
+        : getActiveContentPillars(userId, tenantId);
+      const deskItems = getContentDeskItems(userId, 3, tenantId);
 
-    sendSuccess(res, buildContentIntelligenceDetail({
-      language,
-      reactionJob: context.reactionJob,
-      performanceJob: context.performanceJob,
-      autoresearchJob: context.autoresearchJob,
-      discoverySignals: context.discoverySignals,
-      optimizationSignals: context.optimizationSignals,
-      performanceSummary: context.performanceSummary,
-      voiceEntries: context.voiceEntries,
-      knowledgeStats: context.knowledgeStats,
-      filmingRecommendation,
-      preferredTopics: context.radarPreferences.topics,
-      monitoredPillars,
-      deskItems,
-    }));
+      sendSuccess(res, buildContentIntelligenceDetail({
+        language,
+        autoresearchJob: context.autoresearchJob,
+        discoverySignals: context.discoverySignals,
+        optimizationSignals: context.optimizationSignals,
+        performanceSummary: context.performanceSummary,
+        voiceEntries: context.voiceEntries,
+        knowledgeStats: context.knowledgeStats,
+        filmingRecommendation,
+        preferredTopics: context.radarPreferences.topics,
+        monitoredPillars,
+        deskItems,
+      }));
+    } catch (error) {
+      sendContentIntelligenceUnavailable(res, error, userId, tenantId, 'detail');
+    }
   }));
+}
+
+function sendContentIntelligenceUnavailable(
+  res: Response,
+  error: unknown,
+  userId: number,
+  tenantId: number,
+  surface: 'summary' | 'detail',
+): void {
+  logger.warn({ ...safeContentLogErrorFields(error), userId, tenantId, surface },
+    'Content intelligence read unavailable');
+  sendError(
+    res,
+    'CONTENT_INTELLIGENCE_UNAVAILABLE',
+    'Content intelligence is temporarily unavailable.',
+    503,
+    { retryable: true },
+  );
 }
 
 function requireContentIntelligenceScope(
@@ -138,8 +166,9 @@ function readContentIntelligenceContext(
     userId,
     7,
     validatedTenantId,
-  );
-  const radarPreferences = getContentRadarPreferences(userId, validatedTenantId);
+    { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS, strict: true },
+  ).filter(isActiveContentAgentSignal);
+  const radarPreferences = getContentRadarPreferences(userId, validatedTenantId, { strict: true });
   const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
   const optimizationSignals = readSignals(
     source,
@@ -148,19 +177,18 @@ function readContentIntelligenceContext(
     userId,
     14,
     validatedTenantId,
-  );
+    { excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS, strict: true },
+  ).filter(isActiveContentAgentSignal);
   const performanceSummary = summarizePerformanceFeedback(getPerformanceSummary(userId, 30, validatedTenantId));
 
   return {
-    reactionJob: jobs.get('reaction_radar'),
-    performanceJob: jobs.get('performance_agent'),
     autoresearchJob: jobs.get('autoresearch'),
     radarPreferences,
     discoverySignals,
     optimizationSignals,
     performanceSummary,
-    voiceEntries: getVoiceDna(undefined, userId, validatedTenantId),
-    knowledgeStats: getKnowledgeStats(undefined, userId, validatedTenantId),
+    voiceEntries: getVoiceDna(undefined, userId, validatedTenantId, { strict: true }),
+    knowledgeStats: getKnowledgeStats(undefined, userId, validatedTenantId, { strict: true }),
   };
 }
 

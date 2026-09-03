@@ -103,8 +103,8 @@ describe('portal intelligence routes', () => {
 
   it('caps signal fetches and filters by signal type', () => {
     mockGetSignalLog.mockReturnValue([
-      { id: 1, signal_type: 'hook_effectiveness' },
-      { id: 2, signal_type: 'voice_pattern' },
+      { id: 1, signal_type: 'hook_effectiveness', source_agent: 'performance-agent' },
+      { id: 2, signal_type: 'voice_pattern', source_agent: 'voice-evolution' },
     ]);
     mockGetActiveSignalCount.mockReturnValue(7);
     const route = captureRoutes().find((candidate) => candidate.method === 'GET' && candidate.path === '/api/signals');
@@ -113,13 +113,59 @@ describe('portal intelligence routes', () => {
       query: { limit: '500', type: 'voice_pattern', tenantId: '12', userId: '12' },
     });
 
-    expect(mockGetSignalLog).toHaveBeenCalledWith(200, 12, 12);
-    expect(mockGetActiveSignalCount).toHaveBeenCalledWith(12, 12);
+    expect(mockGetSignalLog).toHaveBeenCalledWith(200, 12, 12, {
+      excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
+    });
+    expect(mockGetActiveSignalCount).toHaveBeenCalledWith(12, 12, {
+      excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
+      excludeIneligibleContentLearningDigests: true,
+    });
     expect(res.body).toEqual({
       ok: true,
-      signals: [{ id: 2, signal_type: 'voice_pattern' }],
+      signals: [{ id: 2, signal_type: 'voice_pattern', source_agent: 'voice-evolution' }],
       activeCount: 7,
     });
+  });
+
+  it('projects paused agents truthfully and removes their historical signals', () => {
+    mockGetAgentStats.mockReturnValue([
+      { agent: 'seo-agent', last_run: '2026-08-01', last_status: 'success', signals_produced: 8, total_runs: 4 },
+      { agent: 'reaction-radar', last_run: '2026-08-30', last_status: 'success', signals_produced: 2, total_runs: 1 },
+    ]);
+    mockGetSignalLog.mockReturnValue([
+      { id: 1, signal_type: 'keyword_opportunity', source_agent: 'seo-agent' },
+      { id: 2, signal_type: 'reaction_opportunity', source_agent: 'reaction-radar' },
+    ]);
+    mockGetActiveSignalCount.mockReturnValue(1);
+    const routes = captureRoutes();
+
+    const agents = invoke(routes.find((route) => route.method === 'GET' && route.path === '/api/agents')!, { query: {} });
+    const signals = invoke(routes.find((route) => route.method === 'GET' && route.path === '/api/signals')!, {
+      query: { tenantId: '12', userId: '12' },
+    });
+
+    expect(agents.body).toEqual({
+      ok: true,
+      agents: [
+        expect.objectContaining({
+          agent: 'seo-agent',
+          lifecycle: 'paused',
+          last_run: null,
+          last_status: 'paused',
+          signals_produced: 0,
+          total_runs: 0,
+        }),
+        expect.objectContaining({
+          agent: 'reaction-radar',
+          lifecycle: 'paused',
+          last_run: null,
+          last_status: 'paused',
+          signals_produced: 0,
+          total_runs: 0,
+        }),
+      ],
+    });
+    expect(signals.body.signals).toEqual([]);
   });
 
   it('dismisses valid signals and clears the portal snapshot cache', () => {
@@ -159,8 +205,23 @@ describe('portal intelligence routes', () => {
     expect(mockGetSignalLog).not.toHaveBeenCalled();
   });
 
-  it('passes tenant scope into ranked signal reads', () => {
-    mockReadRankedSignals.mockReturnValue([]);
+  it('passes tenant scope and paused-source exclusions into ranked signal reads', () => {
+    mockReadRankedSignals.mockReturnValue([
+      {
+        id: 1,
+        source_agent: 'performance_agent',
+        signal_type: 'hook_effectiveness',
+        payload: { hook: 'stale' },
+        priority: 'urgent',
+      },
+      {
+        id: 2,
+        source_agent: 'voice-evolution',
+        signal_type: 'voice_pattern',
+        payload: { observation: 'active' },
+        priority: 'normal',
+      },
+    ]);
     const route = captureRoutes().find((candidate) => candidate.method === 'GET' && candidate.path === '/api/signals/ranked');
 
     const res = invoke(route!, { query: { tenantId: '77', userId: '78', limit: '5' } });
@@ -170,6 +231,12 @@ describe('portal intelligence routes', () => {
       limit: 5,
       userId: 78,
       tenantId: 77,
+      excludeSourceAgents: ['performance_agent', 'reaction_radar', 'seo_agent'],
     }));
+    expect(res.body).toMatchObject({
+      ok: true,
+      count: 1,
+      signals: [expect.objectContaining({ id: 2, source: 'voice-evolution' })],
+    });
   });
 });

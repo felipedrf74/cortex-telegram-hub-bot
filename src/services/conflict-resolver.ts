@@ -205,7 +205,13 @@ function mergeCompatibleContenders(
 
   const signalTypes = new Set(directives.map((directive) => directive.signalType));
 
-  if (target === 'availability' && signalTypes.has('travel_window') && signalTypes.has('calendar_busy_blocks')) {
+  if (
+    directives.length === 2
+    && signalTypes.size === 2
+    && target === 'availability'
+    && signalTypes.has('travel_window')
+    && signalTypes.has('calendar_busy_blocks')
+  ) {
     const travel = directives.find((directive) => directive.signalType === 'travel_window');
     if (!travel) return null;
     return {
@@ -219,7 +225,13 @@ function mergeCompatibleContenders(
     };
   }
 
-  if (target === 'primary-commitment' && signalTypes.has('sponsor_deliverable_due') && signalTypes.has('shoot_day_locked')) {
+  if (
+    directives.length === 2
+    && signalTypes.size === 2
+    && target === 'primary-commitment'
+    && signalTypes.has('sponsor_deliverable_due')
+    && signalTypes.has('shoot_day_locked')
+  ) {
     const shoot = directives.find((directive) => directive.signalType === 'shoot_day_locked');
     if (!shoot) return null;
     return {
@@ -227,7 +239,7 @@ function mergeCompatibleContenders(
         ...shoot,
         id: directives.map((directive) => directive.id).sort().join('+'),
         signalId: directives.map((directive) => directive.signalId).sort().join('+'),
-        summary: 'Sponsor deliverable is due and the filming slot is ready, so treat this as one protected production block.',
+        summary: 'A sponsor deadline needs attention, while the existing Secretary-confirmed filming block remains the only protected time.',
       },
       shadowed: [],
     };

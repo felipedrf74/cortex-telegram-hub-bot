@@ -35,12 +35,18 @@ import {
   getSignalLog,
   getActiveSignalCount,
 } from '../../services/intelligence-bus';
+import {
+  filterActiveContentAgentSignals,
+  isPausedContentAgent,
+  PAUSED_CONTENT_AGENT_IDS,
+} from '../../services/content-agent-lifecycle';
 import { CronExpressionParser } from 'cron-parser';
 import { sendInternalError } from '../response-helpers';
 import { requirePortalToken } from '../secret-guards';
 import { getOwnerBootstrapTarget } from '../../services/user-service';
 import type { ContentWorkspaceScope } from '../../services/content-workspace';
 import { extractClientIp } from '../rate-limiter';
+import { platformContentScopePredicate } from '../../services/content-tenant-scope';
 
 export const CONTENT_DASHBOARD_RATE_LIMIT_PER_MINUTE = 30;
 
@@ -104,16 +110,13 @@ const CONTENT_COMMANDS: CommandRegistryRow[] = [
   { name: 'bookidea',     label: 'Book Idea',     group: 'library',  description: 'Generate a content idea grounded in a book framework.' },
   // ── SEO ─────────────────────────────────────────────────────────────
   { name: 'seo',          label: 'SEO',           group: 'seo',      description: 'Full SEO brief for a topic.' },
-  { name: 'seokeyword',   label: 'SEO Keyword',   group: 'seo',      description: 'Register a keyword for rank tracking.' },
-  { name: 'seorank',      label: 'SEO Rank',      group: 'seo',      description: 'Current ranks for tracked keywords.' },
+  { name: 'seokeyword',   label: 'SEO Keyword',   group: 'seo',      description: 'Paused until keyword rank storage is tenant-user scoped; does not save keywords.' },
+  { name: 'seorank',      label: 'SEO Rank',       group: 'seo',      description: 'Paused until keyword rank storage is tenant-user scoped; no global ranks are exposed.' },
   // ── Pipeline ────────────────────────────────────────────────────────
   { name: 'pipeline',     label: 'Pipeline',      group: 'pipeline', description: 'Pipeline status summary (all stages).' },
-  { name: 'filmed',       label: 'Mark Filmed',   group: 'pipeline', description: 'Mark an approved item as filmed.' },
-  { name: 'editing',      label: 'Mark Editing',  group: 'pipeline', description: 'Mark an item as in editing.' },
-  { name: 'published',    label: 'Mark Published', group: 'pipeline', description: 'Mark an item as published and attach URL.' },
   { name: 'autoresearch', label: 'Auto-Research', group: 'pipeline', description: 'Kick off a prompt-optimization experiment.' },
   { name: 'evalscore',    label: 'Eval Score',    group: 'pipeline', description: 'Score a completed autoresearch run.' },
-  { name: 'calendar',     label: 'Calendar',      group: 'pipeline', description: 'Publish-ready content calendar.' },
+  { name: 'calendar',     label: 'Work Plan',     group: 'pipeline', description: 'Private Content deadlines and confirmed Secretary work blocks.' },
 ];
 
 /**
@@ -128,6 +131,7 @@ interface AgentNode {
   label: string;
   /** Short description of the agent's job. */
   role: string;
+  lifecycle: 'active' | 'paused';
   /** Which signal types this agent emits. */
   emits: string[];
   /** Which signal types this agent consumes. */
@@ -148,7 +152,8 @@ const AGENT_GRAPH_NODES: AgentNode[] = [
     id: 'channel_learner',
     label: 'Channel Learner',
     role: 'Analyzes registered YouTube channels and extracts creator DNA (hook, title, structure, voice).',
-    emits: ['channel_dna', 'voice_pattern'],
+    lifecycle: 'active',
+    emits: ['channel_dna'],
     consumes: [],
     cron: 'channel_relearn',
   },
@@ -156,6 +161,7 @@ const AGENT_GRAPH_NODES: AgentNode[] = [
     id: 'book_extractor',
     label: 'Book Extractor',
     role: 'Extracts thesis, frameworks, quotes and pillar mapping from every book in the library.',
+    lifecycle: 'active',
     emits: ['book_knowledge'],
     consumes: [],
     cron: null,
@@ -163,56 +169,63 @@ const AGENT_GRAPH_NODES: AgentNode[] = [
   {
     id: 'voice_evolution',
     label: 'Voice Evolution',
-    role: 'Monthly re-synthesis of the voice DNA — compares current to last, spots drift.',
-    emits: ['voice_pattern', 'voice_phrase_trend'],
-    consumes: ['channel_dna', 'book_knowledge'],
+    role: 'Learns monthly edit tendencies from direct canonical agent-draft to creator-revision pairs; publication is not inferred.',
+    lifecycle: 'active',
+    emits: ['voice_pattern', 'voice_phrase_trend', 'voice_analysis_fingerprint'],
+    consumes: ['book_knowledge'],
     cron: 'voice_evolution',
   },
   {
     id: 'reaction_radar',
     label: 'Reaction Radar',
-    role: 'Scans reference channels + trending API three times a day for reaction-worthy uploads.',
-    emits: ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
-    consumes: ['channel_dna', 'book_knowledge', 'voice_pattern', 'pillar_performance'],
+    role: 'Paused until reaction discovery, preferences, and emitted opportunities are tenant-user scoped.',
+    lifecycle: 'paused',
+    emits: [],
+    consumes: [],
     cron: 'reaction_radar',
   },
   {
     id: 'content_discovery',
     label: 'Content Discovery',
-    role: 'Autopilot topic discovery using web search + ranked heat scores.',
-    emits: ['trending_spike'],
-    consumes: ['pillar_performance', 'voice_pattern'],
+    role: 'Autopilot topic discovery using web search and ranked heat scores; it does not currently read or write the intelligence bus.',
+    lifecycle: 'active',
+    emits: [],
+    consumes: [],
     cron: null,
   },
   {
     id: 'content_workflow',
     label: 'Content Workflow',
     role: 'Weekly scheduler — Tuesday reels, Thursday YouTube, Friday package. Produces topic candidates.',
-    emits: ['content_formula'],
-    consumes: ['voice_pattern', 'book_knowledge', 'reaction_opportunity'],
+    lifecycle: 'active',
+    emits: [],
+    consumes: ['book_knowledge', 'trending_spike', 'competitor_upload', 'reaction_opportunity'],
     cron: 'friday_weekly',
   },
   {
     id: 'pipeline_agent',
     label: 'Pipeline Tracker',
-    role: 'Monitors pipeline stages, flags bottlenecks, throttles topic generation when backlogged.',
-    emits: ['pipeline_bottleneck', 'pipeline_capacity', 'content_sprint_mode'],
-    consumes: ['content_published'],
+    role: 'Monitors internal workflow stages and emits capacity or bottleneck signals; sprint mode is portal-authored, and external publication tracking is unavailable.',
+    lifecycle: 'active',
+    emits: ['pipeline_bottleneck', 'pipeline_capacity'],
+    consumes: ['keyword_opportunity', 'hook_effectiveness', 'pillar_performance', 'content_formula', 'content_sprint_mode'],
     cron: 'pipeline_agent',
   },
   {
     id: 'performance_agent',
     label: 'Performance Intel',
-    role: 'Weekly pull of YouTube Analytics — hooks, retention, pillar performance.',
-    emits: ['hook_effectiveness', 'retention_pattern', 'pillar_performance'],
+    role: 'Paused until channel-performance signals have tenant-user scoped storage.',
+    lifecycle: 'paused',
+    emits: [],
     consumes: [],
     cron: 'performance_agent',
   },
   {
     id: 'seo_agent',
     label: 'SEO Tracker',
-    role: 'Weekly keyword rank checks + opportunity scoring.',
-    emits: ['keyword_rank_change', 'keyword_opportunity'],
+    role: 'Paused until keyword ranks and emitted signals have tenant-user scoped storage.',
+    lifecycle: 'paused',
+    emits: [],
     consumes: [],
     cron: 'seo_agent',
   },
@@ -220,6 +233,7 @@ const AGENT_GRAPH_NODES: AgentNode[] = [
     id: 'autoresearch',
     label: 'Autoresearch',
     role: 'Scheduled read-only evaluation — reuses unchanged input fingerprints and never mutates prompts automatically.',
+    lifecycle: 'active',
     emits: [],
     consumes: [],
     cron: 'autoresearch',
@@ -227,29 +241,44 @@ const AGENT_GRAPH_NODES: AgentNode[] = [
 ];
 
 const AGENT_GRAPH_EDGES: AgentEdge[] = [
-  { from: 'channel_learner',  to: 'voice_evolution',  signal: 'channel_dna' },
-  { from: 'channel_learner',  to: 'reaction_radar',   signal: 'channel_dna' },
   { from: 'book_extractor',   to: 'voice_evolution',  signal: 'book_knowledge' },
-  { from: 'book_extractor',   to: 'reaction_radar',   signal: 'book_knowledge' },
   { from: 'book_extractor',   to: 'content_workflow', signal: 'book_knowledge' },
-  { from: 'voice_evolution',  to: 'reaction_radar',   signal: 'voice_pattern' },
-  { from: 'voice_evolution',  to: 'content_discovery', signal: 'voice_pattern' },
-  { from: 'voice_evolution',  to: 'content_workflow', signal: 'voice_pattern' },
-  { from: 'performance_agent', to: 'reaction_radar',  signal: 'pillar_performance' },
-  { from: 'performance_agent', to: 'content_discovery', signal: 'pillar_performance' },
-  { from: 'reaction_radar',   to: 'content_workflow', signal: 'reaction_opportunity' },
-  { from: 'content_discovery', to: 'content_workflow', signal: 'trending_spike' },
-  { from: 'content_workflow', to: 'pipeline_agent',   signal: 'content_formula' },
-  { from: 'pipeline_agent',   to: 'content_workflow', signal: 'pipeline_bottleneck' },
-  { from: 'pipeline_agent',   to: 'content_workflow', signal: 'content_sprint_mode' },
-  { from: 'seo_agent',        to: 'content_workflow', signal: 'keyword_opportunity' },
 ];
+
+function normalizeContentAgentRuntimeId(value: string): string {
+  return value.trim().toLowerCase().replaceAll('-', '_');
+}
+
+const CONTENT_DASHBOARD_AVAILABILITY_SECTIONS = [
+  'books',
+  'youtube',
+  'agentStats',
+  'triggers',
+  'voiceDna',
+  'knowledgeStats',
+  'activeSignals',
+] as const;
+
+type ContentDashboardAvailabilitySection = typeof CONTENT_DASHBOARD_AVAILABILITY_SECTIONS[number];
 
 // ─── Response type ──────────────────────────────────────────────────
 
 export interface ContentDashboardResponse {
   ok: true;
   generatedAt: string;
+  /**
+   * Aggregate truth for the platform/runtime reads that otherwise have an
+   * empty-looking fallback. Pipeline keeps its own independent availability
+   * contract because its empty projection has different workspace semantics.
+   */
+  availability: 'available' | 'partial' | 'unavailable';
+  unavailableSections: ContentDashboardAvailabilitySection[];
+  scope: {
+    mode: 'mixed_operator_overview';
+    workspaceScope: ContentWorkspaceScope | null;
+    workspaceScopedSections: ['pipeline', 'activeSignals'];
+    platformSections: ['commands', 'books', 'youtube', 'agentGraph', 'triggers', 'voiceDna', 'reactionRadar', 'knowledgeStats', 'referenceChannels'];
+  };
   commands: {
     group: string;
     rows: {
@@ -323,7 +352,8 @@ export interface ContentDashboardResponse {
     lastResult: string;
     lastDurationMs: number | null;
     nextFireAt: string | null;
-    status: 'ok' | 'failed' | 'running' | 'never';
+    lifecycle: 'active' | 'paused';
+    status: 'ok' | 'failed' | 'running' | 'never' | 'paused';
   }[];
   voiceDna: {
     category: string;
@@ -350,10 +380,15 @@ export interface ContentDashboardResponse {
     availability: 'available' | 'unavailable';
     source: 'content_workspace';
     reasonCode: string | null;
-    stages: Record<string, number>;
+    stages: Record<string, number | null>;
     stageTracking: Record<string, unknown>;
     bottleneck: { stage: string; count: number; avgDays: number } | null;
-    publishedThisWeek: number;
+    publishedThisWeek: number | null;
+    publicationTracking: {
+      availability: 'unavailable';
+      reasonCode: string;
+      publicationExecution: 'not_supported';
+    };
     totalActive: number;
     recent: {
       id: number;
@@ -497,7 +532,7 @@ export function contentDashboardRoutes(): Router {
       res.set('Cache-Control', 'private, max-age=10');
       res.json(payload);
     } catch (err: any) {
-      logger.error({ err }, 'Content dashboard: build failed');
+      logger.error({ errorName: safeDashboardErrorName(err) }, 'Content dashboard: build failed');
       sendInternalError(res, 'Failed to build content dashboard');
     }
   });
@@ -514,6 +549,15 @@ export function contentDashboardRoutes(): Router {
  */
 export function buildContentDashboard(contentScope?: ContentWorkspaceScope): ContentDashboardResponse {
   const db = getDb();
+  const unavailableSections: ContentDashboardResponse['unavailableSections'] = [];
+  const markUnavailable = (
+    section: ContentDashboardAvailabilitySection,
+    err: unknown,
+    message: string,
+  ): void => {
+    if (!unavailableSections.includes(section)) unavailableSections.push(section);
+    logger.warn({ errorName: safeDashboardErrorName(err), section }, message);
+  };
 
   // ── Commands — call counts from api_usage ──────────────────────────
   const names = CONTENT_COMMANDS.map((c) => c.name);
@@ -551,7 +595,7 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
   try {
     books = getBooks(50, db);
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: book_library query failed — returning empty');
+    markUnavailable('books', err, 'Content dashboard: book library read unavailable');
   }
 
   // ── YouTube research ───────────────────────────────────────────────
@@ -565,6 +609,7 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
       SELECT id, channel_url, channel_name, status, video_count_analyzed,
              last_analyzed_at, error_message
         FROM content_ref_channels
+       WHERE ${platformContentScopePredicate()}
        ORDER BY (status = 'active') DESC, channel_name ASC
        LIMIT 30
     `).all() as Array<{
@@ -582,7 +627,10 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
              vs.study_type, vs.created_at as study_created_at,
              vt.created_at as transcript_created_at
         FROM video_transcripts vt
-   LEFT JOIN video_studies vs ON vs.video_id = vt.video_id
+   LEFT JOIN video_studies vs
+          ON vs.video_id = vt.video_id
+         AND ${platformContentScopePredicate('vs')}
+       WHERE ${platformContentScopePredicate('vt')}
        ORDER BY COALESCE(vs.created_at, vt.created_at) DESC
        LIMIT 30
     `).all() as Array<{
@@ -596,10 +644,10 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
 
     const totalsRow = db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM content_ref_channels) as channels,
-        (SELECT COUNT(*) FROM content_ref_channels WHERE status = 'active') as active_channels,
-        (SELECT COUNT(*) FROM video_transcripts) as transcripts,
-        (SELECT COUNT(*) FROM video_studies) as studies
+        (SELECT COUNT(*) FROM content_ref_channels WHERE ${platformContentScopePredicate()}) as channels,
+        (SELECT COUNT(*) FROM content_ref_channels WHERE status = 'active' AND ${platformContentScopePredicate()}) as active_channels,
+        (SELECT COUNT(*) FROM video_transcripts WHERE ${platformContentScopePredicate()}) as transcripts,
+        (SELECT COUNT(*) FROM video_studies WHERE ${platformContentScopePredicate()}) as studies
     `).get() as {
       channels: number;
       active_channels: number;
@@ -634,7 +682,7 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
       },
     };
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: YouTube research query failed');
+    markUnavailable('youtube', err, 'Content dashboard: YouTube research read unavailable');
   }
 
   // ── Agent graph — overlay live agent_runs data on the static graph ─
@@ -643,26 +691,29 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
     { last_run: string | null; last_status: string; signals_produced: number; total_runs: number }
   >();
   try {
-    const stats = getAgentStats();
+    const stats = getAgentStats({ strict: true });
     for (const s of stats) {
-      liveStats.set(String(s.agent), s as any);
+      liveStats.set(normalizeContentAgentRuntimeId(String(s.agent)), s as any);
     }
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: getAgentStats failed');
+    markUnavailable('agentStats', err, 'Content dashboard: agent runtime stats unavailable');
   }
 
   const agentGraph: ContentDashboardResponse['agentGraph'] = {
     nodes: AGENT_GRAPH_NODES.map((n) => {
-      const stats = liveStats.get(n.id);
+      const stats = liveStats.get(normalizeContentAgentRuntimeId(n.id));
+      const paused = n.lifecycle === 'paused';
       return {
         ...n,
-        lastRun: stats?.last_run ?? null,
-        lastStatus: stats?.last_status ?? 'never',
-        totalRuns: stats?.total_runs ?? 0,
-        signalsProduced: stats?.signals_produced ?? 0,
+        lastRun: paused ? null : (stats?.last_run ?? null),
+        lastStatus: paused ? 'paused' : (stats?.last_status ?? 'never'),
+        totalRuns: paused ? 0 : (stats?.total_runs ?? 0),
+        signalsProduced: paused ? 0 : (stats?.signals_produced ?? 0),
       };
     }),
-    edges: AGENT_GRAPH_EDGES,
+    edges: AGENT_GRAPH_EDGES.filter((edge) => (
+      !isPausedContentAgent(edge.from) && !isPausedContentAgent(edge.to)
+    )),
   };
 
   // ── Triggers — content-domain cron jobs from telemetry ─────────────
@@ -671,8 +722,11 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
     const allJobs = getJobStatuses();
     const contentJobs = allJobs.filter((j) => j.domain === 'content');
     for (const job of contentJobs) {
-      const status: 'ok' | 'failed' | 'running' | 'never' =
-        job.lastResult === 'success'
+      const lifecycle: 'active' | 'paused' = isPausedContentAgent(job.name) ? 'paused' : 'active';
+      const status: 'ok' | 'failed' | 'running' | 'never' | 'paused' =
+        lifecycle === 'paused'
+          ? 'paused'
+          : job.lastResult === 'success'
           ? 'ok'
           : job.lastResult === 'failed'
             ? 'failed'
@@ -685,10 +739,11 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
         cronExpression: job.cronExpression,
         cronHuman: humanizeCron(job.cronExpression),
         domain: job.domain,
-        lastRunAt: job.lastRunAt,
-        lastResult: job.lastResult,
-        lastDurationMs: job.lastDurationMs,
-        nextFireAt: nextFireAtIso(job.cronExpression),
+        lastRunAt: lifecycle === 'paused' ? null : job.lastRunAt,
+        lastResult: lifecycle === 'paused' ? 'paused' : job.lastResult,
+        lastDurationMs: lifecycle === 'paused' ? null : job.lastDurationMs,
+        nextFireAt: lifecycle === 'paused' ? null : nextFireAtIso(job.cronExpression),
+        lifecycle,
         status,
       });
     }
@@ -701,7 +756,7 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
       return (a.lastRunAt ?? '').localeCompare(b.lastRunAt ?? '');
     });
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: getJobStatuses failed');
+    markUnavailable('triggers', err, 'Content dashboard: trigger status read unavailable');
   }
 
   // ── Voice DNA — extracted content knowledge categories ─────────────
@@ -726,7 +781,7 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
   try {
     voiceDna = getVoiceDna(db);
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: voice DNA query failed');
+    markUnavailable('voiceDna', err, 'Content dashboard: voice DNA read unavailable');
   }
 
   // ── Reaction Radar — signals + last run ────────────────────────────
@@ -734,31 +789,35 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
     activeSignals: 0,
     recentSignals: [],
     lastRunAt: null,
-    lastStatus: 'never',
+    lastStatus: 'paused',
   };
-  try {
-    const signals = getSignalLog(40);
-    const radarSignals = signals.filter((s) =>
-      s.signal_type === 'reaction_opportunity' ||
-      s.signal_type === 'trending_spike' ||
-      s.signal_type === 'competitor_upload',
-    );
-    const radarStats = liveStats.get('reaction_radar');
-    reactionRadar = {
-      activeSignals: radarSignals.filter((s) => s.status === 'active').length,
-      recentSignals: radarSignals.slice(0, 20).map((s) => ({
-        id: s.id,
-        type: s.signal_type,
-        priority: s.priority,
-        summary: formatSignalSummary(s.signal_type, s.payload),
-        createdAt: s.created_at,
-        status: s.status,
-      })),
-      lastRunAt: radarStats?.last_run ?? null,
-      lastStatus: radarStats?.last_status ?? 'never',
-    };
-  } catch (err) {
-    logger.debug({ err }, 'Content dashboard: reaction radar query failed');
+  if (!isPausedContentAgent('reaction_radar')) {
+    try {
+      const signals = filterActiveContentAgentSignals(getSignalLog(40, undefined, undefined, {
+        excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+      }));
+      const radarSignals = signals.filter((s) =>
+        s.signal_type === 'reaction_opportunity' ||
+        s.signal_type === 'trending_spike' ||
+        s.signal_type === 'competitor_upload',
+      );
+      const radarStats = liveStats.get(normalizeContentAgentRuntimeId('reaction_radar'));
+      reactionRadar = {
+        activeSignals: radarSignals.filter((s) => s.status === 'active').length,
+        recentSignals: radarSignals.slice(0, 20).map((s) => ({
+          id: s.id,
+          type: s.signal_type,
+          priority: s.priority,
+          summary: formatSignalSummary(s.signal_type, s.payload),
+          createdAt: s.created_at,
+          status: s.status,
+        })),
+        lastRunAt: radarStats?.last_run ?? null,
+        lastStatus: radarStats?.last_status ?? 'never',
+      };
+    } catch (err) {
+      logger.debug({ errorName: safeDashboardErrorName(err) }, 'Content dashboard: reaction radar query failed');
+    }
   }
 
   // ── Pipeline — stage counts + recent items ─────────────────────────
@@ -769,7 +828,12 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
     stages: {},
     stageTracking: {},
     bottleneck: null,
-    publishedThisWeek: 0,
+    publishedThisWeek: null,
+    publicationTracking: {
+      availability: 'unavailable',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+      publicationExecution: 'not_supported',
+    },
     totalActive: 0,
     recent: [],
   };
@@ -785,11 +849,12 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
       stageTracking: stats.stageTracking,
       bottleneck: stats.bottleneck,
       publishedThisWeek: stats.publishedThisWeek,
+      publicationTracking: stats.publicationTracking,
       totalActive: stats.totalActive,
       recent,
     };
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: pipeline query failed');
+    logger.debug({ errorName: safeDashboardErrorName(err) }, 'Content dashboard: pipeline query failed');
   }
 
   // ── Knowledge categories stats + ref channel count ─────────────────
@@ -800,21 +865,57 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
     knowledgeStats = ks.categories;
     referenceChannels = ks.referenceChannels;
   } catch (err) {
-    logger.debug({ err }, 'Content dashboard: knowledge-stats query failed');
+    markUnavailable('knowledgeStats', err, 'Content dashboard: knowledge stats read unavailable');
   }
 
   // Also include an aggregate active-signal count so the UI can show
   // a global badge without having to sum its own filter.
   let activeTotal = 0;
-  try {
-    activeTotal = getActiveSignalCount();
-  } catch {
-    activeTotal = 0;
+  if (!contentScope) {
+    markUnavailable(
+      'activeSignals',
+      new Error('Content workspace scope unavailable'),
+      'Content dashboard: active signal scope unavailable',
+    );
+  } else {
+    try {
+      activeTotal = getActiveSignalCount(contentScope.userId, contentScope.tenantId, {
+        excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+        excludeIneligibleContentLearningDigests: true,
+        strict: true,
+      });
+    } catch (err) {
+      markUnavailable('activeSignals', err, 'Content dashboard: active signal count unavailable');
+    }
   }
+
+  const availability: ContentDashboardResponse['availability'] = unavailableSections.length === 0
+    ? 'available'
+    : unavailableSections.length === CONTENT_DASHBOARD_AVAILABILITY_SECTIONS.length
+      ? 'unavailable'
+      : 'partial';
 
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
+    availability,
+    unavailableSections,
+    scope: {
+      mode: 'mixed_operator_overview',
+      workspaceScope: contentScope ?? null,
+      workspaceScopedSections: ['pipeline', 'activeSignals'],
+      platformSections: [
+        'commands',
+        'books',
+        'youtube',
+        'agentGraph',
+        'triggers',
+        'voiceDna',
+        'reactionRadar',
+        'knowledgeStats',
+        'referenceChannels',
+      ],
+    },
     commands,
     books,
     youtube,
@@ -827,6 +928,11 @@ export function buildContentDashboard(contentScope?: ContentWorkspaceScope): Con
     referenceChannels,
     activeSignals: activeTotal,
   };
+}
+
+function safeDashboardErrorName(error: unknown): string {
+  const candidate = error instanceof Error && error.name ? error.name : typeof error;
+  return candidate.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80) || 'UnknownError';
 }
 
 // ─── Small helpers ──────────────────────────────────────────────────

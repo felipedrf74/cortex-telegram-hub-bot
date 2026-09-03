@@ -4,6 +4,9 @@ import type Database from 'better-sqlite3';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 
 let testDb: Database.Database;
+const cacheMocks = vi.hoisted(() => ({
+  invalidateContentDerivedCaches: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -15,6 +18,11 @@ vi.mock('../../src/services/database', () => ({
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
   LOGGER_REDACTION_PATHS: [],
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => cacheMocks.invalidateContentDerivedCaches(...args),
 }));
 
 import { registerContentAgencyRoutes } from '../../src/api/routes/content-agency-routes';
@@ -186,12 +194,13 @@ describe('content agency routes', () => {
   });
 
   it('creates an agency package, scores it, and reads it back only for the owning scope', async () => {
-    const create = await dispatch('POST', '/agency/package', {
+    const packageRequest = {
       brief: {
         goal: 'create a TikTok concept for creator operations',
         audience: 'solo operators who publish educational content',
         offer: 'join a workshop',
         platform: 'TikTok',
+        currentMetrics: { ctr: 0.08, retention: 0.42 },
       },
       competitors: [
         {
@@ -201,10 +210,12 @@ describe('content agency routes', () => {
         },
       ],
       transcript: 'Creators stall because the intro has no tension. But one proof beat before the midpoint changes retention. Save this checklist.',
-    });
+    };
+    const create = await dispatch('POST', '/agency/package', packageRequest);
 
     expect(create.response.statusCode).toBe(201);
     expect(create.response.body.ok).toBe(true);
+    expect(create.response.body.data.mutation).toEqual({ created: true, replayed: false });
     const pkg = create.response.body.data.package;
     expectAgencyContract(create.response.body.data.contract, {
       tenantId: 101,
@@ -222,6 +233,12 @@ describe('content agency routes', () => {
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_compliance_reviews').get()).toMatchObject({ count: 1 });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_experiment_runs').get()).toMatchObject({ count: 1 });
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agency_quality_reviews').get()).toMatchObject({ count: 1 });
+
+    const replay = await dispatch('POST', '/agency/package', packageRequest);
+    expect(replay.response.statusCode).toBe(200);
+    expect(replay.response.body.data.mutation).toEqual({ created: false, replayed: true });
+    expect(replay.response.body.data.package).toEqual(pkg);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agency_packages').get()).toMatchObject({ count: 1 });
 
     const score = await dispatch('POST', '/agency/score', { package: pkg });
     expect(score.response.statusCode).toBe(200);
@@ -310,6 +327,7 @@ describe('content agency routes', () => {
     expect(handoff.response.statusCode).toBe(201);
     expect(handoff.response.body.data.handoff).toMatchObject({
       status: 'created',
+      changed: true,
       packageId: pkg.id,
       blockers: [],
     });
@@ -368,9 +386,12 @@ describe('content agency routes', () => {
     expect(again.response.statusCode).toBe(200);
     expect(again.response.body.data.handoff).toMatchObject({
       status: 'already_exists',
+      changed: false,
       pipelineId: handoff.response.body.data.handoff.pipelineId,
       workspaceItemId: handoff.response.body.data.handoff.workspaceItemId,
     });
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(501);
   });
 
   it('blocks pipeline handoff when compliance blockers remain', async () => {
@@ -397,5 +418,122 @@ describe('content agency routes', () => {
     expect(handoff.response.body.error.details.contract.blockers).toContain('sponsored_or_branded_content_requires_clear_disclosure');
     expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_domain_objects WHERE object_type = ?')
       .get('content_item')).toMatchObject({ count: 0 });
+  });
+
+  it('rejects malformed, oversized, and scope-spoofed public inputs before persistence', async () => {
+    const malformedTranscript = await dispatch('POST', '/agency/transcript-study', {
+      transcript: { text: 'not a string' } as any,
+    });
+    expect(malformedTranscript.response.statusCode).toBe(400);
+    expect(malformedTranscript.response.body.error).toMatchObject({
+      code: 'CONTENT_AGENCY_VALIDATION_FAILED',
+      details: { field: 'transcript' },
+    });
+
+    const oversizedCompetitors = await dispatch('POST', '/agency/competitor-study', {
+      competitors: Array.from({ length: 13 }, (_, index) => ({ title: `Competitor ${index}` })),
+    });
+    expect(oversizedCompetitors.response.statusCode).toBe(400);
+    expect(oversizedCompetitors.response.body.error.details.field).toBe('competitors');
+
+    const spoofedScope = await dispatch('POST', '/agency/package', {
+      brief: {
+        userId: 777,
+        tenantId: 202,
+        visibilityScope: 'tenant_shared',
+        goal: 'spoof a shared package',
+        audience: 'another tenant',
+        platform: 'YouTube',
+      },
+    });
+    expect(spoofedScope.response.statusCode).toBe(400);
+    expect(spoofedScope.response.body.error.code).toBe('CONTENT_AGENCY_VALIDATION_FAILED');
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_agency_packages').get()).toEqual({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_transcript_studies').get()).toEqual({ count: 0 });
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_competitor_studies').get()).toEqual({ count: 0 });
+  });
+
+  it('scores only the authoritative private package instead of caller-supplied package fields', async () => {
+    const created = await dispatch('POST', '/agency/package', {
+      brief: {
+        goal: 'score the stored package',
+        audience: 'operator creators',
+        offer: 'join the workshop',
+        platform: 'TikTok',
+      },
+    });
+    const pkg = created.response.body.data.package;
+
+    const rescored = await dispatch('POST', '/agency/score', {
+      package: {
+        ...pkg,
+        tenantId: 999,
+        userId: 999,
+        visibilityScope: 'platform_internal',
+        platform: 'generic',
+        brief: null,
+        quality: { score: 100, status: 'pass', warnings: [], blockers: [] },
+      },
+    });
+
+    expect(rescored.response.statusCode).toBe(200);
+    expectAgencyContract(rescored.response.body.data.contract, {
+      tenantId: 101,
+      userId: 501,
+      visibilityScope: 'user_private',
+      platform: 'tiktok',
+    });
+    const saved = testDb.prepare(`
+      SELECT user_id, tenant_id, visibility_scope, payload_json
+        FROM content_agency_quality_reviews
+       WHERE agency_id = ?
+    `).get(`${pkg.id}_quality_rescore`) as any;
+    expect(saved).toMatchObject({ user_id: 501, tenant_id: 101, visibility_scope: 'user_private' });
+    expect(JSON.parse(saved.payload_json).platform).toBe('tiktok');
+
+    const crossTenant = await dispatch('POST', '/agency/score', { package: { id: pkg.id } }, 501, 202);
+    expect(crossTenant.response.statusCode).toBe(404);
+  });
+
+  it('rolls back the complete derived package bundle when one persistence step fails', async () => {
+    testDb.exec(`
+      CREATE TRIGGER fail_content_agency_compliance_bundle
+      BEFORE INSERT ON content_compliance_reviews
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated derived artifact failure');
+      END;
+    `);
+
+    const response = await dispatch('POST', '/agency/package', {
+      brief: {
+        goal: 'persist atomically',
+        audience: 'operator creators',
+        offer: 'join the workshop',
+        platform: 'YouTube',
+      },
+    });
+
+    expect(response.response.statusCode).toBe(500);
+    expect(testDb.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM content_agency_packages) AS packages,
+        (SELECT COUNT(*) FROM content_compliance_reviews) AS compliance,
+        (SELECT COUNT(*) FROM content_experiment_runs) AS experiments,
+        (SELECT COUNT(*) FROM content_agency_quality_reviews) AS quality
+    `).get()).toEqual({ packages: 0, compliance: 0, experiments: 0, quality: 0 });
+  });
+
+  it('rejects malformed project identifiers before read or handoff work', async () => {
+    const invalidId = encodeURIComponent(`package_${'a'.repeat(210)}`);
+    const read = await dispatch('GET', `/agency/projects/${invalidId}`);
+    const handoff = await dispatch('POST', `/agency/projects/${invalidId}/handoff`);
+
+    expect(read.response.statusCode).toBe(400);
+    expect(read.response.body.error).toMatchObject({
+      code: 'CONTENT_AGENCY_VALIDATION_FAILED',
+      details: { field: 'projectId' },
+    });
+    expect(handoff.response.statusCode).toBe(400);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_domain_objects').get()).toEqual({ count: 0 });
   });
 });

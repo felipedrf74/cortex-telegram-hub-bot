@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from searchers import news, reddit, web, youtube
+from searchers.base import resolve_search_locale
 from services import orchestrator
 from services.intelligence import competitor_analyzer
 from services.log_redaction import SecretRedactionFilter, redact_log_message
@@ -69,6 +70,67 @@ def _capture_logger(monkeypatch, logger_name: str, level: int) -> list[str]:
     monkeypatch.setattr(logger, "disabled", False)
     monkeypatch.setattr(logger, "propagate", True)
     return messages
+
+
+def test_search_locale_parser_accepts_bounded_iso_hints_only():
+    assert resolve_search_locale("pt-PT") == ("pt", "PT")
+    assert resolve_search_locale("en_US") == ("en", "US")
+    assert resolve_search_locale("pt") == ("pt", None)
+    assert resolve_search_locale("portuguese-Brazil") == (None, None)
+    assert resolve_search_locale("en-US-extra") == (None, None)
+
+
+async def test_search_providers_use_request_locale_without_assuming_brazil(monkeypatch):
+    calls: list[dict] = []
+
+    class _CapturingClient(_FakeAsyncClient):
+        async def get(self, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            return await super().get(*args, **kwargs)
+
+    monkeypatch.setattr(web, "cfg", SimpleNamespace(
+        fixture_mode=False,
+        research_network_disabled=False,
+        serpapi_key="SERP_SECRET",
+        searcher_timeout=10.0,
+    ))
+    monkeypatch.setattr(
+        web.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _CapturingClient([_Response(payload={"organic_results": []})]),
+    )
+    await web.WebSearcher().search("private query", language="pt-PT")
+    assert calls[-1]["kwargs"]["params"]["hl"] == "pt"
+    assert calls[-1]["kwargs"]["params"]["gl"] == "pt"
+
+    monkeypatch.setattr(news, "cfg", SimpleNamespace(
+        fixture_mode=False,
+        research_network_disabled=False,
+        newsapi_key="NEWS_SECRET",
+        searcher_timeout=10.0,
+    ))
+    monkeypatch.setattr(
+        news.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _CapturingClient([_Response(payload={"articles": []})]),
+    )
+    await news.NewsSearcher().search("private query", language="en-US")
+    assert calls[-1]["kwargs"]["params"]["language"] == "en"
+
+    monkeypatch.setattr(youtube, "cfg", SimpleNamespace(
+        fixture_mode=False,
+        research_network_disabled=False,
+        youtube_api_key="YT_SECRET",
+        searcher_timeout=10.0,
+    ))
+    monkeypatch.setattr(
+        youtube.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _CapturingClient([_Response(payload={"items": []})]),
+    )
+    await youtube.YouTubeSearcher().search("private query", language="en-US")
+    assert calls[-1]["kwargs"]["params"]["relevanceLanguage"] == "en"
+    assert calls[-1]["kwargs"]["params"]["regionCode"] == "US"
 
 
 async def test_web_searcher_logs_query_fingerprint_not_raw_query(monkeypatch):
@@ -226,7 +288,7 @@ async def test_reddit_searcher_logs_query_fingerprint_not_raw_query(monkeypatch)
 def test_orchestrator_variation_failure_logging_uses_query_fingerprint():
     source = Path(orchestrator.__file__).read_text(encoding="utf-8")
     assert "Search variation failed for '%s'" not in source
-    assert "Search variation failed (query_hash=%s query_len=%d): %s" in source
+    assert "Search variation failed (query_hash=%s query_len=%d error_type=%s)" in source
 
 
 def test_secret_redaction_filter_scrubs_planted_log_line():

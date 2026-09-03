@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/api/routes/content-generation-meta', () => ({
-  buildGenerationMeta: vi.fn(({ mode, provider, researchUsed }: any) => ({
+  buildGenerationMeta: vi.fn(({ mode, provider, providerSemantics, researchUsed }: any) => ({
     mode,
     provider,
+    providerSemantics,
     researchUsed,
     durationMs: 123,
   })),
@@ -34,6 +35,7 @@ describe('content-learning-route-utils', () => {
           angleTag: 'post-race',
         },
       ],
+      generation: { provider: 'openai', grounded: true },
     }, 'reel', 'fallback', 1000);
 
     expect(result).toMatchObject({
@@ -53,8 +55,9 @@ describe('content-learning-route-utils', () => {
       ],
       generation: {
         mode: 'standard',
-        provider: 'gemini-flash',
-        researchUsed: false,
+        provider: 'openai',
+        providerSemantics: 'resolved_provider',
+        researchUsed: true,
       },
     });
   });
@@ -96,6 +99,7 @@ describe('content-learning-route-utils', () => {
     const result = buildWeeklyPackageResponse({
       youtube: [{ feedbackId: 10, title: 'Long-form idea', niche: 'training', hookIdea: 'Hook', whyNow: 'Now', angleTag: null }],
       reels: [{ feedbackId: 11, title: 'Short-form idea', niche: 'finance', hookIdea: 'Hook 2', whyNow: 'Soon', angleTag: 'budget' }],
+      generation: { provider: 'anthropic', grounded: true },
     }, 2000);
 
     expect(result.youtube.count).toBe(1);
@@ -107,8 +111,9 @@ describe('content-learning-route-utils', () => {
     });
     expect(result.generation).toMatchObject({
       mode: 'standard',
-      provider: 'gemini-flash',
-      researchUsed: false,
+      provider: 'anthropic',
+      providerSemantics: 'resolved_provider',
+      researchUsed: true,
     });
   });
 

@@ -114,6 +114,67 @@ describe('state/content-references isolation contract', () => {
     expect(getChannel(userChannel.id, { adminContext })).toMatchObject({ channel_url: 'https://youtube.com/@user' });
   });
 
+  it('keeps shared, public, foreign-owner, and quarantined channels out of the user-private list', () => {
+    const insert = testDb.prepare(`
+      INSERT INTO content_ref_channels (
+        channel_url, status, user_id, owner_scope, tenant_id, owner_user_id,
+        visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+      ) VALUES (?, 'active', ?, 'user', ?, ?, ?, 'active', ?, ?, ?)
+    `);
+    insert.run('https://youtube.com/@private', 42, 42, 42, 'user_private', 'active', 42, 42);
+    const sharedId = Number(insert.run(
+      'https://youtube.com/@shared',
+      42,
+      42,
+      42,
+      'tenant_shared',
+      'active',
+      42,
+      42,
+    ).lastInsertRowid);
+    insert.run('https://youtube.com/@public', 42, 42, 42, 'public_published', 'active', 42, 42);
+    insert.run('https://youtube.com/@foreign-owner', 77, 42, 77, 'user_private', 'active', 77, 77);
+    insert.run('https://youtube.com/@quarantined', 42, 42, 42, 'user_private', 'quarantined', 42, 42);
+
+    expect(getAllChannels(42, 42).map((row) => row.channel_url)).toEqual([
+      'https://youtube.com/@private',
+    ]);
+    expect(getActiveChannels(42, 42).map((row) => row.channel_url)).toEqual([
+      'https://youtube.com/@private',
+    ]);
+    expect(getPendingChannels(42, 42)).toEqual([]);
+    expect(getChannel(sharedId, { userId: 42, tenantId: 42 })).toBeUndefined();
+    expect(() => updateChannelStatus(sharedId, 'pending', undefined, { userId: 42, tenantId: 42 }))
+      .toThrow(/channel not found in requested user scope/);
+    expect(removeChannel(sharedId, { userId: 42, tenantId: 42 })).toBe(false);
+    expect(testDb.prepare('SELECT COUNT(*) AS count FROM content_ref_channels WHERE id = ?')
+      .get(sharedId)).toEqual({ count: 1 });
+  });
+
+  it('creates a private channel instead of adopting or reviving a shared row', () => {
+    testDb.prepare(`
+      INSERT INTO content_ref_channels (
+        channel_url, status, user_id, owner_scope, tenant_id, owner_user_id,
+        visibility_scope, lifecycle_state, scope_status, created_by, updated_by
+      ) VALUES (?, 'failed', 77, 'user', 42, 77, 'tenant_shared', 'failed', 'active', 77, 77)
+    `).run('https://youtube.com/@shared-source');
+
+    const added = addChannel('https://youtube.com/@shared-source', 'manual', 42, 42);
+
+    expect(added).toMatchObject({
+      user_id: 42,
+      tenant_id: 42,
+      owner_user_id: 42,
+      visibility_scope: 'user_private',
+      scope_status: 'active',
+      status: 'pending',
+    });
+    expect(testDb.prepare(`
+      SELECT status FROM content_ref_channels
+       WHERE channel_url = ? AND owner_user_id = 77
+    `).get('https://youtube.com/@shared-source')).toEqual({ status: 'failed' });
+  });
+
   it('refuses cross-scope channel writes and deletes', () => {
     const systemChannel = addSystemChannel('https://youtube.com/@system', 'manual', adminContext);
     const userChannel = addChannel('https://youtube.com/@user', 'manual', 42);

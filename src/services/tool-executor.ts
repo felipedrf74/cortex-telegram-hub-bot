@@ -19,10 +19,13 @@ import * as cookingChef from './cooking-chef';
 import * as cookingPreferences from './cooking-preferences';
 import * as trainingSignals from './training-signals';
 import * as onboarding from './onboarding';
-import { invalidateCalendarCaches } from './cache-coherence-registry';
-import { invalidateCookingDerivedCaches } from './cache-coherence-registry';
-import { invalidateFinanceDerivedCaches } from './cache-coherence-registry';
-import { invalidateOnboardingDerivedCaches } from './cache-coherence-registry';
+import {
+  invalidateCalendarCaches,
+  invalidateContentDerivedCaches,
+  invalidateCookingDerivedCaches,
+  invalidateFinanceDerivedCaches,
+  invalidateOnboardingDerivedCaches,
+} from './cache-coherence-registry';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
 import { isSingleWritePathEnabled } from './task-store/single-write-path';
@@ -647,6 +650,9 @@ export async function executeToolCall(
             title: input.title,
             consentReceipt,
           });
+          if (captured.created && !captured.replayed) {
+            invalidateContentDerivedCaches(scope.userId);
+          }
           return {
             success: true,
             destination: 'content_workspace',

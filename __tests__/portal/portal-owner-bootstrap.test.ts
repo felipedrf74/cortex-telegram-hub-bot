@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const mockGetDb = vi.fn();
 const mockIsGarminConfigured = vi.fn();
@@ -219,6 +221,9 @@ describe('portal owner bootstrap hardening', () => {
 
   it('keeps portal action allowlist and cooldown ownership outside the server factory', () => {
     expect(VALID_PORTAL_ACTIONS.has('trigger-briefing')).toBe(true);
+    expect(VALID_PORTAL_ACTIONS.has('run-performance-agent')).toBe(false);
+    expect(VALID_PORTAL_ACTIONS.has('run-reaction-radar')).toBe(false);
+    expect(VALID_PORTAL_ACTIONS.has('run-seo-agent')).toBe(false);
     expect(isPortalActionRateLimited('trigger-briefing')).toBe(false);
 
     recordPortalAction('trigger-briefing');
@@ -243,5 +248,36 @@ describe('portal owner bootstrap hardening', () => {
 
     expect(result).toEqual({ ok: true, message: 'Morning briefing stored and pushed' });
     expect(mockSendDailyBriefing).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not expose paused Content agent manual actions in the portal', async () => {
+    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8');
+
+    expect(portalHtml).not.toContain("name: 'run-performance-agent'");
+    expect(portalHtml).not.toContain("name: 'run-reaction-radar'");
+    expect(portalHtml).not.toContain("name: 'run-seo-agent'");
+    expect(portalHtml).toContain('Historical Reaction Radar signals are hidden while the agent is paused.');
+    await expect(handleAction('run-performance-agent')).resolves.toEqual({
+      ok: false,
+      message: 'Unknown action: run-performance-agent',
+    });
+    await expect(handleAction('run-seo-agent')).resolves.toEqual({
+      ok: false,
+      message: 'Unknown action: run-seo-agent',
+    });
+    await expect(handleAction('run-reaction-radar')).resolves.toEqual({
+      ok: false,
+      message: 'Unknown action: run-reaction-radar',
+    });
+  });
+
+  it('keeps the mixed legacy Content overview outside the selected tenant scope', () => {
+    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8');
+
+    expect(portalHtml).toContain("url === '/api/v1/admin/content'");
+    expect(portalHtml).toContain("url.startsWith('/api/v1/admin/content/')");
+    expect(portalHtml).not.toContain("url.includes('/api/v1/admin/content')");
+    expect(portalHtml).toContain('mixed overview remains owner-bootstrap/platform');
+    expect(portalHtml).toContain('legacy mixed overview is intentionally');
   });
 });

@@ -141,6 +141,7 @@ describe('cache-coherence-registry', () => {
     expect(prefixKeys()).toEqual([
       'u:42:calendar:',
       'calendar:',
+      'content:home:active-content-agents.v3:u:42:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',
@@ -148,10 +149,11 @@ describe('cache-coherence-registry', () => {
     ]);
   });
 
-  it('maps content writes to dashboard coordination surfaces', () => {
+  it('maps content writes to Content Home and dashboard coordination surfaces', () => {
     invalidateContentDerivedCaches(42);
 
     expect(prefixKeys()).toEqual([
+      'content:home:active-content-agents.v3:u:42:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',
@@ -184,6 +186,7 @@ describe('cache-coherence-registry', () => {
     expect(prefixKeys()).toEqual([
       'u:42:calendar:',
       'calendar:',
+      'content:home:active-content-agents.v3:u:42:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',
@@ -254,6 +257,7 @@ describe('cache-coherence-registry', () => {
       'cardio-progression:',
       'strength-progression:',
       'training-activity-weekly:',
+      'content:home:active-content-agents.v3:u:42:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',
@@ -330,6 +334,7 @@ describe('cache-coherence-registry', () => {
     expect(prefixKeys()).toEqual([
       'u:42:calendar:',
       'calendar:',
+      'content:home:active-content-agents.v3:u:42:',
       'dashboard:42:',
       'dashboard-home:42:',
       'plan:week:u:42:',

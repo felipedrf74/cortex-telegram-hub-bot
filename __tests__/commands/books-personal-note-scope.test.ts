@@ -41,7 +41,10 @@ vi.mock('../../src/utils/request-context', () => ({
 vi.mock('../../src/config', () => ({ config: {} }));
 vi.mock('../../src/services/content-engine', () => ({
   contentEngineApiBaseUrl: () => 'http://content-engine.test',
-  parseForwardedAiBudgetError: vi.fn(),
+  ForwardedAiBudgetError: class ForwardedAiBudgetError extends Error {},
+  ForwardedContentPolicyError: class ForwardedContentPolicyError extends Error {},
+  ForwardedLocalInferenceError: class ForwardedLocalInferenceError extends Error {},
+  parseForwardedContentEngineError: vi.fn(),
 }));
 vi.mock('../../src/services/cost-guardrail', () => ({
   AiBudgetError: class AiBudgetError extends Error {},

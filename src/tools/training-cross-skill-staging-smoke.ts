@@ -145,7 +145,7 @@ interface RuntimeCrossSkillReader {
   readTrainingMeshContext(opts: { userId: number; weekStart?: string }): Promise<TrainingMeshContext>;
   readCookingMeshContext(opts: { userId: number; weekStart?: string }): Promise<CookingMeshContext>;
   readFinanceMeshContext(opts: { userId: number; weekStart?: string }): Promise<FinanceMeshContext>;
-  readContentMeshContext(opts: { userId: number; weekStart?: string }): Promise<ContentMeshContext>;
+  readContentMeshContext(opts: { userId: number; tenantId?: number; weekStart?: string }): Promise<ContentMeshContext>;
   readSecretaryMeshContext(opts: { userId: number; weekStart?: string }): Promise<SecretaryMeshContext>;
   buildSharedDecisionContext(domain: 'triathlon', userId: number): Promise<string>;
   buildSharedDecisionContracts(domain: 'triathlon', userId: number): Promise<SharedDecisionContracts>;
@@ -513,13 +513,13 @@ export function runLocalFixtureSmoke(): SmokeOperationResult[] {
       ['Secretary travel/admin pressure constrains Training', bundle.coordination.modularSessionBias && bundle.coordination.maxHardSessionsPerWeek === 1],
       ['Cooking fueling gap produces one specific warning line', countOccurrences(contextPrompt, 'FUELING GAP') === 1 && contextPrompt.includes('2026-05-05')],
       ['Finance budget constraint reaches Training', bundle.coordination.lowCostBias && bundle.coordination.selectiveTrainingSpend],
-      ['Content workload protects filming day', bundle.coordination.protectFilmingDay === 'thursday'],
+      ['Secretary-confirmed recording work protects its day', bundle.coordination.protectConfirmedRecordingDay === 'thursday'],
       ['Training milestone signal exists for Content', hasSignal(bundle.training.derivedSignals, 'content_capture_opportunity')],
     ],
     evidence: [
       `maxHardSessionsPerWeek=${bundle.coordination.maxHardSessionsPerWeek}`,
       `protectFocusDay=${bundle.coordination.protectFocusDay}`,
-      `protectFilmingDay=${bundle.coordination.protectFilmingDay}`,
+      `protectConfirmedRecordingDay=${bundle.coordination.protectConfirmedRecordingDay}`,
       `prompt=${oneLine(contextPrompt)}`,
     ],
   }));
@@ -559,10 +559,10 @@ export function runLocalFixtureSmoke(): SmokeOperationResult[] {
 
   operations.push(assertOperation({
     flow: 'content_workload',
-    expected: 'Content workload/filming windows are visible to Training as schedule friction.',
+    expected: 'A current Secretary-confirmed private recording block is visible to Training as real schedule friction.',
     checks: [
-      ['filming day protected', bundle.coordination.protectFilmingDay === 'thursday'],
-      ['prompt references Content', bundle.coordination.promptBlock.includes('Content currently prefers')],
+      ['confirmed recording day protected', bundle.coordination.protectConfirmedRecordingDay === 'thursday'],
+      ['prompt references current Secretary-confirmed recording work', bundle.coordination.promptBlock.includes('Secretary confirms a current private Content recording work session on Thursday')],
     ],
     evidence: [bundle.coordination.promptBlock],
   }));
@@ -603,10 +603,23 @@ function evaluateRuntimeBundle(bundle: RuntimeBundle, userId: number): SmokeOper
     hasAnySignal(bundle.finance.derivedSignals, ['budget_remaining'])
     || ['tight', 'controlled'].includes(String(bundle.finance.budgetView?.affordability ?? '').toLowerCase());
   const contentHasWorkloadFixture =
-    hasAnySignal(bundle.content.derivedSignals, ['publishing_commitment', 'content_workload', 'filming_window'])
+    hasAnySignal(bundle.content.derivedSignals, ['content_capture_opportunity', 'shoot_day_locked', 'content_workload', 'filming_window'])
     || Boolean(bundle.content.filmingRecommendation)
     || Boolean(bundle.content.nextExecution)
+    || bundle.content.deadlines.length > 0
+    || bundle.content.workSchedule.confirmedBlocks.length > 0
     || bundle.content.upcomingTopicCount > 0;
+  const confirmedFilmingBlock = bundle.content.workSchedule.confirmedBlocks.find((block) => (
+    block.workKind === 'record'
+    && block.authority === 'secretary'
+    && block.authorityStatus === 'current'
+    && block.semantics === 'private_work_session'
+    && (
+      block.state === 'scheduled'
+      || block.state === 'provider_synced'
+      || block.state === 'sync_failed'
+    )
+  ));
 
   operations.push(assertRuntimeOperation({
     flow: 'secretary_conflict',
@@ -669,20 +682,22 @@ function evaluateRuntimeBundle(bundle: RuntimeBundle, userId: number): SmokeOper
 
   operations.push(assertRuntimeOperation({
     flow: 'content_workload',
-    expected: 'Staging Content workload/filming signal is visible to Training as schedule friction.',
+    expected: 'Only a current Secretary-confirmed private filming block is protected by Training; recommendations remain advisory.',
     dataChecks: [
       ['Content context is present', bundle.content.userId === userId],
       ['Content section or contract is present', shared.includes('Content:') || Boolean(contracts.content)],
       ['Content workload/filming fixture data is present', contentHasWorkloadFixture],
     ],
     qualityChecks: [
-      ['Training coordination reacts to Content workload when a filming day exists', !bundle.content.filmingRecommendation?.date || Boolean(bundle.coordination.protectFilmingDay)],
+      ['Training protects a recording day only when a canonical confirmed recording block exists', !confirmedFilmingBlock || Boolean(bundle.coordination.protectConfirmedRecordingDay)],
+      ['A filming recommendation alone does not establish protection', confirmedFilmingBlock != null || !bundle.coordination.protectConfirmedRecordingDay],
+      ['A filming recommendation alone does not emit confirmed-work prompt copy', confirmedFilmingBlock != null || !bundle.coordination.promptBlock.includes('private Content recording work session')],
     ],
     evidence: [
       `contentSignals=${contentSignals}`,
       `upcomingTopicCount=${bundle.content.upcomingTopicCount}`,
       `nextExecution=${bundle.content.nextExecution?.title ?? 'none'}`,
-      `protectFilmingDay=${bundle.coordination.protectFilmingDay ?? 'none'}`,
+      `protectConfirmedRecordingDay=${bundle.coordination.protectConfirmedRecordingDay ?? 'none'}`,
     ],
   }));
 
@@ -728,7 +743,7 @@ async function readRuntimeBundle(userId: number, reader: RuntimeCrossSkillReader
     reader.readTrainingMeshContext({ userId }),
     reader.readCookingMeshContext({ userId }),
     reader.readFinanceMeshContext({ userId }),
-    reader.readContentMeshContext({ userId }),
+    reader.readContentMeshContext({ userId, tenantId: userId }),
     reader.readSecretaryMeshContext({ userId }),
     reader.buildSharedDecisionContext('triathlon', userId),
     reader.buildSharedDecisionContracts('triathlon', userId),
@@ -936,8 +951,41 @@ function fixtureContentContext(): ContentMeshContext {
     userId: 42,
     weekStart: WEEK_START,
     weekEnd: WEEK_END,
+    availability: 'available',
+    unavailableSections: [],
     upcomingTopicCount: 3,
-    scheduledTopics: [],
+    deadlines: [
+      {
+        itemId: 91,
+        title: 'Travel-week training update',
+        date: '2026-05-07',
+        deadlineAt: '2026-05-07T17:00:00.000Z',
+        status: 'ready',
+        semantics: 'target_date_not_publication',
+      },
+    ],
+    workSchedule: {
+      authority: 'secretary',
+      authorityStatus: 'current',
+      planStatus: 'confirmed',
+      semantics: 'private_work_session',
+      confirmedBlocks: [
+        {
+          itemId: 91,
+          title: 'Training block update',
+          date: '2026-05-07',
+          startsAt: '2026-05-07T10:00:00.000Z',
+          endsAt: '2026-05-07T12:00:00.000Z',
+          workKind: 'record',
+          state: 'provider_synced',
+          authority: 'secretary',
+          authorityStatus: 'current',
+          semantics: 'private_work_session',
+          contentChangedSinceScheduling: false,
+        },
+      ],
+      attentionCount: 0,
+    },
     filmingRecommendation: {
       date: '2026-05-07',
       blockStart: '2026-05-07T10:00:00.000Z',
@@ -950,19 +998,24 @@ function fixtureContentContext(): ContentMeshContext {
     monitoredPillars: [],
     recentSignals: [],
     nextExecution: {
-      mode: 'film',
+      mode: 'film_window',
       title: 'Training block update',
       summary: 'Capture the travel-week coaching story.',
       scheduledDate: '2026-05-07',
+      dateSemantics: 'recommended_work_date',
+      calendarConfirmed: false,
       confidence: 'high',
+      sourceType: 'desk_item',
     },
     voiceDnaEntries: [],
     knowledgeStats: {} as ReturnType<any>,
     derivedSignals: [
-      signal('publishing_commitment', {
-        upcomingTopicCount: 3,
-        nextDate: '2026-05-07',
-        nextTopicTitle: 'Travel-week training update',
+      signal('content_capture_opportunity', {
+        date: '2026-05-07',
+        title: 'Travel-week training update',
+        status: 'proposed',
+        scheduleAuthority: 'secretary',
+        scheduleSemantics: 'proposal_not_calendar_reservation',
       }),
     ],
   } as unknown as ContentMeshContext;
@@ -1062,10 +1115,22 @@ function fixtureTrainingSignalContext(): TrainingContext {
       },
       {
         id: 4,
-        source_agent: 'content.pipeline',
-        signal_type: 'publishing_commitment',
+        source_agent: 'mesh.editorial-coordinator',
+        signal_type: 'shoot_day_locked',
         payload: {
-          nextDate: '2026-05-07',
+          itemId: 91,
+          title: 'Training block update',
+          date: '2026-05-07',
+          blockStart: '2026-05-07T10:00:00.000Z',
+          blockEnd: '2026-05-07T12:00:00.000Z',
+          workKind: 'filming',
+          sourceWorkKind: 'record',
+          sourceState: 'provider_synced',
+          providerAttention: false,
+          planStatus: 'confirmed',
+          scheduleAuthority: 'secretary',
+          scheduleAuthorityStatus: 'current',
+          semantics: 'private_work_session',
         },
         priority: 'normal',
         consumed_by: [],
@@ -1093,7 +1158,7 @@ function fixtureTrainingSignalContext(): TrainingContext {
       planDrift: false,
       fuelingGap: true,
       budgetConstraint: true,
-      contentCommitment: true,
+      confirmedContentWorkBlock: true,
       otherSportRpeToday: 0,
     },
   };

@@ -1,7 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DateTime } from 'luxon';
-import { getFilmingRecommendation, getTopics, getUpcomingTopicCount, type ContentTopic } from '../../services/content-scheduler';
+import {
+  ContentFilmingRecommendationUnavailableError,
+  getFilmingRecommendation,
+  getTopics,
+  getUpcomingTopicCount,
+  type ContentFilmingRecommendation,
+  type ContentTopic,
+} from '../../services/content-scheduler';
 import { getLearnedPatterns, getPerformanceSummary } from '../../services/content-learning-store';
 import { getAllVendors as getAllInvoiceVendors } from '../../services/invoice-collector';
 import { getFilingsForMonth } from '../../state/invoice-filings';
@@ -16,6 +23,9 @@ import {
   localizeFilmingRecommendation,
 } from '../../services/content-intelligence';
 import type { ContentStateShortcut, FinanceStateShortcut, ShortcutLanguage } from './chat-shortcut-parsers';
+import { getContentWorkspaceSummaryCounts } from '../../services/content-workspace-read-models';
+import { getDb } from '../../services/database';
+import { getUserTimezoneById } from '../../services/user-service';
 
 function formatContentShortcutDate(date: string, language: ShortcutLanguage): string {
   const locale = language === 'en-US' ? 'en-US' : language === 'pt-PT' ? 'pt-PT' : 'pt-BR';
@@ -166,51 +176,108 @@ export async function buildContentStateShortcutResponse(
       };
     }
     case 'filming': {
-      const recommendation = localizeFilmingRecommendation(
-        await getFilmingRecommendation(userId, undefined, tenantId),
-        language,
-      );
-      const upcomingCount = getUpcomingTopicCount(userId, 7, tenantId ?? userId);
+      const resolvedTenantId = tenantId ?? userId;
+      let workSchedule: ReturnType<typeof getContentWorkspaceSummaryCounts> | null = null;
+      try {
+        workSchedule = getContentWorkspaceSummaryCounts(
+          { tenantId: resolvedTenantId, userId },
+          getDb(),
+          new Date(),
+          getUserTimezoneById(userId),
+        );
+      } catch {
+        // The response remains explicit that schedule authority is unavailable.
+      }
+      const upcomingCount = getUpcomingTopicCount(userId, 7, resolvedTenantId);
+      let recommendation: ContentFilmingRecommendation | null = null;
+      let recommendationUnavailable = false;
+      try {
+        recommendation = localizeFilmingRecommendation(
+          await getFilmingRecommendation(userId, undefined, resolvedTenantId),
+          language,
+        );
+      } catch (error) {
+        if (!(error instanceof ContentFilmingRecommendationUnavailableError)) throw error;
+        recommendationUnavailable = true;
+      }
+      const authorityStatus = workSchedule?.scheduleAuthorityStatus ?? 'unavailable';
+      const confirmedCount = workSchedule?.scheduledThisWeek ?? 0;
+      const attentionCount = workSchedule?.scheduleAttentionThisWeek ?? 0;
+      const planStatus = authorityStatus === 'unavailable'
+        ? 'unavailable'
+        : authorityStatus === 'partially_unavailable'
+          ? 'partial'
+          : confirmedCount > 0
+            ? 'confirmed'
+            : recommendation != null
+              ? 'proposed'
+              : 'unplanned';
       if (!recommendation) {
         return {
-          text: language === 'en-US'
-            ? `I do not have a strong filming recommendation yet. You have ${upcomingCount} scheduled content item(s) in the next 7 days.`
-            : `Ainda não tenho uma recomendação forte de filmagem. Há ${upcomingCount} item(ns) de conteúdo agendado(s) para os próximos 7 dias.`,
-          metadata: { type: 'content_filming_snapshot', filmingRecommendation: null, upcomingCount },
+          text: recommendationUnavailable
+            ? (language === 'en-US'
+              ? 'The calendar input needed to recommend a filming window is temporarily unavailable, so I am not proposing a day from incomplete data.'
+              : 'O calendário necessário para recomendar uma janela de gravação está temporariamente indisponível, por isso não vou propor um dia com dados incompletos.')
+            : (language === 'en-US'
+              ? `I do not have a grounded filming-window recommendation yet. You have ${upcomingCount} topic deadline(s) in the next 7 days, but deadlines are not reserved work blocks. Confirmed private work blocks: ${confirmedCount}. Work blocks needing sync or cancellation attention: ${attentionCount}. Calendar authority: ${authorityStatus}; plan status: ${planStatus}.`
+              : `Ainda não tenho uma recomendação fundamentada de janela de filmagem. Há ${upcomingCount} prazo(s) de tópico nos próximos 7 dias, mas prazos não são blocos de trabalho reservados. Blocos privados confirmados: ${confirmedCount}. Blocos que precisam de atenção de sincronização ou cancelamento: ${attentionCount}. Autoridade do calendário: ${authorityStatus}; estado do plano: ${planStatus}.`),
+          metadata: {
+            type: 'content_filming_snapshot',
+            filmingRecommendation: null,
+            availability: recommendationUnavailable ? 'unavailable' : 'available',
+            reasonCode: recommendationUnavailable ? 'FILMING_RECOMMENDATION_UNAVAILABLE' : null,
+            upcomingCount,
+            scheduleAuthorityStatus: authorityStatus,
+            scheduleAttentionCount: attentionCount,
+            planStatus,
+            scheduleSemantics: 'private_work_session',
+          },
         };
       }
 
       const block = recommendation.blockStart && recommendation.blockEnd
         ? (language === 'en-US'
-          ? `• Suggested block: ${recommendation.blockStart.slice(11, 16)}-${recommendation.blockEnd.slice(11, 16)}`
-          : `• Bloco sugerido: ${recommendation.blockStart.slice(11, 16)}-${recommendation.blockEnd.slice(11, 16)}`)
+          ? `• Proposed block: ${recommendation.blockStart.slice(11, 16)}-${recommendation.blockEnd.slice(11, 16)} (not reserved)`
+          : `• Bloco proposto: ${recommendation.blockStart.slice(11, 16)}-${recommendation.blockEnd.slice(11, 16)} (não reservado)`)
         : null;
       const reservation = recommendation.calendarReservationMessage
         ? `• ${recommendation.calendarReservationMessage}`
         : null;
       const lines = [
         language === 'en-US'
-          ? `• Best day: ${formatContentShortcutDate(recommendation.date, language)}`
-          : `• Melhor dia: ${formatContentShortcutDate(recommendation.date, language)}`,
+          ? `• Proposed day: ${formatContentShortcutDate(recommendation.date, language)}`
+          : `• Dia proposto: ${formatContentShortcutDate(recommendation.date, language)}`,
         language === 'en-US'
           ? `• Confidence: ${recommendation.confidence}`
           : `• Confiança: ${recommendation.confidence}`,
         block,
         `• ${recommendation.reason}`,
         language === 'en-US'
-          ? `• Upcoming scheduled topics: ${upcomingCount}`
-          : `• Tópicos agendados para os próximos 7 dias: ${upcomingCount}`,
+          ? `• Topic deadlines in the next 7 days: ${upcomingCount} (not reservations)`
+          : `• Prazos de tópicos nos próximos 7 dias: ${upcomingCount} (não são reservas)`,
+        language === 'en-US'
+          ? `• Calendar authority: ${authorityStatus}; work-plan status: ${planStatus}; this recommendation remains unreserved`
+          : `• Autoridade do calendário: ${authorityStatus}; estado do plano de trabalho: ${planStatus}; esta recomendação continua sem reserva`,
+        attentionCount > 0
+          ? (language === 'en-US'
+            ? `• Work blocks needing sync or cancellation attention: ${attentionCount}`
+            : `• Blocos que precisam de atenção de sincronização ou cancelamento: ${attentionCount}`)
+          : null,
         reservation,
       ].filter((line): line is string => Boolean(line));
 
       return {
         text: language === 'en-US'
-          ? `This is the best filming window I can see for your week:\n\n${lines.join('\n')}`
-          : `Esta é a melhor janela de filmagem que vejo para esta semana:\n\n${lines.join('\n')}`,
+          ? `This is a proposed filming window for your week. It is not reserved until Secretary confirms it:\n\n${lines.join('\n')}`
+          : `Esta é uma janela de filmagem proposta para a semana. Ela não está reservada até o Secretário confirmar:\n\n${lines.join('\n')}`,
         metadata: {
           type: 'content_filming_snapshot',
           filmingRecommendation: recommendation,
           upcomingCount,
+          scheduleAuthorityStatus: authorityStatus,
+          scheduleAttentionCount: attentionCount,
+          planStatus,
+          scheduleSemantics: 'proposal_not_calendar_reservation',
         },
       };
     }
@@ -242,15 +309,15 @@ export async function buildContentStateShortcutResponse(
               : 'planejado';
         const nextStep = nextTopic.status === 'ready'
           ? (language === 'en-US'
-            ? 'This is the strongest next publish candidate in your pipeline.'
-            : 'Este é o candidato mais forte para publicar a seguir no seu pipeline.')
+            ? 'This is the strongest candidate to prepare for publication in your pipeline. Nexus has not published it.'
+            : 'Este é o candidato mais forte para preparar para publicação no seu pipeline. O Nexus ainda não o publicou.')
           : (language === 'en-US'
-            ? 'This is the clearest next content priority, but it still needs work before publish.'
-            : 'Esta é a prioridade mais clara de conteúdo, mas ainda precisa de trabalho antes de publicar.');
+            ? 'This is the clearest next content priority, but it still needs production work and publication remains separate.'
+            : 'Esta é a prioridade mais clara de conteúdo, mas ainda precisa de trabalho de produção e a publicação continua separada.');
         const scheduleLine = dateLabel
           ? (language === 'en-US'
-            ? `• Scheduled for: ${dateLabel}`
-            : `• Agendado para: ${dateLabel}`)
+            ? `• Topic deadline: ${dateLabel} (not a publication reservation)`
+            : `• Prazo do tópico: ${dateLabel} (não é uma reserva de publicação)`)
           : null;
 
         return {
@@ -271,8 +338,8 @@ export async function buildContentStateShortcutResponse(
       if (scriptReady) {
         return {
           text: language === 'en-US'
-            ? `The clearest next publish candidate is already on your desk:\n\n• ${scriptReady.title}\n\nOpen Content to review the script and move it forward.`
-            : `O candidato mais claro para publicar a seguir já está na sua mesa:\n\n• ${scriptReady.title}\n\nAbra Conteúdo para rever o roteiro e avançar com ele.`,
+            ? `The clearest candidate to prepare for publication is already on your desk:\n\n• ${scriptReady.title}\n\nOpen Content to review the script and move it forward. Nexus has not published it.`
+            : `O candidato mais claro para preparar para publicação já está na sua mesa:\n\n• ${scriptReady.title}\n\nAbra Conteúdo para rever o roteiro e avançar. O Nexus ainda não o publicou.`,
           metadata: {
             type: 'content_next_publish_snapshot',
             nextDeskItem: scriptReady,
@@ -288,14 +355,14 @@ export async function buildContentStateShortcutResponse(
 
         const responseByMode: Partial<Record<typeof nextExecution.mode, string>> = {
           publish_ready: language === 'en-US'
-            ? `The clearest next publish candidate is already lined up:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nOpen Content to ship it while the window is clean.`
-            : `O próximo candidato mais claro para publicar já está alinhado:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nAbra Conteúdo para o colocar no ar enquanto a janela ainda está limpa.`,
+            ? `The clearest publication candidate is ready for review:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nOpen Content to review it. External publication has not been performed.`
+            : `O candidato mais claro para publicação está pronto para revisão:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nAbra Conteúdo para o rever. A publicação externa não foi realizada.`,
           reaction_window: language === 'en-US'
             ? `The strongest next content move is to react while this window is still fresh:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nOpen Content to turn this into a script or capture block before the signal cools off.`
             : `A jogada mais forte de conteúdo agora é reagir enquanto esta janela ainda está fresca:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nAbra Conteúdo para transformar isto num roteiro ou bloco de captação antes de o sinal arrefecer.`,
           film_window: language === 'en-US'
-            ? `The clearest next content move is to protect the filming window for:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nOpen Content to reserve the block and keep production moving.`
-            : `A jogada mais clara de conteúdo agora é proteger a janela de filmagem para:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nAbra Conteúdo para reservar o bloco e manter a produção a andar.`,
+            ? `The clearest next content move is to preview a filming block for:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nOpen Content to preview it; the block is not protected until Secretary confirms it.`
+            : `A jogada mais clara de conteúdo agora é pré-visualizar um bloco de filmagem para:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nAbra Conteúdo para pré-visualizar; o bloco não está protegido até o Secretário confirmar.`,
           script_ready: language === 'en-US'
             ? `The clearest next content move is already script-ready:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nOpen Content to review the script and move it forward.`
             : `A jogada mais clara de conteúdo já está com roteiro pronto:\n\n• ${nextExecution.title}\n${confidenceLine}\n\nAbra Conteúdo para rever o roteiro e avançar com ele.`,
@@ -321,8 +388,8 @@ export async function buildContentStateShortcutResponse(
 
       return {
         text: language === 'en-US'
-          ? 'I do not see a clear next publish candidate yet. Open Content to promote a topic into drafting or generate a fresh script package.'
-          : 'Ainda não vejo um próximo candidato claro para publicar. Abra Conteúdo para promover um tema para rascunho ou gerar um novo pacote de roteiro.',
+          ? 'I do not see a clear publication candidate yet. Open Content to move a topic into drafting or generate a fresh script package; publication remains a separate confirmed action.'
+          : 'Ainda não vejo um candidato claro para publicação. Abra Conteúdo para mover um tema para rascunho ou gerar um novo pacote de roteiro; a publicação continua a ser uma ação separada e confirmada.',
         metadata: {
           type: 'content_next_publish_snapshot',
           nextTopic: null,
@@ -331,7 +398,7 @@ export async function buildContentStateShortcutResponse(
       };
     }
     case 'performance': {
-      const summary = getPerformanceSummary(userId, 30);
+      const summary = getPerformanceSummary(userId, 30, tenantId);
       if (summary.count === 0) {
         return {
           text: language === 'en-US'
@@ -389,9 +456,9 @@ export async function buildContentStateShortcutResponse(
       };
     }
     case 'learning': {
-      const patterns = getLearnedPatterns(userId).slice(0, 3);
+      const patterns = getLearnedPatterns(userId, undefined, tenantId).slice(0, 3);
       if (patterns.length === 0) {
-        const summary = getPerformanceSummary(userId, 30);
+        const summary = getPerformanceSummary(userId, 30, tenantId);
         if (summary.count > 0) {
           return {
             text: language === 'en-US'

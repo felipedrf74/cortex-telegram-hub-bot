@@ -7,6 +7,8 @@ import {
   resolveContentTenantId,
 } from '../services/content-tenant-scope';
 import { normalizeContentOutputLanguage } from '../services/content-output-language';
+import { assertContentCreatorProfilePatch } from '../services/content-creator-profile-validation';
+import { safeContentLogErrorFields } from '../services/content-log-safety';
 import { logger } from '../utils/logger';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -45,78 +47,111 @@ export interface ContentCreatorProfile {
   updatedAt?: string | null;
 }
 
-const EMPTY_PROFILE: ContentCreatorProfile = {
-  pillars: [],
-  niches: [],
-  audience: '',
-  platforms: [],
-  voiceRules: [],
-  preferredFormats: [],
-  dislikedTopics: [],
-  bannedTopics: [],
-  trustedSources: [],
-  dislikedSources: [],
-  contentGoals: [],
-  languagePreference: '',
-  voiceExamples: [],
-  updatedAt: null,
-};
+export class ContentCreatorProfileUnavailableError extends Error {
+  readonly code = 'CONTENT_CREATOR_PROFILE_UNAVAILABLE';
+  readonly status = 503;
+  readonly details = { retryable: true } as const;
 
-// ─── Defensive parse helpers ─────────────────────────────────────────
-
-function safeParseJsonArray<T = unknown>(raw: unknown): T[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as T[];
-  if (typeof raw !== 'string') return [];
-  try {
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch (_err) {
-    return [];
+  constructor() {
+    super('The creator profile is temporarily unavailable.');
+    this.name = 'ContentCreatorProfileUnavailableError';
   }
 }
 
-function safeParseStringArray(raw: unknown): string[] {
-  return safeParseJsonArray<unknown>(raw)
-    .filter((v) => typeof v === 'string')
-    .map((v) => String(v).trim())
-    .filter((v) => v.length > 0);
+function createEmptyContentCreatorProfile(): ContentCreatorProfile {
+  return {
+    pillars: [],
+    niches: [],
+    audience: '',
+    platforms: [],
+    voiceRules: [],
+    preferredFormats: [],
+    dislikedTopics: [],
+    bannedTopics: [],
+    trustedSources: [],
+    dislikedSources: [],
+    contentGoals: [],
+    languagePreference: '',
+    voiceExamples: [],
+    updatedAt: null,
+  };
 }
 
-function safeParsePlatforms(raw: unknown): ContentPlatformPreference[] {
-  return safeParseJsonArray<unknown>(raw)
-    .map((v): ContentPlatformPreference | null => {
-      if (!v || typeof v !== 'object') return null;
-      const o = v as Record<string, unknown>;
-      const name = typeof o.name === 'string' ? o.name.trim() : '';
-      if (!name) return null;
-      const cadence = typeof o.cadence === 'string' ? o.cadence : '';
-      const enabled = typeof o.enabled === 'boolean' ? o.enabled : true;
-      return { name, cadence, enabled };
-    })
-    .filter((v): v is ContentPlatformPreference => v != null);
+// ─── Stored-shape parse helpers ──────────────────────────────────────
+
+class ContentCreatorProfileStoredShapeError extends Error {
+  constructor(field: string) {
+    super(`Stored creator profile field ${field} has an invalid shape.`);
+    this.name = 'ContentCreatorProfileStoredShapeError';
+  }
+}
+
+function parseStoredJsonArray(raw: unknown, field: string): unknown[] {
+  if (typeof raw !== 'string') throw new ContentCreatorProfileStoredShapeError(field);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ContentCreatorProfileStoredShapeError(field);
+  }
+  if (!Array.isArray(parsed)) throw new ContentCreatorProfileStoredShapeError(field);
+  return parsed;
+}
+
+function parseStoredStringArray(raw: unknown, field: string): string[] {
+  return parseStoredJsonArray(raw, field).map((value) => {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new ContentCreatorProfileStoredShapeError(field);
+    }
+    return value.trim();
+  });
+}
+
+function parseStoredPlatforms(raw: unknown): ContentPlatformPreference[] {
+  return parseStoredJsonArray(raw, 'platforms_json').map((value) => {
+    if (!value || Array.isArray(value) || typeof value !== 'object') {
+      throw new ContentCreatorProfileStoredShapeError('platforms_json');
+    }
+    const platform = value as Record<string, unknown>;
+    if (typeof platform.name !== 'string'
+      || !platform.name.trim()
+      || typeof platform.cadence !== 'string'
+      || typeof platform.enabled !== 'boolean') {
+      throw new ContentCreatorProfileStoredShapeError('platforms_json');
+    }
+    return {
+      name: platform.name.trim(),
+      cadence: platform.cadence,
+      enabled: platform.enabled,
+    };
+  });
 }
 
 function rowToProfile(row: Record<string, unknown> | undefined): ContentCreatorProfile {
-  if (!row) return { ...EMPTY_PROFILE };
+  if (!row) return createEmptyContentCreatorProfile();
+  if (typeof row.audience !== 'string'
+    || typeof row.language_preference !== 'string'
+    || (row.updated_at != null && typeof row.updated_at !== 'string')) {
+    throw new ContentCreatorProfileStoredShapeError('scalar_fields');
+  }
   return {
-    pillars: safeParseStringArray(row.pillars_json),
-    niches: safeParseStringArray(row.niches_json),
-    audience: typeof row.audience === 'string' ? row.audience : '',
-    platforms: safeParsePlatforms(row.platforms_json),
-    voiceRules: safeParseStringArray(row.voice_rules_json),
-    preferredFormats: safeParseStringArray(row.preferred_formats_json),
-    dislikedTopics: safeParseStringArray(row.disliked_topics_json),
-    bannedTopics: safeParseStringArray(row.banned_topics_json),
-    trustedSources: safeParseStringArray(row.trusted_sources_json),
-    dislikedSources: safeParseStringArray(row.disliked_sources_json),
-    contentGoals: safeParseStringArray(row.content_goals_json),
+    pillars: parseStoredStringArray(row.pillars_json, 'pillars_json'),
+    niches: parseStoredStringArray(row.niches_json, 'niches_json'),
+    audience: row.audience,
+    platforms: parseStoredPlatforms(row.platforms_json),
+    voiceRules: parseStoredStringArray(row.voice_rules_json, 'voice_rules_json'),
+    preferredFormats: parseStoredStringArray(row.preferred_formats_json, 'preferred_formats_json'),
+    dislikedTopics: parseStoredStringArray(row.disliked_topics_json, 'disliked_topics_json'),
+    bannedTopics: parseStoredStringArray(row.banned_topics_json, 'banned_topics_json'),
+    trustedSources: parseStoredStringArray(row.trusted_sources_json, 'trusted_sources_json'),
+    dislikedSources: parseStoredStringArray(row.disliked_sources_json, 'disliked_sources_json'),
+    contentGoals: parseStoredStringArray(row.content_goals_json, 'content_goals_json'),
     // Project legacy/raw rows at the read boundary. This intentionally does
     // not update the stored value; historical data remains byte-for-byte
     // intact until the owner makes a new profile write.
     languagePreference: normalizeContentOutputLanguage(row.language_preference),
-    voiceExamples: safeParseStringArray(row.voice_examples_json),
-    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : null,
+    voiceExamples: parseStoredStringArray(row.voice_examples_json, 'voice_examples_json'),
+    updatedAt: row.updated_at ?? null,
   };
 }
 
@@ -176,11 +211,11 @@ export function getContentCreatorProfile(
   userId: number,
   tenantId?: number | null,
 ): ContentCreatorProfile {
-  if (!Number.isFinite(userId) || userId <= 0) return { ...EMPTY_PROFILE };
-  ensureContentTenantScopeColumns();
-  const db = getDb();
-  const resolvedTenantId = resolveContentTenantId(userId, tenantId);
+  if (!Number.isFinite(userId) || userId <= 0) return createEmptyContentCreatorProfile();
   try {
+    const resolvedTenantId = resolveContentTenantId(userId, tenantId);
+    ensureContentTenantScopeColumns();
+    const db = getDb();
     const row = db.prepare(`
       SELECT * FROM content_creator_profile
       WHERE tenant_id = ? AND owner_user_id = ? AND scope_status = 'active'
@@ -188,9 +223,9 @@ export function getContentCreatorProfile(
     `).get(resolvedTenantId, userId) as Record<string, unknown> | undefined;
     return rowToProfile(row);
   } catch (err) {
-    logger.warn({ err, userId, tenantId: resolvedTenantId },
+    logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId: resolveContentTenantId(userId, tenantId) },
       'content-creator-profile.get failed');
-    return { ...EMPTY_PROFILE };
+    throw new ContentCreatorProfileUnavailableError();
   }
 }
 
@@ -202,6 +237,8 @@ export function upsertContentCreatorProfile(
   if (!Number.isFinite(userId) || userId <= 0) {
     throw new Error('upsertContentCreatorProfile requires a positive userId');
   }
+  assertContentCreatorProfilePatch(patch);
+  try {
   ensureContentTenantScopeColumns();
   const db = getDb();
   const scopeMeta = contentScopeForInsert(userId, tenantId, 'user_private', 'active');
@@ -258,6 +295,10 @@ export function upsertContentCreatorProfile(
       datetime('now'), datetime('now')
     )
     ON CONFLICT(tenant_id, owner_user_id) DO UPDATE SET
+      user_id               = excluded.user_id,
+      visibility_scope      = excluded.visibility_scope,
+      lifecycle_state       = excluded.lifecycle_state,
+      scope_status          = excluded.scope_status,
       pillars_json          = excluded.pillars_json,
       niches_json           = excluded.niches_json,
       audience              = excluded.audience,
@@ -273,7 +314,6 @@ export function upsertContentCreatorProfile(
       voice_examples_json   = excluded.voice_examples_json,
       updated_by            = excluded.updated_by,
       updated_at            = datetime('now')
-    WHERE content_creator_profile.scope_status != 'archived'
   `);
 
   stmt.run({
@@ -290,6 +330,12 @@ export function upsertContentCreatorProfile(
   });
 
   return getContentCreatorProfile(userId, tenantId);
+  } catch (err) {
+    if (err instanceof ContentCreatorProfileUnavailableError) throw err;
+    logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId: resolveContentTenantId(userId, tenantId) },
+      'content-creator-profile.upsert failed');
+    throw new ContentCreatorProfileUnavailableError();
+  }
 }
 
 export function resetContentCreatorProfile(
@@ -297,15 +343,21 @@ export function resetContentCreatorProfile(
   tenantId?: number | null,
 ): void {
   if (!Number.isFinite(userId) || userId <= 0) return;
-  ensureContentTenantScopeColumns();
-  const resolvedTenantId = resolveContentTenantId(userId, tenantId);
-  const db = getDb();
-  db.prepare(`
-    UPDATE content_creator_profile
-       SET scope_status = 'archived',
-           updated_at   = datetime('now')
-     WHERE tenant_id = ? AND owner_user_id = ?
-  `).run(resolvedTenantId, userId);
+  try {
+    ensureContentTenantScopeColumns();
+    const resolvedTenantId = resolveContentTenantId(userId, tenantId);
+    const db = getDb();
+    db.prepare(`
+      UPDATE content_creator_profile
+         SET scope_status = 'archived',
+             updated_at   = datetime('now')
+       WHERE tenant_id = ? AND owner_user_id = ?
+    `).run(resolvedTenantId, userId);
+  } catch (err) {
+    logger.warn({ ...safeContentLogErrorFields(err), userId, tenantId: resolveContentTenantId(userId, tenantId) },
+      'content-creator-profile.reset failed');
+    throw new ContentCreatorProfileUnavailableError();
+  }
 }
 
 // Compute a 0..1 completeness score that mirrors iOS

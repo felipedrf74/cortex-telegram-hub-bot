@@ -60,7 +60,7 @@ describe('content workspace operational read models', () => {
     expect(stats).toMatchObject({
       availability: 'available',
       source: 'content_workspace',
-      stages: { approved: 1, scripted: 1, filming: 0, editing: 0, published: 0 },
+      stages: { approved: 1, scripted: 1, filming: 0, editing: 0, published: null },
       totalActive: 2,
     });
     expect(stats.stageTracking.filming).toMatchObject({
@@ -71,7 +71,7 @@ describe('content workspace operational read models', () => {
     expect(JSON.stringify({ stats, recent })).not.toContain('Tenant B private item');
   });
 
-  it('counts publication only from canonical workflow events', () => {
+  it('does not treat internal states or workflow events as external publication evidence', () => {
     const verified = seedItem(SCOPE_A, 'Verified publication', 'published', 'final', '-2 days');
     seedWorkflowEvent(SCOPE_A, verified, 'approved', 'published', '-2 days');
     seedItem(SCOPE_A, 'Unverified state only', 'published', 'final', '-1 day');
@@ -79,10 +79,20 @@ describe('content workspace operational read models', () => {
     const stats = getContentWorkspacePipelineStats(SCOPE_A, testDb);
     const metrics = getContentWorkspacePipelineOperationalMetrics(SCOPE_A, testDb);
 
-    expect(stats.stages.published).toBe(2);
-    expect(stats.publishedThisWeek).toBe(1);
-    expect(metrics.totalPublished).toBe(1);
-    expect(metrics.weeklyThroughput[3]).toBe(1);
+    expect(stats.stages.published).toBeNull();
+    expect(stats.publishedThisWeek).toBeNull();
+    expect(stats.stageTracking.published).toMatchObject({
+      tracking: 'not_modeled',
+      reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+    });
+    expect(stats.publicationTracking).toMatchObject({
+      availability: 'unavailable',
+      publicationExecution: 'not_supported',
+    });
+    expect(metrics.totalPublished).toBeNull();
+    expect(metrics.weeklyThroughput).toBeNull();
+    expect(metrics.approvalToPublishRate).toBeNull();
+    expect(metrics.publicationTracking.reasonCode).toBe('CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED');
   });
 
   it('returns complete Today counts beyond the bounded library page and stays tenant scoped', () => {
@@ -103,7 +113,7 @@ describe('content workspace operational read models', () => {
       new Date('2032-07-18T12:00:00.000Z'),
       'UTC',
     )).toMatchObject({
-      schemaVersion: 'content-workspace-today-summary-v1',
+      schemaVersion: 'content-workspace-today-summary-v2',
       source: 'content_workspace_and_secretary',
       complete: true,
       itemCount: 126,
@@ -111,12 +121,17 @@ describe('content workspace operational read models', () => {
       activeCount: 50,
       reviewCount: 20,
       approvedCount: 15,
-      publishedCount: 1,
+      publishedCount: null,
       privateWorkBlockCount: 0,
       scheduleAttentionCount: 0,
       scheduleAuthorityStatus: 'current',
       scheduleSemantics: 'private_work_session',
       publicationExecution: 'not_performed',
+      publicationTracking: {
+        availability: 'unavailable',
+        reasonCode: 'CONTENT_PUBLICATION_TRACKING_NOT_SUPPORTED',
+        publicationExecution: 'not_supported',
+      },
     });
     expect(getContentWorkspaceSummaryCounts(
       SCOPE_A,
@@ -166,7 +181,7 @@ describe('content workspace operational read models', () => {
     expect(currentItemId).not.toBe(staleItemId);
   });
 
-  it('does not misreport provider or cancellation failures as confirmed work blocks', () => {
+  it('keeps current provider-sync failures confirmed while cancellation failures remain attention-only', () => {
     const syncFailedItemId = seedConfirmedSchedule('today-sync-failed');
     const cancelFailedItemId = seedConfirmedSchedule('today-cancel-failed');
     const syncFailedAgenda = scheduleAgendaId(syncFailedItemId);
@@ -205,7 +220,7 @@ describe('content workspace operational read models', () => {
       'UTC',
     )).toMatchObject({
       complete: true,
-      privateWorkBlockCount: 0,
+      privateWorkBlockCount: 1,
       scheduleAttentionCount: 2,
       scheduleAuthorityStatus: 'current',
     });
@@ -215,7 +230,7 @@ describe('content workspace operational read models', () => {
       new Date('2032-07-17T08:00:00.000Z'),
       'UTC',
     )).toMatchObject({
-      scheduledThisWeek: 0,
+      scheduledThisWeek: 1,
       scheduleAttentionThisWeek: 2,
       scheduleAuthorityStatus: 'current',
     });
@@ -295,7 +310,7 @@ describe('content workspace operational read models', () => {
     });
   });
 
-  it('counts a canonical publication earlier in the current SQLite second', () => {
+  it('does not reinterpret a same-second workflow state event as publication evidence', () => {
     const itemId = seedItem(SCOPE_A, 'Same-second publication', 'published', 'final');
     testDb.prepare(`
       INSERT INTO content_workflow_events (
@@ -312,7 +327,9 @@ describe('content workspace operational read models', () => {
       new Date('2026-07-17T12:00:00.250Z'),
     );
 
-    expect(stats.publishedThisWeek).toBe(1);
+    expect(stats.publishedThisWeek).toBeNull();
+    expect(stats.stages.published).toBeNull();
+    expect(stats.publicationTracking.availability).toBe('unavailable');
   });
 
   it('resolves a scoped legacy ID through immutable ingress metadata only', () => {

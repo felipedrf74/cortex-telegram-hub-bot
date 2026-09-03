@@ -58,9 +58,6 @@ import {
   type AgentJobTenantTarget,
 } from './agent-job-targets';
 import { runPipelineAgent } from '../agents/pipeline-agent';
-import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
-import { runReactionRadar } from '../agents/reaction-radar-agent';
-import { runPerformanceAgent } from '../agents/performance-agent';
 import { runScheduledVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { sweepExpiredStructuredHealthData } from './health-data-lifecycle';
@@ -168,6 +165,7 @@ import {
   resolveAiAutomationEligibility,
 } from './ai-automation-policy';
 import { AiBudgetError } from './cost-guardrail';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 function safeErrorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
@@ -1832,9 +1830,15 @@ export function startScheduler(): void {
   registerJob('thursday_youtube',  'Thursday YT Topic',     '23 9 * * 4',       'content');
   registerJob('friday_weekly',     'Friday Weekly Package',  '41 18 * * 5',     'content');
   registerJob('pipeline_agent',   'Pipeline Tracker',       '0 20 * * *',      'content');
+  // Registered for portal/manifest truth, but deliberately has no cron
+  // callback while tenant-user scoped performance signals are unavailable.
   registerJob('performance_agent','Performance Intel',        '0 6 * * 0',       'content');
   registerJob('voice_evolution', 'Voice Evolution',          '0 4 1 * *',       'content');
+  // Registered for portal/manifest truth, but deliberately has no cron
+  // callback until discovery inputs and emitted opportunities are tenant-user scoped.
   registerJob('reaction_radar',   'Reaction Radar',          '0 8,14,20 * * *', 'content');
+  // Registered for portal/manifest truth, but deliberately has no cron
+  // callback while tenant-user scoped keyword storage/signals are unavailable.
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
   registerJob('integration_health', 'Integration Health Probes', '*/15 * * * *', 'system');
@@ -1951,7 +1955,7 @@ export function startScheduler(): void {
     }
     logger.info({ providerFiles, localPrivateMaterial },
       'Content Script private-material retention cleanup completed');
-  }));
+  }, { failureDetailPolicy: 'machine_only' }));
 
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
     if (remindersJobInFlight) {
@@ -3387,7 +3391,7 @@ export function startScheduler(): void {
         logger.warn(
           {
             operation: 'pipeline_agent_tenant_run',
-            errorCode: error instanceof Error ? error.name : 'UnknownError',
+            ...safeContentLogErrorFields(error),
           },
           'Pipeline agent tenant run failed; continuing remaining scopes',
         );
@@ -3402,26 +3406,9 @@ export function startScheduler(): void {
     }
   }), { timezone: tz });
 
-  // ── Performance Agent (Sunday 06:00, after channel relearn) ──────
-  cron.schedule('0 6 * * 0', wrapJob('performance_agent', async () => {
-    await runPerformanceAgent();
-  }), { timezone: tz });
-
   // ── Voice Evolution Agent (1st of month, 04:00) ─────────────────
   cron.schedule('0 4 1 * *', wrapJob('voice_evolution', async () => {
     await runScheduledVoiceEvolutionAgent();
-  }), { timezone: tz });
-
-  // ── Reaction Radar Agent (every 4 hours) ─────────────────────────
-  cron.schedule('0 8,14,20 * * *', wrapJob('reaction_radar', async () => {
-    await runReactionRadar();
-  }), { timezone: tz });
-
-  // ── SEO Tracking Agent (Monday 06:00) ────────────────────────────
-  cron.schedule('0 6 * * 1', wrapJob('seo_agent', async () => {
-    await runSEOAgent();
-    // Completion messaging removed: the agent is fail-closed paused and the
-    // old Telegram note was a no-op with legacy delivery disabled.
   }), { timezone: tz });
 
   // ── Autoresearch (Sunday 01:19 — rotates through targets) ────────
@@ -3591,27 +3578,26 @@ export function startScheduler(): void {
     );
   }), { timezone: 'UTC' });
 
-  // Seed SEO keywords (only if table is empty)
-  try {
-    seedKeywordsIfEmpty();
-  } catch (err) {
-    logger.warn({ err }, 'Failed to seed SEO keywords');
-  }
-
   // Seed default reference channels (only if table is empty)
   try {
     seedDefaultChannels();
   } catch (err) {
-    logger.warn({ err }, 'Failed to seed default content reference channels');
+    logger.warn(
+      { operation: 'content_reference_seed', ...safeContentLogErrorFields(err) },
+      'Failed to seed default content reference channels',
+    );
   }
 
   // Seed book library (only if table is empty)
   try {
-    seedBooksIfEmpty(async (msg) => {
-      logger.info({ msg }, '[scheduler] book library seed progress');
+    seedBooksIfEmpty(async () => {
+      logger.info({ operation: 'content_book_seed' }, '[scheduler] book library seed progress');
     });
   } catch (err) {
-    logger.warn({ err }, 'Failed to seed book library');
+    logger.warn(
+      { operation: 'content_book_seed', ...safeContentLogErrorFields(err) },
+      'Failed to seed book library',
+    );
   }
 
   // ── DST Watchdog (every 15 min) — recovers jobs missed during clock changes ──
@@ -3914,7 +3900,7 @@ export function startScheduler(): void {
   }), { timezone: tz });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), garmin-keepalive (5,35), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content topics (Tue 09:17/Thu 09:23/Fri 18:41), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), garmin-keepalive (5,35), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:37), pipeline-agent (20:00), notification-release (*/15), decision-source-supersession (*/15), chat-action-plan-expiry (*/2), chat-action-run-zombie-reaper (*/5), chat-action-run-retention (00:20), event-backbone-worker (* * * * *), event-backbone-cleanup (00:10), nexus-points-expiry (04:00 UTC), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

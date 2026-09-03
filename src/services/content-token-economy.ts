@@ -87,6 +87,9 @@ export interface ContentClaimLedgerEntry {
   claim: string;
   support: 'source_backed' | 'creator_memory_backed' | 'unverified';
   sourceRef?: string | null;
+  sourceRefs?: string[];
+  /** Candidate references for human/model review; never durable support. */
+  suggestedSourceRefs?: string[];
 }
 
 export interface ContentNoveltyResult {
@@ -461,10 +464,17 @@ export function buildCreatorVoiceCard(input: {
   };
 }
 
-const TIMELY_PATTERN = /\b(today|now|latest|breaking|this week|202[5-9]|hoje|agora|últim[ao]s?|semana|not[ií]cia|lançamento)\b/i;
-const HIGH_RISK_PATTERN = /\b(medical|medicine|medication|drug|dose|dosage|diagnosis|treatment|therapy|ibuprofen|migraine|depression|anxiety|diet|fasting|blood pressure|legal|lawsuit|tax advice|investment advice|tratamento|diagn[oó]stico|rem[eé]dio|medicamento|dose|enxaqueca|depress[aã]o|ansiedade|dieta|jejum|press[aã]o arterial|jur[ií]dico|imposto|investimento)\b/i;
+const TIMELY_PATTERN = /\b(today|latest|this[- ]week|this[- ]month|current|recent|now|breaking|news|agora|hoje|(?:d)?esta[- ]semana|(?:d)?este[- ]m[eê]s|atual|atuais|recentes?|[uú]ltim[oa]s?|not[ií]cias?)\b/i;
+const YEAR_PATTERN = /\b20\d{2}\b/g;
+const HIGH_RISK_PATTERN = /\b(medical|medicine|medication|drug|doctor|diagnosis|treatment|dose|dosage|ibuprofen|paracetamol|acetaminophen|aspirin|lithium|antidepressant|prozac|zoloft|xanax|adderall|ritalin|opioid|opiate|migraine|depression|anxiety|panic[- ]attack|bipolar|psychosis|blood[- ]pressure|hypertension|cholesterol|diabetes|insulin|pregnan(?:t|cy)|miscarriage|abortion|menopause|suicide|suicidal|self[- ]harm|eating[- ]disorder|anorexia|bulimia|fasting|diet|keto|carnivore[- ]medical|vaccine[- ](?:truth|conspiracy|danger|skeptic)|covid[- ](?:truth|conspiracy)|legal|lawsuit|sue|sued|litigation|tax(?:[- ]advice|[- ]evasion)?|investment[- ]advice|financial[- ]advice|securities|stock[- ]tip|crypto[- ]advice|tax[- ]shelter|therapy|psychiatr(?:y|ist|ic)|prescription|medicamento|dosagem|enxaqueca|depress[aã]o|ansiedade|press[aã]o[- ]arterial|jejum|dieta|jur[ií]dico|judicial|advogado|advocacia|imposto|investimento|conselho[- ]financeiro|su[ií]cidio|suicidar|automutila[cç][aã]o|terapia|tratamento|gravidez|aborto|menopausa)\b/i;
 const CREATOR_ONLY_PATTERN = /\b(my audience|my voice|my content pillars|my channel|meu p[uú]blico|minha voz|meus pilares|meu canal)\b/i;
-const UNSUPPORTED_PATTERN = /\b(hack account|steal|piracy|plagiarize exactly|roubar conta|copiar exatamente)\b/i;
+const UNSUPPORTED_PATTERN = /\b(hack|hacking|steal|stolen|stealing|phishing|malware|exploit|exploiting|piracy|pirated|crack|cracking|bypass|credential|credentials|ddos|dox|doxx|doxxing|stalk|stalking|harassment|harass|insider[- ]trading|plagiariz(?:e|ing)|plagiarism|copyright[- ]violat(?:e|ion)|market[- ]manipulation|manipulat(?:e|ing)[- ](?:stock|market|prices?)|stock[- ]price[- ]manipulation|pump[- ]and[- ]dump|tax[- ]evasion|counterfeit|fraud|forgery|forge|deep[- ]?fake|revenge[- ]porn|csam|cp(?:\b|orn)|child(?:[- ]sexual[- ]abuse(?:[- ]material)?|[- ]porn(?:ography)?)|pornografia[- ]infantil|material[- ]de[- ]abuso[- ]sexual[- ]infantil|suicide[- ](?:method|how)|self[- ]harm[- ](?:method|how|guide)|roubar|invadir|pirataria|crackear|invas[aã]o|fraude|fraudar|evas[aã]o|evasao|sonega[cç][aã]o|sonegacao|manipula[cç][aã]o[- ](?:de[- ])?mercado|perseguir|ass[ée]dio|falsific[ae]r|plagiar)\b/i;
+
+function isTimelyContentTopic(topic: string): boolean {
+  if (TIMELY_PATTERN.test(topic)) return true;
+  const currentYear = new Date().getUTCFullYear();
+  return (topic.match(YEAR_PATTERN) ?? []).some((year) => Number(year) >= currentYear);
+}
 
 export function routeContentResearch(input: {
   topic: string;
@@ -476,7 +486,7 @@ export function routeContentResearch(input: {
     return { route: 'unsupported', freshnessClass: 'none', allowDeepSearch: false, reason: 'unsupported_or_abusive_topic' };
   }
   if (HIGH_RISK_PATTERN.test(topic)) {
-    return { route: 'high_risk_review', freshnessClass: 'fresh', allowDeepSearch: input.mode === 'deep', reason: 'high_risk_source_grounding_required' };
+    return { route: 'high_risk_review', freshnessClass: 'fresh', allowDeepSearch: false, reason: 'high_risk_source_grounding_required' };
   }
   if (CREATOR_ONLY_PATTERN.test(topic)) {
     return { route: 'creator_only', freshnessClass: 'none', allowDeepSearch: false, reason: 'creator_context_only' };
@@ -484,7 +494,7 @@ export function routeContentResearch(input: {
   if (input.mode === 'deep') {
     return { route: 'deep_explicit', freshnessClass: 'deep', allowDeepSearch: true, reason: 'explicit_deep_mode' };
   }
-  if (input.forceRefresh || TIMELY_PATTERN.test(topic)) {
+  if (input.forceRefresh || isTimelyContentTopic(topic)) {
     return { route: 'fresh_compact', freshnessClass: 'fresh', allowDeepSearch: false, reason: 'timely_or_refresh_compact_research' };
   }
   return { route: 'evergreen_cached', freshnessClass: 'cached', allowDeepSearch: false, reason: 'evergreen_or_draft_default' };
@@ -502,24 +512,47 @@ export function buildSourcePackage(input: {
     .filter((source) => !isMockContentSource(source))
     .slice(0, input.mode === 'deep' ? 8 : 4);
   const topicHash = stableHash(input.topic.toLowerCase().trim());
-  const sourceSummaries = sources.map((source) => [source.title, source.relevance_note].filter(Boolean).join(' — ').slice(0, 260));
-  const unsafe = (input.warnings ?? []).filter((warning) => /unsupported|unverified|review/i.test(warning));
+  const sourceSummaries = sources.map((source) => [
+    source.title,
+    source.publisher || source.author,
+    source.published_at,
+    source.relevance_note,
+  ].filter(Boolean).join(' — ').replace(/[\r\n\t]+/g, ' ').slice(0, 220));
+  // Research warnings are persisted with the immutable research artifact so a
+  // partially degraded source fanout cannot later be presented as healthy.
+  // This legacy field also carries unsafe/unverified claim warnings.
+  const unsafe = [...new Set((input.warnings ?? [])
+    .filter((warning): warning is string => typeof warning === 'string')
+    .map((warning) => warning.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, 500))
+    .filter(Boolean))].slice(0, 10);
   const sourceFingerprint = stableHash([
     input.language,
     input.format,
-    ...sources.map((s) => [s.title, s.url, s.relevance_note].filter(Boolean).join('::')),
+    ...sources.map((s) => [
+      s.title,
+      s.url,
+      s.publisher,
+      s.author,
+      s.published_at,
+      s.relevance_note,
+    ].filter(Boolean).join('::')),
     ...sourceSummaries,
   ].join('|'));
   return {
     sourcePackageId: `sp_${topicHash}_${sourceFingerprint}`,
-    researchArtifactId: `ra_${topicHash}_${stableHash(`${input.language}|${input.format}`)}`,
+    // Research artifacts are immutable identities for an exact source set,
+    // not mutable topic slots. A refresh therefore receives a new ID.
+    researchArtifactId: `ra_${topicHash}_${stableHash(`${input.language}|${input.format}|${sourceFingerprint}`)}`,
     topicHash,
     freshnessClass: input.mode === 'deep' ? 'deep' : sources.length > 0 ? 'cached' : 'none',
     language: input.language,
     format: input.format,
     sources,
     sourceSummaries,
-    claims: sourceSummaries.slice(0, 8),
+    // Source metadata summaries are retrieval context, not claims. The
+    // current engine does not return exact claim-to-source bindings, so a
+    // research artifact must not promote summaries into supported claims.
+    claims: [],
     unsafeOrUnverifiedClaims: unsafe,
     expiresAt: new Date(Date.now() + (input.mode === 'deep' ? 6 : 48) * 3600_000).toISOString(),
     tokenEstimate: estimateContentTokens(sourceSummaries.join('\n')),
@@ -695,20 +728,70 @@ export function buildClaimLedger(input: {
     .sort((left, right) => Number(right.highRisk) - Number(left.highRisk) || left.index - right.index)
     .map(({ sentence }) => sentence)
     .slice(0, 12);
-  const sourceText = (input.sourcePackage?.sourceSummaries ?? []).join(' ').toLowerCase();
+  const sourceCandidates = (input.sourcePackage?.sources ?? []).flatMap((source) => {
+    const sourceRef = normalizeClaimSourceUrl(source.url);
+    if (!sourceRef) return [];
+    return [{
+      sourceRef,
+      text: [
+        source.title,
+        source.publisher,
+        source.author,
+        source.published_at,
+        source.relevance_note,
+      ].filter(Boolean).join(' ').toLowerCase(),
+    }];
+  });
   const voiceText = input.voiceCard?.promptText.toLowerCase() ?? '';
   return sentences.map((claim) => {
-    const terms = claim.toLowerCase().split(/\W+/).filter((term) => term.length > 4).slice(0, 8);
-    const sourceMatches = terms.filter((term) => sourceText.includes(term)).length;
+    const terms = [...new Set(claim.toLowerCase().split(/\W+/).filter((term) => term.length > 4))].slice(0, 8);
+    const scoredSources = sourceCandidates
+      .map((source) => ({
+        sourceRef: source.sourceRef,
+        matches: terms.filter((term) => source.text.includes(term)).length,
+      }))
+      .filter((source) => source.matches >= 2)
+      .sort((left, right) => right.matches - left.matches || left.sourceRef.localeCompare(right.sourceRef));
     const voiceMatches = terms.filter((term) => voiceText.includes(term)).length;
-    if (sourceMatches >= 2) {
-      return { claim, support: 'source_backed', sourceRef: input.sourcePackage?.sourcePackageId ?? null };
+    if (scoredSources.length > 0) {
+      const bestScore = scoredSources[0].matches;
+      const suggestedSourceRefs = scoredSources
+        .filter((source) => source.matches === bestScore)
+        .map((source) => source.sourceRef);
+      // Metadata overlap is useful for suggesting where a reviewer should
+      // look, but it is not evidence that a source actually supports a claim.
+      // Only an explicit grounded claim-to-source contract may emit
+      // `source_backed`; the current script engine does not return one.
+      return {
+        claim,
+        support: 'unverified',
+        sourceRef: null,
+        suggestedSourceRefs,
+      };
     }
     if (voiceMatches >= 2) {
       return { claim, support: 'creator_memory_backed', sourceRef: input.voiceCard?.voiceCardVersion ?? null };
     }
     return { claim, support: 'unverified', sourceRef: null };
   });
+}
+
+function normalizeClaimSourceUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    parsed.username = '';
+    parsed.password = '';
+    parsed.hash = '';
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (/^(access_?token|token|api_?key|key|auth|authorization|signature|sig)$/i.test(key)) {
+        parsed.searchParams.delete(key);
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
 }
 
 export function buildContentAgentSignalDigest(input: {

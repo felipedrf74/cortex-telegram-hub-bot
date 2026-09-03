@@ -145,7 +145,7 @@ describe('buildAgentContext', () => {
 
   it('consumes pillar_performance for seo-agent', () => {
     writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'pillar_performance',
       payload: {
         rankings: [
@@ -163,7 +163,7 @@ describe('buildAgentContext', () => {
 
   it('consumes hook_effectiveness for seo-agent', () => {
     writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'hook_effectiveness',
       payload: {
         hook_type: 'question',
@@ -180,7 +180,7 @@ describe('buildAgentContext', () => {
 
   it('consumes keyword_opportunity for pipeline-agent', () => {
     writeSignal({
-      source_agent: 'seo-agent',
+      source_agent: 'content.keyword-researcher',
       signal_type: 'keyword_opportunity',
       payload: {
         keyword: 'treino híbrido',
@@ -196,7 +196,7 @@ describe('buildAgentContext', () => {
 
   it('consumes content_formula for all agents', () => {
     writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'content_formula',
       payload: {
         formula: 'Fitness + personal story = high engagement',
@@ -226,6 +226,29 @@ describe('buildAgentContext', () => {
     // Second call finds nothing new
     const ctx2 = buildAgentContext('performance-agent', TEST_USER_ID, TEST_TENANT_ID);
     expect(ctx2.voicePatterns).toHaveLength(0);
+  });
+
+  it('does not let historical paused-agent signals influence active peers', () => {
+    writeSignal({
+      source_agent: 'performance-agent',
+      signal_type: 'pillar_performance',
+      payload: {
+        rankings: [{ pillar: 'stale-pillar', avg_views: 99_999, engagement_rate: 1, trend: 'rising' }],
+      },
+    });
+    writeSignal({
+      source_agent: 'seo-agent',
+      signal_type: 'keyword_opportunity',
+      payload: { keyword: 'stale-keyword', direction: 'up', volume_hint: 'high' },
+    });
+
+    const seoContext = buildAgentContext('seo-agent');
+    const pipelineContext = buildAgentContext('pipeline-agent');
+
+    expect(seoContext.pillarRankings).toEqual([]);
+    expect(pipelineContext.keywordOpportunities).toEqual([]);
+    expect(seoContext.signalsConsumed).toBe(0);
+    expect(pipelineContext.signalsConsumed).toBe(0);
   });
 
   it('returns empty context for unknown agent', () => {
@@ -308,9 +331,35 @@ describe('produceLearningDigest', () => {
     expect(id).toBe(-1);
   });
 
+  it.each([0, -1, 1.5, Number.NaN])(
+    'rejects invalid creator user scope %s before reading or consuming inputs',
+    (invalidUserId) => {
+      const sourceId = writeSignal({
+        source_agent: 'content.performance-reviewer',
+        signal_type: 'pillar_performance',
+        payload: {
+          rankings: [{ pillar: 'global-fitness', avg_views: 4_000, engagement_rate: 0.07, trend: 'rising' }],
+        },
+      });
+
+      expect(() => produceLearningDigest(invalidUserId, TEST_TENANT_ID)).toThrow();
+      expect(testDb.prepare('SELECT consumed_by FROM agent_signals WHERE id = ?').get(sourceId))
+        .toEqual({ consumed_by: '[]' });
+      expect(testDb.prepare("SELECT COUNT(*) AS count FROM agent_signals WHERE signal_type = 'creator_learning_digest'").get())
+        .toEqual({ count: 0 });
+    },
+  );
+
   it('writes a global digest from global signals when no creator scope is requested', () => {
-    writeSignal({
+    const pausedSignalId = writeSignal({
       source_agent: 'performance-agent',
+      signal_type: 'pillar_performance',
+      payload: {
+        rankings: [{ pillar: 'stale-paused', avg_views: 99_999, engagement_rate: 1, trend: 'rising' }],
+      },
+    });
+    const activeSignalId = writeSignal({
+      source_agent: 'content.performance-reviewer',
       signal_type: 'pillar_performance',
       payload: {
         rankings: [{ pillar: 'global-fitness', avg_views: 4_000, engagement_rate: 0.07, trend: 'rising' }],
@@ -335,20 +384,35 @@ describe('produceLearningDigest', () => {
       tenant_id: null,
       user_id: null,
     });
-    expect(JSON.parse(row.payload).topPillars).toEqual([
+    const storedDigest = JSON.parse(row.payload);
+    expect(storedDigest.topPillars).toEqual([
       expect.objectContaining({ pillar: 'global-fitness', engagementRate: 0.07 }),
     ]);
+    expect(storedDigest.topPillars).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ pillar: 'stale-paused' })]),
+    );
+    expect(storedDigest.inputEligibility).toEqual({
+      policyVersion: 'active-content-agent-sources.v1',
+      sourceAgents: ['content.performance_reviewer'],
+      sourceSignalIds: [activeSignalId],
+    });
+    expect(storedDigest._signalProvenance).toMatchObject({
+      producerVersion: 'cross-agent-learning.v3',
+      source: 'runtime',
+    });
+    expect(testDb.prepare('SELECT consumed_by FROM agent_signals WHERE id = ?').get(pausedSignalId))
+      .toEqual({ consumed_by: '[]' });
   });
 
   it('keeps a creator digest private within a shared tenant', () => {
     const pillarSignalId = writeSignal({
-      source_agent: 'performance-agent',
+      source_agent: 'content.performance-reviewer',
       signal_type: 'pillar_performance',
       payload: {
         rankings: [{ pillar: 'fitness', avg_views: 5000, engagement_rate: 0.08, trend: 'rising' }],
       },
     });
-    writeSignal({
+    const voiceSignalId = writeSignal({
       source_agent: 'voice-evolution',
       signal_type: 'voice_pattern',
       user_id: TEST_USER_ID,
@@ -368,6 +432,11 @@ describe('produceLearningDigest', () => {
     expect(payload.topPillars).toHaveLength(1);
     expect(payload.voiceInsights).toHaveLength(1);
     expect(payload.summary).toContain('fitness');
+    expect(payload.inputEligibility).toEqual({
+      policyVersion: 'active-content-agent-sources.v1',
+      sourceAgents: ['content.performance_reviewer', 'voice_evolution'],
+      sourceSignalIds: [pillarSignalId, voiceSignalId],
+    });
 
     expect(readSignals(
       'digest-owner',
@@ -424,7 +493,7 @@ describe('writeContentFormula', () => {
 
   it('writes a content_formula signal', () => {
     const id = writeContentFormula(
-      'performance-agent',
+      'content.performance-reviewer',
       'Fitness + anecdote = engagement',
       'fitness',
       0.85,
@@ -452,14 +521,14 @@ describe('writeContentFormula', () => {
   });
 
   it('persists versioned provenance, bounded confidence, and a future expiry', () => {
-    const id = writeContentFormula('performance-agent', 'governed', 'fitness', 0.85, 'measured evidence');
+    const id = writeContentFormula('content.performance-reviewer', 'governed', 'fitness', 0.85, 'measured evidence');
     const [signal] = readSignals('formula-governance-reader', ['content_formula'], 10);
 
     expect(signal).toMatchObject({
       id,
       confidence: 0.5,
       provenance: {
-        producerVersion: 'cross-agent-learning.v2',
+        producerVersion: 'cross-agent-learning.v3',
         source: 'runtime',
       },
     });

@@ -39,7 +39,7 @@ describe('durable Content workspace observability', () => {
       outcome: 'success',
       durationMs: 125,
     });
-    recordContentWorkspaceProductSignal('content_scheduled');
+    recordContentWorkspaceProductSignal('internal_scheduled_state_or_confirmed_work_block');
     expect(_flushContentWorkspaceObservabilityForTests()).toBe(true);
     expect(_flushContentWorkspaceObservabilityForTests()).toBe(true);
 
@@ -54,12 +54,19 @@ describe('durable Content workspace observability', () => {
     });
     expect(value.outcomesByOperation.schedule_confirm.success).toBe(1);
     expect(value.reliability.schedule_confirm_success_total).toBe(1);
-    expect(value.product.content_scheduled).toBe(1);
+    expect(value.product.internal_scheduled_state_or_confirmed_work_block).toBe(1);
+    expect(value.product).not.toHaveProperty('content_scheduled');
+    expect(value.publicationTracking).toEqual({
+      status: 'unavailable',
+      publicationEvidence: false,
+      reasonCode: 'EXTERNAL_PUBLICATION_RECEIPTS_UNAVAILABLE',
+      internalWorkflowStateMetric: 'internal_workflow_published_state',
+    });
 
     _resetContentWorkspaceObservabilityForTests();
     value = getContentWorkspaceObservabilitySnapshot();
     expect(value.outcomesByOperation.schedule_confirm.success).toBe(1);
-    expect(value.product.content_scheduled).toBe(1);
+    expect(value.product.internal_scheduled_state_or_confirmed_work_block).toBe(1);
   });
 
   it('retains a failed write as pending and merges it exactly once', () => {
@@ -89,6 +96,26 @@ describe('durable Content workspace observability', () => {
     expect(value.storage.mode).toBe('durable');
     expect(value.outcomesByOperation.schedule_preview.conflict).toBe(1);
     expect(value.reasons.schedule_preview_stale).toBe(1);
+  });
+
+  it('projects legacy storage keys as explicit internal state and unavailable publication tracking', () => {
+    testDb.prepare(`
+      INSERT INTO content_workspace_product_metrics (signal, metric_value)
+      VALUES ('content_scheduled', 2), ('content_published', 3)
+    `).run();
+
+    const value = getContentWorkspaceObservabilitySnapshot();
+    expect(value.product).toMatchObject({
+      internal_scheduled_state_or_confirmed_work_block: 2,
+      internal_workflow_published_state: 3,
+    });
+    expect(value.product).not.toHaveProperty('content_scheduled');
+    expect(value.product).not.toHaveProperty('content_published');
+    expect(value.publicationTracking).toMatchObject({
+      status: 'unavailable',
+      publicationEvidence: false,
+      reasonCode: 'EXTERNAL_PUBLICATION_RECEIPTS_UNAVAILABLE',
+    });
   });
 
   it('falls back truthfully when the durable schema is unavailable and later flushes once', () => {

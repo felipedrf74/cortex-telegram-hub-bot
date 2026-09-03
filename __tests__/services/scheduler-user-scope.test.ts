@@ -1939,7 +1939,11 @@ describe('scheduler tenant scoping', () => {
     expect(mockRunPipelineAgent).toHaveBeenNthCalledWith(1, { tenantId: 11, userId: 11 });
     expect(mockRunPipelineAgent).toHaveBeenNthCalledWith(2, { tenantId: 22, userId: 22 });
     expect(logger.warn).toHaveBeenCalledWith(
-      { operation: 'pipeline_agent_tenant_run', errorCode: 'Error' },
+      {
+        operation: 'pipeline_agent_tenant_run',
+        errorName: 'Error',
+        errorFingerprint: expect.any(String),
+      },
       'Pipeline agent tenant run failed; continuing remaining scopes',
     );
     expect(logger.error).toHaveBeenCalledWith(
@@ -2146,8 +2150,10 @@ describe('scheduler tenant scoping', () => {
       throw new Error('inventory unavailable');
     });
 
-    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
-    await runWeeklyContentPackageCronForActiveUsers();
+    await expect(runContentTopicCronForActiveUsers('reel', 'tuesday_reels'))
+      .rejects.toThrow('Scheduled Content topic job failed for 2 of 2 tenant scopes');
+    await expect(runWeeklyContentPackageCronForActiveUsers())
+      .rejects.toThrow('Scheduled weekly Content job failed for 2 of 2 tenant scopes');
 
     expect(mockGetMissingScheduledInventoryCount).toHaveBeenCalledTimes(4);
     expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
@@ -2248,8 +2254,91 @@ describe('scheduler tenant scoping', () => {
     });
     expect(mockGenerateAndStoreTopicCandidates).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
-      { userId: 11, sourceJob: 'tuesday_reels' },
+      { userId: 11, tenantId: 11, sourceJob: 'tuesday_reels' },
       'Scheduled Content generation skipped: no Content-surface engagement in 30 days',
+    );
+  });
+
+  it('binds the exact tenant and owner when evaluating scheduled Content engagement', async () => {
+    process.env.PAID_AI_COST_CONTROLS_ENFORCEMENT_ENABLED = 'true';
+    mockGetEffectiveEntitlement.mockReturnValue({
+      plan: 'pro',
+      source: 'stripe',
+      automationAllowed: true,
+    });
+    mockGetMissingScheduledInventoryCount.mockReturnValue(1);
+    const boundCalls: unknown[][] = [];
+    mockGetDb.mockReturnValue({
+      prepare: vi.fn((sql: string) => ({
+        all: vi.fn(() => sql.includes('FROM users') ? [{ id: 11, telegram_id: null }] : []),
+        get: vi.fn((...params: unknown[]) => {
+          boundCalls.push(params);
+          return sql.includes('AS engaged') ? { engaged: 0 } : { count: 5, present: 1 };
+        }),
+      })),
+    });
+
+    await runContentTopicCronForActiveUsers('reel', 'tuesday_reels');
+    const adapter = mockRunGovernedAgentJob.mock.calls.at(-1)?.[0];
+    boundCalls.length = 0;
+
+    expect(adapter.prepare({ tenantId: 77, userId: 11 })).toMatchObject({
+      kind: 'skip',
+      reason: 'engagement_gate',
+    });
+    expect(boundCalls[0]).toEqual([11, 77, 11, 77]);
+    expect(boundCalls[1]).toEqual([11, 77, 'tuesday_reels', 'reel']);
+  });
+
+  it('continues Content topic tenant scopes and rejects the aggregate when one fails', async () => {
+    const privateProviderFailure = new Error('private provider payload');
+    privateProviderFailure.name = 'ProviderTimeoutError';
+    mockRunGovernedAgentJob.mockRejectedValueOnce(privateProviderFailure);
+
+    const failure = await runContentTopicCronForActiveUsers('reel', 'tuesday_reels')
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).message)
+      .toBe('Scheduled Content topic job failed for 1 of 2 tenant scopes');
+    expect((failure as AggregateError).errors).toEqual([
+      { errorCode: 'ProviderTimeoutError' },
+    ]);
+    expect(JSON.stringify(failure)).not.toContain('private provider payload');
+
+    expect(mockRunGovernedAgentJob).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: 'ProviderTimeoutError',
+        userId: 11,
+        tenantId: 11,
+        sourceJob: 'tuesday_reels',
+      }),
+      'Scheduled Content topic job failed for tenant',
+    );
+  });
+
+  it('continues weekly Content tenant scopes and rejects the aggregate when one fails', async () => {
+    const malformedFailure = new Error('private storage response');
+    malformedFailure.name = 'private tenant details';
+    mockRunGovernedAgentJob.mockRejectedValueOnce(malformedFailure);
+
+    const failure = await runWeeklyContentPackageCronForActiveUsers()
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).message)
+      .toBe('Scheduled weekly Content job failed for 1 of 2 tenant scopes');
+    expect((failure as AggregateError).errors).toEqual([
+      { errorCode: 'UnknownError' },
+    ]);
+    expect(JSON.stringify(failure)).not.toContain('private storage response');
+    expect(JSON.stringify(failure)).not.toContain('private tenant details');
+
+    expect(mockRunGovernedAgentJob).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: 'UnknownError', userId: 11, tenantId: 11 }),
+      'Scheduled weekly Content job failed for tenant',
     );
   });
 
@@ -2288,6 +2377,7 @@ describe('scheduler tenant scoping', () => {
       {
         errorCode: 'UnknownError',
         userId: 11,
+        tenantId: 11,
         sourceJob: 'thursday_youtube',
       },
       'Scheduled Content engagement gate failed closed',
@@ -2365,7 +2455,7 @@ describe('scheduler tenant scoping', () => {
     });
     expect(mockGenerateWeeklyPackage).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
-      { userId: 11, sourceJob: 'friday_weekly' },
+      { userId: 11, tenantId: 11, sourceJob: 'friday_weekly' },
       'Scheduled Content generation skipped: no Content-surface engagement in 30 days',
     );
   });
@@ -2471,6 +2561,10 @@ describe('scheduler tenant scoping', () => {
       candidates: [validCandidate],
     };
     expect(() => adapter.validateOutput(validOutput, input)).not.toThrow();
+    expect(() => adapter.validateOutput(
+      validOutput,
+      { ...input, missingCount: 2 },
+    )).toThrow('Scheduled Content topic output failed validation');
 
     const invalidOutputs = [
       { ...validOutput, format: 'youtube' },

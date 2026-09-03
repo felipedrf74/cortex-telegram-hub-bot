@@ -269,9 +269,10 @@ export function buildContentGenerationPackage(input: ContentGenerationPackageInp
     `Platform: ${platformId}`,
     `Format: ${formatDefinition.label} (${formatId})`,
     `Primary object type: ${formatDefinition.primaryObjectType}`,
-    `Required structure: ${formatDefinition.structure.join(' -> ')}`,
-    `Length expectation: ${formatDefinition.lengthExpectation}`,
-    `Pacing: ${formatDefinition.pacing}`,
+    'Format taxonomy below is candidate guidance. Explicit request controls and tenant format configuration take precedence; absent those, treat timing, length, pacing, count, and expected audience response only as bounded review hypotheses.',
+    `Candidate structure: ${formatDefinition.structure.join(' -> ')}`,
+    `Length scope: ${formatDefinition.lengthExpectation}`,
+    `Pacing hypothesis: ${formatDefinition.pacing}`,
     `Hook styles to consider: ${formatDefinition.hookStyle.join(', ')}`,
     `Production requirements: ${formatDefinition.productionRequirements.join(', ')}`,
     `Source usage: ${formatDefinition.sourceUsagePattern}`,
@@ -398,8 +399,8 @@ function buildOutputContract(definition: PlatformFormatDefinition, warnings: str
     requiredFields: requiredFieldsForFormat(definition.formatId),
     structure: [...definition.structure],
     platformNotes: [
-      definition.lengthExpectation,
-      definition.pacing,
+      `Length scope: ${definition.lengthExpectation}`,
+      `Pacing hypothesis: ${definition.pacing}`,
       `Hook style: ${definition.hookStyle.join(', ')}`,
       `Source usage: ${definition.sourceUsagePattern}`,
     ],
@@ -499,7 +500,7 @@ function classifyRefinementIntent(request: string): ContentGenerationIntent {
 
 function refinementActionsForIntent(intent: ContentGenerationIntent, generationPackage: ContentGenerationPackage): string[] {
   const base = [
-    `Keep the target format structure: ${generationPackage.formatDefinition.structure.join(' -> ')}.`,
+    `Use this target-format structure as a candidate unless explicit request or tenant controls override it: ${generationPackage.formatDefinition.structure.join(' -> ')}.`,
     'Preserve authorized source provenance and remove unsupported claims.',
   ];
   switch (intent) {

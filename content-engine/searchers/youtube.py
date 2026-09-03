@@ -14,6 +14,7 @@ import httpx
 
 from config import cfg
 from models.research import SearchResult
+from searchers.base import ResearchSourceUnavailable, resolve_search_locale
 from searchers.mock_fixtures import is_evergreen_mock_query, mock_search_result, query_slug
 
 logger = logging.getLogger("content-engine.youtube")
@@ -43,28 +44,37 @@ def _raise_sanitized_youtube_status(resp: httpx.Response, query: str, stage: str
 class YouTubeSearcher:
     name = "youtube"
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        language: str | None = None,
+    ) -> list[SearchResult]:
         if getattr(cfg, "fixture_mode", False):
             logger.debug("Content-engine fixture mode — returning synthetic YouTube results")
             return self._mock(query, max_results)
         if getattr(cfg, "research_network_disabled", False):
             logger.info("YouTube search disabled for this isolated runtime")
-            return []
+            raise ResearchSourceUnavailable(self.name, "network_disabled")
         if not cfg.youtube_api_key:
             logger.info("YouTube search unavailable because YOUTUBE_API_KEY is not configured")
-            return []
+            raise ResearchSourceUnavailable(self.name, "credentials_missing")
 
         async with httpx.AsyncClient(timeout=cfg.searcher_timeout) as client:
             # Step 1 — search for video IDs
-            search_params = {
+            language_code, region_code = resolve_search_locale(language)
+            search_params: dict[str, str | int] = {
                 "part": "snippet",
                 "q": query,
                 "type": "video",
                 "maxResults": max_results,
                 "order": "relevance",
-                "relevanceLanguage": "pt",
                 "key": cfg.youtube_api_key,
             }
+            if language_code:
+                search_params["relevanceLanguage"] = language_code
+            if region_code:
+                search_params["regionCode"] = region_code
             resp = await client.get(YT_SEARCH_URL, params=search_params)
             _raise_sanitized_youtube_status(resp, query, "search")
             search_data = resp.json()

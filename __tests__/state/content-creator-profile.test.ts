@@ -71,6 +71,48 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
     expect(p.updatedAt).toBeNull();
   });
 
+  it('surfaces scoped profile storage failure instead of returning a neutral profile', () => {
+    testDb.exec('DROP TABLE content_creator_profile');
+
+    expect(() => getContentCreatorProfile(USER_A, USER_A)).toThrow(expect.objectContaining({
+      code: 'CONTENT_CREATOR_PROFILE_UNAVAILABLE',
+      status: 503,
+    }));
+  });
+
+  it.each([
+    ['pillars_json', '{not-json'],
+    ['niches_json', '{"not":"an-array"}'],
+    ['voice_rules_json', '["valid",7]'],
+    ['platforms_json', '[{"name":"YouTube"}]'],
+  ])('withholds an active profile with malformed stored %s', (column, malformedValue) => {
+    upsertContentCreatorProfile(USER_A, USER_A, { pillars: ['Preserved'] });
+    testDb.prepare(`UPDATE content_creator_profile SET ${column} = ? WHERE owner_user_id = ?`)
+      .run(malformedValue, USER_A);
+
+    expect(() => getContentCreatorProfile(USER_A, USER_A)).toThrow(expect.objectContaining({
+      code: 'CONTENT_CREATOR_PROFILE_UNAVAILABLE',
+      status: 503,
+    }));
+    expect(testDb.prepare(`SELECT ${column} AS value FROM content_creator_profile WHERE owner_user_id = ?`)
+      .get(USER_A)).toEqual({ value: malformedValue });
+  });
+
+  it.each([
+    { pillars: 'not-an-array' },
+    { audience: [] },
+    { platforms: {} },
+    { unknownField: 'ignored-before-this-contract' },
+    {},
+  ])('rejects malformed partial updates without writing them: %j', (patch) => {
+    upsertContentCreatorProfile(USER_A, USER_A, { pillars: ['Preserved'] });
+
+    expect(() => upsertContentCreatorProfile(USER_A, USER_A, patch as any)).toThrow(
+      expect.objectContaining({ code: 'CONTENT_CREATOR_PROFILE_INVALID', status: 400 }),
+    );
+    expect(getContentCreatorProfile(USER_A, USER_A).pillars).toEqual(['Preserved']);
+  });
+
   it('round-trips all 13 fields end-to-end', () => {
     const written = upsertContentCreatorProfile(USER_A, USER_A, {
       pillars: ['AI automation', 'Marathon training'],
@@ -263,7 +305,7 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
     expect(getContentCreatorProfile(USER_A, USER_A).pillars).toEqual([]);
   });
 
-  it('upsert after reset does not revive an archived profile row', () => {
+  it('upsert after reset reactivates the archived singleton with the new profile', () => {
     upsertContentCreatorProfile(USER_A, USER_A, {
       pillars: ['Pre-reset'],
       audience: 'Pre-reset audience',
@@ -271,13 +313,25 @@ describe('content-creator-profile (CONTENT-UI-O1)', () => {
     resetContentCreatorProfile(USER_A, USER_A);
 
     const after = upsertContentCreatorProfile(USER_A, USER_A, {
-      pillars: ['Should not revive'],
-      audience: 'Archived profile should stay deleted',
+      pillars: ['Reactivated'],
+      audience: 'New profile audience',
     });
 
-    expect(after.pillars).toEqual([]);
-    expect(after.audience).toBe('');
-    expect(getContentCreatorProfile(USER_A, USER_A).pillars).toEqual([]);
+    expect(after.pillars).toEqual(['Reactivated']);
+    expect(after.audience).toBe('New profile audience');
+    expect(getContentCreatorProfile(USER_A, USER_A)).toEqual(expect.objectContaining({
+      pillars: ['Reactivated'],
+      audience: 'New profile audience',
+    }));
+    expect(testDb.prepare(`
+      SELECT scope_status, visibility_scope, lifecycle_state
+        FROM content_creator_profile
+       WHERE tenant_id = ? AND owner_user_id = ?
+    `).get(USER_A, USER_A)).toEqual({
+      scope_status: 'active',
+      visibility_scope: 'user_private',
+      lifecycle_state: 'active',
+    });
   });
 
   it('reset only affects the same (tenant, owner); other tenant is preserved', () => {

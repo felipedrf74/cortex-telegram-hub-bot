@@ -19,9 +19,9 @@
  *      garmin sync publishes `low_sleep` / `low_hrv` / `low_readiness`
  *      when nightly sync pulls a poor reading. Any coach reads before
  *      generating a prescription and downgrades intensity.
- * All signals here are PER-USER — they carry a userId and readers filter
- * to their own user. The content mesh agents are unaffected; they still
- * use the generic bus with global signals.
+ * All signals here are tenant-user scoped. Readers filter to the authenticated
+ * scope, and the only accepted Content scheduling input is a governed,
+ * Secretary-confirmed filming-block signal from the editorial coordinator.
  */
 
 import {
@@ -37,6 +37,8 @@ import { isTrainingCrossSkillSignalsEnabled } from './training-operational-switc
 import { requireTenantIdParam } from './tenant-scope';
 import { logger } from '../utils/logger';
 import type Database from 'better-sqlite3';
+import { getContentSchedule } from './content-workspace-scheduling';
+import type { ContentWorkspaceScope } from './content-workspace';
 
 // ─── Source identifiers ─────────────────────────────────────────────
 
@@ -468,7 +470,10 @@ const UNIVERSAL_COACH_INPUTS: SignalType[] = [
   'fueling_gap_risk',
   'budget_remaining',
   'subscription_renewal_due',
-  'publishing_commitment',
+  // Content may influence training load only through a current
+  // Secretary-confirmed filming block. Topic deadlines and work proposals do
+  // not carry enough schedule authority to change a prescription.
+  'shoot_day_locked',
   // Phase 4 Slice C — adherence flags inform intensity AND tone.
   // Every sport coach benefits from knowing the user is on-track or
   // off-track — they shape prescriptions AND check-in language.
@@ -506,6 +511,64 @@ const SPORT_SPECIFIC_INPUTS: Record<'gym' | 'running' | 'cycling' | 'swim', Sign
   ],
 };
 
+function isEligibleTrainingInputSignal(
+  signal: AgentSignal,
+  contentScope: ContentWorkspaceScope,
+): boolean {
+  if (signal.signal_type !== 'shoot_day_locked') return true;
+  const itemId = signal.payload?.itemId;
+  const date = signal.payload?.date;
+  const blockStart = signal.payload?.blockStart;
+  const blockEnd = signal.payload?.blockEnd;
+  const sourceState = signal.payload?.sourceState;
+  const providerAttention = signal.payload?.providerAttention;
+  const startMs = typeof blockStart === 'string' ? Date.parse(blockStart) : Number.NaN;
+  const endMs = typeof blockEnd === 'string' ? Date.parse(blockEnd) : Number.NaN;
+  const canonicalDateMs = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? Date.parse(`${date}T12:00:00.000Z`)
+    : Number.NaN;
+  const dateIsExact = Number.isFinite(canonicalDateMs)
+    && new Date(canonicalDateMs).toISOString().slice(0, 10) === date;
+  // The signal date is the user's local calendar day while block bounds may
+  // carry any ISO offset. A 36-hour envelope covers every real timezone and a
+  // full local day without accepting an unrelated date.
+  const dateMatchesBlock = dateIsExact
+    && Number.isFinite(startMs)
+    && Math.abs(startMs - canonicalDateMs) <= 36 * 60 * 60 * 1_000;
+  const payloadIsEligible = signal.source_agent === 'mesh.editorial-coordinator'
+    && Number.isSafeInteger(itemId)
+    && Number(itemId) > 0
+    && signal.payload?.planStatus === 'confirmed'
+    && signal.payload?.scheduleAuthority === 'secretary'
+    && signal.payload?.scheduleAuthorityStatus === 'current'
+    && signal.payload?.semantics === 'private_work_session'
+    && signal.payload?.workKind === 'filming'
+    && signal.payload?.sourceWorkKind === 'record'
+    && ['scheduled', 'provider_synced', 'sync_failed'].includes(sourceState)
+    && typeof providerAttention === 'boolean'
+    && providerAttention === (sourceState === 'sync_failed')
+    && dateMatchesBlock
+    && Number.isFinite(endMs)
+    && endMs > startMs
+    && endMs - startMs <= 24 * 60 * 60 * 1_000;
+  if (!payloadIsEligible) return false;
+  try {
+    const schedule = getContentSchedule(contentScope, Number(itemId));
+    return schedule != null
+      && schedule.authority === 'secretary'
+      && schedule.authorityStatus === 'current'
+      && schedule.localAgendaState === 'scheduled'
+      && ['scheduled', 'provider_synced', 'sync_failed'].includes(schedule.state)
+      && schedule.state === sourceState
+      && schedule.scheduledStart === blockStart
+      && schedule.scheduledEnd === blockEnd;
+  } catch {
+    // A cross-skill signal is advisory. If canonical Content schedule truth
+    // cannot be read, Training must omit it rather than trust stale payload.
+    return false;
+  }
+}
+
 export interface TrainingContext {
   /** All matching signals, newest first, urgent first. */
   signals: AgentSignal[];
@@ -527,8 +590,8 @@ export interface TrainingContext {
     fuelingGap: boolean;
     /** Finance says training cost or supplement/equipment asks need constraint. */
     budgetConstraint: boolean;
-    /** Content has a publishing or execution commitment Training should respect. */
-    contentCommitment: boolean;
+    /** Content has a current Secretary-confirmed filming block Training should respect. */
+    confirmedContentWorkBlock: boolean;
     /** Sum of RPE from load signals of OTHER sports today. */
     otherSportRpeToday: number;
   };
@@ -555,7 +618,8 @@ export function readTrainingContext(opts: {
     ...SPORT_SPECIFIC_INPUTS[opts.sport],
   ];
 
-  const signals = readSignals(consumer, signalTypes, 20, opts.userId, undefined, tenantId);
+  const signals = readSignals(consumer, signalTypes, 20, opts.userId, undefined, tenantId)
+    .filter((signal) => isEligibleTrainingInputSignal(signal, { tenantId, userId: opts.userId }));
 
   const flags = {
     lowSleep: signals.some((s) => s.signal_type === 'low_sleep'),
@@ -569,7 +633,7 @@ export function readTrainingContext(opts: {
     planDrift: signals.some((s) => s.signal_type === 'plan_drift'),
     fuelingGap: signals.some((s) => s.signal_type === 'fueling_gap_risk'),
     budgetConstraint: signals.some((s) => s.signal_type === 'budget_remaining'),
-    contentCommitment: signals.some((s) => s.signal_type === 'publishing_commitment'),
+    confirmedContentWorkBlock: signals.some((s) => s.signal_type === 'shoot_day_locked'),
     otherSportRpeToday: signals
       .filter((s) => s.signal_type.endsWith('_load_today'))
       .reduce((sum, s) => sum + (Number(s.payload?.rpe) || 0), 0),
@@ -589,6 +653,7 @@ export function readTrainingContext(opts: {
  */
 export function readTrainingContextAll(opts: { userId: number; tenantId?: number }): TrainingContext {
   const consumer = 'triathlon.all';
+  const tenantId = opts.tenantId ?? opts.userId;
   const allTrainingSignalTypes: SignalType[] = [
     'low_sleep', 'low_hrv', 'low_readiness', 'safety_red_flag', 'planned_race_this_week',
     'gym_load_today', 'running_load_today', 'cycling_load_today', 'swim_load_today',
@@ -601,9 +666,10 @@ export function readTrainingContextAll(opts: { userId: number; tenantId?: number
     // Training-centered cross-skill orchestration inputs.
     'fueling_gap_risk',
     'budget_remaining', 'subscription_renewal_due',
-    'publishing_commitment',
+    'shoot_day_locked',
   ];
-  const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId, undefined, opts.tenantId);
+  const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId, undefined, tenantId)
+    .filter((signal) => isEligibleTrainingInputSignal(signal, { tenantId, userId: opts.userId }));
 
   const flags = {
     lowSleep: signals.some((s) => s.signal_type === 'low_sleep'),
@@ -617,7 +683,7 @@ export function readTrainingContextAll(opts: { userId: number; tenantId?: number
     planDrift: signals.some((s) => s.signal_type === 'plan_drift'),
     fuelingGap: signals.some((s) => s.signal_type === 'fueling_gap_risk'),
     budgetConstraint: signals.some((s) => s.signal_type === 'budget_remaining'),
-    contentCommitment: signals.some((s) => s.signal_type === 'publishing_commitment'),
+    confirmedContentWorkBlock: signals.some((s) => s.signal_type === 'shoot_day_locked'),
     otherSportRpeToday: signals
       .filter((s) => s.signal_type.endsWith('_load_today'))
       .reduce((sum, s) => sum + (Number(s.payload?.rpe) || 0), 0),
@@ -665,10 +731,10 @@ export function formatTrainingContextForPrompt(ctx: TrainingContext, sport: stri
     const trainingSpendMode = budget?.payload?.trainingSpendMode ? ` / training spend: ${budget.payload.trainingSpendMode}` : '';
     lines.push(`- FINANCE CONSTRAINT — budget mode is ${mode}${trainingSpendMode}. Avoid paid gear, subscriptions, and supplement asks unless explicitly needed.`);
   }
-  if (ctx.flags.contentCommitment) {
-    const commitment = ctx.signals.find((s) => s.signal_type === 'publishing_commitment');
-    const date = commitment?.payload?.nextDate ? ` due ${commitment.payload.nextDate}` : '';
-    lines.push(`- CONTENT COMMITMENT${date} — account for creator workload before adding hard doubles or high-friction training.`);
+  if (ctx.flags.confirmedContentWorkBlock) {
+    const workBlock = ctx.signals.find((s) => s.signal_type === 'shoot_day_locked');
+    const date = typeof workBlock?.payload?.date === 'string' ? ` on ${workBlock.payload.date}` : '';
+    lines.push(`- CONFIRMED PRIVATE CONTENT WORK${date} — account for the Secretary-confirmed filming block before adding hard doubles or high-friction training; this is not publication evidence.`);
   }
   // Phase 4 Slice C — adherence adaptation cues
   if (ctx.flags.lowAdherence) {

@@ -29,10 +29,10 @@ class EngineConfig:
 
     # ── Competitor channels (YouTube channel IDs or handles) ──────────
     niche1_competitors: list[str] = field(default_factory=lambda: [
-        # Hybrid athlete / fitness PT-BR channels — add yours here
+        # Creator-scoped comparison channels — configured by the caller.
     ])
     niche2_competitors: list[str] = field(default_factory=lambda: [
-        # Commentary / reaction PT-BR channels — add yours here
+        # Additional creator-scoped comparison channels — configured by the caller.
     ])
 
 

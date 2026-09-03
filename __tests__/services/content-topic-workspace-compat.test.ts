@@ -69,6 +69,14 @@ describe('content topic canonical workspace compatibility', () => {
       status: 'drafting',
       idempotencyKey: 'topic-create-001',
     }, db)).toThrow('already used for a different request');
+    expect(() => createContentTopicCompatibility({
+      scope: SCOPE,
+      title: 'Control-bearing key',
+      idempotencyKey: 'topic-key\u0085hidden',
+    }, db)).toThrowError(expect.objectContaining({ code: 'CONTENT_VALIDATION_FAILED', status: 400 }));
+    expect(() => listContentTopicCompatibility({
+      scope: { tenantId: Number.MAX_SAFE_INTEGER + 1, userId: SCOPE.userId },
+    }, db)).toThrowError(expect.objectContaining({ code: 'CONTENT_SCOPE_REQUIRED', status: 401 }));
   });
 
   it('updates content through immutable revisions, maps legacy state safely, and never infers scheduling or publication', () => {

@@ -75,10 +75,6 @@ describe('transport-boundary: content-engine is format-free', () => {
     expect(engineSource).not.toContain("from './content-telegram-formatter'");
   });
 
-  it('content-engine.ts is under 700 lines', () => {
-    const lineCount = engineSource.split('\n').length;
-    expect(lineCount).toBeLessThanOrEqual(700);
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

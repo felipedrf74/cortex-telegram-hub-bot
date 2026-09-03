@@ -22,6 +22,7 @@ import {
   getContentWorkspaceIdeaAngleCounts,
   getRecentContentWorkspaceIdeas,
 } from './content-workspace-idea-consumers';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export interface DedupResult {
   isDuplicate: boolean;
@@ -32,6 +33,17 @@ export interface DedupResult {
 export interface ContentDedupCandidate {
   title: string;
   angleTag?: string | null;
+}
+
+export class ContentDedupUnavailableError extends Error {
+  readonly code = 'CONTENT_DEDUP_UNAVAILABLE';
+  readonly status = 503;
+  readonly retryable = true;
+
+  constructor() {
+    super('Content duplicate detection is temporarily unavailable.');
+    this.name = 'ContentDedupUnavailableError';
+  }
 }
 
 const EXACT_MATCH_CONFIDENCE = 0.95;
@@ -158,8 +170,9 @@ export async function isDuplicateIdea(
   userId?: number,
   tenantId?: number,
 ): Promise<DedupResult> {
-  // Scope-resolution failures must still THROW (pinned contract); only the
-  // fetch/classify path below fails open.
+  // Scope-resolution and read failures both throw. Accepting a candidate when
+  // the canonical comparison set is unavailable can persist duplicates while
+  // presenting the result as verified.
   const scope = resolveRequiredContentDedupScope(userId, tenantId);
   const uid = scope.userId;
   const tid = scope.tenantId;
@@ -225,8 +238,11 @@ export async function isDuplicateIdea(
 
     return result;
   } catch (err) {
-    logger.warn({ err, userId: uid, tenantId: tid }, 'Dedup check failed — allowing idea through');
-    return { isDuplicate: false, similarTo: null, confidence: 0 };
+    logger.warn(
+      { ...safeContentLogErrorFields(err), userId: uid, tenantId: tid },
+      'Content dedup comparison set unavailable',
+    );
+    throw new ContentDedupUnavailableError();
   }
 }
 

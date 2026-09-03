@@ -6,18 +6,21 @@
 // Modes:
 //   draft    — cache-first structured draft pack, cheapest path
 //   quick    — cache-first, no deep research, cheap full-ish path (~$0.003)
-//   standard — balanced: research + signals + Claude ($0.01)
+//   standard — balanced: research + signals + governed provider routing
 //   deep     — extra research passes, longer timeout (~$0.02)
 //
-// The mode is chosen by the endpoint based on operation type.
-// iOS does NOT send a mode — the backend selects automatically.
+// The endpoint remains authoritative for the applied mode. Some generation
+// routes accept a requested mode, but runtime flags, budget policy, and the
+// operation contract may safely downgrade it.
 
 export type GenerationMode = 'draft' | 'quick' | 'standard' | 'deep';
+export type GenerationProviderSemantics = 'service_boundary' | 'resolved_provider' | 'deterministic_local';
 
 export interface GenerationMetadata {
   mode: GenerationMode;
   cacheHit: boolean;
   provider?: string;
+  providerSemantics?: GenerationProviderSemantics;
   durationMs?: number;
   researchUsed?: boolean;
 }
@@ -32,12 +35,14 @@ export function buildGenerationMeta(opts: {
   startMs: number;
   cacheHit?: boolean;
   provider?: string;
+  providerSemantics?: GenerationProviderSemantics;
   researchUsed?: boolean;
 }): GenerationMetadata {
   return {
     mode: opts.mode,
     cacheHit: opts.cacheHit ?? false,
     provider: opts.provider,
+    providerSemantics: opts.providerSemantics,
     durationMs: Date.now() - opts.startMs,
     researchUsed: opts.researchUsed ?? !['draft', 'quick'].includes(opts.mode),
   };

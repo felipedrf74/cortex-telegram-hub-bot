@@ -18,6 +18,7 @@ describe('content generation metadata', () => {
       mode: 'draft',
       cacheHit: false,
       provider: undefined,
+      providerSemantics: undefined,
       durationMs: 1000,
       researchUsed: false,
     });
@@ -30,6 +31,7 @@ describe('content generation metadata', () => {
       mode: 'quick',
       cacheHit: true,
       provider: undefined,
+      providerSemantics: undefined,
       durationMs: 1000,
       researchUsed: false,
     });
@@ -38,10 +40,12 @@ describe('content generation metadata', () => {
       mode: 'standard',
       startMs: new Date('2026-04-20T12:00:00.000Z').getTime(),
       provider: 'claude',
+      providerSemantics: 'resolved_provider',
     })).toEqual({
       mode: 'standard',
       cacheHit: false,
       provider: 'claude',
+      providerSemantics: 'resolved_provider',
       durationMs: 1000,
       researchUsed: true,
     });

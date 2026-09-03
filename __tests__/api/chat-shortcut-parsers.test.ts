@@ -2,6 +2,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  inspectContentCreativeShortcut,
+  parseContentCreativeShortcut,
   parseContentScriptShortcut,
   parseContentStateShortcut,
   parseFinanceStateShortcut,
@@ -12,6 +14,63 @@ import {
 } from '../../src/api/routes/chat-shortcut-parsers';
 
 describe('chat shortcut parsers', () => {
+  it('parses each advertised Content creative slash command without losing its subject', () => {
+    expect(parseContentCreativeShortcut('/hooks A calm product launch')).toEqual({
+      operation: 'hooks',
+      topic: 'A calm product launch',
+    });
+    expect(parseContentCreativeShortcut('/titles A calm product launch')).toEqual({
+      operation: 'titles',
+      topic: 'A calm product launch',
+    });
+    expect(parseContentCreativeShortcut('/genthumbnail A calm product launch')).toEqual({
+      operation: 'thumbnail',
+      topic: 'A calm product launch',
+      title: 'A calm product launch',
+    });
+    expect(parseContentCreativeShortcut('/gencaption A calm product launch')).toEqual({
+      operation: 'caption',
+      topic: 'A calm product launch',
+    });
+    expect(parseContentCreativeShortcut('/repurpose A long source draft')).toEqual({
+      operation: 'repurpose',
+      topic: 'A long source draft',
+      sourceContent: 'A long source draft',
+    });
+  });
+
+  it('does not reinterpret natural-language creative requests as explicit slash commands', () => {
+    expect(parseContentCreativeShortcut('Give me hooks for a product launch')).toBeNull();
+    expect(parseContentCreativeShortcut('/hooks')).toBeNull();
+  });
+
+  it('rejects control-bearing and route-oversized creative slash commands', () => {
+    expect(parseContentCreativeShortcut('/hooks safe\u0000hidden')).toBeNull();
+    expect(parseContentCreativeShortcut('/hooks first line\nsecond line')).toBeNull();
+    expect(parseContentCreativeShortcut(`/hooks ${'x'.repeat(2_001)}`)).toBeNull();
+    expect(parseContentCreativeShortcut(`/genthumbnail ${'x'.repeat(1_401)}`)).toBeNull();
+    expect(parseContentCreativeShortcut('/repurpose line one\nline two')).toMatchObject({
+      operation: 'repurpose',
+      topic: 'line one line two',
+      sourceContent: 'line one\nline two',
+    });
+  });
+
+  it('distinguishes malformed advertised commands from unrelated text', () => {
+    expect(inspectContentCreativeShortcut('Give me hooks')).toEqual({ status: 'not_recognized' });
+    expect(inspectContentCreativeShortcut('/hooks')).toEqual({
+      status: 'invalid',
+      command: 'hooks',
+      reason: 'subject_required',
+    });
+    expect(inspectContentCreativeShortcut('/titles first line\nsecond line')).toEqual({
+      status: 'invalid',
+      command: 'titles',
+      reason: 'single_line_required',
+    });
+    expect(inspectContentCreativeShortcut('/hooks-extra topic')).toEqual({ status: 'not_recognized' });
+  });
+
   it('parses content script generation shortcuts without language qualifiers in the topic', () => {
     expect(parseContentScriptShortcut('Escreve um roteiro curto sobre recuperação depois de intervalos duros em português europeu')).toEqual({
       topic: 'recuperação depois de intervalos duros',

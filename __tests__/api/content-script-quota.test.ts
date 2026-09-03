@@ -266,6 +266,80 @@ describe('Content API — script quota enforcement', () => {
     expect(mockGetScriptProvider).not.toHaveBeenCalled();
   });
 
+  it('rejects an oversized synchronous topic before provider or budget admission', async () => {
+    const response = await dispatch({
+      topic: 'x'.repeat(2_001),
+      format: 'Reel',
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+      details: {
+        field: 'topic',
+        maxChars: 2_000,
+        actualChars: 2_001,
+        truncated: false,
+      },
+    });
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockGetScriptProvider).not.toHaveBeenCalled();
+  });
+
+  it('admits the exact synchronous topic boundary before normal budget policy', async () => {
+    const response = await dispatch({
+      topic: 'x'.repeat(2_000),
+      format: 'Reel',
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.body.error.code).toBe('AI_DAILY_LIMIT_REACHED');
+    expect(mockWithAiBudgetReservation).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an oversized regeneration seed without truncating or admitting budget', async () => {
+    const response = await dispatch({
+      topic: 'How to recover after hard intervals',
+      format: 'Reel',
+      forceRefresh: true,
+      regenerationSeed: 'r'.repeat(121),
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_SCRIPT_INPUT_TOO_LARGE',
+      details: {
+        field: 'regenerationSeed',
+        maxChars: 120,
+        actualChars: 121,
+        truncated: false,
+      },
+    });
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockGetScriptProvider).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['niche', { audience: 'creators' }],
+    ['regenerationSeed', 42],
+    ['niche', null],
+    ['regenerationSeed', null],
+  ])('rejects an explicit non-string %s before provider or budget admission', async (field, value) => {
+    const response = await dispatch({
+      topic: 'How to recover after hard intervals',
+      format: 'Reel',
+      [field]: value,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'CONTENT_VALIDATION_FAILED',
+      details: { field },
+    });
+    expect(mockWithAiBudgetReservation).not.toHaveBeenCalled();
+    expect(mockGetScriptProvider).not.toHaveBeenCalled();
+  });
+
   it('does not reserve cloud dollars before an enrolled local-primary script attempt', async () => {
     localRoutingState.contentProxyEnabled = true;
     localRoutingState.mode = 'active';

@@ -2,7 +2,6 @@
 
 import { getUnreadNotifications } from './content-notification-store';
 import { getDb } from './database';
-import { logger } from '../utils/logger';
 import type { Lang } from '../utils/i18n';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import {
@@ -11,7 +10,14 @@ import {
   contentPrivateScopePredicate,
   ensureContentTenantScopeColumns,
 } from './content-tenant-scope';
-import { readRankedSignals } from './intelligence-bus';
+import {
+  CONTENT_DERIVED_CACHE_SIGNAL_TYPES,
+  readRankedSignals,
+} from './intelligence-bus';
+import {
+  filterActiveContentAgentSignals,
+  PAUSED_CONTENT_AGENT_IDS,
+} from './content-agent-lifecycle';
 import {
   getFilmingRecommendation,
   getTopics,
@@ -48,11 +54,23 @@ export type ContentExecutionMode =
   | 'film_window'
   | 'discovery';
 
+export type ContentExecutionDateSemantics =
+  | 'private_deadline'
+  | 'recommended_work_date'
+  | 'none';
+
 export interface ContentExecutionHint {
   mode: ContentExecutionMode;
   title: string;
   summary: string;
+  /**
+   * Compatibility date field. Consumers must use `dateSemantics` before
+   * presenting it: topic dates are private deadlines and filming dates are
+   * recommendations. Neither proves a calendar reservation or publish slot.
+   */
   scheduledDate: string | null;
+  dateSemantics: ContentExecutionDateSemantics;
+  calendarConfirmed: boolean;
   confidence: 'high' | 'medium' | 'low';
   sourceType: string;
 }
@@ -80,8 +98,7 @@ export function getActiveContentPillars(
     return [];
   }
 
-  try {
-    // Closed-beta-auth-hardening (2026-05-04): strict per-user read.
+  // Closed-beta-auth-hardening (2026-05-04): strict per-user read.
     // The previous query was `user_id IN (0, ?)` which returned both
     // the user's rows AND any `user_id=0` "platform seed" rows. The
     // post-filter at lines 84-89 (pre-fix) tried to limit the leak,
@@ -101,9 +118,9 @@ export function getActiveContentPillars(
     // `content-workflow.ts`, `scorer.py`, and `orchestrator.py`, so
     // first-touch users are no longer pushed into a founder pillar
     // set even on the AI-driven path.
-    const db = getDb();
-    ensureContentTenantScopeColumns(db);
-    const rows = db.prepare(`
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  const rows = db.prepare(`
       SELECT name, keywords, weight, user_id
       FROM config_pillars
       WHERE enabled = 1
@@ -116,20 +133,16 @@ export function getActiveContentPillars(
       weight: number;
     }>;
 
-    const deduped = new Map<string, ContentPillarSummary>();
-    for (const row of rows) {
-      if (!deduped.has(row.name)) {
-        deduped.set(row.name, {
-          name: row.name,
-          keywordCount: safeJsonArray(row.keywords).length,
-        });
-      }
+  const deduped = new Map<string, ContentPillarSummary>();
+  for (const row of rows) {
+    if (!deduped.has(row.name)) {
+      deduped.set(row.name, {
+        name: row.name,
+        keywordCount: safeJsonArray(row.keywords).length,
+      });
     }
-    return Array.from(deduped.values());
-  } catch (err) {
-    logger.debug({ err, userId }, 'Content intelligence: active pillars query failed');
-    return [];
   }
+  return Array.from(deduped.values());
 }
 
 export function getContentDeskItems(
@@ -142,25 +155,20 @@ export function getContentDeskItems(
     return [];
   }
 
-  try {
-    return getUnreadNotifications(userId, limit * 3, tenantId)
-      .filter((notification) => (
-        notification.type === 'topic_candidates_ready'
-        || notification.type === 'script_ready'
-        || notification.type === 'weekly_package_ready'
-      ))
-      .slice(0, limit)
-      .map((notification) => ({
-        id: notification.id,
-        type: notification.type,
-        title: notification.title,
-        body: notification.body,
-        createdAt: notification.createdAt,
-      }));
-  } catch (err) {
-    logger.debug({ err, userId }, 'Content intelligence: desk items query failed');
-    return [];
-  }
+  return getUnreadNotifications(userId, limit * 3, tenantId)
+    .filter((notification) => (
+      notification.type === 'topic_candidates_ready'
+      || notification.type === 'script_ready'
+      || notification.type === 'weekly_package_ready'
+    ))
+    .slice(0, limit)
+    .map((notification) => ({
+      id: notification.id,
+      type: notification.type,
+      title: notification.title,
+      body: notification.body,
+      createdAt: notification.createdAt,
+    }));
 }
 
 export function getRankedContentSignals(
@@ -173,38 +181,26 @@ export function getRankedContentSignals(
     return [];
   }
 
-  try {
-    return readRankedSignals(
-      'content-intelligence',
-      [
-        'reaction_opportunity',
-        'trending_spike',
-        'competitor_upload',
-        'hook_effectiveness',
-        'pillar_performance',
-        'learning_digest',
-        'creator_learning_digest',
-        'content_formula',
-        'pipeline_bottleneck',
-      ],
-      {
-        userId,
-        tenantId,
-        limit,
-        minConfidence: 0.2,
-      },
-    ).map((signal) => ({
-      type: signal.signal_type,
-      title: describeContentSignalTitle(signal),
-      summary: describeContentSignalSummary(signal),
-      priority: signal.priority,
-      relevanceScore: signal.relevanceScore,
-      confidence: signal.confidence,
-    }));
-  } catch (err) {
-    logger.debug({ err, userId, tenantId, limit }, 'Content intelligence: ranked signals query failed');
-    return [];
-  }
+  const rankedSignals = readRankedSignals(
+    'content-intelligence',
+    [...CONTENT_DERIVED_CACHE_SIGNAL_TYPES],
+    {
+      userId,
+      tenantId,
+      limit,
+      minConfidence: 0.2,
+      excludeSourceAgents: PAUSED_CONTENT_AGENT_IDS,
+      strict: true,
+    },
+  );
+  return filterActiveContentAgentSignals(rankedSignals).map((signal) => ({
+    type: signal.signal_type,
+    title: describeContentSignalTitle(signal),
+    summary: describeContentSignalSummary(signal),
+    priority: signal.priority,
+    relevanceScore: signal.relevanceScore,
+    confidence: signal.confidence,
+  }));
 }
 
 export async function getNextContentExecutionHint(
@@ -238,12 +234,12 @@ export async function getNextContentExecutionHint(
     return {
       mode: 'publish_ready',
       title: readyScheduled.title,
-      summary: readyScheduled.scheduled_date
-        ? `Ready to ship and already aligned for ${readyScheduled.scheduled_date}.`
-        : 'Ready to ship next.',
+      summary: `Ready to publish; the private target deadline is ${readyScheduled.scheduled_date}. No publishing slot is confirmed.`,
       scheduledDate: readyScheduled.scheduled_date,
+      dateSemantics: 'private_deadline',
+      calendarConfirmed: false,
       confidence: 'high',
-      sourceType: 'topic_ready',
+      sourceType: 'topic_ready_deadline',
     };
   }
 
@@ -252,8 +248,10 @@ export async function getNextContentExecutionHint(
     return {
       mode: 'publish_ready',
       title: readyTopic.title,
-      summary: 'Ready to ship next once the calendar slot is protected.',
+      summary: 'Ready to publish; no publishing slot is confirmed.',
       scheduledDate: readyTopic.scheduled_date,
+      dateSemantics: 'none',
+      calendarConfirmed: false,
       confidence: 'high',
       sourceType: 'topic_ready',
     };
@@ -266,6 +264,8 @@ export async function getNextContentExecutionHint(
       title: scriptReady.title,
       summary: scriptReady.body || 'Script is already on the desk and can move forward now.',
       scheduledDate: null,
+      dateSemantics: 'none',
+      calendarConfirmed: false,
       confidence: 'high',
       sourceType: 'desk_item',
     };
@@ -281,6 +281,8 @@ export async function getNextContentExecutionHint(
       title: reactionSignal.title,
       summary: reactionSignal.summary,
       scheduledDate: null,
+      dateSemantics: 'none',
+      calendarConfirmed: false,
       confidence: reactionSignal.priority === 'urgent'
         ? 'high'
         : reactionSignal.confidence >= 0.6
@@ -294,8 +296,10 @@ export async function getNextContentExecutionHint(
     return {
       mode: 'film_window',
       title: 'Filming window',
-      summary: filmingRecommendation.reason,
+      summary: `${filmingRecommendation.reason} This is a recommendation, not a reserved calendar block.`,
       scheduledDate: filmingRecommendation.date,
+      dateSemantics: 'recommended_work_date',
+      calendarConfirmed: false,
       confidence: filmingRecommendation.confidence,
       sourceType: 'filming_recommendation',
     };
@@ -306,8 +310,12 @@ export async function getNextContentExecutionHint(
     return {
       mode: 'discovery',
       title: draftingTopic.title,
-      summary: 'There is already a topic in motion, but it still needs direction before execution.',
+      summary: draftingTopic.scheduled_date
+        ? `There is already a topic in motion with a private target deadline of ${draftingTopic.scheduled_date}, but it still needs direction before execution.`
+        : 'There is already a topic in motion, but it still needs direction before execution.',
       scheduledDate: draftingTopic.scheduled_date,
+      dateSemantics: draftingTopic.scheduled_date ? 'private_deadline' : 'none',
+      calendarConfirmed: false,
       confidence: 'medium',
       sourceType: 'topic_pipeline',
     };
@@ -319,6 +327,8 @@ export async function getNextContentExecutionHint(
       title: pillars[0].name,
       summary: 'This pillar is active, but it still needs a sharper angle before the next move.',
       scheduledDate: null,
+      dateSemantics: 'none',
+      calendarConfirmed: false,
       confidence: 'low',
       sourceType: 'pillar',
     };

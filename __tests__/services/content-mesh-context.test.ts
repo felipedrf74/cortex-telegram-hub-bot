@@ -93,7 +93,12 @@ describe('readContentMeshContext source health', () => {
 
     const context = await readContentMeshContext({ userId: 42, tenantId: 42, weekStart: '2026-04-13' });
 
-    expect(context.scheduledTopics).toEqual([]);
+    expect(context.deadlines).toEqual([]);
+    expect(context.unavailableSections).toEqual(expect.arrayContaining([
+      'topics',
+      'calendar',
+      'voice_dna',
+    ]));
     expect(context.sourceHealth).toEqual(expect.objectContaining({
       status: 'unavailable',
       warningCodes: ['CONTENT_STATE_UNAVAILABLE'],

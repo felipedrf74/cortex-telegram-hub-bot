@@ -768,7 +768,6 @@ describe('Secretary state context', () => {
         preferredWindows: ['Sequence the day around the tempo run.'],
         fallbackIfDeferred: ['Cut optional admin before moving the session.'],
         budgetMode: null,
-        publishDeadline: null,
         notes: [],
       },
     });

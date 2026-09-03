@@ -62,7 +62,7 @@ export function loadCreatorPromptContextForUser(
   userId?: number | null,
   tenantId?: number | null,
 ): CreatorPromptContext {
-  if (!Number.isFinite(userId) || Number(userId) <= 0) {
+  if (!Number.isSafeInteger(userId) || Number(userId) <= 0) {
     return buildCreatorPromptContext(null);
   }
   return buildCreatorPromptContext(getContentCreatorProfile(Number(userId), tenantId));

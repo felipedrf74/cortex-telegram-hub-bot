@@ -3,7 +3,10 @@
 import { DateTime } from 'luxon';
 import { buildEditorialCoordinationSignals } from '../agents/editorial-coordinator-agent';
 import { getCached, setCache } from './cache-store';
+import { CONTENT_AGENT_LIFECYCLE_POLICY_VERSION } from './content-agent-lifecycle';
+import { safeContentLogErrorFields } from './content-log-safety';
 import {
+  canConsumeConfirmedContentWorkSchedule,
   createEmptySecretaryMeshContext,
   createEmptyTrainingMeshContext,
   readContentMeshContext,
@@ -13,6 +16,8 @@ import {
   readTrainingMeshContext,
   type ContentMeshContext,
   type CookingCalendarStatus,
+  type ContentMeshUnavailableSection,
+  type ContentWorkPlanStatus,
   type CookingMeshContext,
   type FinanceMeshContext,
   type MeshSignalDraft,
@@ -59,6 +64,8 @@ import {
 import { unavailableWeeklyPlanSourceHealth } from './secretary-planning-snapshot';
 
 const WEEKLY_PLAN_SIGNAL_PRODUCER_VERSION = 'weekly-plan-orchestrator.v1';
+/** Bump whenever the externally cached weekly/daily Content plan shape changes. */
+export const CONTENT_PLAN_PROJECTION_VERSION = 'content-plan.v4';
 
 export interface PlanDecision {
   summary: string;
@@ -92,11 +99,50 @@ export interface WeeklyPlanCookingSummary {
 
 export interface WeeklyPlanContentItem {
   status: 'scheduled' | 'advisory' | 'blocked' | 'gated';
+  planStatus: ContentWorkPlanStatus;
+  scheduleAuthority: 'secretary';
+  scheduleAuthorityStatus: 'current' | 'partially_unavailable' | 'unavailable';
+  scheduleSemantics:
+    | 'private_work_session'
+    | 'target_date_not_publication'
+    | 'proposal_not_calendar_reservation'
+    | 'unavailable';
   title: string;
   note: string;
   blockStart: string | null;
   blockEnd: string | null;
+  /** Every current Secretary-confirmed private block on this date. */
+  confirmedBlocks: Array<{
+    itemId: number;
+    title: string;
+    /** Per-block authority remains current even when the bounded day projection is partial. */
+    authorityStatus: 'current';
+    /** Explicit confirmation marker for downstream fail-closed consumers. */
+    confirmationStatus: 'confirmed';
+    itemStatus: NonNullable<ContentMeshContext['workSchedule']['confirmedBlocks'][number]['itemStatus']> | null;
+    outcome: string | null;
+    estimatedEffortMinutes: number | null;
+    dependency: NonNullable<ContentMeshContext['workSchedule']['confirmedBlocks'][number]['dependency']> | null;
+    approvalState: NonNullable<ContentMeshContext['workSchedule']['confirmedBlocks'][number]['approvalState']> | null;
+    nextAction: NonNullable<ContentMeshContext['workSchedule']['confirmedBlocks'][number]['nextAction']> | null;
+    startsAt: string;
+    endsAt: string;
+    workKind: ContentMeshContext['workSchedule']['confirmedBlocks'][number]['workKind'];
+    state: ContentMeshContext['workSchedule']['confirmedBlocks'][number]['state'];
+    contentChangedSinceScheduling: boolean;
+  }>;
   decisions: PlanDecision[];
+}
+
+export interface WeeklyPlanContentScheduleSummary {
+  authority: 'secretary';
+  authorityStatus: 'current' | 'partially_unavailable' | 'unavailable';
+  planStatus: ContentWorkPlanStatus;
+  semantics: 'private_work_session';
+  confirmedBlockCount: number;
+  confirmedBlocksComplete: boolean;
+  attentionCount: number;
+  deadlineCount: number;
 }
 
 export interface WeeklyPlanSecretaryItem {
@@ -144,6 +190,42 @@ export interface WeeklyPlanDay {
   finance: WeeklyPlanFinanceItem | null;
 }
 
+export function isCurrentConfirmedPrivateContentBlock(
+  block: WeeklyPlanContentItem['confirmedBlocks'][number] | null | undefined,
+): boolean {
+  return Boolean(
+    block
+    && block.authorityStatus === 'current'
+    && block.confirmationStatus === 'confirmed'
+    && block.startsAt
+    && block.endsAt,
+  );
+}
+
+/**
+ * A partial top-level projection can still contain trustworthy, individually
+ * confirmed blocks. Consumers must never infer that trust from the partial
+ * aggregate alone; at least one block must carry current authority and an
+ * explicit confirmed marker.
+ */
+export function hasConfirmedPrivateContentBlock(
+  content: WeeklyPlanDay['content'],
+): content is WeeklyPlanContentItem {
+  return Boolean(
+    content?.status === 'scheduled'
+    && content.scheduleAuthority === 'secretary'
+    && (
+      content.scheduleAuthorityStatus === 'current'
+      || content.scheduleAuthorityStatus === 'partially_unavailable'
+    )
+    && (content.planStatus === 'confirmed' || content.planStatus === 'partial')
+    && content.scheduleSemantics === 'private_work_session'
+    && content.blockStart
+    && content.blockEnd
+    && content.confirmedBlocks.some(isCurrentConfirmedPrivateContentBlock),
+  );
+}
+
 export interface WeeklyPlanResponse {
   weekStart: string;
   weekEnd: string;
@@ -161,6 +243,7 @@ export interface WeeklyPlanResponse {
     headline: string;
     note: string;
   };
+  contentPlan: WeeklyPlanContentScheduleSummary;
   summary: {
     sessionCount: number;
     mealCount: number;
@@ -169,6 +252,38 @@ export interface WeeklyPlanResponse {
   days: WeeklyPlanDay[];
 }
 
+function unavailableContentPlan(): WeeklyPlanContentScheduleSummary {
+  return {
+    authority: 'secretary',
+    authorityStatus: 'unavailable',
+    planStatus: 'unavailable',
+    semantics: 'private_work_session',
+    confirmedBlockCount: 0,
+    confirmedBlocksComplete: false,
+    attentionCount: 0,
+    deadlineCount: 0,
+  };
+}
+
+function summarizeContentPlan(content: ContentMeshContext | null): WeeklyPlanContentScheduleSummary {
+  if (!content) return unavailableContentPlan();
+  if (!content.workSchedule) {
+    return {
+      ...unavailableContentPlan(),
+      deadlineCount: content.deadlines?.length ?? 0,
+    };
+  }
+  return {
+    authority: content.workSchedule.authority,
+    authorityStatus: content.workSchedule.authorityStatus,
+    planStatus: content.workSchedule.planStatus,
+    semantics: content.workSchedule.semantics,
+    confirmedBlockCount: content.workSchedule.confirmedBlocks.length,
+    confirmedBlocksComplete: content.workSchedule.confirmedBlocksComplete ?? true,
+    attentionCount: content.workSchedule.attentionCount,
+    deadlineCount: content.deadlines?.length ?? 0,
+  };
+}
 async function loadMeshContextOrFallback<T>(opts: {
   label: string;
   userId: number;
@@ -183,7 +298,12 @@ async function loadMeshContextOrFallback<T>(opts: {
     };
   } catch (err) {
     logger.warn(
-      { err, userId: opts.userId, weekStart: opts.weekStart, label: opts.label },
+      {
+        ...safeContentLogErrorFields(err),
+        userId: opts.userId,
+        weekStart: opts.weekStart,
+        label: opts.label,
+      },
       'weekly plan mesh context failed — falling back to empty context',
     );
     return {
@@ -239,11 +359,20 @@ export async function composeWeeklyPlan(opts: {
   }
   const tenantId = context.tenantId;
   const window = resolveWeekWindow(context.weekStart, context.timezone);
-  const shouldSyncSignals = opts.syncSignals === true;
+  const currentWeekStart = DateTime.fromISO(context.capturedAt, { setZone: true })
+    .setZone(context.timezone)
+    .startOf('week')
+    .toISODate();
+  // Durable mesh signals describe only the request clock's current local week.
+  // Historical and future projections must not replace that active snapshot.
+  const shouldSyncSignals = opts.syncSignals === true
+    && window.weekStart === currentWeekStart;
   const cacheKey = [
     'plan', 'week', 'u', opts.userId, 't', tenantId, window.weekStart,
     'tz', context.timezone, 'lang', context.language,
     'sync', shouldSyncSignals ? '1' : '0',
+    'content-policy', CONTENT_AGENT_LIFECYCLE_POLICY_VERSION,
+    'projection', CONTENT_PLAN_PROJECTION_VERSION,
   ].join(':');
   const ownsCache = opts.cacheMode !== 'bypass';
   if (ownsCache && !opts.forceRefresh) {
@@ -336,11 +465,25 @@ export async function composeWeeklyPlan(opts: {
   const cooking = cookingLoad.value;
   const content = contentLoad.value;
   const finance = financeLoad.value;
+  const contentSnapshotDegraded = content != null && content.availability !== 'available';
+  const contentUnavailableSections = new Set(content?.unavailableSections ?? []);
+  const contentCalendarReliable = content != null && !contentUnavailableSections.has('calendar');
+  const contentEditorialInputSections: readonly ContentMeshUnavailableSection[] = [
+    'filming_recommendation',
+    'content_desk',
+    'pillars',
+    'signals',
+    'topics',
+    'next_execution',
+  ];
+  const contentEditorialInputsReliable = content != null
+    && contentEditorialInputSections.every((section) => !contentUnavailableSections.has(section));
   let orchestrationDegraded =
     trainingLoad.degraded
     || secretaryLoad.degraded
     || cookingLoad.degraded
     || contentLoad.degraded
+    || contentSnapshotDegraded
     || financeLoad.degraded;
   if (cooking && !isCookingCalendarAvailabilityVerified(cooking.calendar?.status)) {
     orchestrationDegraded = true;
@@ -354,15 +497,27 @@ export async function composeWeeklyPlan(opts: {
   const derivedSignalDrafts = [
     ...training.derivedSignals,
     ...secretary.derivedSignals,
-    ...(cooking ? buildCookingMeshSignals(cooking, training, content, context.capturedAt) : []),
-    ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
+    ...(cooking ? buildCookingMeshSignals(
+      cooking,
+      training,
+      contentCalendarReliable ? content : null,
+      context.capturedAt,
+    ) : []),
+    ...(content
+      ? [
+          ...content.derivedSignals,
+          ...(contentEditorialInputsReliable
+            ? buildEditorialCoordinationSignals({ content, secretary, training }).signals
+            : []),
+        ]
+      : []),
     ...(finance ? finance.derivedSignals : []),
   ];
   const authoritativeSignalSources = new Set(derivedSignalDrafts.map((draft) => draft.sourceAgent));
   if (!trainingLoad.degraded) authoritativeSignalSources.add('mesh.training-context');
   if (!secretaryLoad.degraded) authoritativeSignalSources.add('mesh.secretary-context');
   if (!cookingLoad.degraded) authoritativeSignalSources.add('mesh.cooking-orchestrator');
-  if (!contentLoad.degraded) {
+  if (!contentLoad.degraded && content?.availability === 'available') {
     authoritativeSignalSources.add('mesh.content-context');
     authoritativeSignalSources.add('mesh.editorial-coordinator');
   }
@@ -384,9 +539,14 @@ export async function composeWeeklyPlan(opts: {
       : groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts, context.capturedAt);
   } catch (err) {
     orchestrationDegraded = true;
+    // Durable synchronization is an optimization over inputs already loaded
+    // for this plan. Preserve those in-memory safety/conflict directives when
+    // the signal store is unavailable instead of silently planning as though
+    // the inputs did not exist.
+    meshSignals = groupDerivedSignalDrafts(opts.userId, tenantId, derivedSignalDrafts, context.capturedAt);
     logger.warn(
-      { err, userId: opts.userId, weekStart: window.weekStart },
-      'weekly plan signal sync failed — continuing without synced mesh signals',
+      { ...safeContentLogErrorFields(err), userId: opts.userId, weekStart: window.weekStart },
+      'weekly plan signal sync failed — continuing with unsynced in-memory mesh signals',
     );
   }
 
@@ -454,6 +614,7 @@ export async function composeWeeklyPlan(opts: {
     creativeCopy: degradedQuota.over
       ? { headline: '', note: '' }
       : buildCreativeCopy(days, variant, sourceHealth, gatedSkills),
+    contentPlan: summarizeContentPlan(content),
     summary: {
       sessionCount: days.filter((day) => day.training.status !== 'rest' && day.training.status !== 'gated').length,
       mealCount: days.reduce((sum, day) => sum + day.meals.length, 0),
@@ -1025,57 +1186,92 @@ function buildDirectiveSet(opts: {
     }
   }
 
+  for (const signal of opts.meshSignals.get('sponsor_deliverable_due') ?? []) {
+    if (signal.source_agent !== 'mesh.editorial-coordinator') continue;
+    if (
+      signal.payload.status !== 'factual_constraint'
+      || signal.payload.publicationAuthority !== 'not_established'
+      || signal.payload.semantics !== 'external_deadline_not_publication_authority'
+    ) continue;
+
+    const dueAt = typeof signal.payload.dueAt === 'string' ? signal.payload.dueAt.trim() : '';
+    const parsedDueAt = dueAt.length > 0
+      ? DateTime.fromISO(dueAt, { setZone: true })
+      : DateTime.invalid('missing sponsor due date');
+    const date = parsedDueAt.isValid && Number.isFinite(parsedDueAt.toMillis())
+      ? parsedDueAt.toISODate()
+      : null;
+    if (!date) continue;
+
+    const title = typeof signal.payload.title === 'string' && signal.payload.title.trim().length > 0
+      ? signal.payload.title.trim()
+      : 'External Content deliverable';
+    directives.push({
+      id: `sponsor-deadline:${signal.id}:${date}`,
+      date,
+      target: 'primary-commitment',
+      domain: 'content',
+      summary: `${title} has an external deadline at ${dueAt}. It needs attention, but it does not reserve calendar time or authorize publication.`,
+      action: 'external-deadline-attention',
+      signalType: signal.signal_type,
+      signalId: signal.id,
+      meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
+    });
+  }
+
   for (const signal of opts.meshSignals.get('shoot_day_locked') ?? []) {
     const date = typeof signal.payload.date === 'string' ? signal.payload.date : null;
-    if (date) {
+    const itemId = typeof signal.payload.itemId === 'number' ? signal.payload.itemId : null;
+    const blockStart = typeof signal.payload.blockStart === 'string' ? signal.payload.blockStart : null;
+    const blockEnd = typeof signal.payload.blockEnd === 'string' ? signal.payload.blockEnd : null;
+    const confirmedSchedule = canConsumeConfirmedContentWorkSchedule(opts.content?.workSchedule)
+      ? opts.content!.workSchedule
+      : null;
+    const canonicalBlock = confirmedSchedule?.confirmedBlocks.find((block) => (
+      block.workKind === 'record'
+      && block.authority === 'secretary'
+      && block.authorityStatus === 'current'
+      && block.semantics === 'private_work_session'
+      && isConfirmedContentBlockState(block.state)
+      && block.itemId === itemId
+      && block.date === date
+      && block.startsAt === blockStart
+      && block.endsAt === blockEnd
+    ));
+    const confirmedBySecretary = signal.payload.planStatus === 'confirmed'
+      && signal.payload.scheduleAuthority === 'secretary'
+      && signal.payload.scheduleAuthorityStatus === 'current'
+      && signal.payload.semantics === 'private_work_session'
+      && signal.payload.workKind === 'filming'
+      && signal.payload.sourceWorkKind === canonicalBlock?.workKind
+      && signal.payload.sourceState === canonicalBlock?.state
+      && signal.payload.providerAttention === (canonicalBlock?.state === 'sync_failed')
+      && signal.source_agent === 'mesh.editorial-coordinator'
+      && canonicalBlock != null;
+    if (date && confirmedBySecretary && canonicalBlock) {
+      const title = canonicalBlock.title;
+      const externalDeadline = directives.find((directive) => (
+        directive.date === date
+        && directive.signalType === 'sponsor_deliverable_due'
+        && directive.action === 'external-deadline-attention'
+      ));
       directives.push({
         id: `shoot:${signal.id}:${date}`,
         date,
         target: 'primary-commitment',
         domain: 'content',
-        summary: 'Filming slot is ready to lock',
+        summary: `${title} has a Secretary-confirmed private filming block.`,
         action: 'shoot',
         signalType: signal.signal_type,
         signalId: signal.id,
-        meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
+        // Bring the exact confirmed block into the same bounded negotiation as
+        // a same-day external deadline. The resolver then preserves the block
+        // as the only protected time while retaining the deadline as attention.
+        meshPriority: externalDeadline?.meshPriority
+          ?? signal.meshPriority
+          ?? defaultMeshPriorityForSignal(signal.signal_type),
       });
     }
-  }
-
-  for (const signal of opts.meshSignals.get('publishing_commitment') ?? []) {
-    const dates = readDateList(signal.payload.dates);
-    const topicTitlesByDate = readPublishingTopicTitlesByDate(signal.payload.topics);
-    for (const date of dates) {
-      const titles = topicTitlesByDate.get(date) ?? [];
-      directives.push({
-        id: `publish:${signal.id}:${date}`,
-        date,
-        target: 'content-execution',
-        domain: 'content',
-        summary: titles.length > 0
-          ? `Publishing is due for ${titles.join(', ')}.`
-          : 'A publishing commitment is due on this day.',
-        action: 'publish',
-        signalType: signal.signal_type,
-        signalId: signal.id,
-        meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
-      });
-    }
-  }
-
-  for (const signal of opts.meshSignals.get('sponsor_deliverable_due') ?? []) {
-    const date = opts.content?.filmingRecommendation?.date ?? opts.training.weekStart;
-    directives.push({
-      id: `sponsor:${signal.id}:${date}`,
-      date,
-      target: 'primary-commitment',
-      domain: 'content',
-      summary: 'Sponsor deliverable needs a committed slot',
-      action: 'sponsor',
-      signalType: signal.signal_type,
-      signalId: signal.id,
-      meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
-    });
   }
 
   for (const signal of opts.meshSignals.get('content_capture_opportunity') ?? []) {
@@ -1097,7 +1293,7 @@ function buildDirectiveSet(opts: {
       date,
       target: 'content-execution',
       domain: 'content',
-      summary: reason ?? defaultContentExecutionSummary(angle, title),
+      summary: `Proposal: ${reason ?? defaultContentExecutionSummary(angle, title)}`,
       action: normalizeContentExecutionAction(angle),
       signalType: signal.signal_type,
       signalId: signal.id,
@@ -1127,7 +1323,7 @@ function defaultContentExecutionSummary(angle: string | null, title: string): st
     case 'script_ready':
       return `Script is ready for ${title} — move it into execution.`;
     case 'publish_ready':
-      return `Content is ready to ship for ${title}.`;
+      return `A publication candidate is ready for review for ${title}.`;
     case 'film_window':
       return `Capture window is open for ${title}.`;
     default:
@@ -1135,59 +1331,90 @@ function defaultContentExecutionSummary(angle: string | null, title: string): st
   }
 }
 
-function contentExecutionTitle(action: string | null, hasFilmingBlock: boolean): string {
+function contentExecutionTitle(action: string | null, hasConfirmedBlock: boolean): string {
   switch (action) {
     case 'reaction_window':
-      return hasFilmingBlock ? 'Capture + reaction window' : 'Reaction content window';
+      return hasConfirmedBlock ? 'Confirmed block + reaction proposal' : 'Reaction content proposal';
     case 'script_ready':
-      return 'Script ready to move';
+      return hasConfirmedBlock ? 'Confirmed block for a ready script' : 'Ready-script work proposal';
     case 'publish_ready':
-      return 'Ready to ship';
-    case 'publish':
-      return hasFilmingBlock ? 'Capture + publishing day' : 'Publishing commitment';
+      return hasConfirmedBlock ? 'Confirmed review block' : 'Publication candidate for review';
     case 'film_window':
-      return hasFilmingBlock ? 'Capture window protected' : 'Content execution window';
+      return hasConfirmedBlock ? 'Confirmed capture block' : 'Capture-window proposal';
     default:
-      return hasFilmingBlock ? 'Capture + content execution' : 'Content execution window';
+      return hasConfirmedBlock ? 'Confirmed Content work block' : 'Content work proposal';
   }
+}
+
+function contentWorkKindLabel(
+  workKind: ContentMeshContext['workSchedule']['confirmedBlocks'][number]['workKind'],
+): string {
+  switch (workKind) {
+    case 'record': return 'filming';
+    case 'edit': return 'editing';
+    case 'write': return 'writing';
+    case 'revise': return 'revision';
+    case 'publish_prep': return 'publication-preparation';
+    default: return workKind.replace(/_/g, ' ');
+  }
+}
+
+function isConfirmedContentBlockState(state: string): state is 'scheduled' | 'provider_synced' | 'sync_failed' {
+  return state === 'scheduled' || state === 'provider_synced' || state === 'sync_failed';
+}
+
+function isExternalContentDeadlineDirective(
+  directive: MeshDirective | undefined,
+): directive is MeshDirective {
+  return directive?.signalType === 'sponsor_deliverable_due'
+    && directive.action === 'external-deadline-attention';
+}
+
+function includesMergedExternalContentDeadline(directive: MeshDirective | undefined): boolean {
+  return directive?.signalType === 'shoot_day_locked'
+    && directive.summary.startsWith('A sponsor deadline needs attention,');
+}
+
+function isConfirmedShootDirective(directive: MeshDirective | undefined): directive is MeshDirective {
+  return directive?.signalType === 'shoot_day_locked' && directive.action === 'shoot';
 }
 
 function secretaryContentExecutionSequenceStep(directive: MeshDirective): string {
   switch (directive.action) {
     case 'reaction_window':
-      return 'Protect a fast reaction slot while the context is still fresh.';
+      return 'Review a fast reaction-slot proposal while the context is still fresh.';
     case 'script_ready':
-      return 'Protect a short production slot so the ready script actually moves this week.';
+      return 'Review a short production-slot proposal for the ready script.';
     case 'film_window':
-      return 'Protect a real capture slot while the content window is still usable.';
+      return 'Review a capture-slot proposal while the content window is still usable.';
     default:
-      return 'Reserve a real publish/delivery slot so content ships deliberately instead of becoming leftover work.';
+      return 'Review the proposed Content work slot; it is not reserved until Secretary confirms it.';
   }
 }
 
 function secretaryContentPrimarySequenceStep(directive: MeshDirective): string {
   switch (directive.action) {
     case 'reaction_window':
-      return 'Use the filming or reaction block only after the core execution slot is protected.';
+      return 'Use the confirmed private work block; keep the reaction idea secondary to its recorded purpose.';
     case 'script_ready':
-      return 'Use the filming or sponsor block only after the ready-script execution slot is protected.';
+      return 'Use the confirmed private work block for the ready script without inferring publication.';
     case 'film_window':
-      return 'Use the filming block only after the content execution slot is protected.';
+      return 'Use the confirmed private work block for capture; it does not publish content.';
     default:
-      return 'Use the filming or sponsor block only after the publish/delivery commitment is protected.';
+      return 'Honor the Secretary-confirmed private work block without treating it as a publishing commitment.';
   }
 }
 
 function secretaryContentExecutionTradeoffLabel(directive: MeshDirective): string {
   switch (directive.action) {
     case 'reaction_window':
-      return 'the reaction window still needs a real slot';
+      return 'the reaction-window proposal still needs Secretary confirmation';
     case 'script_ready':
-      return 'the ready script still needs a real execution slot';
+      return 'the ready-script proposal still needs Secretary confirmation';
     case 'film_window':
-      return 'the capture window still needs a real slot';
+      return 'the capture-window proposal still needs Secretary confirmation';
     default:
-      return 'publishing still needs a real slot';
+      return 'the Content work proposal still needs Secretary confirmation';
   }
 }
 
@@ -1288,7 +1515,6 @@ function buildPlanDay(opts: {
   const headline = buildDayHeadline(
     trainingItem,
     contentItem,
-    opts.secretary.sourceHealth?.calendar.status === 'ready',
     availabilityDirective,
     mealCoverageDirective,
   );
@@ -1310,10 +1536,15 @@ function buildPlanDay(opts: {
     content: opts.gatedSkills.includes('content')
       ? {
           status: 'gated',
+          planStatus: 'unavailable',
+          scheduleAuthority: 'secretary',
+          scheduleAuthorityStatus: 'unavailable',
+          scheduleSemantics: 'unavailable',
           title: 'Content gated',
           note: 'Upgrade to unlock content coordination in the mesh plan.',
           blockStart: null,
           blockEnd: null,
+          confirmedBlocks: [],
           decisions: [],
         }
       : contentItem,
@@ -1614,98 +1845,194 @@ function buildContentItem(
 ): WeeklyPlanContentItem | null {
   const recommendation = content.filmingRecommendation;
   const filmingToday = recommendation?.date === date ? recommendation : null;
-  if (!filmingToday && !contentExecutionDirective && deferredPrimaryDirective?.domain !== 'content') {
+  const deadlineToday = content.deadlines?.find((deadline) => deadline.date === date) ?? null;
+  const externalDeadlineDirective = isExternalContentDeadlineDirective(primaryDirective)
+    || includesMergedExternalContentDeadline(primaryDirective)
+    ? primaryDirective
+    : isExternalContentDeadlineDirective(deferredPrimaryDirective)
+      ? deferredPrimaryDirective
+      : undefined;
+  const confirmedSchedule = canConsumeConfirmedContentWorkSchedule(content.workSchedule)
+    ? content.workSchedule
+    : null;
+  const confirmedBlocks = (confirmedSchedule?.confirmedBlocks ?? [])
+    .filter((block) => (
+      block.date === date
+      && block.authority === 'secretary'
+      && block.authorityStatus === 'current'
+      && block.semantics === 'private_work_session'
+      && isConfirmedContentBlockState(block.state)
+    ))
+    .sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+  const confirmedBlock = confirmedBlocks[0] ?? null;
+  const publicConfirmedBlocks: WeeklyPlanContentItem['confirmedBlocks'] = confirmedBlocks.map((block) => ({
+    itemId: block.itemId,
+    title: block.title,
+    authorityStatus: block.authorityStatus,
+    confirmationStatus: 'confirmed',
+    itemStatus: block.itemStatus ?? null,
+    outcome: block.outcome ?? null,
+    estimatedEffortMinutes: block.estimatedEffortMinutes ?? null,
+    dependency: block.dependency ?? null,
+    approvalState: block.approvalState ?? null,
+    nextAction: block.nextAction ?? null,
+    startsAt: block.startsAt,
+    endsAt: block.endsAt,
+    workKind: block.workKind,
+    state: block.state,
+    contentChangedSinceScheduling: block.contentChangedSinceScheduling,
+  }));
+  const scheduleAuthorityStatus = content.workSchedule?.authorityStatus ?? 'unavailable';
+  const basePlanStatus = content.workSchedule?.planStatus ?? 'unavailable';
+  const effectivePlanStatus: ContentWorkPlanStatus = basePlanStatus === 'unplanned'
+    && (filmingToday != null || contentExecutionDirective != null)
+    ? 'proposed'
+    : basePlanStatus;
+  const hasContentProposal = filmingToday != null || contentExecutionDirective != null;
+  const hasDeferredConfirmedBlock = isConfirmedShootDirective(deferredPrimaryDirective);
+
+  if (!confirmedBlock && !deadlineToday && !externalDeadlineDirective && !hasContentProposal && !hasDeferredConfirmedBlock) {
     return null;
   }
 
-  if (availabilityDirective) {
-    return {
-      status: 'blocked',
-      title: contentExecutionDirective ? 'Content work deferred' : 'Filming deferred',
-      note: contentExecutionDirective
-        ? `Content execution should wait because ${availabilityDirective.summary.toLowerCase()}.`
-        : `Filming should wait because ${availabilityDirective.summary.toLowerCase()}.`,
-      blockStart: filmingToday?.blockStart ?? null,
-      blockEnd: filmingToday?.blockEnd ?? null,
-      decisions: compactDirectives([contentExecutionDirective, availabilityDirective]),
-    };
-  }
-
-  if (!contentExecutionDirective && primaryDirective?.domain === 'finance') {
-    return {
-      status: 'blocked',
-      title: deferredPrimaryDirective?.domain === 'content' ? 'Content commitment deferred' : 'Filming deferred',
-      note: deferredPrimaryDirective?.domain === 'content'
-        ? `${deferredPrimaryDirective.summary} It still needs a protected slot after the finance/admin block clears.`
-        : 'A higher-priority finance deadline needs this day first.',
-      blockStart: filmingToday?.blockStart ?? null,
-      blockEnd: filmingToday?.blockEnd ?? null,
-      decisions: compactDirectives([primaryDirective, deferredPrimaryDirective]),
-    };
-  }
-
-  if (!contentExecutionDirective && deferredPrimaryDirective?.domain === 'content') {
-    return {
-      status: 'blocked',
-      title: 'Content commitment deferred',
-      note: `${deferredPrimaryDirective.summary} Keep it visible as the next protected block after today's higher-priority obligation.`,
-      blockStart: filmingToday?.blockStart ?? null,
-      blockEnd: filmingToday?.blockEnd ?? null,
-      decisions: compactDirectives([primaryDirective, deferredPrimaryDirective]),
-    };
-  }
-
-  if (contentExecutionDirective) {
-    const contentExecutionAction = contentExecutionDirective.action ?? null;
-    const hasFilmingBlock = primaryDirective?.domain === 'content'
-      && primaryDirective.action === 'shoot'
-      && Boolean(filmingToday);
+  if (confirmedBlock) {
+    const conflict = availabilityDirective
+      ?? (primaryDirective?.domain === 'finance' ? primaryDirective : undefined)
+      ?? (hasDeferredConfirmedBlock ? deferredPrimaryDirective : undefined);
     const noteParts = [
-      contentExecutionDirective.summary,
-      hasFilmingBlock
-        ? contentExecutionAction === 'reaction_window'
-          ? 'Use the protected capture block while the reaction window is still fresh.'
-          : 'Use the filming block as the capture pass, then finish the publishing handoff the same day.'
-        : filmingToday?.reason,
-      primaryDirective?.domain === 'finance'
-        ? contentExecutionAction === 'publish' || contentExecutionAction === 'publish_ready'
-          ? 'Finance/admin still takes the first protected slot, so content should ship after that block.'
-          : 'Finance/admin still takes the first protected slot, so content should move after that block.'
+      `${confirmedBlock.title} has a current Secretary-confirmed private ${contentWorkKindLabel(confirmedBlock.workKind)} block.`,
+      'It reserves work time only; it is not evidence of publication or a promise to publish.',
+      confirmedBlock.state === 'sync_failed'
+        ? 'Provider sync needs attention, but the current local Secretary block remains confirmed.'
         : null,
-      deferredPrimaryDirective?.domain === 'content'
-        ? `${deferredPrimaryDirective.summary} should stay visible after the protected slot.`
+      deadlineToday
+        ? `${deadlineToday.title} also has an advisory target date today; that target does not publish or reserve time.`
+        : null,
+      externalDeadlineDirective
+        ? externalDeadlineDirective.summary
+        : null,
+      contentExecutionDirective
+        ? `${contentExecutionDirective.summary} Treat this as guidance inside the confirmed block, not as added calendar authority.`
+        : null,
+      confirmedBlock.contentChangedSinceScheduling
+        ? 'The content changed after scheduling, so review the block purpose before starting.'
+        : null,
+      confirmedBlocks.length > 1
+        ? `${confirmedBlocks.length - 1} additional Secretary-confirmed private Content block(s) are also preserved in confirmedBlocks for this date.`
+        : null,
+      content.workSchedule.confirmedBlocksComplete === false
+        ? 'The bounded calendar projection was truncated, so confirmedBlocks is partial and Secretary authority requires attention before treating this as the complete day plan.'
+        : null,
+      conflict
+        ? `${conflict.summary} Ask Secretary to reconcile the conflict; this planner does not move or cancel the confirmed block.`
         : null,
       spendingDirective
-        ? `Keep the execution path lower-friction because ${spendingDirective.summary.toLowerCase()}.`
+        ? `Keep the work path lower-friction because ${spendingDirective.summary.toLowerCase()}.`
         : null,
     ].filter((value): value is string => Boolean(value));
 
     return {
+      // A collision does not erase the canonical reservation. Keep the block
+      // scheduled and surface reconciliation through title/note/decisions.
       status: 'scheduled',
-      title: contentExecutionTitle(contentExecutionAction, hasFilmingBlock),
+      planStatus: effectivePlanStatus,
+      scheduleAuthority: confirmedBlock.authority,
+      scheduleAuthorityStatus,
+      scheduleSemantics: 'private_work_session',
+      title: conflict
+        ? 'Confirmed Content block needs review'
+        : confirmedBlock.state === 'sync_failed'
+          ? 'Confirmed Content block needs provider attention'
+        : contentExecutionTitle(contentExecutionDirective?.action ?? null, true),
       note: noteParts.join(' '),
-      blockStart: filmingToday?.blockStart ?? null,
-      blockEnd: filmingToday?.blockEnd ?? null,
+      blockStart: confirmedBlock.startsAt,
+      blockEnd: confirmedBlock.endsAt,
+      confirmedBlocks: publicConfirmedBlocks,
       decisions: compactDirectives([
+        primaryDirective?.domain === 'content' ? primaryDirective : undefined,
+        externalDeadlineDirective !== primaryDirective ? externalDeadlineDirective : undefined,
         contentExecutionDirective,
-        hasFilmingBlock ? primaryDirective : undefined,
-        primaryDirective?.domain === 'finance' ? primaryDirective : undefined,
-        deferredPrimaryDirective?.domain === 'content' ? deferredPrimaryDirective : undefined,
+        conflict,
         spendingDirective,
       ]),
     };
   }
 
+  if (deadlineToday || externalDeadlineDirective) {
+    const deadlinePlanStatus: ContentWorkPlanStatus = scheduleAuthorityStatus === 'unavailable'
+      ? 'unavailable'
+      : scheduleAuthorityStatus === 'partially_unavailable'
+        ? 'partial'
+        : hasContentProposal
+          ? 'proposed'
+          : 'unplanned';
+    const noteParts = [
+      deadlineToday ? `${deadlineToday.title} has a target date today.` : null,
+      externalDeadlineDirective?.summary ?? null,
+      'This deadline attention is advisory: it is not a publication event and does not reserve calendar time.',
+      hasContentProposal
+        ? 'A separate work proposal exists, but Secretary has not confirmed a private Content block.'
+        : 'No Secretary-confirmed private Content block exists for this date.',
+      availabilityDirective ? availabilityDirective.summary : null,
+      spendingDirective
+        ? `Keep any chosen work lower-friction because ${spendingDirective.summary.toLowerCase()}.`
+        : null,
+    ].filter((value): value is string => Boolean(value));
+
+    return {
+      status: 'advisory',
+      planStatus: deadlinePlanStatus,
+      scheduleAuthority: 'secretary',
+      scheduleAuthorityStatus,
+      scheduleSemantics: 'target_date_not_publication',
+      title: externalDeadlineDirective ? 'External Content deadline attention' : 'Content deadline target',
+      note: noteParts.join(' '),
+      blockStart: null,
+      blockEnd: null,
+      confirmedBlocks: [],
+      decisions: compactDirectives([
+        contentExecutionDirective,
+        externalDeadlineDirective,
+        availabilityDirective,
+        primaryDirective?.domain === 'finance' ? primaryDirective : undefined,
+        spendingDirective,
+      ]),
+    };
+  }
+
+  const conflict = availabilityDirective
+    ?? (primaryDirective?.domain === 'finance' ? primaryDirective : undefined)
+    ?? (hasDeferredConfirmedBlock ? deferredPrimaryDirective : undefined);
+  const contentExecutionAction = contentExecutionDirective?.action ?? null;
+  const proposalReason = contentExecutionDirective?.summary
+    ?? filmingToday?.reason
+    ?? deferredPrimaryDirective?.summary
+    ?? 'A Content work window is available for review.';
+  const noteParts = [
+    proposalReason,
+    'This is a proposal, not a protected block. Secretary must confirm a private work session before the time becomes reserved.',
+    conflict
+      ? `${conflict.summary} Review the proposal after the conflict is resolved.`
+      : null,
+    spendingDirective
+      ? `Keep the proposed work lower-friction because ${spendingDirective.summary.toLowerCase()}.`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+
   return {
-    status: primaryDirective?.action === 'shoot' ? 'scheduled' : 'advisory',
-    title: primaryDirective?.action === 'shoot' ? 'Filming block ready' : 'Filming opportunity',
-    note: spendingDirective
-      ? `${filmingToday?.reason ?? 'This looks like a workable filming window.'} Keep this production pass lower-friction because ${spendingDirective.summary.toLowerCase()}.`
-      : filmingToday?.reason ?? 'This looks like a workable filming window.',
+    status: conflict ? 'blocked' : 'advisory',
+    planStatus: effectivePlanStatus === 'unavailable' ? 'unavailable' : 'proposed',
+    scheduleAuthority: 'secretary',
+    scheduleAuthorityStatus,
+    scheduleSemantics: 'proposal_not_calendar_reservation',
+    title: conflict ? 'Content work proposal needs review' : contentExecutionTitle(contentExecutionAction, false),
+    note: noteParts.join(' '),
     blockStart: filmingToday?.blockStart ?? null,
     blockEnd: filmingToday?.blockEnd ?? null,
+    confirmedBlocks: [],
     decisions: compactDirectives([
-      ...(primaryDirective?.action === 'shoot' ? [primaryDirective] : []),
+      contentExecutionDirective,
+      conflict,
       spendingDirective,
     ]),
   };
@@ -1838,8 +2165,10 @@ function buildSecretaryPriorityNote(opts: {
     return 'Calendar load is already high, so only protect the highest-value blocks.';
   }
   if (opts.primaryDirective?.domain === 'finance') {
-    return opts.deferredPrimaryDirective?.domain === 'content'
-      ? 'Finance/admin needs the first protected slot today, but content still needs a real follow-on block after it.'
+    return isConfirmedShootDirective(opts.deferredPrimaryDirective)
+      ? 'Finance/admin and a Secretary-confirmed Content block conflict today; ask Secretary to reconcile them instead of assuming either moved.'
+      : isExternalContentDeadlineDirective(opts.deferredPrimaryDirective)
+        ? 'Finance/admin is the protected commitment; a separate external Content deadline needs attention but does not reserve time.'
       : 'Finance/admin needs the first protected slot today.';
   }
   if (opts.trainingProtectionDirective) {
@@ -1898,19 +2227,27 @@ function buildSecretarySequence(opts: {
   }
 
   if (opts.primaryDirective?.domain === 'content') {
-    steps.push(
-      opts.contentExecutionDirective
-        ? secretaryContentPrimarySequenceStep(opts.contentExecutionDirective)
-        : 'Use the filming or sponsor block only after training and core obligations are protected.',
-    );
+    if (isExternalContentDeadlineDirective(opts.primaryDirective)) {
+      steps.push('Review the factual external Content deadline and decide the response; it does not reserve time or authorize publication.');
+    } else if (isConfirmedShootDirective(opts.primaryDirective)) {
+      steps.push(
+        includesMergedExternalContentDeadline(opts.primaryDirective)
+          ? 'Honor the Secretary-confirmed private filming block and separately address the external deadline; only the work block reserves time, and neither authorizes publication.'
+          : opts.contentExecutionDirective
+            ? secretaryContentPrimarySequenceStep(opts.contentExecutionDirective)
+            : 'Honor the Secretary-confirmed private Content block; it reserves work time but does not imply publication.',
+      );
+    }
   }
 
   if (opts.spendingDirective) {
     steps.push('Bundle only essential errands or purchases and leave discretionary spend for another week.');
   }
 
-  if (opts.deferredPrimaryDirective?.domain === 'content') {
-    steps.push('Keep the deferred content commitment visible as the next protected block once the higher-priority work is done.');
+  if (isExternalContentDeadlineDirective(opts.deferredPrimaryDirective)) {
+    steps.push('Keep the external Content deadline visible as factual attention; it is not a conflicting calendar reservation.');
+  } else if (isConfirmedShootDirective(opts.deferredPrimaryDirective)) {
+    steps.push('Keep the conflicting Secretary-confirmed Content block visible and ask Secretary to reconcile it; do not assume it moved.');
   }
 
   if (opts.focusBlock) {
@@ -1935,32 +2272,38 @@ function buildSecretaryTradeoffNote(opts: {
   if (opts.availabilityDirective?.action === 'travel' && opts.trainingProtectionDirective) {
     return 'Travel compresses the day, so training needs protection first and everything optional should stay secondary.';
   }
-  if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.contentExecutionDirective && opts.primaryDirective?.domain === 'content') {
-    return `Training is the anchor, meals need closing before it, ${contentPressure}, and filming should only use whatever bandwidth remains after all three are protected.`;
+  if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.contentExecutionDirective && isConfirmedShootDirective(opts.primaryDirective)) {
+    return `Training is an anchor, meals need closing, and the Secretary-confirmed private Content block also remains scheduled; ${contentPressure} is guidance, not another reservation.`;
   }
   if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.contentExecutionDirective) {
-    return `The day should sequence around training first, then meal support, then ${contentPressure} before anything lower-value expands.`;
+    return `The day should sequence around training and meal support; ${contentPressure} remains a proposal until Secretary confirms a private block.`;
   }
-  if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.primaryDirective?.domain === 'content') {
-    return 'Training is the anchor, meals need closing before it, and content should only use whatever bandwidth remains after both are protected.';
+  if (opts.trainingProtectionDirective && opts.mealCoverageDirective && isConfirmedShootDirective(opts.primaryDirective)) {
+    return 'Training, meal coverage, and the Secretary-confirmed private Content block all need to remain visible; ask Secretary to reconcile any overlap.';
   }
   if (opts.trainingProtectionDirective && opts.mealCoverageDirective) {
     return 'The day should sequence around training first, then meal support, before any lower-value work expands.';
   }
-  if (opts.contentExecutionDirective && opts.primaryDirective?.domain === 'content') {
-    return 'Publishing is the real delivery commitment today, so filming should support that outcome instead of displacing it.';
+  if (opts.contentExecutionDirective && isConfirmedShootDirective(opts.primaryDirective)) {
+    return 'The Secretary-confirmed private Content block is the only scheduling authority today; the work proposal guides that block but does not imply publication.';
   }
   if (opts.primaryDirective?.domain === 'finance' && opts.spendingDirective) {
     return 'Admin needs the first slot, and the rest of the day should stay lean so finance pressure does not spread further.';
   }
-  if (opts.primaryDirective?.domain === 'finance' && opts.deferredPrimaryDirective?.domain === 'content') {
-    return 'Finance keeps the first protected slot, but content is still a real obligation and should be the next block instead of disappearing from the day.';
+  if (opts.primaryDirective?.domain === 'finance' && isConfirmedShootDirective(opts.deferredPrimaryDirective)) {
+    return 'Finance and a Secretary-confirmed Content block conflict; ask Secretary to reconcile them instead of inventing a new order.';
+  }
+  if (opts.primaryDirective?.domain === 'finance' && isExternalContentDeadlineDirective(opts.deferredPrimaryDirective)) {
+    return 'Finance keeps the protected slot; the external Content deadline remains attention only and does not reserve another block.';
   }
   if (opts.contentExecutionDirective && opts.spendingDirective) {
-    return `${capitalizeFirstLetter(contentPressure ?? 'content still needs a real protected slot')}, but keep the production path lean and low-friction this week.`;
+    return `${capitalizeFirstLetter(contentPressure ?? 'the Content work proposal still needs Secretary confirmation')}, and keep the proposed path lean and low-friction this week.`;
   }
-  if (opts.primaryDirective?.domain === 'content' && opts.spendingDirective) {
-    return 'Content can still happen, but only in a lower-friction way that respects the tighter budget week.';
+  if (isExternalContentDeadlineDirective(opts.primaryDirective) && opts.spendingDirective) {
+    return 'The external Content deadline needs a lean response plan, but it does not reserve time or authorize publication.';
+  }
+  if (isConfirmedShootDirective(opts.primaryDirective) && opts.spendingDirective) {
+    return 'The confirmed private Content block remains scheduled, but its work path should stay low-friction during the tighter budget week.';
   }
   return null;
 }
@@ -2140,7 +2483,6 @@ function readBudgetSignal(finance: FinanceMeshContext): {
 function buildDayHeadline(
   training: WeeklyPlanTrainingItem,
   content: WeeklyPlanContentItem | null,
-  calendarReady: boolean,
   availabilityDirective?: MeshDirective,
   mealCoverageDirective?: MeshDirective,
 ): string {
@@ -2151,17 +2493,16 @@ function buildDayHeadline(
     return 'Fueling needs attention so the day can support the planned session.';
   }
   if (content?.status === 'scheduled') {
-    return content.title === 'Publishing commitment' || content.title === 'Capture + publishing day'
-      ? 'Content is due today, so protect a clean shipping block.'
-      : content.title === 'Reaction content window' || content.title === 'Capture + reaction window'
-        ? 'A timely content window is live, so protect a fast execution block.'
-        : content.title === 'Script ready to move'
-          ? 'A script is already ready, so protect a clean execution block.'
-          : content.title === 'Ready to ship'
-            ? 'Content is ready to ship, so protect a clean delivery block.'
-            : calendarReady
-              ? 'Energy and calendar line up well for filming here.'
-              : 'A filming window is planned, but calendar confirmation is still pending.';
+    return 'A Secretary-confirmed private Content work block is reserved today; it does not imply publication.';
+  }
+  if (content?.status === 'blocked' && content.scheduleSemantics === 'private_work_session') {
+    return 'A confirmed private Content block conflicts with today’s constraints and needs Secretary review.';
+  }
+  if (content?.status === 'advisory' && content.scheduleSemantics === 'target_date_not_publication') {
+    return 'Content has an advisory target date today, not a publishing or calendar commitment.';
+  }
+  if (content?.status === 'advisory') {
+    return 'A Content work proposal is available, but no private block is confirmed yet.';
   }
   if (training.status === 'adjusted') {
     return 'This day needs a small adjustment to stay aligned.';
@@ -2179,7 +2520,7 @@ function buildCreativeCopy(
   gatedSkills: string[],
 ): { headline: string; note: string } {
   const trainingDays = days.filter((day) => day.training.status !== 'rest').length;
-  const filmingDay = days.find((day) => day.content?.status === 'scheduled');
+  const confirmedContentDay = days.find((day) => day.content?.status === 'scheduled');
   const hasUnhealthyEnabledSource = Object.entries(sourceHealth).some(
     ([source, health]) => !gatedSkills.includes(source) && health.status !== 'ready',
   );
@@ -2199,11 +2540,11 @@ function buildCreativeCopy(
       : variant === 'conservative'
         ? 'This week protects consistency first, then performance.'
         : 'This week stays balanced across training, focus, and recovery.',
-    note: filmingDay
+    note: confirmedContentDay
       ? crossSkillAlignmentReady
-        ? `Training, cooking, and content align cleanly around ${filmingDay.weekday}.`
-        : `A content window is visible on ${filmingDay.weekday}; gated skills were not used to confirm alignment.`
-      : `${trainingDays} training days are visible in the current plan.`,
+        ? `Training, cooking, and a Secretary-confirmed private Content work block align around ${confirmedContentDay.weekday}; the block does not imply publication.`
+        : `A Secretary-confirmed private Content work block appears on ${confirmedContentDay.weekday}; gated skills were not used to confirm cross-skill alignment and the block does not imply publication.`
+      : `${trainingDays} training days are scheduled with the current cross-skill constraints in mind.`,
   };
 }
 
@@ -2327,7 +2668,19 @@ function chooseBatchCookDate(
   const fragmentedDates = new Set(cooking.availability?.fragmentedDates ?? []);
   const travelDates = new Set(cooking.availability?.travelDates ?? []);
   const focusDate = cooking.availability?.focusDate ?? null;
-  const filmingDate = content?.filmingRecommendation?.date ?? null;
+  const confirmedSchedule = canConsumeConfirmedContentWorkSchedule(content?.workSchedule)
+    ? content!.workSchedule
+    : null;
+  const confirmedContentDates = new Set(
+    confirmedSchedule?.confirmedBlocks
+      .filter((block) => (
+        block.authority === 'secretary'
+        && block.authorityStatus === 'current'
+        && block.semantics === 'private_work_session'
+        && isConfirmedContentBlockState(block.state)
+      ))
+      .map((block) => block.date) ?? [],
+  );
 
   const scoreLoad = (load: 'hard' | 'moderate' | 'light' | undefined): number => {
     switch (load) {
@@ -2350,14 +2703,14 @@ function chooseBatchCookDate(
         + (travelDates.has(lhs) ? 8 : 0)
         + (busyDates.has(lhs) ? 4 : 0)
         + (fragmentedDates.has(lhs) ? 4 : 0)
-        + (filmingDate === lhs ? 3 : 0)
+        + (confirmedContentDates.has(lhs) ? 3 : 0)
         + (focusDate === lhs ? 2 : 0);
       const rhsScore =
         scoreLoad(trainingLoadByDate.get(rhs))
         + (travelDates.has(rhs) ? 8 : 0)
         + (busyDates.has(rhs) ? 4 : 0)
         + (fragmentedDates.has(rhs) ? 4 : 0)
-        + (filmingDate === rhs ? 3 : 0)
+        + (confirmedContentDates.has(rhs) ? 3 : 0)
         + (focusDate === rhs ? 2 : 0);
 
       if (lhsScore !== rhsScore) return lhsScore - rhsScore;
@@ -2431,33 +2784,6 @@ function readDateList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
-}
-
-function readPublishingTopicTitlesByDate(value: unknown): Map<string, string[]> {
-  const grouped = new Map<string, string[]>();
-  if (!Array.isArray(value)) {
-    return grouped;
-  }
-
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const date = typeof record.date === 'string' ? record.date : null;
-    const title = typeof record.title === 'string' ? record.title : null;
-    if (!date || !title) {
-      continue;
-    }
-    const existing = grouped.get(date);
-    if (existing) {
-      existing.push(title);
-    } else {
-      grouped.set(date, [title]);
-    }
-  }
-
-  return grouped;
 }
 
 function directiveDecision(directive: MeshDirective): PlanDecision {

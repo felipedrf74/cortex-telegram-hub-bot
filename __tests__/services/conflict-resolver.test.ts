@@ -109,7 +109,7 @@ describe('conflict-resolver', () => {
     expect(result.conflicts).toEqual([]);
   });
 
-  it('merges sponsor deliverable pressure with a locked filming slot into one content commitment', () => {
+  it('keeps sponsor deadline pressure factual while preserving only the confirmed filming block', () => {
     const result = resolveDirectiveSet([
       directive({
         id: 'sponsor',
@@ -117,7 +117,7 @@ describe('conflict-resolver', () => {
         domain: 'content',
         signalType: 'sponsor_deliverable_due',
         signalId: 21,
-        summary: 'Sponsor deliverable needs a committed slot',
+        summary: 'Sponsor deadline needs attention',
         action: 'sponsor',
         meshPriority: 1,
       }),
@@ -127,7 +127,7 @@ describe('conflict-resolver', () => {
         domain: 'content',
         signalType: 'shoot_day_locked',
         signalId: 22,
-        summary: 'Filming slot is ready to lock',
+        summary: 'Secretary-confirmed filming block is reserved',
         action: 'shoot',
         meshPriority: 1,
       }),
@@ -136,9 +136,46 @@ describe('conflict-resolver', () => {
     expect(result.accepted).toHaveLength(1);
     expect(result.accepted[0].domain).toBe('content');
     expect(result.accepted[0].action).toBe('shoot');
-    expect(result.accepted[0].summary).toContain('Sponsor deliverable is due');
+    expect(result.accepted[0].summary).toContain('sponsor deadline needs attention');
+    expect(result.accepted[0].summary).toContain('only protected time');
     expect(result.shadowed).toEqual([]);
     expect(result.conflicts).toEqual([]);
+  });
+
+  it('does not absorb a third same-priority deadline into the sponsor and filming merge', () => {
+    const result = resolveDirectiveSet([
+      directive({
+        id: 'sponsor',
+        target: 'primary-commitment',
+        domain: 'content',
+        signalType: 'sponsor_deliverable_due',
+        signalId: 21,
+        action: 'sponsor',
+        meshPriority: 1,
+      }),
+      directive({
+        id: 'shoot',
+        target: 'primary-commitment',
+        domain: 'content',
+        signalType: 'shoot_day_locked',
+        signalId: 22,
+        action: 'shoot',
+        meshPriority: 1,
+      }),
+      directive({
+        id: 'tax',
+        target: 'primary-commitment',
+        domain: 'finance',
+        signalType: 'tax_deadline',
+        signalId: 23,
+        action: 'tax',
+        meshPriority: 1,
+      }),
+    ]);
+
+    expect(result.accepted.map((entry) => entry.id)).toEqual(['tax']);
+    expect(result.shadowed.map((entry) => entry.id)).toEqual(expect.arrayContaining(['sponsor', 'shoot']));
+    expect(result.accepted[0]?.id).not.toContain('+');
   });
 
   it('still surfaces a conflict when same-priority contenders remain genuinely ambiguous', () => {

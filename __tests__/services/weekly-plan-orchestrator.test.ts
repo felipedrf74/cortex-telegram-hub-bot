@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
+import { CONTENT_AGENT_LIFECYCLE_POLICY_VERSION } from '../../src/services/content-agent-lifecycle';
 
 const mockGetCached = vi.fn(() => null);
 const mockSetCache = vi.fn();
@@ -58,6 +59,18 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
   readContentMeshContext: (...args: unknown[]) => mockReadContentMeshContext(...args),
   readSecretaryMeshContext: (...args: unknown[]) => mockReadSecretaryMeshContext(...args),
   readFinanceMeshContext: (...args: unknown[]) => mockReadFinanceMeshContext(...args),
+  canConsumeConfirmedContentWorkSchedule: (schedule: {
+    authority?: string;
+    authorityStatus?: string;
+    planStatus?: string;
+    semantics?: string;
+  } | null | undefined) => Boolean(
+    schedule
+    && schedule.authority === 'secretary'
+    && (schedule.authorityStatus === 'current' || schedule.authorityStatus === 'partially_unavailable')
+    && (schedule.planStatus === 'confirmed' || schedule.planStatus === 'partial')
+    && schedule.semantics === 'private_work_session'
+  ),
   createEmptyTrainingMeshContext: (userId: number, weekStart: string) => ({
     userId,
     weekStart,
@@ -154,28 +167,30 @@ vi.mock('../../src/services/intelligence-bus', () => ({
   reconcileGovernedSignalSet: (...args: unknown[]) => mockReconcileGovernedSignalSet(
     args[0] as Parameters<typeof mockReconcileGovernedSignalSet>[0],
   ),
-  readSignals: (_consumer: string, signalTypes: string[], _limit: number, userId?: number, _maxAgeDays?: number, tenantId?: number) =>
+  readSignals: (_consumer: string, signalTypes: string[], limit: number, userId?: number, _maxAgeDays?: number, tenantId?: number) =>
     writtenSignals
       .filter((signal) =>
         signal.status === 'active'
         && signal.user_id === userId
         && (tenantId === undefined || signal.tenant_id === tenantId)
         && signalTypes.includes(String(signal.signal_type)))
+      .slice(0, limit)
       .map((signal) => ({ ...signal })),
   writeGovernedSignal: (signal: Record<string, unknown>) => {
+    const persist = (id: number) => writtenSignals.push({
+        id,
+        ...signal,
+        created_at: '2026-04-14T08:00:00.000Z',
+        expires_at: signal.expires_at ?? '2026-04-20T23:59:59.000Z',
+        consumed_by: [],
+        status: 'active',
+        confidence: 1,
+        pillar_tag: null,
+        format_tag: null,
+        evidence_count: 1,
+      });
     const id = writtenSignals.length + 1;
-    writtenSignals.push({
-      id,
-      ...signal,
-      created_at: '2026-04-14T08:00:00.000Z',
-      expires_at: signal.expires_at ?? '2026-04-20T23:59:59.000Z',
-      consumed_by: [],
-      status: 'active',
-      confidence: 1,
-      pillar_tag: null,
-      format_tag: null,
-      evidence_count: 1,
-    });
+    persist(id);
     return id;
   },
 }));
@@ -365,7 +380,43 @@ function buildBaseContexts() {
       userId: 12,
       weekStart: '2026-04-13',
       weekEnd: '2026-04-19',
+      availability: 'available',
+      unavailableSections: [],
       upcomingTopicCount: 2,
+      deadlines: [],
+      workSchedule: {
+        authority: 'secretary',
+        authorityStatus: 'current',
+        planStatus: 'confirmed',
+        semantics: 'private_work_session',
+        confirmedBlocksComplete: true,
+        confirmedBlocks: [
+          {
+            itemId: 41,
+            title: 'Record the weekly piece',
+            itemStatus: 'approved',
+            outcome: 'Planned outcome: complete a recording session for "Record the weekly piece".',
+            estimatedEffortMinutes: 120,
+            dependency: null,
+            approvalState: 'approved',
+            nextAction: {
+              action: 'prepare_scheduled_work',
+              label: 'Prepare the confirmed recording block',
+              reason: 'The item is approved and scheduled.',
+            },
+            date: '2026-04-15',
+            startsAt: '2026-04-15T11:00:00.000Z',
+            endsAt: '2026-04-15T13:00:00.000Z',
+            workKind: 'record',
+            state: 'provider_synced',
+            authority: 'secretary',
+            authorityStatus: 'current',
+            semantics: 'private_work_session',
+            contentChangedSinceScheduling: false,
+          },
+        ],
+        attentionCount: 0,
+      },
       filmingRecommendation: {
         date: '2026-04-15',
         confidence: 'high',
@@ -452,6 +503,8 @@ describe('weekly-plan-orchestrator', () => {
   });
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-14T08:00:00.000Z'));
     clearTenantScopeAnomaliesForTests();
     writtenSignals = [];
     mockReconcileGovernedSignalSet.mockClear();
@@ -485,10 +538,19 @@ describe('weekly-plan-orchestrator', () => {
           meshPriority: 3,
           priority: 'normal',
           payload: {
+            itemId: 41,
+            title: 'Record the weekly piece',
             date: '2026-04-15',
             blockStart: '2026-04-15T11:00:00.000Z',
             blockEnd: '2026-04-15T13:00:00.000Z',
-            reservationAvailable: true,
+            workKind: 'filming',
+            sourceWorkKind: 'record',
+            sourceState: 'provider_synced',
+            providerAttention: false,
+            planStatus: 'confirmed',
+            scheduleAuthority: 'secretary',
+            scheduleAuthorityStatus: 'current',
+            semantics: 'private_work_session',
           },
         },
       ],
@@ -672,6 +734,11 @@ describe('weekly-plan-orchestrator', () => {
     expect(writtenSignals.length).toBeGreaterThan(0);
     expect(writtenSignals.every((signal) => signal.user_id === 12 && signal.tenant_id === 12)).toBe(true);
     expect(mockSetCache).toHaveBeenCalledWith(expect.stringContaining('plan:week:u:12:t:12:'), expect.anything(), 1800);
+    expect(mockSetCache).toHaveBeenCalledWith(
+      expect.stringContaining(`:content-policy:${CONTENT_AGENT_LIFECYCLE_POLICY_VERSION}`),
+      expect.anything(),
+      1800,
+    );
   });
 
   it('keeps the weekly plan available but fails paid skill context closed when the user record is missing', async () => {
@@ -913,6 +980,23 @@ describe('weekly-plan-orchestrator', () => {
     expect(new Set(keys).size).toBe(4);
   });
 
+  it('marks partial Content input as degraded and suppresses editorial recommendations from fallback empties', async () => {
+    const contexts = buildBaseContexts();
+    mockReadContentMeshContext.mockResolvedValueOnce({
+      ...contexts.content,
+      availability: 'partial',
+      unavailableSections: ['content_desk', 'topics', 'next_execution'],
+      deskItems: [],
+      nextExecution: null,
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(mockBuildEditorialSignals).not.toHaveBeenCalled();
+  });
+
   it('returns garmin_stale and falls back to conservative mode when Garmin needs reauth', async () => {
     garminStatus = 'needs_reauth';
 
@@ -1123,14 +1207,31 @@ describe('weekly-plan-orchestrator', () => {
     expect(wednesday?.meals.find((meal) => meal.title === 'Fueling coverage missing')?.note).toContain('staple carb + protein option you already buy');
   });
 
-  it('places batch cooking around verified calendar, focus, and content pressure', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-04-15T08:00:00.000Z'));
+  it('places the batch-cook day around a current sync-failed Content block, not unconfirmed filming recommendations', async () => {
     const base = buildBaseContexts();
-    base.cooking.meals = [
-      ...base.cooking.meals,
-      { ...base.cooking.meals[0], id: 2, date: '2026-04-16', title: 'Second prep meal' },
-      { ...base.cooking.meals[0], id: 3, date: '2026-04-17', title: 'Third prep meal' },
+    base.content.workSchedule.confirmedBlocks[0].state = 'sync_failed';
+    base.content.workSchedule.attentionCount = 1;
+    base.secretary.focusBlock = {
+      ...base.secretary.focusBlock,
+      date: '2026-04-17',
+      start: '2026-04-17T09:00:00.000Z',
+      end: '2026-04-17T10:30:00.000Z',
+    };
+    base.secretary.derivedSignals = [
+      {
+        sourceAgent: 'mesh.secretary-context',
+        signalType: 'travel_window',
+        meshPriority: 1,
+        priority: 'urgent',
+        payload: { dates: ['2026-04-13'] },
+      },
+      {
+        sourceAgent: 'mesh.secretary-context',
+        signalType: 'calendar_busy_blocks',
+        meshPriority: 1,
+        priority: 'urgent',
+        payload: { dates: ['2026-04-14'], totalEvents: 5 },
+      },
     ];
     base.cooking.availability = {
       travelDates: ['2026-04-13'],
@@ -1479,18 +1580,18 @@ describe('weekly-plan-orchestrator', () => {
     expect(wednesday?.secretary.sequence).toEqual([
       'Protect the key training window before moving meetings, errands, or filming onto the day.',
       'Lock meal or shopping coverage before the session so training support is not left to chance.',
-      'Use the filming or sponsor block only after training and core obligations are protected.',
+      'Honor the Secretary-confirmed private Content block; it reserves work time but does not imply publication.',
       'Keep the recommended focus block clean once the non-negotiables are sequenced.',
     ]);
     expect(wednesday?.secretary.tradeoffNote).toBe(
-      'Training is the anchor, meals need closing before it, and content should only use whatever bandwidth remains after both are protected.',
+      'Training, meal coverage, and the Secretary-confirmed private Content block all need to remain visible; ask Secretary to reconcile any overlap.',
     );
     expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).toEqual(
       expect.arrayContaining(['session_immovability', 'fueling_gap_risk', 'shoot_day_locked']),
     );
   });
 
-  it('keeps shadowed content commitments visible when finance wins the first protected slot', async () => {
+  it('keeps a Secretary-confirmed private Content block visible when finance conflicts and ignores sponsor commitment invention', async () => {
     const base = buildBaseContexts();
     base.finance.derivedSignals = [
       {
@@ -1517,21 +1618,24 @@ describe('weekly-plan-orchestrator', () => {
     ];
     mockReadFinanceMeshContext.mockResolvedValue(base.finance);
     mockReadContentMeshContext.mockResolvedValue(base.content);
-    mockBuildEditorialSignals.mockReturnValue({ signals: [] });
 
     const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
     const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
     const wednesday = result.days.find((day) => day.date === '2026-04-15');
 
     expect(wednesday?.finance?.taxNote).toContain('Tax deadline needs attention');
-    expect(wednesday?.content?.title).toBe('Content commitment deferred');
-    expect(wednesday?.content?.note).toContain('Sponsor deliverable needs a committed slot');
-    expect(wednesday?.secretary.priorityNote).toContain('Finance/admin needs the first protected slot');
-    expect(wednesday?.secretary.tradeoffNote).toContain('content is still a real obligation');
-    expect(wednesday?.secretary.sequence).toContain('Keep the deferred content commitment visible as the next protected block once the higher-priority work is done.');
+    expect(wednesday?.content?.title).toBe('Confirmed Content block needs review');
+    expect(wednesday?.content?.status).toBe('scheduled');
+    expect(wednesday?.content?.scheduleAuthorityStatus).toBe('current');
+    expect(wednesday?.content?.scheduleSemantics).toBe('private_work_session');
+    expect(wednesday?.content?.note).toContain('Secretary-confirmed private filming block');
+    expect(wednesday?.content?.note).not.toContain('Sponsor deliverable needs a committed slot');
+    expect(wednesday?.secretary.priorityNote).toContain('Secretary-confirmed Content block conflict');
+    expect(wednesday?.secretary.tradeoffNote).toContain('ask Secretary to reconcile');
+    expect(wednesday?.secretary.sequence).toContain('Keep the conflicting Secretary-confirmed Content block visible and ask Secretary to reconcile it; do not assume it moved.');
   });
 
-  it('turns scheduled publishing into a real content execution block for secretary sequencing', async () => {
+  it('keeps a Content deadline advisory and ignores legacy publishing signals while preserving a confirmed private block', async () => {
     const base = buildBaseContexts();
     base.cooking.meals = [];
     base.training.derivedSignals = [
@@ -1545,6 +1649,16 @@ describe('weekly-plan-orchestrator', () => {
           title: 'Track intervals',
           level: 'high',
         },
+      },
+    ];
+    base.content.deadlines = [
+      {
+        itemId: 21,
+        title: 'Race-week recap',
+        date: '2026-04-15',
+        deadlineAt: '2026-04-15T17:00:00.000Z',
+        status: 'ready',
+        semantics: 'target_date_not_publication',
       },
     ];
     base.content.derivedSignals = [
@@ -1572,28 +1686,114 @@ describe('weekly-plan-orchestrator', () => {
     const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
     const wednesday = result.days.find((day) => day.date === '2026-04-15');
 
-    expect(wednesday?.content?.title).toBe('Capture + publishing day');
+    expect(wednesday?.content?.title).toBe('Confirmed Content work block');
+    expect(wednesday?.content?.status).toBe('scheduled');
+    expect(wednesday?.content?.planStatus).toBe('confirmed');
+    expect(wednesday?.content?.note).toContain('advisory target date');
+    expect(wednesday?.content?.note).not.toContain('publishing handoff');
+    expect(result.contentPlan).toMatchObject({
+      authority: 'secretary',
+      planStatus: 'confirmed',
+      confirmedBlockCount: 1,
+      deadlineCount: 1,
+    });
     expect(wednesday?.headline).toBe('Fueling needs attention so the day can support the planned session.');
     expect(wednesday?.secretary.priorityNote).toBe('Protect Track intervals as a high-immovability training block.');
     expect(wednesday?.secretary.sequence).toEqual([
       'Protect the key training window before moving meetings, errands, or filming onto the day.',
       'Lock meal or shopping coverage before the session so training support is not left to chance.',
-      'Reserve a real publish/delivery slot so content ships deliberately instead of becoming leftover work.',
-      'Use the filming or sponsor block only after the publish/delivery commitment is protected.',
+      'Honor the Secretary-confirmed private Content block; it reserves work time but does not imply publication.',
       'Keep the recommended focus block clean once the non-negotiables are sequenced.',
     ]);
     expect(wednesday?.secretary.tradeoffNote).toBe(
-      'Training is the anchor, meals need closing before it, publishing still needs a real slot, and filming should only use whatever bandwidth remains after all three are protected.',
+      'Training, meal coverage, and the Secretary-confirmed private Content block all need to remain visible; ask Secretary to reconcile any overlap.',
     );
     expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).toEqual(
-      expect.arrayContaining(['session_immovability', 'fueling_gap_risk', 'publishing_commitment', 'shoot_day_locked']),
+      expect.arrayContaining(['session_immovability', 'fueling_gap_risk', 'shoot_day_locked']),
     );
+    expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).not.toContain('publishing_commitment');
   });
 
-  it('promotes editorial content capture opportunities into a real weekly execution block', async () => {
+  it('preserves every same-day Secretary-confirmed private Content block in chronological order', async () => {
+    const base = buildBaseContexts();
+    base.content.workSchedule.confirmedBlocks.push({
+      itemId: 42,
+      title: 'Edit the weekly piece',
+      date: '2026-04-15',
+      startsAt: '2026-04-15T14:00:00.000Z',
+      endsAt: '2026-04-15T15:30:00.000Z',
+      workKind: 'edit',
+      state: 'scheduled',
+      authority: 'secretary',
+      authorityStatus: 'current',
+      semantics: 'private_work_session',
+      contentChangedSinceScheduling: true,
+    });
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(wednesday?.content?.blockStart).toBe('2026-04-15T11:00:00.000Z');
+    expect(wednesday?.content?.confirmedBlocks).toEqual([
+      expect.objectContaining({
+        itemId: 41,
+        workKind: 'record',
+        authorityStatus: 'current',
+        confirmationStatus: 'confirmed',
+        itemStatus: 'approved',
+        outcome: 'Planned outcome: complete a recording session for "Record the weekly piece".',
+        estimatedEffortMinutes: 120,
+        approvalState: 'approved',
+      }),
+      expect.objectContaining({
+        itemId: 42,
+        workKind: 'edit',
+        authorityStatus: 'current',
+        confirmationStatus: 'confirmed',
+        contentChangedSinceScheduling: true,
+      }),
+    ]);
+    expect(wednesday?.content?.note).toContain('1 additional Secretary-confirmed private Content block');
+    expect(result.contentPlan.confirmedBlockCount).toBe(2);
+  });
+
+  it('does not give a deadline-only day the confirmed status of a block on another day', async () => {
+    const base = buildBaseContexts();
+    base.content.deadlines = [{
+      itemId: 88,
+      title: 'Friday advisory target',
+      date: '2026-04-17',
+      deadlineAt: '2026-04-17T17:00:00.000Z',
+      status: 'approved',
+      semantics: 'target_date_not_publication',
+    }];
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const friday = result.days.find((day) => day.date === '2026-04-17');
+
+    expect(result.contentPlan.planStatus).toBe('confirmed');
+    expect(friday?.content).toEqual(expect.objectContaining({
+      status: 'advisory',
+      planStatus: 'unplanned',
+      scheduleSemantics: 'target_date_not_publication',
+      blockStart: null,
+      blockEnd: null,
+    }));
+  });
+
+  it('keeps editorial content capture opportunities advisory until Secretary confirms a private block', async () => {
     const base = buildBaseContexts();
     base.content.filmingRecommendation = null;
     base.content.derivedSignals = [];
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      planStatus: 'unplanned',
+      confirmedBlocks: [],
+    };
     mockReadContentMeshContext.mockResolvedValue(base.content);
     mockBuildEditorialSignals.mockReturnValue({
       signals: [
@@ -1607,6 +1807,12 @@ describe('weekly-plan-orchestrator', () => {
             title: 'Creators are debating carb myths again',
             angle: 'reaction_window',
             reason: 'Fast reaction window with enough context to move now.',
+            planStatus: 'proposed',
+            scheduleAuthority: 'secretary',
+            scheduleAuthorityStatus: 'current',
+            semantics: 'proposal_not_calendar_reservation',
+            nextExecutionDateSemantics: 'recommended_work_date',
+            nextExecutionCalendarConfirmed: false,
           },
         },
       ],
@@ -1616,13 +1822,393 @@ describe('weekly-plan-orchestrator', () => {
     const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
     const wednesday = result.days.find((day) => day.date === '2026-04-15');
 
-    expect(wednesday?.content?.title).toBe('Reaction content window');
+    expect(wednesday?.content?.title).toBe('Reaction content proposal');
+    expect(wednesday?.content?.status).toBe('advisory');
+    expect(wednesday?.content?.planStatus).toBe('proposed');
+    expect(wednesday?.content?.scheduleSemantics).toBe('proposal_not_calendar_reservation');
     expect(wednesday?.content?.note).toContain('Fast reaction window with enough context to move now.');
-    expect(wednesday?.headline).toBe('A timely content window is live, so protect a fast execution block.');
-    expect(wednesday?.secretary.priorityNote).toBe('Fast reaction window with enough context to move now.');
-    expect(wednesday?.secretary.sequence).toContain('Protect a fast reaction slot while the context is still fresh.');
+    expect(wednesday?.content?.note).toContain('not a protected block');
+    expect(wednesday?.headline).toBe('A Content work proposal is available, but no private block is confirmed yet.');
+    expect(wednesday?.secretary.priorityNote).toBe('Proposal: Fast reaction window with enough context to move now.');
+    expect(wednesday?.secretary.sequence).toContain('Review a fast reaction-slot proposal while the context is still fresh.');
     expect(wednesday?.secretary.tradeoffNote).toBeNull();
     expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).toContain('content_capture_opportunity');
+  });
+
+  it('ignores shoot-day signals for non-filming Content work', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.deadlines = [];
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      planStatus: 'confirmed',
+      confirmedBlocks: [{
+        itemId: 77,
+        title: 'Edit the approved capture',
+        date: '2026-04-15',
+        startsAt: '2026-04-15T11:00:00.000Z',
+        endsAt: '2026-04-15T13:00:00.000Z',
+        workKind: 'edit',
+        state: 'provider_synced',
+        authority: 'secretary',
+        authorityStatus: 'current',
+        semantics: 'private_work_session',
+        contentChangedSinceScheduling: false,
+      }],
+    };
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({
+      signals: [
+        {
+          sourceAgent: 'mesh.editorial-coordinator',
+          signalType: 'shoot_day_locked',
+          meshPriority: 3,
+          priority: 'normal',
+          payload: {
+            itemId: 77,
+            title: 'Edit the approved capture',
+            date: '2026-04-15',
+            blockStart: '2026-04-15T11:00:00.000Z',
+            blockEnd: '2026-04-15T13:00:00.000Z',
+            workKind: 'filming',
+            sourceWorkKind: 'edit',
+            sourceState: 'provider_synced',
+            providerAttention: false,
+            planStatus: 'confirmed',
+            scheduleAuthority: 'secretary',
+            scheduleAuthorityStatus: 'current',
+            semantics: 'private_work_session',
+          },
+        },
+      ],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(wednesday?.content).toEqual(expect.objectContaining({
+      status: 'scheduled',
+      scheduleSemantics: 'private_work_session',
+    }));
+    expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).not.toContain('shoot_day_locked');
+  });
+
+  it('keeps a current sync-failed filming block confirmed while surfacing provider attention', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.workSchedule.confirmedBlocks[0].state = 'sync_failed';
+    base.content.workSchedule.attentionCount = 1;
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({
+      signals: [
+        {
+          sourceAgent: 'mesh.editorial-coordinator',
+          signalType: 'shoot_day_locked',
+          meshPriority: 3,
+          priority: 'normal',
+          payload: {
+            itemId: 41,
+            title: 'Record the weekly piece',
+            date: '2026-04-15',
+            blockStart: '2026-04-15T11:00:00.000Z',
+            blockEnd: '2026-04-15T13:00:00.000Z',
+            workKind: 'filming',
+            sourceWorkKind: 'record',
+            sourceState: 'sync_failed',
+            providerAttention: true,
+            planStatus: 'confirmed',
+            scheduleAuthority: 'secretary',
+            scheduleAuthorityStatus: 'current',
+            semantics: 'private_work_session',
+          },
+        },
+      ],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(result.contentPlan).toMatchObject({
+      planStatus: 'confirmed',
+      confirmedBlockCount: 1,
+      attentionCount: 1,
+    });
+    expect(wednesday?.content).toMatchObject({
+      status: 'scheduled',
+      planStatus: 'confirmed',
+      title: 'Confirmed Content block needs provider attention',
+      blockStart: '2026-04-15T11:00:00.000Z',
+      blockEnd: '2026-04-15T13:00:00.000Z',
+    });
+    expect(wednesday?.content?.note).toContain('local Secretary block remains confirmed');
+    expect(wednesday?.content?.note).not.toContain('publishing commitment');
+    expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).toContain('shoot_day_locked');
+  });
+
+  it('places a trusted external deadline on its supplied zoned date without reserving time', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.deadlines = [];
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      planStatus: 'unplanned',
+      confirmedBlocks: [],
+      attentionCount: 0,
+    };
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({
+      signals: [{
+        sourceAgent: 'mesh.editorial-coordinator',
+        signalType: 'sponsor_deliverable_due',
+        meshPriority: 1,
+        priority: 'urgent',
+        payload: {
+          title: 'Partner review package',
+          dueAt: '2026-04-16T00:30:00+02:00',
+          status: 'factual_constraint',
+          publicationAuthority: 'not_established',
+          semantics: 'external_deadline_not_publication_authority',
+        },
+      }],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const thursday = result.days.find((day) => day.date === '2026-04-16');
+
+    expect(result.days.find((day) => day.date === '2026-04-15')?.content).toBeNull();
+    expect(thursday?.content).toMatchObject({
+      status: 'advisory',
+      planStatus: 'unplanned',
+      scheduleSemantics: 'target_date_not_publication',
+      title: 'External Content deadline attention',
+      blockStart: null,
+      blockEnd: null,
+    });
+    expect(thursday?.content?.note).toContain('2026-04-16T00:30:00+02:00');
+    expect(thursday?.content?.note).toContain('does not reserve calendar time or authorize publication');
+    expect(thursday?.secretary.sequence).toContain(
+      'Review the factual external Content deadline and decide the response; it does not reserve time or authorize publication.',
+    );
+  });
+
+  it('does not place undated or untrusted sponsor constraints into a plan day', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.deadlines = [];
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      planStatus: 'unplanned',
+      confirmedBlocks: [],
+      attentionCount: 0,
+    };
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({
+      signals: [
+        {
+          sourceAgent: 'mesh.editorial-coordinator',
+          signalType: 'sponsor_deliverable_due',
+          meshPriority: 1,
+          priority: 'urgent',
+          payload: {
+            title: 'Undated partner package',
+            dueAt: null,
+            status: 'factual_constraint',
+            publicationAuthority: 'not_established',
+            semantics: 'external_deadline_not_publication_authority',
+          },
+        },
+        {
+          sourceAgent: 'mesh.untrusted-producer',
+          signalType: 'sponsor_deliverable_due',
+          meshPriority: 1,
+          priority: 'urgent',
+          payload: {
+            title: 'Untrusted deadline',
+            dueAt: '2026-04-17T09:00:00Z',
+            status: 'factual_constraint',
+            publicationAuthority: 'not_established',
+            semantics: 'external_deadline_not_publication_authority',
+          },
+        },
+      ],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.days.every((day) => day.content == null)).toBe(true);
+    expect(result.days.flatMap((day) => day.secretary.decisions).map((decision) => decision.signalType))
+      .not.toContain('sponsor_deliverable_due');
+  });
+
+  it('merges a same-day external deadline with a confirmed filming block without inventing publication authority', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({
+      signals: [
+        {
+          sourceAgent: 'mesh.editorial-coordinator',
+          signalType: 'sponsor_deliverable_due',
+          meshPriority: 1,
+          priority: 'urgent',
+          payload: {
+            title: 'Partner review package',
+            dueAt: '2026-04-15T17:00:00+01:00',
+            status: 'factual_constraint',
+            publicationAuthority: 'not_established',
+            semantics: 'external_deadline_not_publication_authority',
+          },
+        },
+        {
+          sourceAgent: 'mesh.editorial-coordinator',
+          signalType: 'shoot_day_locked',
+          meshPriority: 3,
+          priority: 'normal',
+          payload: {
+            itemId: 41,
+            title: 'Record the weekly piece',
+            date: '2026-04-15',
+            blockStart: '2026-04-15T11:00:00.000Z',
+            blockEnd: '2026-04-15T13:00:00.000Z',
+            workKind: 'filming',
+            sourceWorkKind: 'record',
+            sourceState: 'provider_synced',
+            providerAttention: false,
+            planStatus: 'confirmed',
+            scheduleAuthority: 'secretary',
+            scheduleAuthorityStatus: 'current',
+            semantics: 'private_work_session',
+          },
+        },
+      ],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(result.conflicts).toEqual([]);
+    expect(wednesday?.content).toMatchObject({
+      status: 'scheduled',
+      scheduleSemantics: 'private_work_session',
+      blockStart: '2026-04-15T11:00:00.000Z',
+      blockEnd: '2026-04-15T13:00:00.000Z',
+    });
+    expect(wednesday?.content?.note).toContain('sponsor deadline needs attention');
+    expect(wednesday?.content?.note).toContain('only protected time');
+    expect(wednesday?.content?.note).not.toContain('publishing commitment');
+    expect(wednesday?.secretary.sequence).toContain(
+      'Honor the Secretary-confirmed private filming block and separately address the external deadline; only the work block reserves time, and neither authorizes publication.',
+    );
+  });
+
+  it('reports current authority with attention but zero blocks as unplanned rather than proposed or confirmed', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      planStatus: 'unplanned',
+      confirmedBlocks: [],
+      attentionCount: 1,
+    };
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({ signals: [] });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.contentPlan).toEqual({
+      authority: 'secretary',
+      authorityStatus: 'current',
+      planStatus: 'unplanned',
+      semantics: 'private_work_session',
+      confirmedBlockCount: 0,
+      confirmedBlocksComplete: true,
+      attentionCount: 1,
+      deadlineCount: 0,
+    });
+    expect(result.days.every((day) => day.content == null)).toBe(true);
+  });
+
+  it('propagates partial authority without discarding an individually confirmed private block', async () => {
+    const base = buildBaseContexts();
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      authorityStatus: 'partially_unavailable',
+      planStatus: 'partial',
+      attentionCount: 1,
+    };
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(result.contentPlan).toMatchObject({
+      authorityStatus: 'partially_unavailable',
+      planStatus: 'partial',
+      confirmedBlockCount: 1,
+      attentionCount: 1,
+    });
+    expect(wednesday?.content).toMatchObject({
+      status: 'scheduled',
+      planStatus: 'partial',
+      scheduleAuthority: 'secretary',
+      scheduleAuthorityStatus: 'partially_unavailable',
+      scheduleSemantics: 'private_work_session',
+    });
+    expect(wednesday?.content?.confirmedBlocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authorityStatus: 'current',
+        confirmationStatus: 'confirmed',
+      }),
+    ]));
+  });
+
+  it('does not schedule a stale embedded block when aggregate Content authority is unavailable', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.deadlines = [];
+    base.content.workSchedule = {
+      ...base.content.workSchedule,
+      authorityStatus: 'unavailable',
+      planStatus: 'unavailable',
+      confirmedBlocksComplete: false,
+    };
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(result.contentPlan).toMatchObject({
+      authorityStatus: 'unavailable',
+      planStatus: 'unavailable',
+    });
+    expect(wednesday?.content).toBeNull();
+  });
+
+  it('propagates an unavailable Content plan when the mesh reader cannot establish schedule authority', async () => {
+    mockReadContentMeshContext.mockRejectedValueOnce(new Error('content schedule unavailable'));
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.contentPlan).toEqual({
+      authority: 'secretary',
+      authorityStatus: 'unavailable',
+      planStatus: 'unavailable',
+      semantics: 'private_work_session',
+      confirmedBlockCount: 0,
+      confirmedBlocksComplete: false,
+      attentionCount: 0,
+      deadlineCount: 0,
+    });
   });
 
   it('retires superseded mesh signals so orchestration does not reason from stale copies', async () => {
@@ -1777,4 +2363,106 @@ describe('weekly-plan-orchestrator', () => {
       && signal.tenant_id === 12,
     )).toHaveLength(1);
   });
+  it('keeps current-window signal ownership when another week is recomputed', async () => {
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+    const currentIds = writtenSignals
+      .filter((signal) => signal.status === 'active')
+      .map((signal) => signal.id);
+    mockReconcileGovernedSignalSet.mockClear();
+
+    const otherWeek = await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-20',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    expect(otherWeek.weekStart).toBe('2026-04-20');
+    expect(writtenSignals.filter((signal) => signal.status === 'active').map((signal) => signal.id))
+      .toEqual(currentIds);
+    expect(mockReconcileGovernedSignalSet).not.toHaveBeenCalled();
+  });
+
+  it('keeps loaded safety directives when durable signal synchronization is unavailable', async () => {
+    mockReconcileGovernedSignalSet.mockImplementationOnce(() => {
+      throw new Error('signal store unavailable');
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days.some((day) => (
+      day.secretary.decisions.some((decision) => decision.signalType === 'travel_window')
+    ))).toBe(true);
+  });
+
+  it('retires a synced shoot-day signal when the confirmed filming block disappears', async () => {
+    mockBuildEditorialSignals.mockReturnValueOnce({
+      signals: [{
+        sourceAgent: 'mesh.editorial-coordinator',
+        signalType: 'shoot_day_locked',
+        meshPriority: 2,
+        priority: 'urgent',
+        payload: { date: '2026-04-15', reason: 'Confirmed filming block.' },
+      }],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+    expect(writtenSignals.some((signal) => (
+      signal.status === 'active'
+      && signal.source_agent === 'mesh.editorial-coordinator'
+      && signal.signal_type === 'shoot_day_locked'
+    ))).toBe(true);
+
+    const cancelled = buildBaseContexts();
+    cancelled.content.workSchedule = {
+      authority: 'secretary',
+      authorityStatus: 'current',
+      planStatus: 'unplanned',
+      semantics: 'private_work_session',
+      confirmedBlocks: [],
+      confirmedBlocksComplete: true,
+      attentionCount: 0,
+    };
+    cancelled.content.filmingRecommendation = null;
+    mockReadContentMeshContext.mockResolvedValueOnce(cancelled.content);
+    mockBuildEditorialSignals.mockReturnValueOnce({ signals: [] });
+
+    await composeWeeklyPlan({
+      userId: 12,
+      tenantId: 12,
+      weekStart: '2026-04-13',
+      forceRefresh: true,
+      syncSignals: true,
+    });
+
+    expect(writtenSignals.some((signal) => (
+      signal.status === 'active'
+      && signal.source_agent === 'mesh.editorial-coordinator'
+      && signal.signal_type === 'shoot_day_locked'
+    ))).toBe(false);
+  });
+
 });

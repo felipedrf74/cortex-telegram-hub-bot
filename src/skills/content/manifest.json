@@ -36,29 +36,29 @@
     },
     {
       "module_name": "seo-tracker",
-      "description": "YouTube keyword rank tracking and opportunity detection",
-      "enabled_by_default": true,
+      "description": "Paused until keyword ranks and emitted signals have tenant-user scoped storage",
+      "enabled_by_default": false,
       "tools": [],
       "cronJobs": ["seo_agent"]
     },
     {
       "module_name": "reaction-radar",
-      "description": "Monitors trending content and reference channels for reaction opportunities",
-      "enabled_by_default": true,
+      "description": "Paused until reaction discovery, preferences, and emitted opportunities are tenant-user scoped",
+      "enabled_by_default": false,
       "tools": [],
       "cronJobs": ["reaction_radar"]
     },
     {
       "module_name": "voice-evolution",
-      "description": "Compares AI scripts vs actual transcripts to learn voice patterns",
+      "description": "Learns observed voice edits from canonical agent-draft to creator-revision pairs",
       "enabled_by_default": true,
       "tools": [],
       "cronJobs": ["voice_evolution"]
     },
     {
       "module_name": "performance-intel",
-      "description": "Analyzes YouTube channel performance by pillar and format",
-      "enabled_by_default": true,
+      "description": "Paused until channel-performance signals have tenant-user scoped storage",
+      "enabled_by_default": false,
       "tools": [],
       "cronJobs": ["performance_agent"]
     },
@@ -91,7 +91,7 @@
       "cronJobs": []
     }
   ],
-  "requiredApiKeys": ["ANTHROPIC_API_KEY"],
+  "requiredApiKeys": [],
   "config": {
     "stateContextTtl": 30000,
     "maxToolIterations": 5

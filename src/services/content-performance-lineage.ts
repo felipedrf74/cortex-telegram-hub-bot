@@ -11,6 +11,7 @@ import {
   type ContentWorkspaceScope,
 } from './content-workspace';
 import { recordContentPerformanceMemory } from './content-memory-profile';
+import { safeContentLogErrorFields } from './content-log-safety';
 
 export const CONTENT_PERFORMANCE_LINEAGE_SCHEMA_VERSION = 'content-performance-lineage-v1';
 const RECORD_OUTCOME_OPERATION = 'record_content_performance';
@@ -584,10 +585,10 @@ function normalizeInput(raw: RecordContentPerformanceOutcomeInput): NormalizedIn
 }
 
 function normalizeScope(scope: ContentWorkspaceScope): ContentWorkspaceScope {
-  if (!scope || !Number.isInteger(scope.tenantId) || scope.tenantId <= 0) {
+  if (!scope || !Number.isSafeInteger(scope.tenantId) || scope.tenantId <= 0) {
     throw validationError('tenantId', 'A valid tenant scope is required.');
   }
-  if (!Number.isInteger(scope.userId) || scope.userId <= 0) {
+  if (!Number.isSafeInteger(scope.userId) || scope.userId <= 0) {
     throw validationError('userId', 'A valid user scope is required.');
   }
   return { tenantId: scope.tenantId, userId: scope.userId };
@@ -736,7 +737,7 @@ function updatePerformanceMemoryBestEffort(input: NormalizedInput, performanceId
         performanceId,
         tenantId: input.scope.tenantId,
         userId: input.scope.userId,
-        error: error instanceof Error ? error.message : String(error),
+        ...safeContentLogErrorFields(error),
       },
       'Canonical Content performance outcome stored but memory update failed',
     );

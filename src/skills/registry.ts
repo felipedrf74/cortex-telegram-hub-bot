@@ -3,6 +3,7 @@
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 import type { InstalledSkill, SkillSubmodule } from '../domains/types';
+import { getSkillDefinition } from './skill-config';
 
 function canonicalInstalledSkillName(name: string): string {
   const normalized = name.trim();
@@ -127,19 +128,19 @@ export function getEnabledSubmodules(skillName: string): string[] {
   const canonicalSkillName = canonicalInstalledSkillName(skillName);
   const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(canonicalSkillName) as { id: number } | undefined;
   if (!skill) {
-    // Skill not in DB — default ALL sub-skills to enabled
-    // Return all sub-skill names from DEFAULT_SKILLS definition
-    try {
-      const { DEFAULT_SKILLS } = require('./skill-config');
-      const def = DEFAULT_SKILLS[canonicalSkillName];
-      if (def?.subSkills) return def.subSkills.map((s: any) => s.name);
-    } catch { /* skill-config not loaded */ }
-    return [];
+    return configuredSubSkills(canonicalSkillName)
+      .filter((sub) => sub.enabledByDefault)
+      .map((sub) => sub.name);
   }
   const rows = db.prepare(
-    'SELECT module_name FROM skill_submodules WHERE skill_id = ? AND enabled = 1 ORDER BY module_name'
-  ).all(skill.id) as Array<{ module_name: string }>;
-  return rows.map(r => r.module_name);
+    'SELECT module_name, enabled FROM skill_submodules WHERE skill_id = ? ORDER BY module_name'
+  ).all(skill.id) as Array<{ module_name: string; enabled: number }>;
+  const persisted = new Map(rows.map((row) => [row.module_name, row.enabled === 1]));
+  const enabled = new Set(rows.filter((row) => row.enabled === 1).map((row) => row.module_name));
+  for (const sub of configuredSubSkills(canonicalSkillName)) {
+    if (!persisted.has(sub.name) && sub.enabledByDefault) enabled.add(sub.name);
+  }
+  return [...enabled].sort();
 }
 
 /** Check if a specific submodule is enabled. */
@@ -152,17 +153,14 @@ export function isSubmoduleEnabled(skillName: string, moduleName: string): boole
     WHERE s.name = ? AND sm.module_name = ?
   `).get(canonicalSkillName, moduleName) as { enabled: number } | undefined;
   if (row) return row.enabled === 1;
-  // Not in DB — check if it's a known skill from DEFAULT_SKILLS
-  try {
-    const { DEFAULT_SKILLS } = require('./skill-config');
-    const def = DEFAULT_SKILLS[canonicalSkillName];
-    if (def) {
-      // Known skill, not in DB → default to enabled
-      const sub = def.subSkills?.find((s: any) => s.name === moduleName);
-      return !!sub; // true if sub-skill exists in the definition
-    }
-  } catch { /* skill-config not loaded */ }
-  return false; // Truly unknown skill → disabled
+  // A missing skill/submodule row is degraded registry state. Preserve the
+  // declarative default instead of manufacturing an enabled capability.
+  return configuredSubSkills(canonicalSkillName)
+    .find((sub) => sub.name === moduleName)?.enabledByDefault ?? false;
+}
+
+function configuredSubSkills(skillName: string): Array<{ name: string; enabledByDefault: boolean }> {
+  return getSkillDefinition(skillName)?.subSkills ?? [];
 }
 
 // ── Queries ────────────────────────────────────────────────────────

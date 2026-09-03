@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "3695c71a7c3f947c18787ac5a1dca8875fdbc96c7d34a14f04aed9958d59bb63",
-    "baseCommit": "ebedb0dfe06782e68ad42e2d097685ce045d8c1d",
-    "baseCommitTimestamp": "2026-09-03T08:10:03+01:00",
-    "trackedFiles": 3557,
-    "sourceFiles": 1248
+    "sourceDigest": "84a699f5c02b72e3625492ac12a2b9591447a453a60443c3d018d0ad0f46ef13",
+    "baseCommit": "ee0b2aa431aecbc44cbe4e8693d3833dff15ff60",
+    "baseCommitTimestamp": "2026-09-03T08:28:05+01:00",
+    "trackedFiles": 3597,
+    "sourceFiles": 1261
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -34,7 +34,7 @@
     {
       "path": "src/api",
       "owner": "backend",
-      "files": 171
+      "files": 174
     },
     {
       "path": "src/boot.ts",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 921
+      "files": 931
     },
     {
       "path": "src/skills",
@@ -4847,9 +4847,9 @@
     }
   ],
   "migrations": {
-    "count": 302,
-    "latest": "migrations/311_activate_secretary_2_2_skill_version.sql",
-    "digest": "2aeda9917ed6efa2eb818f1addddcdaea27fdab1ad244f2c52cb6efd1ef88377",
+    "count": 303,
+    "latest": "migrations/312_content_neutral_legacy_defaults.sql",
+    "digest": "d09cd77865b55b08b213c25012c864bdffeba29e19b618aa59e8cfb63d442d7b",
     "files": [
       "migrations/001_initial.sql",
       "migrations/002_shared_memory.sql",
@@ -5152,7 +5152,8 @@
       "migrations/308_secretary_calendar_command_receipts.sql",
       "migrations/309_secretary_calendar_mutation_receipts.sql",
       "migrations/310_retire_fossa_email_metadata.sql",
-      "migrations/311_activate_secretary_2_2_skill_version.sql"
+      "migrations/311_activate_secretary_2_2_skill_version.sql",
+      "migrations/312_content_neutral_legacy_defaults.sql"
     ]
   },
   "capabilities": [
@@ -5268,13 +5269,13 @@
     }
   ],
   "tests": {
-    "files": 1317,
+    "files": 1336,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
       "adapters": 2,
       "agents": 4,
-      "api": 165,
+      "api": 168,
       "billing": 1,
       "brand": 1,
       "cli": 2,
@@ -5282,7 +5283,7 @@
       "domains": 5,
       "integration": 4,
       "lib": 1,
-      "migrations": 43,
+      "migrations": 44,
       "portal": 59,
       "regression": 1,
       "router": 8,
@@ -5290,7 +5291,7 @@
       "scripts": 112,
       "sdk": 1,
       "security": 24,
-      "services": 824,
+      "services": 839,
       "skills": 12,
       "state": 17,
       "storage": 1,
@@ -6051,7 +6052,7 @@
     },
     {
       "path": "docs/contracts/openapi-v1.yaml",
-      "bytes": 668572,
+      "bytes": 803626,
       "generated": false
     },
     {
@@ -6080,6 +6081,11 @@
       "generated": false
     },
     {
+      "path": "__tests__/api/chat-routes.test.ts",
+      "bytes": 319399,
+      "generated": false
+    },
+    {
       "path": "catalog/training/exercise-media/v1/media-localizations.json",
       "bytes": 315882,
       "generated": false
@@ -6091,12 +6097,7 @@
     },
     {
       "path": "src/portal/portal.html",
-      "bytes": 312279,
-      "generated": false
-    },
-    {
-      "path": "__tests__/api/chat-routes.test.ts",
-      "bytes": 307784,
+      "bytes": 314187,
       "generated": false
     },
     {

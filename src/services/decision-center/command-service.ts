@@ -97,6 +97,8 @@ import { isLowRiskAutoReflowEligible, revalidateNormalizedDecisionAction } from 
 
 import { directOwnedContentObjectForDecision } from '../decision-command-effects';
 
+import { invalidateContentDerivedCaches } from '../cache-coherence-registry';
+
 import {
   contentWorkflowStateRevision,
   cookingMealSlotStateRevision,
@@ -5427,6 +5429,8 @@ export function executeContentApprovalDecision(
       actualProductionState: verified?.productionState ?? null,
     });
   }
+
+  invalidateContentDerivedCaches(userId);
 
   return persistProjectionAfterVerifiedSourceEffect('content_approval_effect', () => (
     markDecisionActioned(record, actionId, {

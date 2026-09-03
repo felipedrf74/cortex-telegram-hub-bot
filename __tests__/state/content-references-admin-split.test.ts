@@ -61,7 +61,7 @@ describe('content-references admin/system-scope split', () => {
     expect(getSystemChannels(adminContext)).toHaveLength(1);
   });
 
-  it('keeps system rows out of positive-user reads unless they are deliberately shared', () => {
+  it('keeps system rows out of positive-user reads', () => {
     addSystemChannel('https://youtube.com/@system', 'manual', adminContext);
     addChannel('https://youtube.com/@user', 'manual', 42);
 

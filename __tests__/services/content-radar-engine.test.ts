@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMigratedTestDatabase } from '../../src/testing/migrated-test-database';
 import Database from 'better-sqlite3';
 let testDb: Database.Database;
+const cacheMocks = vi.hoisted(() => ({
+  invalidateContentDerivedCaches: vi.fn(),
+}));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -15,6 +18,11 @@ vi.mock('../../src/services/database', () => ({
   stripWrappingTransactionStatements: vi.fn((sql: string) => sql),
   withDatabaseForTest: vi.fn(),
   withDatabaseForTestAsync: vi.fn(),
+}));
+
+vi.mock('../../src/services/cache-coherence-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/cache-coherence-registry')>()),
+  invalidateContentDerivedCaches: (...args: unknown[]) => cacheMocks.invalidateContentDerivedCaches(...args),
 }));
 
 import {
@@ -31,6 +39,7 @@ import { getContentWorkspaceItemDetail } from '../../src/services/content-worksp
 
 describe('Content radar opportunity engine', () => {
   beforeEach(() => {
+    cacheMocks.invalidateContentDerivedCaches.mockClear();
     testDb = createMigratedTestDatabase();
   });
 
@@ -369,5 +378,7 @@ describe('Content radar opportunity engine', () => {
       object: { id: result.object!.id },
       reasonCodes: ['canonical_idempotent_replay'],
     });
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledOnce();
+    expect(cacheMocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(501);
   });
 });
