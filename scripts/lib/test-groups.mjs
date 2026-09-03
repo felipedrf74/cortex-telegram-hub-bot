@@ -297,9 +297,10 @@ export function classifyTestGroups(files, policy) {
   for (const file of files) {
     if (!isRelevantPath(file)) continue;
     const owners = groupsForPath(file, policy);
-    // Unowned Swift paths belong to the external XCTest projection. A Swift
-    // path explicitly covered by this repository's policy remains Vitest-owned.
-    if (owners.length === 0 && !file.endsWith('.swift')) unmapped.push(file);
+    // Only the three iOS-repository projections belong exclusively to XCTest.
+    // Repository-owned Swift elsewhere must still fail closed when unowned.
+    const isExternalIOSSwift = /^(?:Nexus Hub|Nexus HubTests|Nexus HubUITests)\/.+\.swift$/.test(file);
+    if (owners.length === 0 && !isExternalIOSSwift) unmapped.push(file);
     owners.forEach((owner) => mapped.add(owner));
   }
   return { groups: [...mapped].sort(), unmapped: [...new Set(unmapped)].sort() };

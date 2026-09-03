@@ -159,6 +159,16 @@ describe('lean changed-area classification', () => {
     ]));
   });
 
+  it('selects a newly added external XCTest class by its source filename', () => {
+    const result = classify([
+      'Nexus HubTests/BrandNewFeatureTests.swift',
+    ]);
+
+    expect(result.vitest.mode).toBe('skip');
+    expect(result.xctest.mode).toBe('focused');
+    expect(result.xctest.classes).toContain('Nexus HubTests/BrandNewFeatureTests');
+  });
+
   it.each([
     ['scripts/backend-policy-check.swift', 'release-ops'],
     ['migrations/backend-schema-check.swift', 'migrations'],
@@ -415,6 +425,18 @@ describe('lean changed-area classification', () => {
     expect(result.stderr).toContain('config/test-groups.json');
   });
 
+  it('fails closed for an unmapped repository-owned Swift source path', () => {
+    const result = spawnSync('bash', [
+      'scripts/changed-area-classifier.sh',
+      '--json',
+      '--files',
+      'src/new-unowned-area.swift',
+    ], { encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Test-group policy has no owner');
+    expect(result.stderr).toContain('src/new-unowned-area.swift');
+  });
+
   it('fails closed when Git cannot resolve changed-file impact from an ancestor', () => {
     expect(() => assertResolvedChangeImpact(false, 'non-ancestor-sha')).toThrow(
       /base 'non-ancestor-sha' is not an ancestor of HEAD.*full-suite fallback is intentionally disabled/,
@@ -445,10 +467,19 @@ describe('lean changed-area classification', () => {
     expect(classifyTestGroups([
       'src/services/content-workflow.ts',
       'src/services/new-unowned-area.ts',
+      'src/services/new-unowned-area.swift',
+      'Nexus Hub/ViewModels/ExternalProjection.swift',
+      'Nexus Hub/ViewModels/ExternalProjection.swift.bak',
+      'src/Nexus Hub/ViewModels/Embedded.swift',
       'docs/testing.md',
     ], policy)).toEqual({
       groups: ['content'],
-      unmapped: ['src/services/new-unowned-area.ts'],
+      unmapped: [
+        'Nexus Hub/ViewModels/ExternalProjection.swift.bak',
+        'src/Nexus Hub/ViewModels/Embedded.swift',
+        'src/services/new-unowned-area.swift',
+        'src/services/new-unowned-area.ts',
+      ],
     });
   });
 
