@@ -64,9 +64,14 @@ When a controller transition retires an accepted staging candidate, a failed
 `compose down` is accepted as an idempotent no-op only after Docker proves that
 both containers and networks bearing that exact governed Compose-project label
 are absent. The proof allows only a short bounded recheck for Docker's final
-network-removal settlement (at most five seconds). A partial project, a
+network-removal settlement (at most thirty seconds). A partial project, a
 different project, an unavailable Docker enumeration, or resources that remain
-after that bound is a hard teardown failure and blocks further deployment.
+after that bound is a hard teardown failure and blocks further deployment. The
+controller records only a privacy-safe proof class and bounded attempt/elapsed
+metadata in its deployment journal (`absent_after_attempts`,
+`container_present`, `network_present_timeout`,
+`container_enumeration_failed`, or `network_enumeration_failed`); it never
+records Docker IDs, names, or command output.
 
 The immutable host control plane is built only in its transient staging tree.
 Each Git, npm, and Node builder command runs as the dedicated non-login build

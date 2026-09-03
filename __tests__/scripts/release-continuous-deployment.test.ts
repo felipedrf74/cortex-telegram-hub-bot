@@ -474,6 +474,11 @@ interface RegistryScript {
   payloadDigests?: string[];
   composeUpFailures?: Record<string, number>;
   composeDownFailures?: Record<string, number>;
+  composeDownProof?: {
+    classification: string;
+    attempts: number;
+    elapsedMs: number;
+  };
   migratorExit?: Record<string, number>;
   migratorStdout?: Record<string, string>;
   migratorStderr?: Record<string, string>;
@@ -647,6 +652,7 @@ function fakeRegistry(
           status: script.composeDownFailures?.[environment] ?? 0,
           stdout: '',
           stderr: '',
+          ...(script.composeDownProof ? { teardownProof: script.composeDownProof } : {}),
         };
       },
       composeRunMigrator: ({ environment, releaseIdentity }: {
@@ -1223,6 +1229,7 @@ async function deploy(options: {
   installedBackupInterface?: ReturnType<typeof fakeInstalledBackupInterface>;
   notificationDelayMs?: number[];
   nowMs?: number;
+  log?: (message: string) => void;
 } = {}) {
   const envelope = options.envelope ?? signed(payloadFor());
   const store = options.store ?? makeStore();
@@ -1291,7 +1298,7 @@ async function deploy(options: {
     governanceOnlyReleaseId: options.governanceOnlyReleaseId ?? null,
     ownerAuthorized: options.ownerAuthorized ?? false,
     clock,
-    log: () => {},
+    log: options.log ?? (() => {}),
     env: { [LOCK_HELD_ENV]: '1' },
     schemaPolicy: options.schemaPolicy,
   });
@@ -2630,8 +2637,17 @@ describe('release state and locking', () => {
 
   it('hard-blocks and retains active evidence when stale staging teardown fails', async () => {
     let checks = 0;
+    const logs: string[] = [];
     const { result, store, registryHarness } = await deploy({
-      script: { composeDownFailures: { staging: 1 } },
+      script: {
+        composeDownFailures: { staging: 1 },
+        composeDownProof: {
+          classification: 'network_present_timeout',
+          attempts: 61,
+          elapsedMs: 30_000,
+        },
+      },
+      log: (message) => logs.push(message),
       protectedHead: {
         verify: ({ expectedSha }) => {
           checks += 1;
@@ -2644,7 +2660,17 @@ describe('release state and locking', () => {
     expect(result).toMatchObject({
       outcome: DEPLOYMENT_OUTCOMES.BLOCKED,
       reason: 'preproduction_teardown_failed',
+      teardownProof: {
+        classification: 'network_present_timeout',
+        attempts: 61,
+        elapsedMs: 30_000,
+      },
     });
+    const proofLog = logs.find((line) => line.startsWith('pre-production teardown proof:'));
+    expect(proofLog).toContain(
+      'pre-production teardown proof: network_present_timeout attempts=61 elapsedMs=30000',
+    );
+    expect(proofLog).not.toMatch(/retained-container|persistent-network|[0-9a-f]{12,64}/i);
     expect(store.readState().active?.status).toBe(RELEASE_STATUSES.STAGING_HEALTHY);
     expect(store.readState().blocked?.reason)
       .toBe(BLOCK_REASONS.PREPRODUCTION_TEARDOWN_FAILED);
@@ -7122,7 +7148,11 @@ describe('release security and operations', () => {
       planDir: createRuntimePlanDir().planDir,
     });
 
-    expect(result).toMatchObject({ status: 0, alreadyAbsent: true });
+    expect(result).toMatchObject({
+      status: 0,
+      alreadyAbsent: true,
+      teardownProof: { classification: 'absent_after_attempts', attempts: 1 },
+    });
     expect(commands).toEqual([
       expect.arrayContaining(['compose', '--file', join(workspace, 'compose.yml'), 'down']),
       [
@@ -7171,7 +7201,11 @@ describe('release security and operations', () => {
       planDir: createRuntimePlanDir().planDir,
     });
 
-    expect(result).toMatchObject({ status: 0, alreadyAbsent: true });
+    expect(result).toMatchObject({
+      status: 0,
+      alreadyAbsent: true,
+      teardownProof: { classification: 'absent_after_attempts', attempts: 2 },
+    });
     expect(networkListings).toBe(2);
     expect(sleeps).toEqual([500]);
   });
@@ -7205,7 +7239,10 @@ describe('release security and operations', () => {
 
     expect(result.status).toBe(1);
     expect(result).not.toHaveProperty('alreadyAbsent');
-    expect(sleeps).toEqual(Array.from({ length: 10 }, () => 500));
+    expect(result).toMatchObject({
+      teardownProof: { classification: 'network_present_timeout', attempts: 61 },
+    });
+    expect(sleeps).toEqual(Array.from({ length: 60 }, () => 500));
   });
 
   it.each([
@@ -7244,6 +7281,8 @@ describe('release security and operations', () => {
 
     expect(result.status).toBe(1);
     expect(result).not.toHaveProperty('alreadyAbsent');
+    expect(result.teardownProof?.classification)
+      .toBe(`${unavailableKind}_enumeration_failed`);
     expect(commands[0]).toEqual(expect.arrayContaining(['compose', 'down']));
   });
 
@@ -7274,6 +7313,9 @@ describe('release security and operations', () => {
 
     expect(result.status).toBe(1);
     expect(result).not.toHaveProperty('alreadyAbsent');
+    expect(result).toMatchObject({
+      teardownProof: { classification: 'container_present', attempts: 1 },
+    });
     expect(commands).toHaveLength(2);
     expect(commands.some((args) => args[0] === 'network')).toBe(false);
   });
