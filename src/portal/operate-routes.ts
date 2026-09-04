@@ -19,6 +19,8 @@
  */
 
 import type { Express, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import { cancelJob, replayJob } from '../services/background-job-queue';
@@ -201,8 +203,25 @@ function countBy(column: string, where: string, params: unknown[], limit = 10): 
 
 // ── Routes ────────────────────────────────────────────────────────────────
 
+
+function createOperateRateLimiter() {
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  return rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 180,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      res.setHeader('Retry-After', Math.max(1, Math.ceil(options.windowMs / 1000)));
+      res.status(options.statusCode).json({ ok: false, message: 'Too many portal requests from this IP. Slow down.' });
+    },
+  });
+}
+
 export function registerPortalOperateRoutes(app: Express): void {
-  app.get('/api/ops/queues', (_req: Request, res: Response) => {
+  const limiter = createOperateRateLimiter();
+  app.get('/api/ops/queues', limiter, (_req: Request, res: Response) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
       res.json({ ok: true, ...getQueueSummary() });
@@ -211,7 +230,7 @@ export function registerPortalOperateRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/ops/queues/dead-letter', (req: Request, res: Response) => {
+  app.get('/api/ops/queues/dead-letter', limiter, (req: Request, res: Response) => {
     try {
       const kind = req.query.kind ?? 'jobs';
       if (!isDeadLetterKind(kind)) {
@@ -247,10 +266,10 @@ export function registerPortalOperateRoutes(app: Express): void {
       sendPortalInternalError(res, err, `Failed to ${action} dead-letter item`, `Portal: dead-letter ${action} failed`);
     }
   };
-  app.post('/api/ops/queues/:kind/:id/replay', requirePortalAdminToken, deadLetterAction('replay'));
-  app.post('/api/ops/queues/:kind/:id/cancel', requirePortalAdminToken, deadLetterAction('cancel'));
+  app.post('/api/ops/queues/:kind/:id/replay', limiter, requirePortalAdminToken, deadLetterAction('replay'));
+  app.post('/api/ops/queues/:kind/:id/cancel', limiter, requirePortalAdminToken, deadLetterAction('cancel'));
 
-  app.get('/api/ops/flags', (_req: Request, res: Response) => {
+  app.get('/api/ops/flags', limiter, (_req: Request, res: Response) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
       let killSwitches: ReturnType<typeof listHybridKillSwitches> = [];
@@ -273,7 +292,7 @@ export function registerPortalOperateRoutes(app: Express): void {
     }
   });
 
-  app.post('/api/ops/flags/kill-switches/:key', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/ops/flags/kill-switches/:key', limiter, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const key = req.params.key;
       if (typeof key !== 'string' || !(HYBRID_KILL_SWITCH_KEYS as readonly string[]).includes(key)) {
@@ -310,7 +329,7 @@ export function registerPortalOperateRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/ops/provider-health-history', (req: Request, res: Response) => {
+  app.get('/api/ops/provider-health-history', limiter, (req: Request, res: Response) => {
     try {
       const hours = parseBoundedInt(req.query.hours, HISTORY_DEFAULT_HOURS, 1, HISTORY_MAX_HOURS);
       const provider = optionalToken(req.query.provider, PROVIDER_PATTERN);
@@ -330,7 +349,7 @@ export function registerPortalOperateRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/ops/notification-delivery', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/ops/notification-delivery', limiter, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const filters = parseDeliveryFilters(req.query);
       const { where, params } = deliveryWhere(filters);

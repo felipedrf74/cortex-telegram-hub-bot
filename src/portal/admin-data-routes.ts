@@ -142,6 +142,7 @@ export function registerPortalAdminDataRoutes(app: Express): void {
   });
   if (typeof app.use === 'function') {
     app.use('/api/users/:userId/data-summary', authorizationRateLimitMiddleware);
+    app.use('/api/audit-trail', authorizationRateLimitMiddleware);
   }
 
   // GET /api/audit-trail — recent audit events (admin only).

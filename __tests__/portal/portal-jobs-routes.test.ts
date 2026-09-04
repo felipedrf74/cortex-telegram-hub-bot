@@ -270,7 +270,7 @@ describe('GET /api/jobs/:name/history', () => {
 describe('POST /api/jobs/:name/run', () => {
   it('requires the admin guard', () => {
     const { routes } = makeApp();
-    expect(routes.get('POST /api/jobs/:name/run')).toHaveLength(2);
+    expect(routes.get('POST /api/jobs/:name/run')).toHaveLength(3);
   });
 
   it('starts an allowed job once, audits it, and enforces the cooldown', async () => {

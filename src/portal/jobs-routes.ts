@@ -21,6 +21,8 @@
  */
 
 import type { Express, Request, Response } from 'express';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 import { CronExpressionParser } from 'cron-parser';
 import { config } from '../config';
 import { getDb } from '../services/database';
@@ -194,8 +196,25 @@ function validName(raw: unknown): string | null {
   return typeof raw === 'string' && JOB_NAME_PATTERN.test(raw) ? raw : null;
 }
 
+
+function createJobsRateLimiter() {
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  return rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 180,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      res.setHeader('Retry-After', Math.max(1, Math.ceil(options.windowMs / 1000)));
+      res.status(options.statusCode).json({ ok: false, message: 'Too many portal requests from this IP. Slow down.' });
+    },
+  });
+}
+
 export function registerPortalJobsRoutes(app: Express): void {
-  app.get('/api/jobs', (_req: Request, res: Response) => {
+  const limiter = createJobsRateLimiter();
+  app.get('/api/jobs', limiter, (_req: Request, res: Response) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
       const jobs = listPortalJobs();
@@ -211,7 +230,7 @@ export function registerPortalJobsRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/jobs/:name/history', (req: Request, res: Response) => {
+  app.get('/api/jobs/:name/history', limiter, (req: Request, res: Response) => {
     try {
       const name = validName(req.params.name);
       if (!name || !getJobMap().has(name)) {
@@ -232,7 +251,7 @@ export function registerPortalJobsRoutes(app: Express): void {
     }
   });
 
-  app.post('/api/jobs/:name/run', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/jobs/:name/run', limiter, requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const name = validName(req.params.name);
       const status = name ? getJobMap().get(name) : undefined;

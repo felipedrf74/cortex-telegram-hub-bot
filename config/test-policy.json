@@ -2325,6 +2325,27 @@
           }
         ],
         "reason": "The retained receipts suite replaces whole-object toEqual snapshots of {result, idempotent} with field assertions plus the additive immutable commandReceipt contract; the replay/conflict identity guard remains directly owned."
+      },
+      {
+        "test": "__tests__/portal/portal-admin-data-routes.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-audit-trail-filters.test.ts",
+          "__tests__/portal/portal-admin-data-routes.test.ts"
+        ],
+        "sources": [
+          "src/portal/admin-data-routes.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/portal/admin-data-routes.ts:88-99",
+            "anchor": "if (filters.actorId)",
+            "behavior": "Audit trail filters translate one-to-one into WHERE clauses: user, actor and action match exactly, resource matches as an escaped prefix, free text searches details and resource, the time range and beforeId cursor bound the page, and no filter yields no WHERE clause.",
+            "replacementTest": "__tests__/portal/portal-audit-trail-filters.test.ts",
+            "ownerTestNamePattern": "filters by action, resource prefix, actor, date range and free text$",
+            "minimumMutants": 3
+          }
+        ],
+        "reason": "The admin-data suite's two audit assertions moved from whole-payload toEqual to toMatchObject plus the new ordered, filterable SQL and the rate-limited middleware chain; the WHERE builder behavior is owned by the dedicated audit filter suite."
       }
     ],
     "ownerTestMappings": [],

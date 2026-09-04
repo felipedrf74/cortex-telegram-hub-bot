@@ -241,7 +241,7 @@ describe('queues', () => {
     insertJob('j-dead', 'dead_letter', 7);
     insertEvent('e-dead', 'dead_letter', 8);
     const { routes } = makeApp();
-    expect(routes.get('POST /api/ops/queues/:kind/:id/replay')).toHaveLength(2);
+    expect(routes.get('POST /api/ops/queues/:kind/:id/replay')).toHaveLength(3);
 
     const replay = call(routes, 'POST /api/ops/queues/:kind/:id/replay', { params: { kind: 'jobs', id: 'j-dead' } });
     expect(replay.statusCode).toBe(200);
@@ -290,7 +290,7 @@ describe('flags', () => {
     const state = { controlKey: 'storefront', engaged: true, reason: 'incident 42', actorUserId: 1, updatedAt: 'now' };
     hoisted.setHybridKillSwitch.mockReturnValue({ kind: 'updated', state });
     const { routes } = makeApp();
-    expect(routes.get('POST /api/ops/flags/kill-switches/:key')).toHaveLength(2);
+    expect(routes.get('POST /api/ops/flags/kill-switches/:key')).toHaveLength(3);
 
     const payload = call(routes, 'POST /api/ops/flags/kill-switches/:key', { params: { key: 'storefront' }, body: { engaged: true, reason: '  incident 42 ' } });
     expect(payload.statusCode).toBe(200);
@@ -369,7 +369,7 @@ describe('notification delivery', () => {
     insert.run('a3', 'n3', 'email', 'sent', null, null, '-3 hours');
     insert.run('a4', 'n4', 'push', 'failed', '410', 'BadDeviceToken', '-3 days');
     const { routes } = makeApp();
-    expect(routes.get('GET /api/ops/notification-delivery')).toHaveLength(2);
+    expect(routes.get('GET /api/ops/notification-delivery')).toHaveLength(3);
 
     const payload = call(routes, 'GET /api/ops/notification-delivery');
     expect(payload.statusCode).toBe(200);
