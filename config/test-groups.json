@@ -336,17 +336,12 @@
       "reason": "Content dates are advisory unless Secretary confirms a private work block, and internal workflow never proves publication. The retained decision-context suite replaces derived publish deadlines and filming commitments with confirmed, partial, failed-sync, unavailable, and proposal-only authority states."
     },
     {
-      "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/services/signal-ranking.test.ts",
-      "requiredChangedPaths": [
-        "__tests__/services/signal-ranking.test.ts",
-        "src/agents/pipeline-agent.ts"
-      ],
-      "replacementTests": [
-        "__tests__/services/signal-ranking.test.ts",
-        "__tests__/state/content-performance-aggregate.test.ts"
-      ],
-      "reason": "Signal ranking no longer infers publication counts, conversion, or throughput from internal pipeline state. The retained ranking and aggregate suites replace numeric publication assertions with explicit unavailable tracking while preserving script-conversion evidence."
+      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts"],
+      "requiredChangedPaths": ["src/portal/server.ts"],
+      "replacementTests": ["__tests__/services/signal-ranking.test.ts"],
+      "reason": "Two structural checks that read src/portal/intelligence-routes.ts were replaced by a check that the module is retired; ranked-signal, schema and pipeline-metric behavior assertions in the same file are unchanged. Supersedes the earlier pipeline-agent retirement mapping for this suite."
     },
     {
       "baseSha": "e96c1ccfda321f419a6732a3aee676d1481060cc",
@@ -1232,6 +1227,59 @@
         "__tests__/scripts/release-operational-liveness.test.ts"
       ],
       "reason": "The retained liveness suite retires systemd-level exit-75 restart suppression: the bounded retry launcher now owns transient lock contention inside one oneshot activation, while any terminal exit 75 reaches the durable operational-alert outbox; the local-backup suite proves both launcher outcomes."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/portal/intelligence-routes.test.ts",
+      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts"],
+      "requiredChangedPaths": ["src/portal/server.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "replacementTests": ["__tests__/portal/portal-route-registration.test.ts", "__tests__/services/signal-ranking.test.ts"],
+      "reason": "The legacy /api/agents, /api/signals and /api/pipeline portal routes had no SPA consumer and were deleted with their module. The retained route-registration hygiene suite proves every mounted portal route has a consumer or an explicit allowlist entry, and signal-ranking keeps the intelligence-bus contract coverage."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/portal/portal-intelligence-routes.test.ts",
+      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts"],
+      "requiredChangedPaths": ["src/portal/server.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "replacementTests": ["__tests__/portal/portal-route-registration.test.ts", "__tests__/portal/portal-admin-scope.test.ts"],
+      "reason": "Retired together with src/portal/intelligence-routes.ts, which no portal surface or script called. Route wiring is now guarded by the registration hygiene suite and admin-scope assertions cover the remaining mutation routes."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/portal/anthropic-hook.test.ts",
+      "requiredChangedPaths": ["src/services/anthropic-hook.ts", "__tests__/services/anthropic-hook.test.ts"],
+      "replacementTests": ["__tests__/services/anthropic-hook.test.ts"],
+      "reason": "The Anthropic tracked-create hook moved from src/portal to src/services with its unit suite renamed in place; the retained suite is the same file at the new path with unchanged assertions."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/portal/portal-admin-scope.test.ts",
+      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts", "src/portal/content-routes.ts"],
+      "requiredChangedPaths": ["src/portal/user-routes.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "replacementTests": ["__tests__/portal/portal-admin-scope.test.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "reason": "Assertions for the deleted intelligence and legacy content mutation routes were removed with those modules; the retained suite adds the admin guard assertion for GET /api/users and the registration hygiene suite proves no unguarded route survived."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/portal/portal-document-routes.test.ts",
+      "requiredChangedPaths": ["src/portal/document-routes.ts"],
+      "replacementTests": ["__tests__/portal/portal-document-routes.test.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "reason": "GET /api/reports had no SPA consumer and was removed from document-routes; the retained suite now exercises the sanitized-error path through the notifications route, and the registration hygiene suite proves the remaining document routes are consumed."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/portal/portal-operations-routes.test.ts",
+      "requiredChangedPaths": ["src/portal/operations-routes.ts"],
+      "replacementTests": ["__tests__/portal/portal-operations-routes.test.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "reason": "The unconsumed /api/spend-by-provider, /api/task-metrics and /api/training-generation-metrics routes were deleted from operations-routes; the retained suite keeps the route family list, quality-score and operator-alert coverage, and the registration hygiene suite guards consumers."
+    },
+    {
+      "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
+      "test": "__tests__/services/content-dashboard-service.test.ts",
+      "requiredRemovedPaths": ["src/portal/content-routes.ts"],
+      "requiredChangedPaths": ["src/portal/server.ts"],
+      "replacementTests": ["__tests__/services/content-dashboard-service.test.ts"],
+      "reason": "The structural checks that read src/portal/content-routes.ts were replaced by a check that the legacy portal content routes are retired in favor of /api/v1/admin/content; the service-layer behavior assertions in the same file are unchanged."
     }
   ],
   "groups": {

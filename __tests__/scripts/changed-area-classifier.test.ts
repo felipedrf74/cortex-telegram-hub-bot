@@ -39,6 +39,8 @@ const QA3_INBOX_RETIREMENT_BASE_SHA = '98ec86210f34ad94ea250c8a1eb10ea71aee2db4'
 const RELEASE_A_RETIREMENT_BASE_SHA = '92b722ee02242fd37453ece17d74cfc53102d961';
 // Content Creation end-to-end contract replacement and cleanup ownership.
 const CONTENT_CREATION_RETIREMENT_BASE_SHA = 'e96c1ccfda321f419a6732a3aee676d1481060cc';
+// Portal modernization (2026-09-04): legacy intelligence/content portal routes retired.
+const PORTAL_MODERNIZATION_RETIREMENT_BASE_SHA = '0ec25946530db6359d341ef193de2504f15f8af4';
 
 function classify(files: string[]) {
   return JSON.parse(execFileSync('bash', [
@@ -554,12 +556,39 @@ describe('lean changed-area classification', () => {
       QA3_INBOX_RETIREMENT_BASE_SHA,
       RELEASE_A_RETIREMENT_BASE_SHA,
       CONTENT_CREATION_RETIREMENT_BASE_SHA,
+      PORTAL_MODERNIZATION_RETIREMENT_BASE_SHA,
     ]));
 
     const contentCreationRetirements = policy.retirementMappings.filter((mapping: {
       baseSha?: string;
     }) => mapping.baseSha === CONTENT_CREATION_RETIREMENT_BASE_SHA);
-    expect(contentCreationRetirements).toHaveLength(31);
+    // 31 at the content-creation wave; the signal-ranking mapping was re-based
+    // by the portal modernization wave, which owns it now.
+    expect(contentCreationRetirements).toHaveLength(30);
+
+    const portalModernizationRetirements = policy.retirementMappings.filter((mapping: {
+      baseSha?: string;
+    }) => mapping.baseSha === PORTAL_MODERNIZATION_RETIREMENT_BASE_SHA);
+    expect(portalModernizationRetirements.map((mapping: { test?: string }) => mapping.test).sort()).toEqual([
+      '__tests__/portal/anthropic-hook.test.ts',
+      '__tests__/portal/intelligence-routes.test.ts',
+      '__tests__/portal/portal-admin-scope.test.ts',
+      '__tests__/portal/portal-document-routes.test.ts',
+      '__tests__/portal/portal-intelligence-routes.test.ts',
+      '__tests__/portal/portal-operations-routes.test.ts',
+      '__tests__/services/content-dashboard-service.test.ts',
+      '__tests__/services/signal-ranking.test.ts',
+    ]);
+    expect(portalModernizationRetirements.every((mapping: {
+      requiredChangedPaths?: string[];
+      requiredRemovedPaths?: string[];
+      replacementTests?: string[];
+      reason?: string;
+    }) => (
+      ((mapping.requiredChangedPaths?.length ?? 0) + (mapping.requiredRemovedPaths?.length ?? 0)) > 0
+      && (mapping.replacementTests?.length ?? 0) > 0
+      && typeof mapping.reason === 'string' && mapping.reason.length >= 40
+    ))).toBe(true);
     expect(contentCreationRetirements.every((mapping: {
       test?: string;
       requiredChangedPaths?: string[];
