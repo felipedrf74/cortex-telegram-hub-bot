@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "9a79c321b8943bdea7472665c1b9703e0d1c7d03a76397e6903c2b2f19c1dfb9",
-    "baseCommit": "677b25f877b86244a9d33df2d58efeaa3150a15d",
-    "baseCommitTimestamp": "2026-09-04T11:19:30+01:00",
-    "trackedFiles": 3649,
-    "sourceFiles": 1275
+    "sourceDigest": "0d733dc3a3ba5a56ee7eb31cd3f0caf319e475dd5c618d128378076d38e52dc4",
+    "baseCommit": "5c66d58297f69f48f8c2114404f7949af07f7367",
+    "baseCommitTimestamp": "2026-09-04T12:25:56+01:00",
+    "trackedFiles": 3659,
+    "sourceFiles": 1276
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -74,7 +74,7 @@
     {
       "path": "src/portal",
       "owner": "backend",
-      "files": 49
+      "files": 50
     },
     {
       "path": "src/release",
@@ -171,6 +171,30 @@
       "localPath": "/api/audit-trail/facets",
       "mountPath": "/",
       "source": "src/portal/admin-data-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/session",
+      "localPath": "/api/auth/session",
+      "mountPath": "/",
+      "source": "src/portal/session-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/session",
+      "localPath": "/api/auth/session",
+      "mountPath": "/",
+      "source": "src/portal/session-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/session/logout",
+      "localPath": "/api/auth/session/logout",
+      "mountPath": "/",
+      "source": "src/portal/session-routes.ts",
       "owner": "backend"
     },
     {
@@ -5537,7 +5561,7 @@
     }
   ],
   "tests": {
-    "files": 1358,
+    "files": 1360,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5552,7 +5576,7 @@
       "integration": 4,
       "lib": 1,
       "migrations": 45,
-      "portal": 66,
+      "portal": 68,
       "regression": 1,
       "router": 8,
       "scope": 1,
@@ -6346,11 +6370,6 @@
     {
       "path": "__tests__/services/decision-center.test.ts",
       "bytes": 364925,
-      "generated": false
-    },
-    {
-      "path": "src/portal/portal.html",
-      "bytes": 343468,
       "generated": false
     },
     {

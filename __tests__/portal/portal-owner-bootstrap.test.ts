@@ -251,7 +251,8 @@ describe('portal owner bootstrap hardening', () => {
   });
 
   it('does not expose paused Content agent manual actions in the portal', async () => {
-    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8');
+    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8')
+      + readFileSync(path.resolve(__dirname, '../../src/portal/ui/legacy.js'), 'utf8');
 
     expect(portalHtml).not.toContain("name: 'run-performance-agent'");
     expect(portalHtml).not.toContain("name: 'run-reaction-radar'");
@@ -272,7 +273,7 @@ describe('portal owner bootstrap hardening', () => {
   });
 
   it('keeps the mixed legacy Content overview outside the selected tenant scope', () => {
-    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8');
+    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/ui/legacy.js'), 'utf8');
 
     expect(portalHtml).toContain("url === '/api/v1/admin/content'");
     expect(portalHtml).toContain("url.startsWith('/api/v1/admin/content/')");

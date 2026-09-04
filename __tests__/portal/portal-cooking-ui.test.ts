@@ -2,13 +2,22 @@ import fs from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 
-const portalHtml = fs.readFileSync(
+const portalMarkup = fs.readFileSync(
   path.join(process.cwd(), 'src', 'portal', 'portal.html'),
   'utf8',
 );
+const legacyScript = fs.readFileSync(
+  path.join(process.cwd(), 'src', 'portal', 'ui', 'legacy.js'),
+  'utf8',
+);
+// The SPA script now ships as /portal/ui/legacy.js (no inline script under the strict CSP);
+// re-inline it here so the assertions below see the page exactly as the browser executes it.
+// (function replacer: a replacement string would expand the $-patterns the script contains)
+const portalHtml = portalMarkup.replace('<script src="/portal/ui/legacy.js"></script>', () => '<script>\n' + legacyScript + '\n</script>');
 
 describe('portal Cooking browser UI', () => {
   it('keeps the portal script syntactically valid', () => {
+    expect(portalMarkup).toContain('<script src="/portal/ui/legacy.js"></script>');
     const match = portalHtml.match(/<script>\n([\s\S]*)\n<\/script>/);
     expect(match?.[1]).toBeTruthy();
     expect(() => new Function(match?.[1] ?? '')).not.toThrow();

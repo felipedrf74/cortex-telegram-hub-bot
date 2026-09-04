@@ -196,12 +196,20 @@ describe('portal-hardening: content admin auth unification', () => {
 
 describe('portal-hardening: no localStorage or URL token', () => {
   const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
+  const legacyPath = path.resolve(__dirname, '../../src/portal/ui/legacy.js');
+  // The SPA script lives in ui/legacy.js (extracted from the inline block so the CSP can drop 'unsafe-inline').
+  const uiDir = path.resolve(__dirname, '../../src/portal/ui');
+  const readSpaSource = () => [
+    fs.readFileSync(htmlPath, 'utf8'),
+    fs.readFileSync(legacyPath, 'utf8'),
+    ...fs.readdirSync(uiDir).filter((f) => f.endsWith('.js') && f !== 'legacy.js').map((f) => fs.readFileSync(path.join(uiDir, f), 'utf8')),
+  ].join('\n');
 
   // Skip if portal.html doesn't exist in the test environment
   const htmlExists = fs.existsSync(htmlPath);
 
   it.skipIf(!htmlExists)('portal.html does not use localStorage for token', () => {
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    const html = readSpaSource();
     // The old pattern was: localStorage.getItem('portalToken')
     // After hardening: token is in-memory only (_portalToken variable)
     expect(html).not.toContain("localStorage.getItem('portalToken')");
@@ -210,21 +218,21 @@ describe('portal-hardening: no localStorage or URL token', () => {
   });
 
   it.skipIf(!htmlExists)('portal.html does not read token from URL params', () => {
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    const html = readSpaSource();
     // Old: URLSearchParams(location.search).get('token')
     expect(html).not.toContain("URLSearchParams(location.search).get('token')");
     expect(html).not.toContain("searchParams.get('token')");
   });
 
   it.skipIf(!htmlExists)('portal.html uses in-memory TOKEN variable (not localStorage)', () => {
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    const html = readSpaSource();
     // The hardened pattern: `let TOKEN = '';  // In-memory only — dies with the tab`
     expect(html).toContain("let TOKEN = ''");
     expect(html).toContain('In-memory only');
   });
 
   it.skipIf(!htmlExists)('portal.html has no telegramId references', () => {
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    const html = readSpaSource();
     // All functions should use userId, not telegramId
     expect(html).not.toContain('telegramId');
   });
@@ -237,7 +245,7 @@ describe('portal-hardening: no localStorage or URL token', () => {
   });
 
   it.skipIf(!htmlExists)('configuration sections render auth errors instead of keeping loading placeholders forever', () => {
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    const html = readSpaSource();
     expect(html).toContain('function apiJson(url, opts = {})');
     expect(html).toContain("setCardError('settings-content', 'Could not load settings', err)");
     expect(html).toContain("setCardError('invite-codes-content', 'Could not load invite codes', err)");

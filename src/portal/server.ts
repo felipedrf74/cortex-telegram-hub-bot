@@ -49,6 +49,7 @@ import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
 import { registerPortalOpsRoutes } from './ops-routes';
 import { registerPortalJobsRoutes } from './jobs-routes';
 import { registerPortalOperateRoutes } from './operate-routes';
+import { registerPortalSessionRoutes } from './session-routes';
 import { registerPortalSupportRoutes } from './support-routes';
 import { registerPortalUserAdminRoutes } from './user-admin-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
@@ -122,7 +123,7 @@ export function createPortalSecurityHeadersMiddleware() {
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+      "default-src 'self'; script-src 'self'; "
       + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
       + "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; "
       + "connect-src 'self' https://api.nexushub.me https://*.nexushub-landing.pages.dev; "
@@ -490,6 +491,7 @@ export function createPortalServer(): http.Server {
   registerPortalOpsRoutes(app);
   registerPortalJobsRoutes(app);
   registerPortalOperateRoutes(app);
+  registerPortalSessionRoutes(app);
 
   registerPortalSupportRoutes(app);
 
