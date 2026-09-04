@@ -161,3 +161,65 @@ describe('portal support routes', () => {
     expect(hoisted.sendPortalInternalError).toHaveBeenCalledWith(expect.anything(), expect.any(Error), 'Portal request failed', 'Portal: support tickets request failed');
   });
 });
+
+describe('portal support routes: validation and edge branches', () => {
+  it('lists with every filter, rejects malformed ids and bodies, and 404s unknown tickets', () => {
+    const { routes } = makeApp();
+    const list = call(routes, 'GET /api/support/tickets', { query: { status: 'all', kind: 'bug', priority: 'p1', source: 'operator', userId: '7', q: 'needle', limit: '5' } });
+    expect(list.statusCode).toBe(200);
+    expect(list.body.tickets).toEqual([]);
+    expect(call(routes, 'GET /api/support/tickets', { query: { status: 'resolved' } }).statusCode).toBe(200);
+    expect(call(routes, 'GET /api/support/tickets', { query: { status: 'bogus', kind: 'bogus', priority: 'p9', userId: 'x', limit: '' } }).statusCode).toBe(200);
+
+    expect(call(routes, 'GET /api/support/tickets/:id', { params: { id: 'abc' } }).statusCode).toBe(400);
+    expect(call(routes, 'GET /api/support/tickets/:id', { params: { id: '999' } }).statusCode).toBe(404);
+
+    expect(call(routes, 'POST /api/support/tickets', { body: { title: '   ' } }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/support/tickets', { body: {} }).statusCode).toBe(400);
+    const defaults = call(routes, 'POST /api/support/tickets', { body: { title: 'Defaults', kind: 'nope', source: 'nope', priority: 'p9', userId: 'x', body: 42 } });
+    expect(defaults.statusCode).toBe(201);
+    expect(defaults.body.ticket).toMatchObject({ kind: 'task', source: 'operator', priority: 'p3', userId: null, body: null });
+    const full = call(routes, 'POST /api/support/tickets', { body: { title: 'Full', kind: 'bug', source: 'email', priority: 'p1', userId: '7', body: 'details', externalRef: 'ext-1', assignee: 'ops' } });
+    expect(full.statusCode).toBe(201);
+    expect(full.body.ticket).toMatchObject({ kind: 'bug', source: 'email', priority: 'p1', userId: 7, externalRef: 'ext-1', assignee: 'ops' });
+    const id = String(full.body.ticket.id);
+
+    expect(call(routes, 'PATCH /api/support/tickets/:id', { params: { id: 'x' }, body: {} }).statusCode).toBe(400);
+    expect(call(routes, 'PATCH /api/support/tickets/:id', { params: { id }, body: { status: 'bogus' } }).statusCode).toBe(400);
+    expect(call(routes, 'PATCH /api/support/tickets/:id', { params: { id }, body: { priority: 'p9' } }).statusCode).toBe(400);
+    expect(call(routes, 'PATCH /api/support/tickets/:id', { params: { id }, body: { kind: 'bogus' } }).statusCode).toBe(400);
+    expect(call(routes, 'PATCH /api/support/tickets/:id', { params: { id: '999' }, body: { status: 'open' } }).statusCode).toBe(404);
+    const patched = call(routes, 'PATCH /api/support/tickets/:id', { params: { id }, body: { status: 'open', priority: 'p2', kind: 'task', title: '', assignee: null, externalRef: null, dueAt: 'not-a-date' } });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.body.ticket).toMatchObject({ status: 'open', priority: 'p2', kind: 'task', title: 'Full', assignee: null, externalRef: null, dueAt: null });
+
+    expect(call(routes, 'POST /api/support/tickets/:id/events', { params: { id: 'x' }, body: { body: 'hi' } }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/support/tickets/:id/events', { params: { id }, body: { body: '  ' } }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/support/tickets/:id/events', { params: { id }, body: undefined }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/support/tickets/:id/events', { params: { id: '999' }, body: { body: 'hi' } }).statusCode).toBe(404);
+
+    expect(call(routes, 'POST /api/support/tickets/:id/link', { params: { id: 'x' }, body: {} }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/support/tickets/:id/link', { params: { id: '999' }, body: { issueId: 1 } }).statusCode).toBe(404);
+    const linked = call(routes, 'POST /api/support/tickets/:id/link', { params: { id }, body: { issueId: 'x', alertId: 'x', reqId: '', userId: 'x', clientErrorId: 'x' } });
+    expect(linked.statusCode).toBe(200);
+    expect(linked.body.ticket).toMatchObject({ issueId: null, alertId: null, reqId: null, clientErrorId: null });
+  });
+
+  it('validates issue and alert ids and maps alert severity to ticket priority', () => {
+    const { routes } = makeApp();
+    expect(call(routes, 'POST /api/ops/issues/:id/ticket', { params: { id: 'x' } }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/ops/issues/:id/ticket', { params: { id: '999' } }).statusCode).toBe(404);
+    expect(call(routes, 'POST /api/operator-alerts/:id/ticket', { params: { id: 'x' } }).statusCode).toBe(400);
+    expect(call(routes, 'POST /api/operator-alerts/:id/ticket', { params: { id: '999' } }).statusCode).toBe(404);
+
+    hoisted.listOperatorAlerts.mockReturnValueOnce([{ id: 5, title: 'Disk full', detail: null, severity: 'critical', status: 'open' }]);
+    const critical = call(routes, 'POST /api/operator-alerts/:id/ticket', { params: { id: '5' } });
+    expect(critical.statusCode).toBe(201);
+    expect(critical.body.ticket).toMatchObject({ priority: 'p1', alertId: 5, body: null });
+
+    hoisted.listOperatorAlerts.mockReturnValueOnce([{ id: 6, title: 'Slow', detail: 'p95 up', severity: 'warning', status: 'open' }]);
+    const warning = call(routes, 'POST /api/operator-alerts/:id/ticket', { params: { id: '6' } });
+    expect(warning.statusCode).toBe(201);
+    expect(warning.body.ticket).toMatchObject({ priority: 'p2', alertId: 6, body: 'p95 up' });
+  });
+});

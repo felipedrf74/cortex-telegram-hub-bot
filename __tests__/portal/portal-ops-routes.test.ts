@@ -234,3 +234,48 @@ describe('portal ops routes', () => {
     expect(hoisted.sendPortalInternalError).toHaveBeenCalledWith(expect.anything(), expect.any(Error), 'Portal request failed', 'Portal: ops logs request failed');
   });
 });
+
+describe('portal ops routes: parsing and edge branches', () => {
+  it('parses log levels by name or number and ignores garbage', () => {
+    expect(parseLogLevel('WARN')).toBe(40);
+    expect(parseLogLevel('30')).toBe(30);
+    expect(parseLogLevel(50)).toBe(50);
+    expect(parseLogLevel('')).toBeUndefined();
+    expect(parseLogLevel(null)).toBeUndefined();
+    expect(parseLogLevel('loud')).toBeUndefined();
+  });
+
+  it('applies every log and request filter and clamps latency windows', () => {
+    const { routes } = makeApp();
+    const logs = call(routes, 'GET /api/ops/logs', { query: { level: 'error', src: 'portal', reqId: 'r', userId: '3', q: 'x', since: '2026-01-01T00:00:00Z', until: 'garbage', beforeId: '10', limit: '5' } });
+    expect(logs.payload.statusCode).toBe(200);
+    const requests = call(routes, 'GET /api/ops/requests', { query: { reqId: 'r', userId: '3', path: '/api', route: '/api/:id', status: '500', statusClass: '9', minDurationMs: '10', surface: 'mars', since: '2026-01-01', beforeId: '10', limit: '5' } });
+    expect(requests.payload.body).toEqual({ ok: true, requests: [], nextBeforeId: null });
+    expect(call(routes, 'GET /api/ops/requests', { query: { statusClass: '5', surface: 'ios' } }).payload.statusCode).toBe(200);
+    for (const [window, expected] of [['15m', '15m'], ['24h', '24h'], ['bogus', '1h'], [undefined, '1h']] as const) {
+      const latency = call(routes, 'GET /api/ops/latency', { query: window ? { window } : {} });
+      expect(latency.payload.body.window).toBe(expected);
+    }
+    expect(call(routes, 'GET /api/ops/requests/:reqId', { params: { reqId: '   ' } }).payload.statusCode).toBe(400);
+    expect(call(routes, 'GET /api/ops/requests/:reqId', { params: { reqId: 'missing' } }).payload.statusCode).toBe(404);
+  });
+
+  it('filters issues and client errors by every dimension and validates ids', () => {
+    const { routes } = makeApp();
+    for (const status of ['all', 'open', 'acked', 'resolved', 'muted', 'bogus']) {
+      const kind = status === 'all' ? 'client' : status === 'open' ? 'server' : 'bogus';
+      expect(call(routes, 'GET /api/ops/issues', { query: { status, kind, source: 'portal', q: 'x', limit: '5' } }).payload.statusCode).toBe(200);
+    }
+    expect(call(routes, 'GET /api/ops/issues/:id', { params: { id: '0' } }).payload.statusCode).toBe(400);
+    expect(call(routes, 'GET /api/ops/issues/:id', { params: { id: 'x' } }).payload.statusCode).toBe(400);
+    expect(call(routes, 'GET /api/ops/issues/:id', { params: { id: '999' }, query: { limit: '3' } }).payload.statusCode).toBe(404);
+    for (const action of ['ack', 'resolve', 'mute', 'reopen']) {
+      expect(call(routes, `POST /api/ops/issues/:id/${action}`, { params: { id: 'x' } }).payload.statusCode).toBe(400);
+      expect(call(routes, `POST /api/ops/issues/:id/${action}`, { params: { id: '999' }, body: { notes: 'n' } }).payload.statusCode).toBe(404);
+    }
+    expect(hoisted.logPortalAdminMutation).not.toHaveBeenCalled();
+    const errors = call(routes, 'GET /api/ops/client-errors', { query: { userId: '1', appVersion: '1.0', level: 'error', since: '2026-01-01', beforeId: '50', limit: '2' } });
+    expect(errors.payload.body).toEqual({ ok: true, errors: [] });
+    expect(call(routes, 'GET /api/ops/client-errors', { query: { limit: '9999' } }).payload.statusCode).toBe(200);
+  });
+});

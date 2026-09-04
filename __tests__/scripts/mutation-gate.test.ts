@@ -775,7 +775,7 @@ describe('changed-critical mutation gate', () => {
       };
     };
 
-    expect(policy.coverage.exceptions).toHaveLength(5);
+    expect(policy.coverage.exceptions).toHaveLength(6);
     const minimumFor = (file: string) => policy.coverage.exceptions.find(
       (exception) => exception.file === file,
     )?.minimum;
@@ -791,6 +791,10 @@ describe('changed-critical mutation gate', () => {
     expect(minimumFor('src/services/scheduler.ts')).toEqual({
       lines: 53.64,
       branches: 38.79,
+    });
+    expect(minimumFor('src/services/anthropic-hook.ts')).toEqual({
+      lines: 57,
+      branches: 40,
     });
     expect(policy.mutation.schedule).toBe('manual-test-rationalization-only');
     expect(policy.mutation.scope).toBe('test-cleanup');

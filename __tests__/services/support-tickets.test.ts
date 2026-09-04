@@ -127,3 +127,73 @@ describe('support tickets', () => {
     expect(getSupportSummary().byStatus.new).toBe(0);
   });
 });
+
+import { getTicketByRef } from '../../src/services/support-tickets';
+
+function eventCount(ticketId: number): number {
+  return Number((hoisted.db!.prepare('SELECT COUNT(*) AS c FROM support_ticket_events WHERE ticket_id = ?').get(ticketId) as { c: number }).c);
+}
+
+describe('support tickets: validation and filter branches', () => {
+  it('rejects invalid kinds, sources, titles, statuses and comments, and defaults unknown priorities', () => {
+    expect(() => createTicket({ kind: 'nope' as any, source: 'operator', title: 'x', createdBy: 'op', quiet: true })).toThrow('invalid ticket kind');
+    expect(() => createTicket({ kind: 'task', source: 'nope' as any, title: 'x', createdBy: 'op', quiet: true })).toThrow('invalid ticket source');
+    expect(() => createTicket({ kind: 'task', source: 'operator', title: '   ', createdBy: 'op', quiet: true })).toThrow('ticket title is required');
+    const ticket = createTicket({ kind: 'task', source: 'operator', title: 'Defaults', priority: 'p9' as any, createdBy: '', quiet: true });
+    expect(ticket.priority).toBe('p3');
+    expect(ticket.createdBy).toBe('system');
+    expect(() => addTicketComment(ticket.id, 'op', '   ')).toThrow('comment body is required');
+    expect(addTicketComment(999, 'op', 'hello')).toBeNull();
+    expect(linkTicket(999, { issueId: 1 }, 'op')).toBeNull();
+    expect(linkTicket(ticket.id, {}, 'op')?.id).toBe(ticket.id);
+    expect(updateTicket(999, { status: 'open' }, 'op')).toBeNull();
+    expect(() => updateTicket(ticket.id, { status: 'bogus' as any }, 'op')).toThrow('invalid ticket status');
+    expect(() => updateTicket(ticket.id, { priority: 'p9' as any }, 'op')).toThrow('invalid ticket priority');
+    expect(() => updateTicket(ticket.id, { kind: 'nope' as any }, 'op')).toThrow('invalid ticket kind');
+  });
+
+  it('raises a critical alert for p0 tickets and names the user in the detail', () => {
+    createTicket({ kind: 'incident', source: 'alert', title: 'Outage', priority: 'p0', userId: 42, createdBy: 'op' });
+    expect(hoisted.recordOperatorAlert).toHaveBeenLastCalledWith(expect.objectContaining({ severity: 'critical', detail: expect.stringContaining('for user 42') }));
+    createTicket({ kind: 'task', source: 'operator', title: 'Routine', createdBy: 'op' });
+    expect(hoisted.recordOperatorAlert).toHaveBeenLastCalledWith(expect.objectContaining({ severity: 'info', detail: expect.not.stringContaining('for user') }));
+  });
+
+  it('updates only what changed, normalizes due dates, and stamps lifecycle timestamps', () => {
+    const t = createTicket({ kind: 'task', source: 'operator', title: 'Same', createdBy: 'op', assignee: 'ops', quiet: true });
+    const before = eventCount(t.id);
+    const unchanged = updateTicket(t.id, { status: 'new', priority: 'p3', kind: 'task', title: '   ', assignee: 'ops' }, 'op')!;
+    expect(eventCount(t.id)).toBe(before);
+    expect(unchanged.title).toBe('Same');
+    const changed = updateTicket(t.id, { title: 'Renamed', externalRef: 'ext', dueAt: 'not a date' }, '')!;
+    expect(changed).toMatchObject({ title: 'Renamed', externalRef: 'ext', dueAt: null });
+    const due = updateTicket(t.id, { dueAt: '2026-09-10T10:00:00Z', assignee: null }, 'op')!;
+    expect(due.dueAt).toBe('2026-09-10T10:00:00.000Z');
+    expect(due.assignee).toBeNull();
+    expect(updateTicket(t.id, { status: 'resolved' }, 'op')!.resolvedAt).not.toBeNull();
+    expect(updateTicket(t.id, { status: 'open' }, 'op')!.resolvedAt).toBeNull();
+    expect(updateTicket(t.id, { status: 'closed' }, 'op')!.closedAt).not.toBeNull();
+    const linked = linkTicket(t.id, { userId: 9, reqId: 'req-1', clientErrorId: 3, alertId: 4, issueId: 5 }, '')!;
+    expect(linked).toMatchObject({ userId: 9, tenantId: 9, reqId: 'req-1', clientErrorId: 3, alertId: 4, issueId: 5 });
+  });
+
+  it('filters lists by every dimension and escapes LIKE wildcards', () => {
+    const a = createTicket({ kind: 'bug', source: 'email', title: '100% broken', priority: 'p1', userId: 1, createdBy: 'op', quiet: true });
+    const b = createTicket({ kind: 'task', source: 'operator', title: 'Routine', priority: 'p3', userId: 2, createdBy: 'op', quiet: true });
+    updateTicket(b.id, { status: 'closed' }, 'op');
+    expect(listTickets().map((t) => t.id)).toEqual([a.id]);
+    expect(listTickets({ status: 'all' }).map((t) => t.id).sort()).toEqual([a.id, b.id].sort());
+    expect(listTickets({ status: 'closed' }).map((t) => t.id)).toEqual([b.id]);
+    expect(listTickets({ status: 'all', kind: 'bug' }).map((t) => t.id)).toEqual([a.id]);
+    expect(listTickets({ status: 'all', priority: 'p3' }).map((t) => t.id)).toEqual([b.id]);
+    expect(listTickets({ status: 'all', source: 'email' }).map((t) => t.id)).toEqual([a.id]);
+    expect(listTickets({ status: 'all', userId: 2 }).map((t) => t.id)).toEqual([b.id]);
+    expect(listTickets({ status: 'all', q: '100%' }).map((t) => t.id)).toEqual([a.id]);
+    expect(listTickets({ status: 'all', q: '_' })).toEqual([]);
+    expect(listTickets({ status: 'all', limit: 1 })).toHaveLength(1);
+    expect(getTicketByRef(a.ref)?.id).toBe(a.id);
+    expect(getTicketByRef('NH-T-9999')).toBeNull();
+    expect(listTicketsForUser(1)).toHaveLength(1);
+    expect(countUserTicketsSince(1, 60_000)).toBe(1);
+  });
+});
