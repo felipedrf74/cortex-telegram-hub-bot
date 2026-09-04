@@ -9,7 +9,7 @@ function updateBadge(count) {
   const badge = document.getElementById('nav-founders-count');
   if (!badge) return;
   badge.textContent = String(count);
-  badge.style.display = count > 0 ? '' : 'none';
+  badge.hidden = !(count > 0);
 }
 
 async function load() {
@@ -27,7 +27,7 @@ async function load() {
         ? '<span class="badge badge-accent">MAX</span>'
         : '<span class="badge badge-success">PRO</span>';
       return '<tr>' +
-        '<td><code class="mono" style="font-size:13px">' + P.esc(f.email) + '</code></td>' +
+        '<td><code class="u-fs-13 mono">' + P.esc(f.email) + '</code></td>' +
         '<td>' + planBadge + '</td>' +
         '<td class="text-muted">' + P.esc(f.note || '—') + '</td>' +
         '<td class="text-muted">' + (f.created_at ? P.shortDateTime(f.created_at) : '—') + '</td>' +
@@ -79,17 +79,17 @@ async function refreshBadge() {
 
 function mount(container) {
   root = container;
-  const label = (text) => '<label style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;display:block">' + text + '</label>';
+  const label = (text) => '<label class="u-fs-11 u-fw-600 u-c-text-secondary u-tt-uppercase u-ls-0-5 u-mb-4 u-d-block">' + text + '</label>';
   root.innerHTML =
     '<div class="section-header"><div><h1 class="section-title">Founders</h1>' +
     '<div class="section-subtitle">Emails with permanent Pro or Max access — no paywall, no expiry</div></div></div>' +
-    '<div class="card" style="margin-bottom:var(--space-4)"><div style="display:flex;gap:var(--space-3);align-items:end;flex-wrap:wrap">' +
-    '<div style="flex:1;min-width:200px">' + label('Email') + '<input class="input" type="email" placeholder="user@example.com" id="founder-email-input" style="width:100%"></div>' +
-    '<div style="min-width:100px">' + label('Plan') + '<select class="input" id="founder-plan-select" style="width:100%"><option value="pro">Pro</option><option value="max">Max</option></select></div>' +
-    '<div style="flex:0.6;min-width:140px">' + label('Note (optional)') + '<input class="input" type="text" placeholder="Beta tester, Investor…" id="founder-note-input" style="width:100%"></div>' +
-    '<button class="btn btn-primary btn-sm" id="founder-add-btn" style="height:36px">+ Add Founder</button></div></div>' +
-    '<div class="card"><div style="overflow-x:auto"><table class="data-table" id="founders-table"><thead><tr>' +
-    '<th>Email</th><th>Plan</th><th>Note</th><th>Added</th><th style="width:60px"></th></tr></thead>' +
+    '<div class="u-mb-space-4 card"><div class="u-d-flex u-gap-space-3 u-ai-end u-flexwrap-wrap">' +
+    '<div class="u-flex-1 u-minw-200">' + label('Email') + '<input class="u-w-100p input" type="email" placeholder="user@example.com" id="founder-email-input"></div>' +
+    '<div class="u-minw-100">' + label('Plan') + '<select class="u-w-100p input" id="founder-plan-select"><option value="pro">Pro</option><option value="max">Max</option></select></div>' +
+    '<div class="u-flex-0-6 u-minw-140">' + label('Note (optional)') + '<input class="u-w-100p input" type="text" placeholder="Beta tester, Investor…" id="founder-note-input"></div>' +
+    '<button class="u-h-36 btn btn-primary btn-sm" id="founder-add-btn">+ Add Founder</button></div></div>' +
+    '<div class="card"><div class="u-ovx-auto"><table class="data-table" id="founders-table"><thead><tr>' +
+    '<th>Email</th><th>Plan</th><th>Note</th><th>Added</th><th class="u-w-60"></th></tr></thead>' +
     '<tbody id="founders-tbody"><tr><td colspan="5"><div class="empty">Loading founders…</div></td></tr></tbody></table></div></div>';
   el('founder-add-btn').addEventListener('click', add);
   root.addEventListener('click', (e) => {

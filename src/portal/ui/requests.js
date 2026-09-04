@@ -28,7 +28,7 @@ function renderRequests(list, append) {
     return;
   }
   const html = list.map((r) =>
-    '<tr class="req-row" data-req="' + P.esc(r.reqId) + '" style="cursor:pointer">' +
+    '<tr class="u-cur-pointer req-row" data-req="' + P.esc(r.reqId) + '">' +
     '<td class="mono text-muted">' + P.esc(P.shortDateTime(r.ts)) + '</td>' +
     '<td><span class="badge badge-' + statusTone(r.status) + '">' + r.status + '</span></td>' +
     '<td class="mono">' + P.esc(r.method) + ' ' + P.esc(r.path) + '</td>' +
@@ -83,7 +83,7 @@ async function loadRateLimits() {
 
 async function openRequest(reqId) {
   const panel = root.querySelector('#req-detail');
-  panel.style.display = 'block';
+  panel.hidden = false;
   panel.innerHTML = '<div class="empty">Loading ' + P.esc(reqId) + '…</div>';
   const res = await P.apiFetch('/api/ops/requests/' + encodeURIComponent(reqId));
   if (res.status === 404) { panel.innerHTML = '<div class="empty">No ledger row, logs or errors for ' + P.esc(reqId) + ' (it may have been sampled out or pruned)</div>'; return; }
@@ -91,14 +91,14 @@ async function openRequest(reqId) {
   const data = await res.json();
   const r = data.request;
   const head = r
-    ? '<div class="grid grid-cols-4" style="padding:var(--space-3) 0">' +
+    ? '<div class="u-p-space-3-0 grid grid-cols-4">' +
       '<div><div class="kpi-label">Status</div><span class="badge badge-' + statusTone(r.status) + '">' + r.status + '</span></div>' +
       '<div><div class="kpi-label">Duration</div><div class="mono">' + r.durationMs + 'ms</div></div>' +
       '<div><div class="kpi-label">User</div><div class="mono">' + (r.userId != null ? r.userId : '—') + '</div></div>' +
-      '<div><div class="kpi-label">Client</div><div class="text-muted" style="font-size:11px">' + P.esc(r.userAgent || '—') + '</div></div></div>'
+      '<div><div class="kpi-label">Client</div><div class="u-fs-11 text-muted">' + P.esc(r.userAgent || '—') + '</div></div></div>'
     : '<div class="text-muted">No ledger row for this request id (not sampled); showing correlated logs and errors.</div>';
   const logs = (data.logs || []).map((l) =>
-    '<div class="mono" style="font-size:11px;padding:2px 0"><span class="text-muted">' + P.esc(l.ts.slice(11, 23)) + '</span> ' +
+    '<div class="u-fs-11 u-p-2-0 mono"><span class="text-muted">' + P.esc(l.ts.slice(11, 23)) + '</span> ' +
     '<span class="badge badge-' + (l.level >= 50 ? 'error' : l.level >= 40 ? 'warning' : 'neutral') + '">' + l.level + '</span> ' + P.esc(l.msg) + '</div>').join('');
   const errs = [].concat(
     (data.errors && data.errors.server || []).map((e) => '<div><span class="badge badge-error">server</span> ' + P.esc(e.message) + (e.issue_id ? ' <a href="#issues" class="req-issue" data-issue="' + e.issue_id + '">issue #' + e.issue_id + '</a>' : '') + '</div>'),
@@ -108,10 +108,10 @@ async function openRequest(reqId) {
     '<div class="card-header"><div class="card-title">🔎 ' + P.esc(r ? r.method + ' ' + r.path : reqId) + '</div>' +
     '<span class="card-subtitle mono">' + P.esc(reqId) + '</span>' +
     '<button class="btn btn-ghost btn-sm" id="req-detail-close">Close</button></div>' + head +
-    '<div class="card-title" style="margin-top:var(--space-3)">Errors</div>' + (errs || '<div class="text-muted">none</div>') +
-    '<div class="card-title" style="margin-top:var(--space-3)">Logs (' + (data.logs || []).length + ')</div>' + (logs || '<div class="text-muted">no runtime log lines carry this request id</div>') +
-    '<div style="margin-top:var(--space-3)"><a href="#logs" class="btn btn-ghost btn-sm" id="req-open-logs">Open in Logs</a></div>';
-  panel.querySelector('#req-detail-close').addEventListener('click', () => { panel.style.display = 'none'; });
+    '<div class="u-mt-space-3 card-title">Errors</div>' + (errs || '<div class="text-muted">none</div>') +
+    '<div class="u-mt-space-3 card-title">Logs (' + (data.logs || []).length + ')</div>' + (logs || '<div class="text-muted">no runtime log lines carry this request id</div>') +
+    '<div class="u-mt-space-3"><a href="#logs" class="btn btn-ghost btn-sm" id="req-open-logs">Open in Logs</a></div>';
+  panel.querySelector('#req-detail-close').addEventListener('click', () => { panel.hidden = true; });
   panel.querySelector('#req-open-logs').addEventListener('click', (e) => {
     e.preventDefault();
     P.navigateTo('logs');
@@ -131,29 +131,29 @@ function mount(container) {
   root.innerHTML =
     '<div class="section-header"><div><h1 class="section-title">Requests</h1>' +
     '<div class="section-subtitle">Sampled HTTP ledger keyed by x-request-id, with per-route latency and throttle counters</div></div>' +
-    '<div class="section-actions"><select class="input" id="req-window" style="max-width:110px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="24h">24 hours</option></select>' +
+    '<div class="section-actions"><select class="u-maxw-110 input" id="req-window"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="24h">24 hours</option></select>' +
     '<button class="btn btn-ghost btn-sm" id="req-refresh">Refresh</button></div></div>' +
     '<div class="grid grid-cols-2">' +
     '<div class="card"><div class="card-header"><div class="card-title">⏱ Latency by route</div></div>' +
-    '<div style="overflow-x:auto"><table class="data-table dense"><thead><tr><th>Route</th><th class="text-right">n</th><th class="text-right">p50</th><th class="text-right">p95</th><th class="text-right">p99</th><th class="text-right">max</th><th class="text-right">5xx</th></tr></thead>' +
+    '<div class="u-ovx-auto"><table class="data-table dense"><thead><tr><th>Route</th><th class="text-right">n</th><th class="text-right">p50</th><th class="text-right">p95</th><th class="text-right">p99</th><th class="text-right">max</th><th class="text-right">5xx</th></tr></thead>' +
     '<tbody id="latency-tbody"><tr><td colspan="7"><div class="empty">Loading…</div></td></tr></tbody></table></div></div>' +
     '<div class="card"><div class="card-header"><div class="card-title">🚦 Rate limiting</div></div>' +
-    '<div class="grid grid-cols-2" style="padding:var(--space-3) var(--space-4)"><div class="kpi-card"><div class="kpi-label">429s last 5 min</div><div class="kpi-value" id="rl-5m">—</div></div>' +
+    '<div class="u-p-space-3-space-4 grid grid-cols-2"><div class="kpi-card"><div class="kpi-label">429s last 5 min</div><div class="kpi-value" id="rl-5m">—</div></div>' +
     '<div class="kpi-card"><div class="kpi-label">429s last hour</div><div class="kpi-value" id="rl-1h">—</div></div></div>' +
-    '<div id="rl-buckets" style="padding:0 var(--space-4) var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2)"></div></div></div>' +
-    '<div class="card mt-4" id="req-detail" style="display:none;padding:var(--space-3) var(--space-4)"></div>' +
+    '<div id="rl-buckets" class="u-p-0-space-4-space-3 u-d-flex u-flexwrap-wrap u-gap-space-2"></div></div></div>' +
+    '<div class="u-p-space-3-space-4 card mt-4" id="req-detail" hidden></div>' +
     '<div class="card mt-4"><div class="table-toolbar" id="req-filters">' +
-    '<input class="input" data-f="reqId" placeholder="request id" style="max-width:190px">' +
-    '<input class="input" data-f="path" placeholder="path prefix" style="max-width:200px">' +
-    '<select class="input" data-f="statusClass" style="max-width:110px"><option value="">any status</option><option value="2">2xx</option><option value="3">3xx</option><option value="4">4xx</option><option value="5">5xx</option></select>' +
-    '<select class="input" data-f="surface" style="max-width:110px"><option value="">any surface</option><option value="ios">ios</option><option value="portal">portal</option><option value="webhook">webhook</option><option value="oauth">oauth</option><option value="public">public</option><option value="health">health</option></select>' +
-    '<input class="input" data-f="minDurationMs" placeholder="≥ ms" style="max-width:90px">' +
-    '<input class="input" data-f="userId" placeholder="user id" style="max-width:100px">' +
+    '<input class="u-maxw-190 input" data-f="reqId" placeholder="request id">' +
+    '<input class="u-maxw-200 input" data-f="path" placeholder="path prefix">' +
+    '<select class="u-maxw-110 input" data-f="statusClass"><option value="">any status</option><option value="2">2xx</option><option value="3">3xx</option><option value="4">4xx</option><option value="5">5xx</option></select>' +
+    '<select class="u-maxw-110 input" data-f="surface"><option value="">any surface</option><option value="ios">ios</option><option value="portal">portal</option><option value="webhook">webhook</option><option value="oauth">oauth</option><option value="public">public</option><option value="health">health</option></select>' +
+    '<input class="u-maxw-90 input" data-f="minDurationMs" placeholder="≥ ms">' +
+    '<input class="u-maxw-100 input" data-f="userId" placeholder="user id">' +
     '<button class="btn btn-ghost btn-sm" id="req-apply">Apply</button>' +
-    '<span class="text-muted" id="req-status" style="margin-left:auto;font-size:11px"></span></div>' +
-    '<div style="overflow-x:auto"><table class="data-table dense"><thead><tr><th>Time</th><th>Status</th><th>Request</th><th>Duration</th><th>Surface</th><th>User</th><th>Id</th></tr></thead>' +
+    '<span class="u-ml-auto u-fs-11 text-muted" id="req-status"></span></div>' +
+    '<div class="u-ovx-auto"><table class="data-table dense"><thead><tr><th>Time</th><th>Status</th><th>Request</th><th>Duration</th><th>Surface</th><th>User</th><th>Id</th></tr></thead>' +
     '<tbody id="req-tbody"><tr><td colspan="7"><div class="empty">Loading…</div></td></tr></tbody></table></div>' +
-    '<div style="padding:var(--space-3) var(--space-4)"><button class="btn btn-ghost btn-sm" id="req-older" disabled>Load older</button></div></div>';
+    '<div class="u-p-space-3-space-4"><button class="btn btn-ghost btn-sm" id="req-older" disabled>Load older</button></div></div>';
 
   const apply = () => {
     root.querySelectorAll('[data-f]').forEach((el) => { filterState[el.dataset.f] = el.value.trim(); });

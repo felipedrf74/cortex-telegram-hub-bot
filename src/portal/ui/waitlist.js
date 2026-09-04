@@ -13,7 +13,8 @@ function setText(id, value) { const node = el(id); if (node) node.textContent = 
 function updateNavBadge(pending) {
   const badge = document.getElementById('waitlist-nav-count');
   if (!badge) return;
-  if (pending > 0) { badge.textContent = pending; badge.style.display = ''; } else badge.style.display = 'none';
+  if (pending > 0) badge.textContent = pending;
+  badge.hidden = !(pending > 0);
 }
 
 async function fetchWaitlist(params) {
@@ -72,7 +73,7 @@ function render() {
       : '<span class="badge badge-neutral">General</span>';
     const slotHtml = r.founder_slot ? '<span class="mono">#' + r.founder_slot + '</span>' : '<span class="text-tertiary">—</span>';
     const srcHtml = r.source
-      ? '<span class="mono text-muted" style="font-size:11px">' + P.esc(r.source) + '</span>'
+      ? '<span class="u-fs-11 mono text-muted">' + P.esc(r.source) + '</span>'
       : '<span class="text-tertiary">—</span>';
     let actionsHtml = '';
     if (r.status === 'pending') {
@@ -86,13 +87,13 @@ function render() {
     }
     return '<tr>' +
       '<td><div class="user-name">' + P.esc(r.email) + '</div>' +
-      (r.use_case ? '<div class="user-handle" style="max-width:320px;overflow:hidden;text-overflow:ellipsis">' + P.esc(r.use_case) + '</div>' : '') +
+      (r.use_case ? '<div class="u-maxw-320 u-ov-hidden u-to-ellipsis user-handle">' + P.esc(r.use_case) + '</div>' : '') +
       '</td>' +
       '<td>' + intentHtml + '</td>' +
       '<td>' + srcHtml + '</td>' +
       '<td>' + statusHtml + '</td>' +
       '<td>' + slotHtml + '</td>' +
-      '<td class="text-muted mono" style="font-size:11px">' + (r.created_at ? P.shortDateTime(r.created_at) : '—') + '</td>' +
+      '<td class="u-fs-11 text-muted mono">' + (r.created_at ? P.shortDateTime(r.created_at) : '—') + '</td>' +
       '<td class="text-right">' + actionsHtml + '</td>' +
     '</tr>';
   }).join('');
@@ -193,17 +194,17 @@ function mount(container) {
     '<div class="section-subtitle">Landing page signups · founder slots · approve to invite</div></div>' +
     '<div class="section-actions"><button class="btn btn-ghost btn-sm" id="waitlist-refresh-btn">Refresh</button>' +
     '<button class="btn btn-primary btn-sm" id="waitlist-export-btn">Export CSV</button></div></div>' +
-    '<div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">' +
+    '<div class="u-mb-space-4 grid grid-cols-4">' +
     kpi('Founder slots', 'waitlist-kpi-founder', 'of 100', 'waitlist-kpi-founder-sub') +
     kpi('General waitlist', 'waitlist-kpi-general', 'total signups') +
     kpi('Pending approval', 'waitlist-kpi-pending', 'awaiting review') +
     kpi('Signed up', 'waitlist-kpi-signed', 'redeemed invite') + '</div>' +
     '<div class="card"><div class="table-toolbar">' +
-    '<input class="input" type="search" placeholder="Search email…" id="waitlist-search" style="max-width:240px">' +
-    '<select class="input" id="waitlist-filter-status" style="max-width:160px"><option value="">All statuses</option><option value="pending" selected>Pending</option><option value="approved">Approved</option><option value="invited">Invited</option><option value="signed_up">Signed up</option><option value="rejected">Rejected</option></select>' +
-    '<select class="input" id="waitlist-filter-intent" style="max-width:140px"><option value="">All intents</option><option value="founder">🏆 Founder</option><option value="general">General</option></select>' +
-    '<span class="text-muted mono" style="margin-left:auto;font-size:11px" id="waitlist-count-label"></span></div>' +
-    '<div style="overflow-x:auto"><table class="data-table" id="waitlist-table"><thead><tr>' +
+    '<input class="u-maxw-240 input" type="search" placeholder="Search email…" id="waitlist-search">' +
+    '<select class="u-maxw-160 input" id="waitlist-filter-status"><option value="">All statuses</option><option value="pending" selected>Pending</option><option value="approved">Approved</option><option value="invited">Invited</option><option value="signed_up">Signed up</option><option value="rejected">Rejected</option></select>' +
+    '<select class="u-maxw-140 input" id="waitlist-filter-intent"><option value="">All intents</option><option value="founder">🏆 Founder</option><option value="general">General</option></select>' +
+    '<span class="u-ml-auto u-fs-11 text-muted mono" id="waitlist-count-label"></span></div>' +
+    '<div class="u-ovx-auto"><table class="data-table" id="waitlist-table"><thead><tr>' +
     '<th>Email</th><th>Intent</th><th>Source</th><th>Status</th><th>Founder #</th><th>Signed up</th><th class="text-right">Actions</th></tr></thead>' +
     '<tbody id="waitlist-tbody"><tr><td colspan="7"><div class="empty">Loading waitlist…</div></td></tr></tbody></table></div></div>';
 

@@ -68,7 +68,7 @@ function renderPreferences() {
   meta.textContent = 'User ' + state.userId + ' · tenant ' + state.tenantId;
   summary.textContent = prefs.summary || prefs.skillMemorySummary || 'No preference summary available';
   if (!memories.length) { list.innerHTML = '<div class="empty">No Cooking preference memories returned</div>'; return; }
-  list.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Kind</th><th>Scope</th><th>Confidence</th><th>Freshness</th><th>Updated</th></tr></thead><tbody>' +
+  list.innerHTML = '<div class="u-ovx-auto"><table class="data-table"><thead><tr><th>Kind</th><th>Scope</th><th>Confidence</th><th>Freshness</th><th>Updated</th></tr></thead><tbody>' +
     memories.map((memory) => '<tr>' +
       '<td><span class="mono">' + P.esc(memory.memoryKey || memory.memoryType || 'preference') + '</span></td>' +
       '<td><span class="badge badge-neutral">' + P.esc(memory.scope || 'unknown') + '</span></td>' +
@@ -86,13 +86,13 @@ function renderPantry() {
   if (state.error) { meta.textContent = 'Load failed for user ' + state.userId + ' · tenant ' + state.tenantId; list.innerHTML = '<div class="empty">Failed to load Cooking pantry</div>'; return; }
   meta.textContent = items.length + ' items · user ' + state.userId + ' · tenant ' + state.tenantId;
   if (!items.length) { list.innerHTML = '<div class="empty">No pantry items returned</div>'; return; }
-  list.innerHTML = '<div style="overflow-x:auto"><table class="data-table"><thead><tr><th>Item</th><th>Quantity</th><th>Freshness</th><th>Expires</th><th></th></tr></thead><tbody>' +
+  list.innerHTML = '<div class="u-ovx-auto"><table class="data-table"><thead><tr><th>Item</th><th>Quantity</th><th>Freshness</th><th>Expires</th><th></th></tr></thead><tbody>' +
     items.map((item) => {
       const freshness = item.freshness_status || item.freshnessStatus || 'unknown';
       const badgeClass = freshness === 'expired' ? 'badge-error' : freshness === 'aging' ? 'badge-warning' : 'badge-success';
       const qty = [item.quantity, item.unit].filter(Boolean).join(' ') || '—';
       return '<tr>' +
-        '<td><div style="font-weight:600">' + P.esc(item.name || 'Unnamed item') + '</div><div class="text-muted" style="font-size:11px">' + P.esc(item.category || item.availability_status || item.availabilityStatus || '') + '</div></td>' +
+        '<td><div class="u-fw-600">' + P.esc(item.name || 'Unnamed item') + '</div><div class="u-fs-11 text-muted">' + P.esc(item.category || item.availability_status || item.availabilityStatus || '') + '</div></td>' +
         '<td class="mono">' + P.esc(qty) + '</td>' +
         '<td><span class="badge ' + badgeClass + '">' + P.esc(freshness) + '</span></td>' +
         '<td class="text-muted">' + P.esc(item.expires_at || item.expiresAt || '—') + '</td>' +
@@ -273,8 +273,8 @@ function openForUser(userId) {
   load();
 }
 
-const FIELD = 'width:100%;padding:8px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)';
-const CELL = 'padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary)';
+const FIELD = 'u-w-100p u-p-8-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary';
+const CELL = 'u-p-7-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary';
 function options(list) { return list.map(([v, l]) => '<option value="' + v + '">' + l + '</option>').join(''); }
 function kpi(label, id, sub, subId) { return '<div class="kpi-card"><div class="kpi-label">' + label + '</div><div class="kpi-value" id="' + id + '">—</div><div class="kpi-sub"' + (subId ? ' id="' + subId + '"' : '') + '>' + sub + '</div></div>'; }
 
@@ -284,51 +284,51 @@ function mount(container) {
     '<div class="section-header"><div><h1 class="section-title">Cooking</h1>' +
     '<div class="section-subtitle">Scoped preference review, pantry management, and Cooking setup diagnostics</div></div>' +
     '<div class="section-actions"><button class="btn btn-ghost btn-sm" id="cooking-refresh-btn">Refresh</button></div></div>' +
-    '<div class="card" style="margin-bottom:var(--space-4)"><div class="card-header"><div><div class="card-title">Target Scope</div>' +
+    '<div class="u-mb-space-4 card"><div class="card-header"><div><div class="card-title">Target Scope</div>' +
     '<span class="card-subtitle">Portal access is backend-authorized; current operator scoping requires tenant ID to match user ID.</span></div>' +
     '<span class="badge badge-neutral mono" id="cooking-scope-status">No user selected</span></div>' +
-    '<div class="grid grid-cols-4" style="gap:var(--space-3);align-items:end">' +
-    '<div><label class="label" for="cooking-target-user-id">User ID</label><input type="number" min="1" id="cooking-target-user-id" placeholder="42" style="' + FIELD + '"></div>' +
-    '<div><label class="label" for="cooking-target-tenant-id">Tenant ID</label><input type="number" min="1" id="cooking-target-tenant-id" placeholder="same as user" style="' + FIELD + '"></div>' +
-    '<div><button class="btn btn-sm" id="cooking-load-btn" style="width:100%">Load Cooking</button></div>' +
-    '<div><button class="btn btn-ghost btn-sm" id="cooking-clear-btn" style="width:100%">Clear</button></div></div></div>' +
-    '<div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">' +
+    '<div class="u-gap-space-3 u-ai-end grid grid-cols-4">' +
+    '<div><label class="label" for="cooking-target-user-id">User ID</label><input type="number" min="1" id="cooking-target-user-id" placeholder="42" class="' + FIELD + '"></div>' +
+    '<div><label class="label" for="cooking-target-tenant-id">Tenant ID</label><input type="number" min="1" id="cooking-target-tenant-id" placeholder="same as user" class="' + FIELD + '"></div>' +
+    '<div><button class="u-w-100p btn btn-sm" id="cooking-load-btn">Load Cooking</button></div>' +
+    '<div><button class="u-w-100p btn btn-ghost btn-sm" id="cooking-clear-btn">Clear</button></div></div></div>' +
+    '<div class="u-mb-space-4 grid grid-cols-4">' +
     kpi('Preference memories', 'cooking-kpi-preferences', 'scoped metadata', 'cooking-kpi-preferences-sub') + kpi('Pantry items', 'cooking-kpi-pantry', 'including expired', 'cooking-kpi-pantry-sub') +
     kpi('Allergies', 'cooking-kpi-allergies', 'from read model') + kpi('Diet rules', 'cooking-kpi-diet', 'restrictions') + '</div>' +
-    '<div class="grid grid-cols-2" style="margin-bottom:var(--space-4)">' +
+    '<div class="u-mb-space-4 grid grid-cols-2">' +
     '<div class="card"><div class="card-header"><div><div class="card-title">Preference Review</div><span class="card-subtitle" id="cooking-preferences-meta">Select a user to load Cooking preferences</span></div></div>' +
-    '<div style="padding:var(--space-3);border-bottom:1px solid var(--border)"><div style="display:grid;grid-template-columns:1fr 1.4fr auto auto;gap:var(--space-2);align-items:end">' +
-    '<div><label class="label" for="cooking-preference-kind">Kind</label><select id="cooking-preference-kind" style="' + FIELD + '">' +
+    '<div class="u-p-space-3 u-bb-1-solid-border"><div class="u-d-grid u-cols-1fr-1-4fr-auto-auto u-gap-space-2 u-ai-end">' +
+    '<div><label class="label" for="cooking-preference-kind">Kind</label><select id="cooking-preference-kind" class="' + FIELD + '">' +
     options([['allergy', 'Allergy'], ['dietary_restriction', 'Dietary restriction'], ['disliked_ingredient', 'Disliked ingredient'], ['preferred_ingredient', 'Preferred ingredient'], ['equipment', 'Equipment'], ['weekday_max_prep_minutes', 'Weekday prep minutes'], ['budget_limit', 'Budget limit'], ['budget_currency', 'Budget currency'], ['batch_cooking_preferred', 'Batch cooking preferred'], ['training_day_preference', 'Training day preference'], ['cooking_skill_level', 'Cooking skill level'], ['grocery_preference', 'Grocery preference']]) +
     '</select></div>' +
-    '<div><label class="label" for="cooking-preference-value">Value</label><input type="text" id="cooking-preference-value" placeholder="peanuts, 20, true…" style="' + FIELD + '"></div>' +
-    '<label class="flex items-center" style="gap:6px;white-space:nowrap;padding-bottom:8px"><input type="checkbox" id="cooking-preference-correction" checked><span class="text-muted" style="font-size:12px">Correction</span></label>' +
+    '<div><label class="label" for="cooking-preference-value">Value</label><input type="text" id="cooking-preference-value" placeholder="peanuts, 20, true…" class="' + FIELD + '"></div>' +
+    '<label class="u-gap-6 u-ws-nowrap u-pb-8 flex items-center"><input type="checkbox" id="cooking-preference-correction" checked><span class="u-fs-12 text-muted">Correction</span></label>' +
     '<button class="btn btn-sm" id="cooking-save-preference-btn">Save</button></div></div>' +
-    '<div style="padding:var(--space-3);border-bottom:1px solid var(--border)"><div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:var(--space-2)">Summary</div>' +
-    '<div id="cooking-preferences-summary" style="font-size:12px;line-height:1.5;color:var(--text-secondary)">No preferences loaded</div></div>' +
+    '<div class="u-p-space-3 u-bb-1-solid-border"><div class="u-fs-11 u-tt-uppercase u-ls-04em u-mb-space-2 text-muted">Summary</div>' +
+    '<div id="cooking-preferences-summary" class="u-fs-12 u-lh-1-5 u-c-text-secondary">No preferences loaded</div></div>' +
     '<div id="cooking-preferences-list"><div class="empty">No Cooking preferences loaded</div></div></div>' +
     '<div class="card"><div class="card-header"><div><div class="card-title">Pantry Editor</div><span class="card-subtitle" id="cooking-pantry-meta">Select a user to load pantry state</span></div></div>' +
-    '<div style="padding:var(--space-3);border-bottom:1px solid var(--border)">' +
-    '<div style="display:grid;grid-template-columns:1.5fr .7fr .7fr 1fr;gap:var(--space-2);margin-bottom:var(--space-2)">' +
-    '<input type="text" id="cooking-pantry-name" placeholder="Ingredient" style="' + CELL + '"><input type="text" id="cooking-pantry-quantity" placeholder="Qty" style="' + CELL + '">' +
-    '<input type="text" id="cooking-pantry-unit" placeholder="Unit" style="' + CELL + '"><input type="text" id="cooking-pantry-category" placeholder="Category" style="' + CELL + '"></div>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr 1.5fr auto;gap:var(--space-2)">' +
-    '<input type="date" id="cooking-pantry-expires-at" style="' + CELL + '">' +
-    '<select id="cooking-pantry-freshness" style="' + CELL + '">' + options([['', 'Freshness'], ['fresh', 'Fresh'], ['aging', 'Aging'], ['expired', 'Expired'], ['unknown', 'Unknown']]) + '</select>' +
-    '<input type="text" id="cooking-pantry-notes" placeholder="Notes" style="' + CELL + '"><button class="btn btn-sm" id="cooking-save-pantry-btn">Save item</button></div></div>' +
+    '<div class="u-p-space-3 u-bb-1-solid-border">' +
+    '<div class="u-d-grid u-cols-1-5fr-7fr-7fr-1fr u-gap-space-2 u-mb-space-2">' +
+    '<input type="text" id="cooking-pantry-name" placeholder="Ingredient" class="' + CELL + '"><input type="text" id="cooking-pantry-quantity" placeholder="Qty" class="' + CELL + '">' +
+    '<input type="text" id="cooking-pantry-unit" placeholder="Unit" class="' + CELL + '"><input type="text" id="cooking-pantry-category" placeholder="Category" class="' + CELL + '"></div>' +
+    '<div class="u-d-grid u-cols-1fr-1fr-1-5fr-auto u-gap-space-2">' +
+    '<input type="date" id="cooking-pantry-expires-at" class="' + CELL + '">' +
+    '<select id="cooking-pantry-freshness" class="' + CELL + '">' + options([['', 'Freshness'], ['fresh', 'Fresh'], ['aging', 'Aging'], ['expired', 'Expired'], ['unknown', 'Unknown']]) + '</select>' +
+    '<input type="text" id="cooking-pantry-notes" placeholder="Notes" class="' + CELL + '"><button class="btn btn-sm" id="cooking-save-pantry-btn">Save item</button></div></div>' +
     '<div id="cooking-pantry-list"><div class="empty">No pantry loaded</div></div></div></div>' +
-    '<div class="card" style="margin-bottom:var(--space-4)"><div class="card-header"><div><div class="card-title">Substitution Acceptance</div>' +
+    '<div class="u-mb-space-4 card"><div class="card-header"><div><div class="card-title">Substitution Acceptance</div>' +
     '<span class="card-subtitle">Apply an already-reviewed safe substitution to a scoped meal, linked recipe, and optional shopping list.</span></div>' +
     '<span class="badge badge-neutral" id="cooking-substitution-status">No substitution applied</span></div>' +
-    '<div style="padding:var(--space-3);border-bottom:1px solid var(--border)"><div style="display:grid;grid-template-columns:1fr 1fr 1.1fr 1.1fr 1.2fr auto;gap:var(--space-2);align-items:end">' +
-    '<div><label class="label" for="cooking-substitution-date">Meal date</label><input type="date" id="cooking-substitution-date" style="' + FIELD + '"></div>' +
-    '<div><label class="label" for="cooking-substitution-meal-type">Meal type</label><select id="cooking-substitution-meal-type" style="' + FIELD + '">' + options([['breakfast', 'Breakfast'], ['lunch', 'Lunch'], ['dinner', 'Dinner'], ['snack', 'Snack']]) + '</select></div>' +
-    '<div><label class="label" for="cooking-substitution-original">Original ingredient</label><input type="text" id="cooking-substitution-original" placeholder="peanuts" style="' + FIELD + '"></div>' +
-    '<div><label class="label" for="cooking-substitution-suggested">Suggested ingredient</label><input type="text" id="cooking-substitution-suggested" placeholder="sunflower seeds" style="' + FIELD + '"></div>' +
-    '<div><label class="label" for="cooking-substitution-reason">Reason</label><select id="cooking-substitution-reason" style="' + FIELD + '">' + options([['allergy', 'Allergy'], ['dietary_restriction', 'Dietary restriction'], ['disliked_ingredient', 'Disliked ingredient'], ['expired_pantry', 'Expired pantry']]) + '</select></div>' +
+    '<div class="u-p-space-3 u-bb-1-solid-border"><div class="u-d-grid u-cols-1fr-1fr-1-1fr-1-1fr-1-2fr-auto u-gap-space-2 u-ai-end">' +
+    '<div><label class="label" for="cooking-substitution-date">Meal date</label><input type="date" id="cooking-substitution-date" class="' + FIELD + '"></div>' +
+    '<div><label class="label" for="cooking-substitution-meal-type">Meal type</label><select id="cooking-substitution-meal-type" class="' + FIELD + '">' + options([['breakfast', 'Breakfast'], ['lunch', 'Lunch'], ['dinner', 'Dinner'], ['snack', 'Snack']]) + '</select></div>' +
+    '<div><label class="label" for="cooking-substitution-original">Original ingredient</label><input type="text" id="cooking-substitution-original" placeholder="peanuts" class="' + FIELD + '"></div>' +
+    '<div><label class="label" for="cooking-substitution-suggested">Suggested ingredient</label><input type="text" id="cooking-substitution-suggested" placeholder="sunflower seeds" class="' + FIELD + '"></div>' +
+    '<div><label class="label" for="cooking-substitution-reason">Reason</label><select id="cooking-substitution-reason" class="' + FIELD + '">' + options([['allergy', 'Allergy'], ['dietary_restriction', 'Dietary restriction'], ['disliked_ingredient', 'Disliked ingredient'], ['expired_pantry', 'Expired pantry']]) + '</select></div>' +
     '<button class="btn btn-sm" id="cooking-apply-substitution-btn">Apply</button></div>' +
-    '<label class="flex items-center" style="gap:6px;margin-top:var(--space-3);white-space:nowrap"><input type="checkbox" id="cooking-substitution-update-shopping" checked><span class="text-muted" style="font-size:12px">Refresh the scoped shopping list after applying</span></label></div>' +
-    '<div id="cooking-substitution-result" style="padding:var(--space-3);font-size:12px;color:var(--text-secondary)">' + SUBSTITUTION_HINT + '</div></div>';
+    '<label class="u-gap-6 u-mt-space-3 u-ws-nowrap flex items-center"><input type="checkbox" id="cooking-substitution-update-shopping" checked><span class="u-fs-12 text-muted">Refresh the scoped shopping list after applying</span></label></div>' +
+    '<div id="cooking-substitution-result" class="u-p-space-3 u-fs-12 u-c-text-secondary">' + SUBSTITUTION_HINT + '</div></div>';
 
   el('cooking-refresh-btn').addEventListener('click', load);
   el('cooking-load-btn').addEventListener('click', load);

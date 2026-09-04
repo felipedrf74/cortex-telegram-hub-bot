@@ -20,12 +20,12 @@ function renderDashAlerts(list) {
   }
   box.innerHTML = active.map((a) => {
     const dot = a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warning' : 'online';
-    return '<div class="flex-between" style="padding:var(--space-2) var(--space-1);border-bottom:1px solid var(--border)">' +
-      '<div class="flex gap-2" style="align-items:center;min-width:0">' +
+    return '<div class="u-p-space-2-space-1 u-bb-1-solid-border flex-between">' +
+      '<div class="u-ai-center u-minw-0 flex gap-2">' +
         '<span class="status-dot ' + dot + '"></span>' +
-        '<span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + P.esc(a.title) + '</span>' +
+        '<span class="u-fs-12 u-ov-hidden u-to-ellipsis u-ws-nowrap">' + P.esc(a.title) + '</span>' +
       '</div>' +
-      '<span class="text-tertiary mono" style="font-size:10px">' + P.esc(a.deliveryStatus || 'pending') + '</span>' +
+      '<span class="u-fs-10 text-tertiary mono">' + P.esc(a.deliveryStatus || 'pending') + '</span>' +
       '</div>';
   }).join('');
 }
@@ -59,18 +59,18 @@ function renderTable() {
     const resolveButton = a.status !== 'resolved' ? button('resolve', 'Resolve') : '';
     const ticketButton = button('ticket', 'Ticket', 'Open a support ticket for this alert');
     return '<tr>' +
-      '<td><div style="font-weight:600">' + P.esc(a.title) + '</div>' +
-        '<div class="text-muted" style="font-size:11px;max-width:520px">' + P.esc(a.userImpact || a.detail || '—') + '</div>' +
-        '<div class="text-tertiary mono" style="font-size:10px">' + P.esc(a.source) + ' · ' + P.esc(a.suspectedArea || 'unknown') + '</div></td>' +
+      '<td><div class="u-fw-600">' + P.esc(a.title) + '</div>' +
+        '<div class="u-fs-11 u-maxw-520 text-muted">' + P.esc(a.userImpact || a.detail || '—') + '</div>' +
+        '<div class="u-fs-10 text-tertiary mono">' + P.esc(a.source) + ' · ' + P.esc(a.suspectedArea || 'unknown') + '</div></td>' +
       '<td><span class="badge badge-' + severityClass + '">' + P.esc(a.severity) + '</span></td>' +
       '<td><span class="badge badge-' + statusClass + '">' + P.esc(a.status) + '</span></td>' +
       '<td><span class="badge badge-' + deliveryClass + '">' + P.esc(a.deliveryStatus || 'pending') + '</span>' +
-        (a.lastDeliveryError ? '<div class="text-tertiary" style="font-size:10px;margin-top:4px">' + P.esc(a.lastDeliveryError).slice(0, 90) + '</div>' : '') +
-        (a.nextDeliveryAttemptAt ? '<div class="text-tertiary" style="font-size:10px;margin-top:4px">next ' + P.relativeTime(a.nextDeliveryAttemptAt) + '</div>' : '') +
+        (a.lastDeliveryError ? '<div class="u-fs-10 u-mt-4 text-tertiary">' + P.esc(a.lastDeliveryError).slice(0, 90) + '</div>' : '') +
+        (a.nextDeliveryAttemptAt ? '<div class="u-fs-10 u-mt-4 text-tertiary">next ' + P.relativeTime(a.nextDeliveryAttemptAt) + '</div>' : '') +
         '</td>' +
       '<td>' + P.esc(a.owner || 'ops') + '</td>' +
-      '<td class="text-muted">' + P.relativeTime(a.lastSeenAt || a.createdAt) + '<div class="mono text-tertiary" style="font-size:10px">' + fmtNum(a.occurrenceCount || 1) + 'x</div></td>' +
-      '<td><div class="flex gap-2" style="justify-content:flex-end">' + retryButton + ackButton + resolveButton + ticketButton + '</div></td>' +
+      '<td class="text-muted">' + P.relativeTime(a.lastSeenAt || a.createdAt) + '<div class="u-fs-10 mono text-tertiary">' + fmtNum(a.occurrenceCount || 1) + 'x</div></td>' +
+      '<td><div class="u-jc-flex-end flex gap-2">' + retryButton + ackButton + resolveButton + ticketButton + '</div></td>' +
       '</tr>';
   }).join('');
 }
@@ -145,12 +145,12 @@ function mount(container) {
   root.innerHTML =
     '<div class="section-header"><div><h1 class="section-title">Operator Alerts</h1>' +
     '<div class="section-subtitle">Durable incident queue, delivery status, acknowledgement, and resolution</div></div>' +
-    '<div class="section-actions"><select class="input" id="alerts-filter-status" style="max-width:150px">' +
+    '<div class="section-actions"><select class="u-maxw-150 input" id="alerts-filter-status">' +
     '<option value="open">Open</option><option value="acknowledged">Acknowledged</option><option value="resolved">Resolved</option><option value="all">All</option></select>' +
     '<button class="btn btn-ghost btn-sm" id="alerts-refresh-btn">Refresh</button></div></div>' +
     '<div class="grid grid-cols-4">' + kpi('Pending', 'alerts-kpi-pending') + kpi('Delivered', 'alerts-kpi-delivered') + kpi('Retrying', 'alerts-kpi-failed') + kpi('Dead Letter', 'alerts-kpi-dead') + '</div>' +
     '<div class="card mt-4"><div class="card-header"><div class="card-title">Alert Queue</div><span class="card-subtitle" id="alerts-count-label">—</span></div>' +
-    '<div style="overflow-x:auto"><table class="data-table"><thead><tr>' +
+    '<div class="u-ovx-auto"><table class="data-table"><thead><tr>' +
     '<th>Alert</th><th>Severity</th><th>Status</th><th>Delivery</th><th>Owner</th><th>Last Seen</th><th></th></tr></thead>' +
     '<tbody id="alerts-tbody"><tr><td colspan="7"><div class="empty">Loading alerts…</div></td></tr></tbody></table></div></div>';
   el('alerts-refresh-btn').addEventListener('click', load);

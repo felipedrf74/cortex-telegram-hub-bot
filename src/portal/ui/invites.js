@@ -26,7 +26,7 @@ async function load() {
             ? '<span class="badge badge-neutral">✅ Used</span>'
             : '<span class="badge badge-success">🟢 Active</span>';
         return '<tr>' +
-          '<td><code class="mono" style="font-size:13px;font-weight:600;letter-spacing:1px">' + P.esc(c.code) + '</code></td>' +
+          '<td><code class="u-fs-13 u-fw-600 u-ls-1 mono">' + P.esc(c.code) + '</code></td>' +
           '<td class="mono">' + c.used_count + ' / ' + c.max_uses + '</td>' +
           '<td>' + status + '</td>' +
           '<td class="text-muted">' + (c.created_at ? P.shortDateTime(c.created_at) : '—') + '</td>' +

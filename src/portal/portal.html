@@ -15,7 +15,7 @@
 <!-- ════════════════════════════════════════════════════════════
      LOGIN OVERLAY (shown when token is missing or invalid)
      ════════════════════════════════════════════════════════════ -->
-<div id="login-overlay" class="login-overlay" style="display:none">
+<div id="login-overlay" class="login-overlay" hidden>
   <div class="login-card">
     <div class="login-mark">N</div>
     <div class="login-title">Nexus Hub Admin</div>
@@ -24,8 +24,8 @@
       <input id="login-token" type="password" placeholder="Portal token" autofocus>
       <button id="login-btn" class="btn btn-primary">Sign In</button>
       <div id="login-error" class="login-error"></div>
-      <div style="margin-top:14px;font-size:12px;color:var(--text-tertiary)">
-        User account? <a href="/user" style="color:var(--accent);font-weight:700">Sign in with email, Google, or Apple</a>
+      <div class="u-mt-14 u-fs-12 u-c-text-tertiary">
+        User account? <a href="/user" class="u-c-accent u-fw-700">Sign in with email, Google, or Apple</a>
       </div>
     </div>
   </div>
@@ -117,7 +117,7 @@
       </a>
     </nav>
 
-    <div class="nav-section-label" style="margin-top: var(--space-5)">Support</div>
+    <div class="u-mt-space-5 nav-section-label">Support</div>
     <nav class="nav">
       <a class="nav-item" data-nav="support">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span>
@@ -126,7 +126,7 @@
       </a>
     </nav>
 
-    <div class="nav-section-label" style="margin-top: var(--space-5)">Observe</div>
+    <div class="u-mt-space-5 nav-section-label">Observe</div>
     <nav class="nav">
       <a class="nav-item" data-nav="logs">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h14"/></svg></span>
@@ -143,7 +143,7 @@
       </a>
     </nav>
 
-    <div class="nav-section-label" style="margin-top: var(--space-5)">Operate</div>
+    <div class="u-mt-space-5 nav-section-label">Operate</div>
     <nav class="nav">
       <a class="nav-item" data-nav="operate">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>
@@ -151,7 +151,7 @@
       </a>
     </nav>
 
-    <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
+    <div class="u-mt-space-5 nav-section-label">Configuration</div>
     <nav class="nav">
       <a class="nav-item" data-nav="settings">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg></span>
@@ -168,7 +168,7 @@
       </a>
       <a class="nav-item" data-nav="waitlist">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></span>
-        <span class="nav-label">Waitlist <span class="badge badge-accent" id="waitlist-nav-count" style="margin-left:4px;display:none"></span></span>
+        <span class="nav-label">Waitlist <span class="u-ml-4 badge badge-accent" id="waitlist-nav-count" hidden></span></span>
       </a>
       <a class="nav-item" data-nav="audit">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></span>
@@ -195,12 +195,12 @@
         </div>
       </div>
 
-      <div class="card" id="release-card" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 card" id="release-card">
         <div class="card-header">
           <div class="card-title">🚀 Release &amp; Environment</div>
           <span class="card-subtitle" id="release-subtitle">Loading…</span>
         </div>
-        <div class="grid grid-cols-4" id="release-grid" style="padding: var(--space-3) var(--space-4);">
+        <div class="u-p-space-3-space-4 grid grid-cols-4" id="release-grid">
           <div>
             <div class="kpi-label">Version</div>
             <div class="mono" id="release-version">—</div>
@@ -208,20 +208,20 @@
           <div>
             <div class="kpi-label">Commit</div>
             <div class="mono" id="release-commit">—</div>
-            <div class="text-muted" style="font-size:11px" id="release-branch"></div>
+            <div class="u-fs-11 text-muted" id="release-branch"></div>
           </div>
           <div>
             <div class="kpi-label">Deployed</div>
             <div id="release-deployed">—</div>
-            <div class="text-muted" style="font-size:11px" id="release-booted"></div>
+            <div class="u-fs-11 text-muted" id="release-booted"></div>
           </div>
           <div>
             <div class="kpi-label">Migrations</div>
             <div id="release-migrations">—</div>
-            <div class="text-muted" style="font-size:11px" id="release-migrations-sub"></div>
+            <div class="u-fs-11 text-muted" id="release-migrations-sub"></div>
           </div>
         </div>
-        <div id="release-flags" style="display:flex;flex-wrap:wrap;gap:var(--space-2);padding:0 var(--space-4) var(--space-3)"></div>
+        <div id="release-flags" class="u-d-flex u-flexwrap-wrap u-gap-space-2 u-p-0-space-4-space-3"></div>
       </div>
 
       <div class="grid grid-cols-4">
@@ -254,7 +254,7 @@
             <div class="card-title">📡 Provider Status</div>
             <a class="btn btn-ghost btn-sm" data-jump-to="ai">View all →</a>
           </div>
-          <div id="dash-providers" class="grid" style="gap:var(--space-3)">
+          <div id="dash-providers" class="u-gap-space-3 grid">
             <div class="empty">Loading providers…</div>
           </div>
         </div>
@@ -263,7 +263,7 @@
           <div class="card-header">
             <div class="card-title">🔌 Integration Health</div>
           </div>
-          <div id="dash-integrations" class="grid" style="gap:var(--space-2)">
+          <div id="dash-integrations" class="u-gap-space-2 grid">
             <div class="empty">Loading integrations…</div>
           </div>
         </div>
@@ -274,7 +274,7 @@
           <div class="card-title">🚨 Operator Alerts</div>
           <a class="btn btn-ghost btn-sm" data-jump-to="alerts">Open queue →</a>
         </div>
-        <div id="dash-alerts" class="grid" style="gap:var(--space-2)">
+        <div id="dash-alerts" class="u-gap-space-2 grid">
           <div class="empty">Loading alerts…</div>
         </div>
       </div>
@@ -314,7 +314,7 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-4" id="users-funnel" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 grid grid-cols-4" id="users-funnel">
         <div class="kpi-card"><div class="kpi-label">Users</div><div class="kpi-value" id="funnel-total">—</div><div class="kpi-sub" id="funnel-status">—</div></div>
         <div class="kpi-card"><div class="kpi-label">Active 7d / 30d</div><div class="kpi-value" id="funnel-active">—</div><div class="kpi-sub" id="funnel-signups">—</div></div>
         <div class="kpi-card"><div class="kpi-label">With device / push</div><div class="kpi-value" id="funnel-device">—</div><div class="kpi-sub" id="funnel-oauth">—</div></div>
@@ -324,20 +324,20 @@
       <div class="card">
         <div class="table-toolbar">
           <input class="input" type="search" placeholder="Search by name, username, or ID…" id="users-search">
-          <select class="input" id="users-filter-tier" style="max-width:140px">
+          <select class="u-maxw-140 input" id="users-filter-tier">
             <option value="">All tiers</option>
             <option value="owner">Owner</option>
             <option value="pro">Pro</option>
             <option value="free">Free</option>
           </select>
-          <select class="input" id="users-filter-status" style="max-width:140px">
+          <select class="u-maxw-140 input" id="users-filter-status">
             <option value="">All statuses</option>
             <option value="active">Active</option>
             <option value="suspended">Suspended</option>
           </select>
-          <span class="text-muted mono" style="margin-left:auto;font-size:11px" id="users-count-label"></span>
+          <span class="u-ml-auto u-fs-11 text-muted mono" id="users-count-label"></span>
         </div>
-        <div style="overflow-x:auto">
+        <div class="u-ovx-auto">
           <table class="data-table" id="users-table">
             <thead>
               <tr>
@@ -444,16 +444,16 @@
         </div>
 
         <!-- Master toggles -->
-        <div id="domain-routing-controls" style="display:flex;flex-wrap:wrap;gap:var(--space-3);padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--border-subtle);background:var(--bg-overlay);">
-          <label class="flex items-center" style="gap:var(--space-2);cursor:pointer;font-size:13px;">
+        <div id="domain-routing-controls" class="u-d-flex u-flexwrap-wrap u-gap-space-3 u-p-space-3-space-4 u-bb-1-solid-border-subtle u-bg-bg-overlay">
+          <label class="u-gap-space-2 u-cur-pointer u-fs-13 flex items-center">
             <input type="checkbox" id="domain-routing-enabled" data-on="change" data-act="toggleGeminiRouting" data-args="[&quot;$el&quot;]" />
             <span><strong>Enable Gemini routing</strong> — master switch for Gemini-backed domains</span>
           </label>
-          <label class="flex items-center" style="gap:var(--space-2);cursor:pointer;font-size:13px;">
+          <label class="u-gap-space-2 u-cur-pointer u-fs-13 flex items-center">
             <input type="checkbox" id="domain-routing-secretary-primary" data-on="change" data-act="toggleSecretaryPrimaryRoute" data-args="[&quot;$el&quot;]" />
             <span><strong>Secretary primary route</strong> — off uses the emergency fallback</span>
           </label>
-          <span id="domain-routing-status" class="card-subtitle" style="margin-left:auto;font-family:var(--font-mono);font-size:11px;"></span>
+          <span id="domain-routing-status" class="u-ml-auto u-ff-font-mono u-fs-11 card-subtitle"></span>
         </div>
 
         <!-- Routing table -->
@@ -495,7 +495,7 @@
           <span class="card-subtitle" id="secretary-opt-summary">Loading…</span>
         </div>
 
-        <div class="grid grid-cols-3" style="padding: var(--space-3) var(--space-4);">
+        <div class="u-p-space-3-space-4 grid grid-cols-3">
           <div class="kpi-card">
             <div class="kpi-label">Fastpath Hit Rate</div>
             <div class="kpi-value" id="secretary-opt-hit-rate">—</div>
@@ -549,15 +549,15 @@
         </div>
 
         <!-- Range selector + provider split strip -->
-        <div style="display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--border-subtle);background:var(--bg-overlay);">
-          <div class="flex" style="gap:var(--space-1)">
+        <div class="u-d-flex u-flexwrap-wrap u-gap-space-3 u-ai-center u-p-space-3-space-4 u-bb-1-solid-border-subtle u-bg-bg-overlay">
+          <div class="u-gap-space-1 flex">
             <button class="btn-sm" id="cost-range-1" data-act="loadCostByDomain" data-args="[1]">1d</button>
             <button class="btn-sm" id="cost-range-7" data-act="loadCostByDomain" data-args="[7]">7d</button>
             <button class="btn-sm" id="cost-range-30" data-act="loadCostByDomain" data-args="[30]">30d</button>
           </div>
-          <div id="cost-provider-split" style="flex:1;display:flex;gap:var(--space-3);font-size:11px;font-family:var(--font-mono)"></div>
-          <div id="cost-pricing-status" style="font-size:11px;font-family:var(--font-mono);color:var(--text-tertiary)"></div>
-          <canvas id="cost-sparkline" width="180" height="32" style="opacity:0.9"></canvas>
+          <div id="cost-provider-split" class="u-flex-1 u-d-flex u-gap-space-3 u-fs-11 u-ff-font-mono"></div>
+          <div id="cost-pricing-status" class="u-fs-11 u-ff-font-mono u-c-text-tertiary"></div>
+          <canvas id="cost-sparkline" width="180" height="32" class="u-op-0-9"></canvas>
         </div>
 
         <table class="dense" id="cost-by-domain-table">
@@ -582,9 +582,9 @@
       <div class="card mt-4">
         <div class="card-header">
           <div class="card-title">💰 Model Pricing Comparison</div>
-          <div class="card-subtitle" style="font-size:11px;color:var(--text-muted)">Input / Output per 1M tokens · Updated weekly</div>
+          <div class="u-fs-11 u-c-text-muted card-subtitle">Input / Output per 1M tokens · Updated weekly</div>
         </div>
-        <div style="overflow-x:auto">
+        <div class="u-ovx-auto">
           <table class="data-table" id="model-pricing-table">
             <thead>
               <tr>
@@ -598,7 +598,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr style="background:rgba(76,175,80,0.08)">
+              <tr class="u-bg-rgba-76-175-80-0-08">
                 <td><span class="badge badge-success">OpenAI</span></td>
                 <td><code>gpt-5.4-nano</code></td>
                 <td class="text-right mono">$0.20</td>
@@ -607,8 +607,8 @@
                 <td>✅ Native</td>
                 <td><span class="badge badge-accent">Secretary</span></td>
               </tr>
-              <tr style="background:rgba(33,150,243,0.08)">
-                <td><span class="badge" style="background:var(--info)">Gemini</span></td>
+              <tr class="u-bg-rgba-33-150-243-0-08">
+                <td><span class="u-bg-info badge">Gemini</span></td>
                 <td><code>gemini-2.5-flash-lite</code></td>
                 <td class="text-right mono">$0.10</td>
                 <td class="text-right mono">$0.40</td>
@@ -616,8 +616,8 @@
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Classify · Other domains</span></td>
               </tr>
-              <tr style="background:rgba(33,150,243,0.08)">
-                <td><span class="badge" style="background:var(--info)">Gemini</span></td>
+              <tr class="u-bg-rgba-33-150-243-0-08">
+                <td><span class="u-bg-info badge">Gemini</span></td>
                 <td><code>gemini-2.5-flash</code></td>
                 <td class="text-right mono">$0.30</td>
                 <td class="text-right mono">$2.50</td>
@@ -626,7 +626,7 @@
                 <td><span class="badge badge-neutral">Triathlon · Content · Finance · Cooking</span></td>
               </tr>
               <tr>
-                <td><span class="badge" style="background:var(--info)">Gemini</span></td>
+                <td><span class="u-bg-info badge">Gemini</span></td>
                 <td><code>gemini-2.5-flash</code></td>
                 <td class="text-right mono">$0.15</td>
                 <td class="text-right mono">$1.25</td>
@@ -643,8 +643,8 @@
                 <td>✅</td>
                 <td><span class="badge badge-neutral">Receipt Verify (dual-model)</span></td>
               </tr>
-              <tr style="opacity:0.6">
-                <td><span class="badge" style="background:var(--warning)">Anthropic</span></td>
+              <tr class="u-op-0-6">
+                <td><span class="u-bg-warning badge">Anthropic</span></td>
                 <td><code>claude-sonnet-4-6</code></td>
                 <td class="text-right mono">$3.00</td>
                 <td class="text-right mono">$15.00</td>
@@ -652,8 +652,8 @@
                 <td>✅ Best</td>
                 <td><span class="badge badge-neutral">Fallback only</span></td>
               </tr>
-              <tr style="opacity:0.6">
-                <td><span class="badge" style="background:var(--warning)">Anthropic</span></td>
+              <tr class="u-op-0-6">
+                <td><span class="u-bg-warning badge">Anthropic</span></td>
                 <td><code>claude-haiku-4-5</code></td>
                 <td class="text-right mono">$1.00</td>
                 <td class="text-right mono">$5.00</td>
@@ -670,7 +670,7 @@
       <div class="card mt-4">
         <div class="card-header">
           <div class="card-title">🧠 Model Intelligence</div>
-          <div class="card-subtitle" style="font-size:11px;color:var(--text-muted)">Recommendations based on current usage patterns</div>
+          <div class="u-fs-11 u-c-text-muted card-subtitle">Recommendations based on current usage patterns</div>
         </div>
         <div id="model-intelligence-content"><div class="empty">Loading insights…</div></div>
       </div>
@@ -684,7 +684,7 @@
           <thead><tr><th>Agent</th><th class="text-right">Score</th><th class="text-right">Tasks</th><th class="text-right">Pass %</th></tr></thead>
           <tbody><tr><td colspan="4"><div class="empty">No quality data — run evals to populate</div></td></tr></tbody>
         </table>
-        <div style="padding:8px 16px;font-size:11px;color:var(--text-muted)">
+        <div class="u-p-8-16 u-fs-11 u-c-text-muted">
           Quality scores are populated by the eval/autoresearch system. Run <code>npm run eval</code> to generate scores.
         </div>
       </div>
@@ -710,7 +710,7 @@
         <div class="card-header">
           <div class="card-title">⚡ Quick Actions</div>
         </div>
-        <div id="quick-actions-content" class="flex" style="gap:var(--space-2);flex-wrap:wrap"></div>
+        <div id="quick-actions-content" class="u-gap-space-2 u-flexwrap-wrap flex"></div>
       </div>
 
       <div class="card mt-4">
@@ -735,13 +735,13 @@
         <div class="card-header">
           <div class="card-title">🎛 Job Control</div>
           <div class="section-actions">
-            <input class="input" id="jobctl-filter" placeholder="Filter jobs…" style="max-width:220px">
+            <input class="u-maxw-220 input" id="jobctl-filter" placeholder="Filter jobs…">
             <button class="btn btn-ghost btn-sm" id="jobctl-refresh">Refresh</button>
           </div>
         </div>
-        <div class="text-muted" style="font-size:12px">Lifecycle and manual-run policy come from the agent job manifest and the owning sub-skill. Provider-capable jobs ask for confirmation; runs are audited and rate limited.</div>
+        <div class="u-fs-12 text-muted">Lifecycle and manual-run policy come from the agent job manifest and the owning sub-skill. Provider-capable jobs ask for confirmation; runs are audited and rate limited.</div>
         <div id="jobctl-content" class="mt-4"><div class="empty">Loading…</div></div>
-        <div id="jobctl-history" class="mt-4" style="display:none"></div>
+        <div id="jobctl-history" class="mt-4" hidden></div>
       </div>
     </section>
 
@@ -758,14 +758,14 @@
            toggles call /api/users/:id/skills (per-user override) instead of
            the global /api/skills/toggle endpoint. Switching back to Global
            reloads the global view. -->
-      <div class="card" style="margin-bottom:var(--space-3)">
-        <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);">
-          <span class="text-muted" style="font-size:12px;font-weight:600">Scope:</span>
-          <select id="skills-user-select" data-on="change" data-act="onSkillsUserChange" data-args="[&quot;$el&quot;]" style="min-width:240px;padding:6px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-primary);font-size:13px">
+      <div class="u-mb-space-3 card">
+        <div class="u-d-flex u-ai-center u-gap-space-3 u-p-space-3-space-4">
+          <span class="u-fs-12 u-fw-600 text-muted">Scope:</span>
+          <select id="skills-user-select" data-on="change" data-act="onSkillsUserChange" data-args="[&quot;$el&quot;]" class="u-minw-240 u-p-6-10 u-bg-bg-tertiary u-b-1-solid-border u-r-radius-md u-c-text-primary u-fs-13">
             <option value="global">⚠️ GLOBAL — affects ALL users (super-admin only)</option>
           </select>
-          <span class="card-subtitle" id="skills-scope-hint" style="font-size:11px;margin-left:auto;color:var(--error)">⚠️ Global mode: changes affect ALL users. Select a specific user for safe per-user overrides.</span>
-          <button id="skills-reset-user" class="btn btn-xs" style="display:none" data-act="resetSelectedUserSkills">Reset to defaults</button>
+          <span class="u-fs-11 u-ml-auto u-c-error card-subtitle" id="skills-scope-hint">⚠️ Global mode: changes affect ALL users. Select a specific user for safe per-user overrides.</span>
+          <button id="skills-reset-user" class="btn btn-xs" hidden data-act="resetSelectedUserSkills">Reset to defaults</button>
         </div>
       </div>
 
@@ -810,30 +810,30 @@
         x-nexus-user-id / x-nexus-tenant-id headers automatically
         by `apiFetch` for any /api/v1/admin/content/* call.
       ─────────────────────────────────────────────────────────────── -->
-      <div class="card" id="content-scope-card" style="margin-bottom:var(--space-4);border:1px solid var(--accent);background:var(--bg-elevated)">
+      <div class="u-mb-space-4 u-b-1-solid-accent u-bg-bg-elevated card" id="content-scope-card">
         <div class="card-header">
           <div>
             <div class="card-title">🎯 Tenant Scope</div>
             <span class="card-subtitle" id="content-scope-subtitle">Set the user / tenant context for scoped V1 Content panels and actions. The legacy mixed overview remains owner-bootstrap/platform scoped and is labeled separately.</span>
           </div>
         </div>
-        <div style="padding:var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center">
-          <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px">
+        <div class="u-p-space-3 u-d-flex u-flexwrap-wrap u-gap-space-2 u-ai-center">
+          <label class="u-fs-11 u-c-text-secondary u-d-flex u-flexdir-column u-gap-4">
             User ID
-            <input type="number" id="content-scope-user-id" min="0" style="width:120px;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px" placeholder="e.g. 1">
+            <input type="number" id="content-scope-user-id" min="0" class="u-w-120 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12" placeholder="e.g. 1">
           </label>
-          <label style="font-size:11px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px">
+          <label class="u-fs-11 u-c-text-secondary u-d-flex u-flexdir-column u-gap-4">
             Tenant ID
-            <input type="number" id="content-scope-tenant-id" min="0" style="width:120px;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px" placeholder="e.g. 1">
+            <input type="number" id="content-scope-tenant-id" min="0" class="u-w-120 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12" placeholder="e.g. 1">
           </label>
-          <button class="btn btn-sm" data-act="saveContentScope" id="content-scope-save-btn" style="margin-top:18px">Apply</button>
-          <button class="btn btn-ghost btn-sm" data-act="clearContentScope" id="content-scope-clear-btn" style="margin-top:18px">Clear</button>
-          <span id="content-scope-status" style="margin-left:var(--space-3);margin-top:18px;font-size:11px;color:var(--text-tertiary)"></span>
+          <button class="u-mt-18 btn btn-sm" data-act="saveContentScope" id="content-scope-save-btn">Apply</button>
+          <button class="u-mt-18 btn btn-ghost btn-sm" data-act="clearContentScope" id="content-scope-clear-btn">Clear</button>
+          <span id="content-scope-status" class="u-ml-space-3 u-mt-18 u-fs-11 u-c-text-tertiary"></span>
         </div>
       </div>
 
       <!-- KPI strip -->
-      <div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 grid grid-cols-4">
         <div class="kpi-card">
           <div class="kpi-label">Pipeline active</div>
           <div class="kpi-value" id="content-kpi-pipeline">—</div>
@@ -857,45 +857,45 @@
       </div>
 
       <!-- Pipeline -->
-      <div class="card" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 card">
         <div class="card-header">
           <div class="card-title">🎬 Content Pipeline</div>
           <span class="card-subtitle" id="content-pipeline-meta">—</span>
         </div>
         <!-- CONTENT-UI-O4: Canonical 12-bucket lifecycle band (visible
              when scope is active; collapses when no scope is set). -->
-        <div id="content-canonical-lifecycle-card" style="display:none;padding:var(--space-3);border-bottom:1px solid var(--border)">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-2)">
-            <div style="font-size:12px;font-weight:600">Lifecycle (12-stage canonical)</div>
-            <span style="font-size:11px;color:var(--text-tertiary)" id="content-canonical-lifecycle-meta">—</span>
+        <div id="content-canonical-lifecycle-card" class="u-p-space-3 u-bb-1-solid-border" hidden>
+          <div class="u-d-flex u-jc-space-between u-ai-center u-mb-space-2">
+            <div class="u-fs-12 u-fw-600">Lifecycle (12-stage canonical)</div>
+            <span class="u-fs-11 u-c-text-tertiary" id="content-canonical-lifecycle-meta">—</span>
           </div>
-          <div id="content-canonical-lifecycle-band" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          <div id="content-canonical-lifecycle-band" class="u-d-flex u-gap-6 u-flexwrap-wrap"></div>
         </div>
-        <div id="content-pipeline-stages" class="grid grid-cols-auto" style="margin-bottom:var(--space-4)"></div>
+        <div id="content-pipeline-stages" class="u-mb-space-4 grid grid-cols-auto"></div>
         <div id="content-pipeline-recent"></div>
       </div>
 
       <!-- Agent mesh graph -->
-      <div class="card" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 card">
         <div class="card-header">
           <div class="card-title">🕸️ Agent Mesh Graph</div>
           <span class="card-subtitle">How content agents communicate via the intelligence bus</span>
         </div>
-        <div style="overflow-x:auto">
-          <svg id="content-agent-graph" width="1040" height="520" style="display:block;max-width:100%;background:var(--bg-tertiary);border-radius:var(--radius-lg)">
+        <div class="u-ovx-auto">
+          <svg id="content-agent-graph" width="1040" height="520" class="u-d-block u-maxw-100p u-bg-bg-tertiary u-r-radius-lg">
             <text x="20" y="30" fill="var(--text-secondary)" font-size="12">Loading agent graph…</text>
           </svg>
         </div>
-        <div id="content-agent-legend" style="margin-top:var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2);font-size:11px;color:var(--text-secondary)"></div>
+        <div id="content-agent-legend" class="u-mt-space-3 u-d-flex u-flexwrap-wrap u-gap-space-2 u-fs-11 u-c-text-secondary"></div>
       </div>
 
       <!-- Triggers -->
-      <div class="card" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 card">
         <div class="card-header">
           <div class="card-title">⏰ Content Triggers</div>
           <span class="card-subtitle">Cron jobs in the content domain</span>
         </div>
-        <div style="overflow-x:auto">
+        <div class="u-ovx-auto">
           <table class="data-table" id="content-triggers-table">
             <thead>
               <tr>
@@ -914,7 +914,7 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-2" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 grid grid-cols-2">
         <!-- Books -->
         <div class="card">
           <div class="card-header">
@@ -922,17 +922,17 @@
             <span class="card-subtitle" id="content-books-meta">—</span>
           </div>
           <!-- Add Book form -->
-          <div style="padding:var(--space-3);border-bottom:1px solid var(--border);display:flex;gap:var(--space-2);align-items:center">
-            <input type="text" id="add-book-title" placeholder="Title" style="flex:2;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
-            <input type="text" id="add-book-author" placeholder="Author" style="flex:1;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
-            <button class="btn btn-sm" data-act="addBook" id="add-book-btn" style="white-space:nowrap">+ Add</button>
+          <div class="u-p-space-3 u-bb-1-solid-border u-d-flex u-gap-space-2 u-ai-center">
+            <input type="text" id="add-book-title" placeholder="Title" class="u-flex-2 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12">
+            <input type="text" id="add-book-author" placeholder="Author" class="u-flex-1 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12">
+            <button class="u-ws-nowrap btn btn-sm" data-act="addBook" id="add-book-btn">+ Add</button>
           </div>
           <div id="content-books-list"><div class="empty">Loading books…</div></div>
         </div>
 
         <!-- Reaction radar -->
         <div class="card">
-          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div class="u-d-flex u-jc-space-between u-ai-center card-header">
             <div>
               <div class="card-title">📡 Reaction Radar</div>
               <span class="card-subtitle" id="content-radar-meta">—</span>
@@ -940,12 +940,12 @@
             <button class="btn btn-ghost btn-sm" data-act="togglePillarEditor" id="pillar-editor-toggle">⚙️ Pillars</button>
           </div>
           <!-- Pillar editor (hidden by default) -->
-          <div id="pillar-editor" style="display:none;padding:var(--space-3);border-bottom:1px solid var(--border)">
-            <div style="font-size:12px;font-weight:600;margin-bottom:var(--space-2)">Pillar Keywords (editable)</div>
+          <div id="pillar-editor" class="u-p-space-3 u-bb-1-solid-border" hidden>
+            <div class="u-fs-12 u-fw-600 u-mb-space-2">Pillar Keywords (editable)</div>
             <div id="pillar-editor-rows"></div>
-            <div style="display:flex;gap:var(--space-2);margin-top:var(--space-2)">
-              <input type="text" id="add-pillar-name" placeholder="New pillar name" style="flex:1;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
-              <input type="text" id="add-pillar-keywords" placeholder="keyword1, keyword2, ..." style="flex:2;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+            <div class="u-d-flex u-gap-space-2 u-mt-space-2">
+              <input type="text" id="add-pillar-name" placeholder="New pillar name" class="u-flex-1 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12">
+              <input type="text" id="add-pillar-keywords" placeholder="keyword1, keyword2, ..." class="u-flex-2 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12">
               <button class="btn btn-sm" data-act="addPillar">+ Add</button>
             </div>
           </div>
@@ -960,15 +960,15 @@
         working") and warnings ("what's underperforming"). Only loads
         when scope is active.
       ─────────────────────────────────────────────────────────────────── -->
-      <div class="card" id="content-performance-card" style="margin-bottom:var(--space-4);display:none">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+      <div class="u-mb-space-4 card" id="content-performance-card" hidden>
+        <div class="u-d-flex u-jc-space-between u-ai-center card-header">
           <div>
             <div class="card-title">📈 Performance (scoped tenant)</div>
             <span class="card-subtitle" id="content-performance-meta">—</span>
           </div>
           <button class="btn btn-ghost btn-sm" data-act="loadContentPerformance" id="content-performance-refresh-btn">↻ Refresh</button>
         </div>
-        <div class="grid grid-cols-4" style="padding:var(--space-3);border-bottom:1px solid var(--border)">
+        <div class="u-p-space-3 u-bb-1-solid-border grid grid-cols-4">
           <div class="kpi-card">
             <div class="kpi-label">Topics total</div>
             <div class="kpi-value" id="content-perf-topics-total">—</div>
@@ -990,31 +990,31 @@
             <div class="kpi-sub" id="content-perf-radar-sub">accept / reject</div>
           </div>
         </div>
-        <div class="grid grid-cols-2" style="padding:var(--space-3)">
+        <div class="u-p-space-3 grid grid-cols-2">
           <div>
-            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">✅ What's working</div>
-            <ul id="content-perf-highlights" style="margin:0;padding-left:var(--space-4);font-size:12px;color:var(--text-secondary)"></ul>
+            <div class="u-mb-space-2 u-fw-600 card-subtitle">✅ What's working</div>
+            <ul id="content-perf-highlights" class="u-m-0 u-pl-space-4 u-fs-12 u-c-text-secondary"></ul>
           </div>
           <div>
-            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">⚠️ Underperforming</div>
-            <ul id="content-perf-warnings" style="margin:0;padding-left:var(--space-4);font-size:12px;color:var(--text-secondary)"></ul>
+            <div class="u-mb-space-2 u-fw-600 card-subtitle">⚠️ Underperforming</div>
+            <ul id="content-perf-warnings" class="u-m-0 u-pl-space-4 u-fs-12 u-c-text-secondary"></ul>
           </div>
         </div>
-        <div class="grid grid-cols-2" style="padding:var(--space-3);border-top:1px solid var(--border)">
+        <div class="u-p-space-3 u-bt-1-solid-border grid grid-cols-2">
           <div>
-            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Top accepted topics</div>
+            <div class="u-mb-space-2 u-fw-600 card-subtitle">Top accepted topics</div>
             <div id="content-perf-top-accepted"><div class="empty">No data yet</div></div>
           </div>
           <div>
-            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Top rejected topics</div>
+            <div class="u-mb-space-2 u-fw-600 card-subtitle">Top rejected topics</div>
             <div id="content-perf-top-rejected"><div class="empty">No data yet</div></div>
           </div>
         </div>
       </div>
 
       <!-- YouTube research -->
-      <div class="card" style="margin-bottom:var(--space-4)">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+      <div class="u-mb-space-4 card">
+        <div class="u-d-flex u-jc-space-between u-ai-center card-header">
           <div>
             <div class="card-title">🎥 YouTube Research</div>
             <span class="card-subtitle" id="content-youtube-meta">—</span>
@@ -1022,25 +1022,25 @@
           <button class="btn btn-ghost btn-sm" data-act="triggerChannelRelearn" id="channel-relearn-btn">🔄 Re-learn All</button>
         </div>
         <!-- Add Channel form -->
-        <div style="padding:var(--space-3);border-bottom:1px solid var(--border);display:flex;gap:var(--space-2);align-items:center">
-          <input type="text" id="add-channel-url" placeholder="YouTube channel URL or @handle" style="flex:1;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+        <div class="u-p-space-3 u-bb-1-solid-border u-d-flex u-gap-space-2 u-ai-center">
+          <input type="text" id="add-channel-url" placeholder="YouTube channel URL or @handle" class="u-flex-1 u-p-6-10 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-12">
           <button class="btn btn-sm" data-act="addChannel" id="add-channel-btn">+ Add Channel</button>
         </div>
         <div class="grid grid-cols-2">
           <div>
-            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Reference channels</div>
+            <div class="u-mb-space-2 u-fw-600 card-subtitle">Reference channels</div>
             <div id="content-youtube-channels"><div class="empty">Loading channels…</div></div>
           </div>
           <div>
-            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Analyzed videos</div>
+            <div class="u-mb-space-2 u-fw-600 card-subtitle">Analyzed videos</div>
             <div id="content-youtube-videos"><div class="empty">Loading videos…</div></div>
           </div>
         </div>
       </div>
 
       <!-- Voice DNA cards -->
-      <div class="card" style="margin-bottom:var(--space-4)">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+      <div class="u-mb-space-4 card">
+        <div class="u-d-flex u-jc-space-between u-ai-center card-header">
           <div>
             <div class="card-title">🎙️ Voice DNA</div>
             <span class="card-subtitle">Extracted from reference channels + voice evolution</span>
@@ -1051,7 +1051,7 @@
       </div>
 
       <!-- Commands -->
-      <div class="card" style="margin-bottom:var(--space-4)">
+      <div class="u-mb-space-4 card">
         <div class="card-header">
           <div class="card-title">⌨️ Content Commands</div>
           <span class="card-subtitle">Chat slash commands with usage over the last 7 and 30 days</span>
@@ -1102,8 +1102,8 @@
     <div class="empty">Loading…</div>
   </div>
   <div class="slideout-footer">
-    <button class="btn btn-danger btn-sm" id="slideout-suspend-btn" style="display:none">Suspend</button>
-    <button class="btn btn-sm" id="slideout-activate-btn" style="display:none">Activate</button>
+    <button class="btn btn-danger btn-sm" id="slideout-suspend-btn" hidden>Suspend</button>
+    <button class="btn btn-sm" id="slideout-activate-btn" hidden>Activate</button>
     <button class="btn btn-ghost btn-sm" id="slideout-reset-btn">Reset Skills</button>
   </div>
 </aside>
