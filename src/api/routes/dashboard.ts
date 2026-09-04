@@ -4,6 +4,7 @@ import { Router, Request, Response } from 'express';
 import { DateTime } from 'luxon';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { runWithContext } from '../../utils/request-context';
 import { config } from '../../config';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
@@ -210,7 +211,15 @@ export async function warmDashboardCache(userId: number): Promise<void> {
   if (getCachedSWR(cacheKey)?.fresh) return; // Already warm enough
 
   try {
-    const response = await buildDashboardPayload(userId, userId, language);
+    // Warming runs from boot timers and intervals with no request context, so
+    // pin a startup context that marks Garmin reads silent: refresh and token
+    // reload only. A credentials login here would email an MFA passcode with
+    // nobody to answer it, once per warm cycle, for as long as the session is
+    // dead.
+    const response = await runWithContext(
+      { source: 'startup', userId, tenantId: userId, garminSilent: true },
+      () => buildDashboardPayload(userId, userId, language),
+    );
     setCacheSWR(cacheKey, response, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
     logger.debug('Dashboard cache warmed');
   } catch (err) {
