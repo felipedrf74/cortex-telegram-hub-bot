@@ -562,6 +562,36 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
   exposure mode, and whether Sentry and the operator-alert webhook are
   configured (booleans only). `/health` carries `version` and `gitShortSha`.
 
+- **Jobs** (`/admin#jobs` Job Control card, `GET /api/jobs`,
+  `GET /api/jobs/:name/history`, `POST /api/jobs/:name/run`): every cron job
+  with its AgentJobManifest governance (policy owner, provider usage, cost and
+  overlap policy), lifecycle, next fire time, and 24 h outcome counts. Manual
+  runs are admin mutations audited as `job.run` with a 30 s cooldown per job;
+  jobs paused by the manifest or whose sub-skill is disabled are denied, and
+  provider-capable jobs require `{"confirm": true}`. Pause/resume is a
+  reviewed change to `config/agent-job-manifest.json`, not a runtime toggle.
+- **Queues & Flags** (`/admin#operate`): `GET /api/ops/queues` reports depth by
+  status and oldest pending age for `background_jobs` and `event_outbox`;
+  `GET /api/ops/queues/dead-letter` lists dead letters across tenants and
+  `POST /api/ops/queues/:kind/:id/{replay,cancel}` delegates to the
+  tenant-scoped queue services (audited as `queue.<kind>.<action>`).
+  `GET /api/ops/flags` renders the runtime flag catalog
+  (`src/services/runtime-flags-catalog.ts`, pinned to the exports of
+  `runtime-flags.ts` by test) as parsed values plus env-key presence, never raw
+  env strings; env flags are read-only. The DB-backed hybrid kill switches are
+  the only mutable switches (`POST /api/ops/flags/kill-switches/:key`, audited
+  as `hybrid_kill_switch.<key>`, same service as the iOS admin route).
+  `GET /api/ops/provider-health-history` buckets `integration_health` probes
+  per provider and hour; `GET /api/ops/notification-delivery` (admin)
+  summarizes `notification_delivery_attempts` by status, channel, provider and
+  APNs response code. The webhooks card is read-only over the existing
+  `/api/webhooks/{stats,subscriptions,events}` routes.
+- **Audit** (`/admin#audit`, `GET /api/audit-trail`): filters by user, actor,
+  action, resource prefix, free text and time range, cursor paging with
+  `beforeId`, `GET /api/audit-trail/facets` for dropdowns, and
+  `format=csv` for a server-rendered export (spreadsheet-formula cells are
+  neutralized).
+
 Triage loop: Issues → open the last request → read its log lines → fix →
 resolve the issue and let the regression alert say if it comes back. Quote the
 `x-request-id` from the app or the response headers when reporting.

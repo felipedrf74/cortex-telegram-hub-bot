@@ -1410,6 +1410,14 @@ table.dense th {
       </a>
     </nav>
 
+    <div class="nav-section-label" style="margin-top: var(--space-5)">Operate</div>
+    <nav class="nav">
+      <a class="nav-item" data-nav="operate">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>
+        <span class="nav-label">Queues &amp; Flags</span>
+      </a>
+    </nav>
+
     <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
     <nav class="nav">
       <a class="nav-item" data-nav="settings">
@@ -1553,6 +1561,7 @@ table.dense th {
     <section class="section" data-section="requests"><div class="empty">Loading module…</div></section>
     <section class="section" data-section="issues"><div class="empty">Loading module…</div></section>
     <section class="section" data-section="support"><div class="empty">Loading module…</div></section>
+    <section class="section" data-section="operate"><div class="empty">Loading module…</div></section>
 
     <!-- ════════════════════ ALERTS ════════════════════ -->
     <section class="section" data-section="alerts">
@@ -2050,6 +2059,19 @@ table.dense th {
           <span class="card-subtitle">Last run + duration</span>
         </div>
         <div id="jobs-list-content"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">🎛 Job Control</div>
+          <div class="section-actions">
+            <input class="input" id="jobctl-filter" placeholder="Filter jobs…" style="max-width:220px">
+            <button class="btn btn-ghost btn-sm" id="jobctl-refresh">Refresh</button>
+          </div>
+        </div>
+        <div class="text-muted" style="font-size:12px">Lifecycle and manual-run policy come from the agent job manifest and the owning sub-skill. Provider-capable jobs ask for confirmation; runs are audited and rate limited.</div>
+        <div id="jobctl-content" class="mt-4"><div class="empty">Loading…</div></div>
+        <div id="jobctl-history" class="mt-4" style="display:none"></div>
       </div>
     </section>
 
@@ -2795,10 +2817,19 @@ table.dense th {
       </div>
 
       <div class="card">
-        <div class="table-toolbar">
-          <select class="input" id="audit-filter" style="max-width:280px">
+        <div class="table-toolbar" style="flex-wrap:wrap;gap:8px">
+          <select class="input" id="audit-filter" style="max-width:220px">
             <option value="">All users</option>
           </select>
+          <select class="input" id="audit-action" style="max-width:200px">
+            <option value="">All actions</option>
+          </select>
+          <input class="input" id="audit-resource" placeholder="Resource prefix" style="max-width:180px">
+          <input class="input" id="audit-q" placeholder="Search details…" style="max-width:200px">
+          <input class="input" id="audit-since" type="datetime-local" title="Since" style="max-width:200px">
+          <input class="input" id="audit-until" type="datetime-local" title="Until" style="max-width:200px">
+          <button class="btn btn-ghost btn-sm" id="audit-apply">Apply</button>
+          <button class="btn btn-ghost btn-sm" id="audit-more" style="display:none">Load older</button>
           <span class="text-muted mono" style="margin-left:auto;font-size:11px" id="audit-count-label"></span>
         </div>
         <div style="overflow-x:auto">
@@ -3119,6 +3150,7 @@ table.dense th {
   function navigateTo(section) {
     if (!SECTIONS.includes(section)) section = 'dashboard';
     currentSection = section;
+    if (section === 'jobs') loadJobControl();
     SECTIONS.forEach(s => {
       const sec = document.querySelector('[data-section="' + s + '"]');
       const nav = document.querySelector('[data-nav="' + s + '"]');
@@ -3789,6 +3821,93 @@ table.dense th {
         '</div>';
     }).join('');
   }
+
+  // ── Job control: /api/jobs — governance, next run, manual run, history ──
+  let jobCtlJobs = [];
+  let jobCtlFilter = '';
+  async function loadJobControl() {
+    const el = document.getElementById('jobctl-content');
+    if (!el) return;
+    try {
+      const d = await apiJson('/api/jobs');
+      jobCtlJobs = d.jobs || [];
+      renderJobControl();
+    } catch (err) {
+      el.innerHTML = '<div class="empty">' + esc('Could not load job control: ' + adminLoadErrorMessage(err)) + '</div>';
+    }
+  }
+  function renderJobControl() {
+    const el = document.getElementById('jobctl-content');
+    if (!el) return;
+    const needle = jobCtlFilter.trim().toLowerCase();
+    const jobs = jobCtlJobs.filter(j => !needle || j.name.toLowerCase().includes(needle) || (j.label || '').toLowerCase().includes(needle) || (j.domain || '').includes(needle));
+    if (jobs.length === 0) { el.innerHTML = '<div class="empty">No jobs match</div>'; return; }
+    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table dense"><thead><tr><th>Job</th><th>Cron</th><th>Next run</th><th>Last</th><th class="text-right">24h</th><th>Governance</th><th></th></tr></thead><tbody>' +
+      jobs.map(j => {
+        const paused = j.lifecycle === 'paused';
+        const state = j.running ? 'running' : paused ? 'paused' : !j.enabled ? 'disabled' : (j.lastResult || 'never');
+        const cls = state === 'success' ? 'success' : state === 'failed' ? 'error' : state === 'running' ? 'info' : state === 'paused' || state === 'disabled' ? 'warning' : 'neutral';
+        const denied = j.manual.policy === 'deny';
+        const disabled = denied || j.running || !j.runnerAvailable || j.cooldownRemainingMs > 0;
+        const title = denied ? (j.manual.reason || 'manual run denied') : j.running ? 'already running' : !j.runnerAvailable ? 'runner unavailable in this process' : j.cooldownRemainingMs > 0 ? 'cooldown active' : j.manual.policy === 'confirm' ? 'asks for confirmation: ' + j.manual.reason : 'run now';
+        const gov = j.governance ? '<span class="text-muted">' + esc(j.governance.policyOwner) + '</span> · <span class="mono" title="provider usage">' + esc(j.governance.providerUsage === 'none' ? 'no provider' : 'provider-capable') + '</span>' : '<span class="text-muted">not in manifest</span>';
+        return '<tr>' +
+          '<td><span class="domain-tag domain-' + esc(j.domain || 'system') + '">' + esc(j.domain || 'sys') + '</span> ' + esc(j.label || j.name) + '<div class="mono text-muted" style="font-size:11px">' + esc(j.name) + '</div></td>' +
+          '<td class="mono">' + esc(j.cronExpression || '—') + '</td>' +
+          '<td class="text-muted">' + (j.nextRunAt ? esc(relativeTime(j.nextRunAt)) : '—') + '</td>' +
+          '<td><span class="badge badge-' + cls + '">' + esc(state) + '</span> <span class="text-muted">' + (j.lastRunAt ? esc(relativeTime(j.lastRunAt)) : '') + '</span>' + (j.lastError ? '<div class="mono text-muted" style="font-size:11px" title="' + esc(j.lastError) + '">' + esc(String(j.lastError).slice(0, 60)) + '</div>' : '') + '</td>' +
+          '<td class="text-right mono">' + j.stats24h.runs + (j.stats24h.failed ? ' <span class="badge badge-error">' + j.stats24h.failed + ' failed</span>' : '') + '</td>' +
+          '<td>' + gov + '</td>' +
+          '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" data-jobctl="run" data-job="' + esc(j.name) + '" title="' + esc(title) + '"' + (disabled ? ' disabled' : '') + '>' + (j.manual.policy === 'confirm' ? 'Run…' : 'Run') + '</button> ' +
+          '<button class="btn btn-ghost btn-sm" data-jobctl="history" data-job="' + esc(j.name) + '">History</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+  async function runJobNow(name) {
+    const job = jobCtlJobs.find(j => j.name === name);
+    if (!job) return;
+    let body = {};
+    if (job.manual.policy === 'confirm') {
+      if (!confirm('"' + (job.label || job.name) + '" ' + (job.manual.reason || 'may spend provider budget') + '. Run it now?')) return;
+      body = { confirm: true };
+    }
+    try {
+      const res = await apiFetch('/api/jobs/' + encodeURIComponent(name) + '/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await res.json().catch(() => ({}));
+      showToast(res.ok ? 'Started ' + (job.label || job.name) : (d.message || 'Run failed (HTTP ' + res.status + ')'), res.ok);
+    } catch (err) {
+      showToast('Run failed: ' + adminLoadErrorMessage(err), false);
+    }
+    setTimeout(loadJobControl, 1500);
+  }
+  async function showJobHistory(name) {
+    const box = document.getElementById('jobctl-history');
+    if (!box) return;
+    box.style.display = 'block';
+    box.innerHTML = '<div class="empty">Loading history for ' + esc(name) + '…</div>';
+    try {
+      const d = await apiJson('/api/jobs/' + encodeURIComponent(name) + '/history' + '?limit=50');
+      const rows = d.history || [];
+      box.innerHTML = '<div class="card-header"><div class="card-title">History · ' + esc(name) + '</div><button class="btn btn-ghost btn-sm" id="jobctl-history-close">Close</button></div>' +
+        (rows.length === 0 ? '<div class="empty">No runs recorded</div>' :
+        '<table class="data-table dense"><thead><tr><th>When</th><th>Result</th><th class="text-right">Duration</th><th>Error</th></tr></thead><tbody>' +
+        rows.map(r => '<tr><td class="text-muted">' + esc(shortDateTime(r.ts)) + '</td><td><span class="badge badge-' + (r.result === 'success' ? 'success' : 'error') + '">' + esc(r.result) + '</span></td><td class="text-right mono">' + (r.durationMs != null ? (r.durationMs / 1000).toFixed(1) + 's' : '—') + '</td><td class="mono text-muted" title="' + esc(r.errorMessage || '') + '">' + esc((r.errorMessage || '').slice(0, 120)) + '</td></tr>').join('') +
+        '</tbody></table>');
+      const close = document.getElementById('jobctl-history-close');
+      if (close) close.addEventListener('click', () => { box.style.display = 'none'; box.innerHTML = ''; });
+    } catch (err) {
+      box.innerHTML = '<div class="empty">' + esc('Could not load history: ' + adminLoadErrorMessage(err)) + '</div>';
+    }
+  }
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-jobctl]');
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.jobctl === 'run') runJobNow(btn.dataset.job);
+    else if (btn.dataset.jobctl === 'history') showJobHistory(btn.dataset.job);
+  });
+  const jobCtlRefresh = document.getElementById('jobctl-refresh');
+  if (jobCtlRefresh) jobCtlRefresh.addEventListener('click', loadJobControl);
+  const jobCtlFilterInput = document.getElementById('jobctl-filter');
+  if (jobCtlFilterInput) jobCtlFilterInput.addEventListener('input', (e) => { jobCtlFilter = e.target.value; renderJobControl(); });
 
   // ════════════════════════════════════════════════════════════
   // Users
@@ -5336,13 +5455,45 @@ table.dense th {
     }
   }
 
-  async function loadAuditTrail() {
+  let auditNextBeforeId = null;
+  let auditFacetsLoaded = false;
+  function auditFilterParams() {
+    const params = new URLSearchParams();
+    const get = (id) => (document.getElementById(id) ? document.getElementById(id).value || '' : '').trim();
+    if (get('audit-filter')) params.set('userId', get('audit-filter'));
+    if (get('audit-action')) params.set('action', get('audit-action'));
+    if (get('audit-resource')) params.set('resource', get('audit-resource'));
+    if (get('audit-q')) params.set('q', get('audit-q'));
+    if (get('audit-since')) params.set('since', new Date(get('audit-since')).toISOString());
+    if (get('audit-until')) params.set('until', new Date(get('audit-until')).toISOString());
+    return params;
+  }
+  async function populateAuditFacets() {
+    if (auditFacetsLoaded) return;
+    try {
+      const d = await apiJson('/api/audit-trail/facets');
+      const sel = document.getElementById('audit-action');
+      if (!sel) return;
+      const current = sel.value;
+      sel.innerHTML = '<option value="">All actions</option>' + (d.actions || []).map(a => '<option value="' + esc(a.value) + '">' + esc(a.value) + ' (' + a.count + ')</option>').join('');
+      sel.value = current;
+      auditFacetsLoaded = true;
+    } catch (_) {
+      // facets are a convenience; the free-text filters still work
+    }
+  }
+  async function loadAuditTrail(append) {
     try {
       await populateAuditUserDropdown(false);
-      const filter = (document.getElementById('audit-filter').value || '').trim();
-      const url = filter ? '/api/audit-trail?userId=' + encodeURIComponent(filter) + '&limit=200' : '/api/audit-trail?limit=200';
-      const d = await apiJson(url);
-      allAuditEntries = d.entries || [];
+      await populateAuditFacets();
+      const params = auditFilterParams();
+      params.set('limit', '200');
+      if (append && auditNextBeforeId) params.set('beforeId', String(auditNextBeforeId));
+      const d = await apiJson('/api/audit-trail?' + params.toString());
+      allAuditEntries = append ? allAuditEntries.concat(d.entries || []) : (d.entries || []);
+      auditNextBeforeId = d.nextBeforeId || null;
+      const more = document.getElementById('audit-more');
+      if (more) more.style.display = auditNextBeforeId ? '' : 'none';
       renderAuditTrail();
     } catch (err) {
       allAuditEntries = [];
@@ -5372,25 +5523,28 @@ table.dense th {
   });
   // Dropdown: immediate reload on change (no debounce needed)
   document.getElementById('audit-filter').addEventListener('change', loadAuditTrail);
-  document.getElementById('audit-export-btn').addEventListener('click', () => {
-    if (allAuditEntries.length === 0) { showToast('No data to export', false); return; }
-    const headers = ['timestamp', 'user_id', 'action', 'resource', 'details'];
-    const rows = allAuditEntries.map(e => headers.map(h => {
-      const v = e[h === 'timestamp' ? 'ts' : h];
-      if (v == null) return '';
-      const s = String(v).replace(/"/g, '""');
-      return '"' + s + '"';
-    }).join(','));
-    const csv = headers.join(',') + '\n' + rows.join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'audit-trail-' + new Date().toISOString().slice(0, 10) + '.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('Exported ' + allAuditEntries.length + ' entries');
+  document.getElementById('audit-export-btn').addEventListener('click', async () => {
+    const params = auditFilterParams();
+    params.set('format', 'csv');
+    params.set('limit', '500');
+    try {
+      const res = await apiFetch('/api/audit-trail?' + params.toString());
+      if (!res.ok) { showToast('Export failed (HTTP ' + res.status + ')', false); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'audit-trail-' + new Date().toISOString().slice(0, 10) + '.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Exported audit trail (current filters, up to 500 rows)');
+    } catch (err) {
+      showToast('Export failed: ' + adminLoadErrorMessage(err), false);
+    }
   });
+  document.getElementById('audit-apply').addEventListener('click', () => loadAuditTrail(false));
+  document.getElementById('audit-more').addEventListener('click', () => loadAuditTrail(true));
+  ['audit-resource', 'audit-q'].forEach(id => document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') loadAuditTrail(false); }));
 
   // ════════════════════════════════════════════════════════════
   // Waitlist
