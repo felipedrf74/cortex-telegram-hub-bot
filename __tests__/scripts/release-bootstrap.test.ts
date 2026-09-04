@@ -543,6 +543,7 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '313_runtime_logs.sql' }),
         expect.objectContaining({ file: '314_http_request_log.sql' }),
         expect.objectContaining({ file: '315_issues.sql' }),
+        expect.objectContaining({ file: '316_support_tickets.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

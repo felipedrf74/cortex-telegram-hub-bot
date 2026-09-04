@@ -69,6 +69,7 @@ async function openIssue(id) {
   panel.innerHTML =
     '<div class="card-header"><div class="card-title">🐞 #' + i.id + ' ' + P.esc(i.title) + '</div>' +
     '<div>' + actions.map((a) => '<button class="btn btn-ghost btn-sm iss-act" data-act="' + a + '">' + a + '</button>').join(' ') +
+    ' <button class="btn btn-ghost btn-sm" id="iss-ticket">Create ticket</button>' +
     ' <button class="btn btn-ghost btn-sm" id="iss-close">Close</button></div></div>' +
     '<div class="grid grid-cols-4" style="padding:var(--space-3) 0">' +
     '<div><div class="kpi-label">Status</div><span class="badge badge-' + tone(i.status) + '">' + P.esc(i.status) + '</span></div>' +
@@ -84,6 +85,14 @@ async function openIssue(id) {
     '<div style="overflow-x:auto"><table class="data-table dense"><thead><tr><th>Time</th><th>Level</th><th>Request</th><th>User</th><th>App</th><th>Message</th></tr></thead><tbody>' +
     (occ || '<tr><td colspan="6"><div class="empty">No linked occurrences yet (rows recorded before this issue existed are not linked)</div></td></tr>') + '</tbody></table></div>';
   panel.querySelector('#iss-close').addEventListener('click', () => { panel.style.display = 'none'; openIssueId = null; });
+  panel.querySelector('#iss-ticket').addEventListener('click', async () => {
+    const res = await P.apiFetch('/api/ops/issues/' + i.id + '/ticket', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!res.ok) { setStatus('Ticket creation failed (HTTP ' + res.status + ')'); return; }
+    const data = await res.json();
+    if (P.refreshSupportBadge) P.refreshSupportBadge();
+    P.navigateTo('support');
+    if (P.sections.support && P.sections.support.openTicket) P.sections.support.openTicket(data.ticket.id);
+  });
   panel.querySelectorAll('.iss-act').forEach((b) => b.addEventListener('click', () => act(i.id, b.dataset.act)));
   panel.querySelectorAll('.iss-req').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();

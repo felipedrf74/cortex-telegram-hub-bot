@@ -7,9 +7,23 @@
 import './logs.js';
 import './requests.js';
 import './issues.js';
+import './support.js';
 import { sseSubscribe } from './sse.js';
 
 const P = window.NexusPortal;
+
+async function refreshSupportBadge() {
+  try {
+    const res = await P.apiFetch('/api/support/summary');
+    if (!res.ok) return;
+    const data = await res.json();
+    const fresh = (data.byStatus && data.byStatus.new) || 0;
+    const badge = document.getElementById('nav-support-count');
+    if (badge) badge.textContent = fresh > 0 ? String(fresh) : '';
+  } catch (_) {
+    // badge is best-effort
+  }
+}
 
 async function refreshIssueBadge() {
   try {
@@ -59,6 +73,9 @@ function startAlertsStream() {
 
 P.onAppStart = () => {
   refreshIssueBadge();
+  refreshSupportBadge();
+  setInterval(refreshSupportBadge, 60000);
   startAlertsStream();
 };
+P.refreshSupportBadge = refreshSupportBadge;
 P.refreshIssueBadge = refreshIssueBadge;

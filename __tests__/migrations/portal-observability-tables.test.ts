@@ -17,6 +17,9 @@ describe('migrations 313-315 (portal observability)', () => {
     expect(columns(db, 'issues')).toEqual(expect.arrayContaining(['fingerprint', 'kind', 'status', 'occurrence_count', 'regressed_at', 'last_alert_id']));
     expect(columns(db, 'error_log')).toEqual(expect.arrayContaining(['req_id', 'issue_id']));
     expect(columns(db, 'client_errors')).toEqual(expect.arrayContaining(['req_id', 'issue_id']));
+    expect(columns(db, 'support_tickets')).toEqual(expect.arrayContaining(['ref', 'kind', 'status', 'priority', 'source', 'issue_id', 'alert_id', 'req_id', 'created_by']));
+    expect(columns(db, 'support_ticket_events')).toEqual(expect.arrayContaining(['ticket_id', 'actor', 'type', 'meta_json']));
+    expect(() => db.prepare("INSERT INTO support_tickets (ref, kind, source, title, created_by) VALUES ('x', 'nope', 'operator', 't', 'o')").run()).toThrow();
     const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>).map((i) => i.name);
     expect(indexes).toEqual(expect.arrayContaining(['idx_runtime_logs_req', 'idx_http_request_log_req', 'idx_issues_status_last', 'idx_error_log_issue', 'idx_client_errors_issue']));
     expect(() => db.prepare("INSERT INTO issues (fingerprint, kind, source, title, level, status) VALUES ('f', 'bogus', 's', 't', 'error', 'open')").run()).toThrow();
