@@ -600,11 +600,13 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
   session survives reloads and every mutating request must carry the
   `x-portal-csrf` proof returned at sign-in (`rejectCookieSessionCsrf`).
   Without the secret the routes answer 503 and the in-memory bearer flow
-  remains. The dashboard ships no inline script: the SPA lives in
-  `src/portal/ui/legacy.js` plus the ES modules and markup uses `data-act`
-  delegation, so the dashboard CSP is `script-src 'self'` (no
-  `'unsafe-inline'`); `__tests__/portal/portal-csp-no-inline.test.ts` keeps
-  it that way. Background tabs pause polling; badge counts ride the alerts
+  remains. The dashboard ships no inline script or stylesheet: the SPA lives in
+  `src/portal/ui/legacy.js` plus the ES modules (audit, invites, founders,
+  waitlist, settings, alerts, notifications, cooking, logs, requests, issues,
+  support, operate), styles in `/portal/ui/portal.css`, and markup uses
+  `data-act` delegation, so the dashboard CSP is `script-src 'self'` (no
+  `'unsafe-inline'`; `style-src` keeps it for inline style attributes);
+  `__tests__/portal/portal-csp-no-inline.test.ts` keeps it that way. Background tabs pause polling; badge counts ride the alerts
   stream (`/api/ops/alerts/stream` now carries issues and support summaries).
 
 Triage loop: Issues → open the last request → read its log lines → fix →
