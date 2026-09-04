@@ -489,6 +489,8 @@ non-gating and is reconciled from the immutable local receipt.
 ### Daily
 
 - [ ] No open critical alerts.
+- [ ] `/admin#issues` has no unacknowledged open issue; `/admin#support` has no
+      `new` ticket older than 48 h.
 - [ ] No degraded provider state (Garmin, Google, Outlook, OAuth
       providers).
 - [ ] Backend and content-engine containers are healthy; any restart is explained.
@@ -518,6 +520,51 @@ non-gating and is reconciled from the immutable local receipt.
 - [ ] Root cause identified before resolve.
 - [ ] Regression test landed before fix.
 - [ ] Postmortem written within 7 days for any P0 incident.
+
+## 14a. Operator portal surfaces (Observe / Support)
+
+The admin portal (`:8200`, operator tokens only) is the day-to-day triage
+surface; `ssh … pm2 logs` is the fallback, not the default.
+
+- **Logs** (`/admin#logs`, `GET /api/ops/logs`, SSE `GET /api/ops/logs/stream`):
+  a second pino stream fills an in-memory ring and the bounded `runtime_logs`
+  table (info and above, already redacted; 72 h / 500k rows). Filters: level,
+  `src`, `reqId`, `userId`, text. `LOG_STORE_ENABLED=false` disables capture;
+  stdout for the container is unchanged either way.
+- **Requests** (`/admin#requests`, `GET /api/ops/requests`, `/api/ops/requests/:reqId`,
+  `/api/ops/latency`, `/api/ops/rate-limits`): the sampled `http_request_log`
+  ledger keeps every non-2xx, every request ≥ 500 ms, and every portal
+  mutation; polling paths are sampled 1-in-50 and fast 2xx at
+  `HTTP_LOG_SAMPLE_RATE` (default 0.1). IPs are salted hashes
+  (`HTTP_LOG_IP_SALT`). Retention 7 d / 500k rows. A row opens the correlated
+  runtime log lines and error rows for the same `reqId`.
+- **Issues** (`/admin#issues`, `GET /api/ops/issues`): `error_log` and iOS
+  `client_errors` grouped by fingerprint (kind + source + normalised message +
+  first stack frame) into `issues` with ack / resolve / mute / reopen (admin,
+  audited as `issue.<action>`). A resolved issue that recurs is reopened,
+  marked regressed, and raises a `warning` alert from source `issue_tracker`.
+- **Support** (`/admin#support`, `GET /api/support/tickets`): tickets from
+  in-app feedback (`POST /api/v1/support/feedback`, 5 per user per hour,
+  allowlisted diagnostics only, never chat content), from an Issue or an
+  Operator Alert ("Ticket" buttons), email intake, and operator tasks. States
+  `new → open → waiting_user → resolved → closed`, priorities `p0..p3`, one
+  timeline event per change; new tickets raise an `info` alert from source
+  `support` (`critical` for `p0`). The app can list its own tickets' status
+  only (`GET /api/v1/support/feedback/mine`).
+- **Users drawer**: sign out one or all devices, revoke a push token, inspect
+  or clear the login lockout, and see the provider connection matrix. All are
+  admin mutations audited as `user.*`. There is no impersonation and no
+  operator password reset.
+- **Release card** (`/admin#dashboard`, `GET /api/release`): version, the
+  container identity from `NEXUS_RELEASE_SHA` / `NEXUS_RELEASE_ARTIFACT_SHA256`
+  / `NEXUS_RELEASE_ROLE` (the build stamp `dist/release-stamp.json` fills in
+  branch and commit detail), boot time, applied vs pending migrations, admin
+  exposure mode, and whether Sentry and the operator-alert webhook are
+  configured (booleans only). `/health` carries `version` and `gitShortSha`.
+
+Triage loop: Issues → open the last request → read its log lines → fix →
+resolve the issue and let the regression alert say if it comes back. Quote the
+`x-request-id` from the app or the response headers when reporting.
 
 ## 15. Forbidden runtime patterns
 

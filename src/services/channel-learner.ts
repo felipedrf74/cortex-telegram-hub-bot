@@ -17,7 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createHash, randomUUID } from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { loadPrompt } from '../utils/prompt-loader';
 import { pushEvent } from '../portal/telemetry';

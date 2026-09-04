@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { DomainMessage, DomainName } from '../domains/types';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeOneShotWithFallback, completeVisionOneShotWithFallback } from './gemini-provider';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';

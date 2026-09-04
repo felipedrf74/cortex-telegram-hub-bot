@@ -311,48 +311,14 @@ describe('content-dashboard-service: sprint mode', () => {
 describe('content-dashboard-service: no raw SQL duplication', () => {
   const portalContentRoutesPath = path.resolve(__dirname, '../../src/portal/content-routes.ts');
 
-  it('portal GET /api/books uses getBooks from service', () => {
-    const source = fs.readFileSync(
-      portalContentRoutesPath,
-      'utf8',
-    );
-    // Should use canonical service
-    expect(source).toContain("from '../services/content-dashboard-service'");
-    expect(source).toContain('getBooks');
-  });
-
-  it('portal GET /api/content-knowledge uses getVoiceDna from service', () => {
-    const source = fs.readFileSync(
-      portalContentRoutesPath,
-      'utf8',
-    );
-    expect(source).toContain('getVoiceDna');
-  });
-
-  it('portal POST /api/override/sprint uses toggleSprintMode from service', () => {
-    const source = fs.readFileSync(
-      portalContentRoutesPath,
-      'utf8',
-    );
-    expect(source).toContain('toggleSprintMode');
-    // Should NOT have raw SQL for sprint mode
-    const lines = source.split('\n');
-    const sprintSection = lines.slice(
-      lines.findIndex(l => l.includes("'/api/override/sprint'")),
-      lines.findIndex(l => l.includes("'/api/override/sprint'")) + 15,
-    ).join('\n');
-    expect(sprintSection).not.toContain("signal_type = 'content_sprint_mode'");
-  });
-
-  it('legacy portal content mutations are disabled in favor of scoped v1 routes', () => {
-    const source = fs.readFileSync(
-      portalContentRoutesPath,
-      'utf8',
-    );
-    expect(source).toContain('SCOPED_V1_REQUIRED');
-    expect(source).toContain('/api/v1/admin/content');
-    expect(source).not.toContain('addAndAnalyzeChannel(url');
-    expect(source).not.toContain('handleAddBookFromPortal(title');
+  it('legacy portal content routes were retired in favor of the scoped /api/v1/admin/content surface', () => {
+    // The legacy `/api/books`, `/api/content-knowledge` and `/api/override/sprint`
+    // portal routes duplicated the service layer and had no SPA consumer; the
+    // operator UI reads `/api/v1/admin/content-dashboard` and writes through
+    // `/api/v1/admin/content/*` (content-admin-write.ts).
+    expect(fs.existsSync(portalContentRoutesPath)).toBe(false);
+    const serverSource = fs.readFileSync(path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8');
+    expect(serverSource).not.toContain('registerPortalContentRoutes');
   });
 
   it('content-dashboard.ts uses getBooks from service', () => {

@@ -2,7 +2,6 @@
 
 import type { Express, Request, Response } from 'express';
 import { getAllNotifications } from '../services/content-notification-store';
-import { getAllReports } from '../services/report-document-store';
 import {
   getAllNotificationCenterItemsForPortal,
   getNotificationProfileSummariesForPortal,
@@ -126,29 +125,6 @@ export function registerPortalDocumentRoutes(app: Express): void {
       });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: notification preferences request failed');
-    }
-  });
-
-  app.get('/api/reports', (req: Request, res: Response) => {
-    try {
-      const limit = parseInt(String(req.query.limit || '50'), 10);
-      const reports = getAllReports(limit);
-      res.json({
-        ok: true,
-        count: reports.length,
-        reports: reports.map((r: any) => ({
-          id: r.id,
-          userId: r.userId,
-          type: r.type,
-          title: r.title,
-          summary: r.summary,
-          status: r.status,
-          sourceJob: r.sourceJob,
-          createdAt: r.createdAt,
-        })),
-      });
-    } catch (err) {
-      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }
   });
 }

@@ -22,7 +22,7 @@ import {
   resolveCurrentTenantIdForUser,
 } from '../../services/user-service';
 import { getIosJwtTokenLifetimeSeconds, signIosJwt } from '../../services/ios-jwt';
-import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess, hashRefreshToken } from '../../services/ios-auth-session';
+import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess, hashRefreshToken, revokeAllDeviceSessions, revokeDeviceSession } from '../../services/ios-auth-session';
 import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
 import { consumeAppleSignInNonce, AppleSignInNonceError } from '../../services/apple-sign-in-nonce';
 import {
@@ -1486,16 +1486,10 @@ export function authRoutes(): Router {
   // can retry safely and does not need branching logic on the client.
   router.post('/logout', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
     const { userId, tenantId, deviceId } = req as AuthenticatedRequest;
-    const db = getDb();
 
-    const result = db.prepare(
-      'DELETE FROM ios_devices WHERE user_id = ? AND device_id = ?',
-    ).run(userId, deviceId);
-    const notificationTokenResult = db.prepare(`
-      UPDATE notification_device_tokens
-      SET revoked_at = datetime('now')
-      WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
-    `).run(userId, deviceId);
+    const revocation = revokeDeviceSession(userId, deviceId);
+    const result = { changes: revocation.devicesRevoked };
+    const notificationTokenResult = { changes: revocation.notificationTokensRevoked };
     const pendingChatActionsCancelled = cancelPendingChatActionsForAccountSwitch({ userId, tenantId });
 
     logAudit({
@@ -1532,14 +1526,10 @@ export function authRoutes(): Router {
 
   router.post('/logout-all', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const db = getDb();
 
-    const result = db.prepare('DELETE FROM ios_devices WHERE user_id = ?').run(userId);
-    const notificationTokenResult = db.prepare(`
-      UPDATE notification_device_tokens
-      SET revoked_at = datetime('now')
-      WHERE user_id = ? AND revoked_at IS NULL
-    `).run(userId);
+    const revocation = revokeAllDeviceSessions(userId);
+    const result = { changes: revocation.devicesRevoked };
+    const notificationTokenResult = { changes: revocation.notificationTokensRevoked };
     const pendingChatActionsCancelled = cancelPendingChatActionsForAccountSwitch({ userId });
 
     logAudit({

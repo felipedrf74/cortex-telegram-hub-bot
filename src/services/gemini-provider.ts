@@ -403,7 +403,7 @@ async function logGeminiUsage(
     // April 9 2026: persist `user_id` into the INSERT. Previously
     // omitted, so every Gemini row silently had user_id=0 via the
     // `NOT NULL DEFAULT 0` from migration 029 — see the matching
-    // fix in `src/portal/anthropic-hook.ts` for the full story.
+    // fix in `src/services/anthropic-hook.ts` for the full story.
     // Per-user cost enforcement (cost-guardrail.isUserOverDailyCap)
     // was effectively disabled until both INSERT statements were
     // updated.

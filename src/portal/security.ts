@@ -142,6 +142,29 @@ export function isPortalAdminExposureBetaSafe(mode: PortalAdminExposureMode): bo
 // production emit a fatal-level log but do not throw, preserving the
 // existing permissive-by-default behavior for single-owner deployments
 // that predate the beta hardening flag.
+/**
+ * Mirror the production "admin surface not beta-hardened" warning into the
+ * durable operator alert queue so it is visible in the portal (Alerts tab)
+ * instead of only in the boot log. Best-effort: the alert store may not be
+ * reachable this early in boot, and a failure must never block startup.
+ */
+function recordPortalExposureAlert(mode: PortalAdminExposureMode): void {
+  try {
+    const { recordOperatorAlert } = require('../services/operator-alerts') as typeof import('../services/operator-alerts');
+    recordOperatorAlert({
+      severity: 'critical',
+      source: 'portal_readiness',
+      dedupeKey: `portal:admin_exposure:${mode}`,
+      title: 'Portal admin surface is not beta-hardened',
+      detail: `Admin exposure mode is '${mode}'. Configure PORTAL_SESSION_SECRET + PORTAL_REQUIRE_SESSION_AUTH (or PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET) and set PORTAL_BETA_HARDENED=true.`,
+      suspectedArea: 'portal',
+      runbookUrl: 'docs/OBSERVABILITY-ONCALL.md',
+    });
+  } catch (err) {
+    logger.debug?.({ err }, 'Portal exposure alert could not be recorded at boot (non-fatal)');
+  }
+}
+
 export function validatePortalAdminBetaReadiness(
   portalConfig: PortalAdminExposureConfig,
   options: { nodeEnv?: string } = {},
@@ -185,6 +208,7 @@ export function validatePortalAdminBetaReadiness(
       },
       'Portal admin surface is exposed without signed sessions or actor signatures. Beta rollouts should set PORTAL_BETA_HARDENED=true after configuring PORTAL_SESSION_SECRET + PORTAL_REQUIRE_SESSION_AUTH.',
     );
+    recordPortalExposureAlert(mode);
   } else {
     logger.info({ adminExposureMode: mode }, 'Portal admin exposure mode');
   }

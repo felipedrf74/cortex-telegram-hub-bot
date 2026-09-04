@@ -6,11 +6,8 @@ import { extractClientIp } from '../api/rate-limiter';
 import { logger } from '../utils/logger';
 import { getErrorTrends } from '../services/error-monitor';
 import { getErrorDistribution } from '../services/error-categorizer';
-import { getSpendByProvider } from '../services/cost-guardrail';
 import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-fastpath';
 import { getQualityByAgent } from '../services/quality-scorer';
-import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
-import { getTrainingGenerationObservabilitySnapshot } from '../services/training-generation-observability';
 import {
   getTrainingCoachV2SoakSnapshot,
   recordTrainingCoachV2RuleReview,
@@ -109,16 +106,6 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
-  app.get('/api/spend-by-provider', (req: Request, res: Response) => {
-    try {
-      const userId = parsePositiveInteger(req.query.userId);
-      const tenantId = parsePositiveInteger(req.query.tenantId);
-      res.json(getSpendByProvider(undefined, { userId, tenantId }));
-    } catch {
-      res.json({ anthropic: 0, openai: 0, gemini: 0 });
-    }
-  });
-
   app.get('/api/secretary-metrics', (_req: Request, res: Response) => {
     try {
       const metrics = getFastpathMetrics();
@@ -156,35 +143,6 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
       res.json({ ok: true, byAgent });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
-    }
-  });
-
-  app.get('/api/task-metrics', (_req: Request, res: Response) => {
-    try {
-      const summary = getTaskExecutionSummary(7);
-      const recent = getRecentExecutions(20);
-      res.json({ ok: true, summary, recent });
-    } catch (err) {
-      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
-    }
-  });
-
-  app.get('/api/training-generation-metrics', (_req: Request, res: Response) => {
-    try {
-      res.json({
-        ok: true,
-        training: getTrainingGenerationObservabilitySnapshot(),
-      });
-    } catch (err) {
-      logger.error({ err }, 'Portal: training generation metrics failed');
-      res.json({
-        ok: false,
-        message: 'Training generation metrics unavailable',
-        training: {
-          counters: {},
-          progression_state_counts: {},
-        },
-      });
     }
   });
 

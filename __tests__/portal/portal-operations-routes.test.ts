@@ -189,11 +189,8 @@ describe('portal operations routes', () => {
       'GET /api/errors',
       'GET /api/error-distribution',
       'GET /api/provider-health',
-      'GET /api/spend-by-provider',
       'GET /api/secretary-metrics',
       'GET /api/quality-scores',
-      'GET /api/task-metrics',
-      'GET /api/training-generation-metrics',
       'GET /api/training-coach-v2-soak',
       'POST /api/training-coach-v2-soak/reviews',
       'GET /api/content-workspace-metrics',
@@ -317,28 +314,6 @@ describe('portal operations routes', () => {
     expect(invoke('/api/provider-health').body).toEqual({ providers: {} });
   });
 
-  it('preserves spend fallback behavior when the cost store fails', () => {
-    mockGetSpendByProvider.mockImplementationOnce(() => {
-      throw new Error('db unavailable');
-    });
-
-    const res = invoke('/api/spend-by-provider');
-
-    expect(res.body).toEqual({ anthropic: 0, openai: 0, gemini: 0 });
-    expect(mockSendPortalInternalError).not.toHaveBeenCalled();
-  });
-
-  it('passes optional user and tenant scope into spend-by-provider reads', () => {
-    mockGetSpendByProvider.mockReturnValue({ anthropic: 0.1, openai: 0, gemini: 0 });
-
-    const res = invoke('/api/spend-by-provider', {
-      req: { query: { userId: '42', tenantId: '42' } },
-    });
-
-    expect(res.body).toEqual({ anthropic: 0.1, openai: 0, gemini: 0 });
-    expect(mockGetSpendByProvider).toHaveBeenCalledWith(undefined, { userId: 42, tenantId: 42 });
-  });
-
   it('returns secretary fastpath metrics and preserves the degraded fallback', () => {
     mockGetFastpathMetrics.mockReturnValueOnce({
       totalAttempts: 10,
@@ -380,59 +355,11 @@ describe('portal operations routes', () => {
     expect(mockLoggerError).toHaveBeenCalledWith(expect.objectContaining({ err: expect.any(Error) }), 'Portal: secretary metrics failed');
   });
 
-  it('returns quality and task metric snapshots', () => {
+  it('returns quality score snapshots', () => {
     mockGetQualityByAgent.mockReturnValue([{ agent: 'secretary', avgScore: 0.91 }]);
     expect(invoke('/api/quality-scores').body).toEqual({
       ok: true,
       byAgent: [{ agent: 'secretary', avgScore: 0.91 }],
-    });
-
-    mockGetTaskExecutionSummary.mockReturnValue({ totalTasks: 3 });
-    mockGetRecentExecutions.mockReturnValue([{ id: 1, taskTitle: 'Review' }]);
-
-    expect(invoke('/api/task-metrics').body).toEqual({
-      ok: true,
-      summary: { totalTasks: 3 },
-      recent: [{ id: 1, taskTitle: 'Review' }],
-    });
-
-    mockGetTrainingGenerationObservabilitySnapshot.mockReturnValue({
-      counters: {
-        equipment_default_conservative_total: 1,
-        unavailable_equipment_blocked_total: 0,
-        selector_no_candidate_total: 2,
-        final_validation_failure_total: 0,
-        tenant_scope_missing_blocked_total: 0,
-        calendar_capacity_reflow_total: 1,
-        safety_guardrail_triggered_total: 0,
-      },
-      progression_state_counts: {
-        build: 3,
-        hold: 1,
-        deload: 0,
-        reentry: 0,
-      },
-    });
-
-    expect(invoke('/api/training-generation-metrics').body).toEqual({
-      ok: true,
-      training: {
-        counters: {
-          equipment_default_conservative_total: 1,
-          unavailable_equipment_blocked_total: 0,
-          selector_no_candidate_total: 2,
-          final_validation_failure_total: 0,
-          tenant_scope_missing_blocked_total: 0,
-          calendar_capacity_reflow_total: 1,
-          safety_guardrail_triggered_total: 0,
-        },
-        progression_state_counts: {
-          build: 3,
-          hold: 1,
-          deload: 0,
-          reentry: 0,
-        },
-      },
     });
   });
 

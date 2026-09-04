@@ -81,7 +81,7 @@ vi.mock('../../src/services/entitlement', () => ({
   isPaidAiCostControlsEnforcementEnabled,
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate,
 }));
 

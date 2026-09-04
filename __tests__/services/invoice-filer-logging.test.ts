@@ -37,7 +37,7 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: (...args: unknown[]) => mocks.trackedCreate(...args),
 }));
 

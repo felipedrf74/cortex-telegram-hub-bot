@@ -68,7 +68,7 @@ vi.mock('../../src/services/ollama-provider', () => ({
   completeLocalReasoningOneShot,
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 

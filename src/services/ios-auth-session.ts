@@ -263,3 +263,45 @@ export function grantBetaSandboxAccess(userId: number, expiresAt?: string | Date
       updated_at = datetime('now')
   `).run(userId, periodStart, periodEnd);
 }
+
+// ── Session revocation (shared by /auth/logout* and the portal) ─────────
+
+export interface DeviceSessionRevocation {
+  devicesRevoked: number;
+  notificationTokensRevoked: number;
+}
+
+/** Sign out one device: drop its refresh token row and revoke its push tokens. */
+export function revokeDeviceSession(userId: number, deviceId: string): DeviceSessionRevocation {
+  const db = getDb();
+  const devices = db.prepare('DELETE FROM ios_devices WHERE user_id = ? AND device_id = ?').run(userId, deviceId);
+  let tokens = 0;
+  try {
+    tokens = Number(db.prepare(`
+      UPDATE notification_device_tokens
+      SET revoked_at = datetime('now')
+      WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+    `).run(userId, deviceId).changes);
+  } catch {
+    tokens = 0;
+  }
+  return { devicesRevoked: Number(devices.changes), notificationTokensRevoked: tokens };
+}
+
+/** Sign out every device for the user. */
+export function revokeAllDeviceSessions(userId: number): DeviceSessionRevocation {
+  const db = getDb();
+  const devices = db.prepare('DELETE FROM ios_devices WHERE user_id = ?').run(userId);
+  let tokens = 0;
+  try {
+    tokens = Number(db.prepare(`
+      UPDATE notification_device_tokens
+      SET revoked_at = datetime('now')
+      WHERE user_id = ? AND revoked_at IS NULL
+    `).run(userId).changes);
+  } catch {
+    tokens = 0;
+  }
+  return { devicesRevoked: Number(devices.changes), notificationTokensRevoked: tokens };
+}
+

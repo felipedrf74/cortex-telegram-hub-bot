@@ -6,7 +6,7 @@ import path from 'path';
 import sharp from 'sharp';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeVisionOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { centsToNumber, parseUserAmount } from './money';

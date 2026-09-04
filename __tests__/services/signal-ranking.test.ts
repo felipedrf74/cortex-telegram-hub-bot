@@ -479,22 +479,12 @@ describe('signal-ranking: structural', () => {
     expect(typeof agent.getPipelineOperationalMetrics).toBe('function');
   });
 
-  it('portal has /api/pipeline/metrics endpoint', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/intelligence-routes.ts'),
-      'utf8',
-    );
-    expect(source).toContain("'/api/pipeline/metrics'");
-    expect(source).toContain('getPipelineOperationalMetrics');
-  });
-
-  it('portal has /api/signals/ranked endpoint', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/intelligence-routes.ts'),
-      'utf8',
-    );
-    expect(source).toContain("'/api/signals/ranked'");
-    expect(source).toContain('readRankedSignals');
+  it('legacy portal intelligence routes were retired (ranked signals stay available via intelligence-bus)', () => {
+    // `/api/signals/ranked` and `/api/pipeline/metrics` had no SPA consumer;
+    // the content dashboard reads `/api/v1/admin/content-dashboard` instead.
+    expect(fs.existsSync(path.resolve(__dirname, '../../src/portal/intelligence-routes.ts'))).toBe(false);
+    const serverSource = fs.readFileSync(path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8');
+    expect(serverSource).not.toContain('registerPortalIntelligenceRoutes');
   });
 
   it('migration 060 adds ranking columns', () => {

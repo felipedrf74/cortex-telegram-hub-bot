@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { config } from '../config';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { logger } from '../utils/logger';
 import {
   enqueueJob,

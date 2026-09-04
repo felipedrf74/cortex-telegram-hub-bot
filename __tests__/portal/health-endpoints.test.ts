@@ -144,6 +144,19 @@ vi.mock('../../src/services/training-route-deprecation-telemetry', () => ({
   })),
 }));
 
+vi.mock('../../src/services/release-info', () => ({
+  getReleaseInfo: vi.fn(() => ({
+    version: '4.14.999',
+    gitSha: 'abcdef0123456789abcdef0123456789abcdef01',
+    gitShortSha: 'abcdef01',
+    branch: 'main',
+    stampPresent: true,
+    migrations: { applied: 3, available: 3, latestApplied: '003.sql', pending: [], unknownApplied: [] },
+    adminExposureMode: 'signed_static',
+    integrations: { sentry: true, operatorAlertWebhook: true, iosApi: true, anthropic: false, ollama: false },
+  })),
+}));
+
 vi.mock('../../src/services/cache-store', () => ({
   initCacheStore: vi.fn(),
   clearExpired: vi.fn(),
@@ -413,6 +426,10 @@ describe('GET /health', () => {
     expect(serialized).not.toContain('test:token');
     expect(serialized).not.toContain('test-health-secret');
     expect(serialized).not.toMatch(/"(?:password|secret|token|botToken)"\s*:/i);
+    // Release identity (build stamp) is surfaced so monitors can pin a deploy.
+    expect(body.version).toBe('4.14.999');
+    expect(body.gitShortSha).toBe('abcdef01');
+    expect(body).not.toHaveProperty('release');
   });
 
   it('returns 200 and keeps server healthy when bot is not polling', async () => {
@@ -560,6 +577,14 @@ describe('GET /health/detailed', () => {
     expect(body.integrations[0]).toHaveProperty('name');
     expect(body.integrations[0]).toHaveProperty('configured');
     expect(body.integrations[0]).toHaveProperty('tokenHealth');
+
+    // Release identity + migration state
+    expect(body.release).toMatchObject({
+      version: '4.14.999',
+      gitShortSha: 'abcdef01',
+      adminExposureMode: 'signed_static',
+      migrations: { applied: 3, pending: [] },
+    });
 
     // Error counts
     expect(body.errors).toBeDefined();

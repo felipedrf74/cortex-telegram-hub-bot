@@ -14,6 +14,7 @@ process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key-not-real';
 process.env.DATABASE_PATH = ':memory:';
 process.env.TIMEZONE = 'Europe/Lisbon';
 process.env.LOG_LEVEL = 'silent';  // Suppress logs during tests
+process.env.LOG_STORE_ENABLED = 'false';  // Portal runtime log capture stays off in unit tests
 process.env.PORTAL_ENABLED = 'false';
 process.env.INVOICE_FILING_ENABLED = 'false';
 process.env.GARMIN_COACH_ENABLED = 'false';

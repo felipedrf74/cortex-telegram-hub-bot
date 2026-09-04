@@ -2,6 +2,7 @@
 
 import pino from 'pino';
 import { getCurrentContext } from './request-context';
+import { createLogCaptureStream, isLogStoreEnabled } from './log-store';
 
 export const LOGGER_REDACTION_PATHS = [
   'authorization',
@@ -193,16 +194,27 @@ const PINO_REDACTION_PATHS = [...LOGGER_REDACTION_PATHS];
  * AsyncLocalStorage. The mixin reads from storage on each call, so it
  * "just works" without touching any caller.
  */
+// Stdout stays byte-identical to the previous single-stream setup (PM2 tails
+// it). The second stream feeds the portal runtime log store; it only sees
+// lines that already passed the redaction paths above.
+const pinoHasStreams = typeof (pino as { multistream?: unknown }).multistream === 'function'
+  && typeof (pino as { destination?: unknown }).destination === 'function';
+
+function buildLogDestination(): pino.DestinationStream | undefined {
+  if (!pinoHasStreams) return undefined;
+  const logStreams: pino.StreamEntry[] = [{ level: 'trace', stream: pino.destination(1) }];
+  if (isLogStoreEnabled()) {
+    logStreams.push({ level: 'trace', stream: createLogCaptureStream() });
+  }
+  return pino.multistream(logStreams);
+}
+
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   redact: {
     paths: PINO_REDACTION_PATHS,
     censor: '[Redacted]',
   },
-  transport:
-    process.env.NODE_ENV !== 'production'
-      ? { target: 'pino/file', options: { destination: 1 } }
-      : undefined,
   mixin() {
     const ctx = getCurrentContext();
     if (!ctx) return {};
@@ -212,4 +224,4 @@ export const logger = pino({
       ...(ctx.userId ? { userId: ctx.userId } : {}),
     };
   },
-});
+}, buildLogDestination());

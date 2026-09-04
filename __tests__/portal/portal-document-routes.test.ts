@@ -82,14 +82,13 @@ describe('portal document routes', () => {
     vi.mocked(getNotificationProfileSummariesForPortal).mockReturnValue([]);
   });
 
-  it('registers notification and report document routes', () => {
+  it('registers notification document routes', () => {
     const { app } = makeApp();
 
     registerPortalDocumentRoutes(app);
 
     expect(app.get).toHaveBeenCalledWith('/api/notifications', expect.any(Function), expect.any(Function));
     expect(app.get).toHaveBeenCalledWith('/api/notification-preferences', expect.any(Function), expect.any(Function));
-    expect(app.get).toHaveBeenCalledWith('/api/reports', expect.any(Function));
   });
 
   it('maps content notifications and Decision Center items into the portal-safe admin payload', () => {
@@ -283,52 +282,15 @@ describe('portal document routes', () => {
     expect(getNotificationProfileSummariesForPortal).not.toHaveBeenCalled();
   });
 
-  it('maps durable reports into the portal-safe admin payload', () => {
-    const { app, routes } = makeApp();
-    registerPortalDocumentRoutes(app);
-    vi.mocked(getAllReports).mockReturnValue([
-      {
-        id: 9,
-        userId: 42,
-        type: 'coach_briefing',
-        title: 'Coach report',
-        summary: 'Ready',
-        status: 'unread',
-        sourceJob: 'garmin_coach',
-        createdAt: '2026-04-22T11:00:00Z',
-        documentJson: { hidden: true },
-      },
-    ] as any);
-    const res = makeResponse();
-
-    routes['GET /api/reports']({ query: {} }, res);
-
-    expect(getAllReports).toHaveBeenCalledWith(50);
-    expect(res.json).toHaveBeenCalledWith({
-      ok: true,
-      count: 1,
-      reports: [{
-        id: 9,
-        userId: 42,
-        type: 'coach_briefing',
-        title: 'Coach report',
-        summary: 'Ready',
-        status: 'unread',
-        sourceJob: 'garmin_coach',
-        createdAt: '2026-04-22T11:00:00Z',
-      }],
-    });
-  });
-
   it('uses shared safe portal errors when the backing stores fail', () => {
     const { app, routes } = makeApp();
     registerPortalDocumentRoutes(app);
-    vi.mocked(getAllReports).mockImplementation(() => {
+    vi.mocked(getAllNotifications).mockImplementation(() => {
       throw new Error('raw store failure');
     });
     const res = makeResponse();
 
-    routes['GET /api/reports']({ query: {} }, res);
+    routes['GET /api/notifications']({ headers: adminScopeHeaders, query: {} }, res);
 
     expect(sendPortalInternalError).toHaveBeenCalledWith(
       res,

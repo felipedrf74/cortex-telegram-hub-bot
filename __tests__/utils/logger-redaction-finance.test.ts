@@ -29,7 +29,7 @@ describe('logger finance redaction paths', () => {
     const source = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
     const gemini = source('src/services/gemini-provider.ts');
     const openai = source('src/services/openai-provider.ts');
-    const anthropic = source('src/portal/anthropic-hook.ts');
+    const anthropic = source('src/services/anthropic-hook.ts');
 
     expect(gemini).toContain("summary: 'Gemini API call metered'");
     expect(openai).toContain('OpenAI API call metered');

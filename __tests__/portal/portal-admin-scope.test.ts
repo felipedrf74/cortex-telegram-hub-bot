@@ -5,9 +5,7 @@ import path from 'path';
 const serverPath = path.resolve(__dirname, '../../src/portal/server.ts');
 const adminDataRoutesPath = path.resolve(__dirname, '../../src/portal/admin-data-routes.ts');
 const skillRoutesPath = path.resolve(__dirname, '../../src/portal/skill-routes.ts');
-const contentRoutesPath = path.resolve(__dirname, '../../src/portal/content-routes.ts');
 const founderRoutesPath = path.resolve(__dirname, '../../src/portal/founder-routes.ts');
-const intelligenceRoutesPath = path.resolve(__dirname, '../../src/portal/intelligence-routes.ts');
 const inviteRoutesPath = path.resolve(__dirname, '../../src/portal/invite-routes.ts');
 const planRoutesPath = path.resolve(__dirname, '../../src/portal/plan-routes.ts');
 const providerRoutesPath = path.resolve(__dirname, '../../src/portal/provider-routes.ts');
@@ -26,9 +24,7 @@ const portalRouteSource = [
   fs.readFileSync(settingsRoutesPath, 'utf8'),
   fs.readFileSync(userSkillRoutesPath, 'utf8'),
   fs.readFileSync(skillRoutesPath, 'utf8'),
-  fs.readFileSync(contentRoutesPath, 'utf8'),
   fs.readFileSync(founderRoutesPath, 'utf8'),
-  fs.readFileSync(intelligenceRoutesPath, 'utf8'),
   fs.readFileSync(inviteRoutesPath, 'utf8'),
   fs.readFileSync(planRoutesPath, 'utf8'),
   fs.readFileSync(providerRoutesPath, 'utf8'),
@@ -69,6 +65,7 @@ describe('portal admin scope hardening', () => {
 
   it('protects sensitive audit and user data-summary reads with the admin token middleware', () => {
     expect(portalRouteSource).toContain("app.get('/api/audit-trail', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.get('/api/users', authorizationRateLimitMiddleware, requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.get('/api/users/:userId/data-summary', requirePortalAdminToken");
   });
 
@@ -77,12 +74,7 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("app.post('/api/domain-routing/toggle', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.put('/api/model-config', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.delete('/api/model-config', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/channels', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.delete('/api/channels/:id', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/action/:name', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/signals/:id/dismiss', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/books', requirePortalAdminToken");
-    expect(portalRouteSource).toContain("app.post('/api/override/sprint', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/enable', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/disable', requirePortalAdminToken");
     expect(portalRouteSource).toContain("app.post('/api/skills/:name/subskills/:sub/enable', requirePortalAdminToken");
@@ -134,11 +126,11 @@ describe('portal admin scope hardening', () => {
 
   it('mounts the shared portal API limiter before expensive portal route families', () => {
     const portalRateLimitIndex = serverSource.indexOf('return rateLimitMiddleware(req, res, next);');
-    const intelligenceRoutesIndex = serverSource.indexOf('registerPortalIntelligenceRoutes(app);');
+    const providerRoutesIndex = serverSource.indexOf('registerPortalProviderRoutes(app);');
     const operationsRoutesIndex = serverSource.indexOf('registerPortalOperationsRoutes(app);');
 
     expect(portalRateLimitIndex).toBeGreaterThan(0);
-    expect(intelligenceRoutesIndex).toBeGreaterThan(portalRateLimitIndex);
+    expect(providerRoutesIndex).toBeGreaterThan(portalRateLimitIndex);
     expect(operationsRoutesIndex).toBeGreaterThan(portalRateLimitIndex);
   });
 

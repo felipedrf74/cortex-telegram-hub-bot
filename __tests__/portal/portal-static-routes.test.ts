@@ -83,6 +83,7 @@ describe('portal static routes', () => {
     // no-store headers.
     expect(Array.from(routes.keys())).toEqual([
       '/assets/nexus-mark.png',
+      '/portal/ui/:file',
       '/landing-preview',
       '/auth/forgot-password',
       '/auth/password-reset',
@@ -188,7 +189,7 @@ describe('portal static routes', () => {
 
     expect(html).toContain('AI Plan Budgets');
     expect(html).toContain('Effective plan: ');
-    expect(html).toContain('Legacy tier');
+    expect(html).toContain('>Tier <span class="sort-arrow">');
     expect(html).toContain("apiFetch('/api/users/' + user.id + '/ai-budget')");
     expect(html).toContain('id="slideout-ai-daily"');
     expect(html).toContain('id="slideout-ai-monthly"');

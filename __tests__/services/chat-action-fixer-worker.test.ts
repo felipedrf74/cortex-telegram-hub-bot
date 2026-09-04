@@ -25,7 +25,7 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   withAiBudgetReservation: (...args: unknown[]) => aiMocks.withAiBudgetReservation(...args),
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: (...args: unknown[]) => aiMocks.trackedCreate(...args),
 }));
 

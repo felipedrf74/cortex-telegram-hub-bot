@@ -362,7 +362,7 @@ const CONTENT_LIVE_EVAL_CONTRACT_FILE_GROUPS: Readonly<Record<keyof ContentLiveE
     'src/services/domain-provider-router.ts',
     'src/services/openai-provider.ts',
     'src/services/gemini-provider.ts',
-    'src/portal/anthropic-hook.ts',
+    'src/services/anthropic-hook.ts',
     'src/services/internal-attribution.ts',
   ],
   pricing: [

@@ -24,7 +24,7 @@ import path from 'path';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { withAiBudgetReservation } from './cost-guardrail';
 import { pushEvent } from '../portal/telemetry';

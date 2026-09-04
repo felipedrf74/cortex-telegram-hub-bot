@@ -261,7 +261,7 @@ describe('portal user routes', () => {
 
     registerPortalUserRoutes(app as any);
 
-    expect(app.get).toHaveBeenCalledWith('/api/users', expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/users', expect.any(Function), hoisted.requirePortalAdminToken, expect.any(Function));
     expect(app.get).toHaveBeenCalledWith('/api/users/:userId/ai-budget', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.post).toHaveBeenCalledWith('/api/users/:userId/suspend', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', expect.any(Function), hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));

@@ -119,6 +119,24 @@ function requestedSubset(governedFiles) {
   return [...new Set(requestedFiles)].sort();
 }
 
+/** Prints failed suites and unhandled errors from the merged JSON report (best effort). */
+function reportMergedResultsSummary(reportPath) {
+  if (!reportPath) return;
+  try {
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    process.stderr.write(`Merged Vitest report: success=${report.success} suites=${report.numTotalTestSuites} failedSuites=${report.numFailedTestSuites} tests=${report.numTotalTests} failedTests=${report.numFailedTests}\n`);
+    const failed = (report.testResults ?? []).filter((suite) => suite.status !== 'passed');
+    for (const suite of failed.slice(0, 20)) {
+      const firstFailure = (suite.assertionResults ?? []).find((assertion) => assertion.status === 'failed');
+      const detail = firstFailure ? ` — ${firstFailure.fullName}: ${String(firstFailure.failureMessages?.[0] ?? '').split('\n')[0].slice(0, 300)}` : suite.message ? ` — ${String(suite.message).split('\n')[0].slice(0, 300)}` : '';
+      process.stderr.write(`  ${suite.status}: ${path.relative(root, suite.name)}${detail}\n`);
+    }
+    if (failed.length > 20) process.stderr.write(`  … ${failed.length - 20} more non-passing suites\n`);
+  } catch (error) {
+    process.stderr.write(`Merged Vitest report unavailable at ${reportPath}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+}
+
 function reporterArgs() {
   const resolved = [`--reporter=${reporter}`];
   if (jsonOutputPath) {
@@ -274,6 +292,10 @@ async function runVitest(files, extra = [], envOverrides = {}, { maxSeconds = nu
           && mergeStatus === 0
           ? 0
           : 1;
+        // The merged reporter output is not always captured by hosted CI logs,
+        // so summarize the merge outcome from the parent process as well.
+        process.stderr.write(`Coverage merge exit status=${merge.status ?? 'null'} signal=${merge.signal ?? 'none'} shards=[${shardStatuses.join(',')}]\n`);
+        if (status !== 0) reportMergedResultsSummary(jsonOutputPath);
       }
     } finally {
       fs.rmSync(shardDirectory, { recursive: true, force: true });

@@ -8,26 +8,26 @@
  * see the identical Anthropic.Message return type.
  */
 import Anthropic from '@anthropic-ai/sdk';
-import { getDb } from '../services/database';
-import { pushEvent } from './telemetry';
+import { getDb } from './database';
+import { pushEvent } from '../portal/telemetry';
 import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
-import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from '../services/runtime-flags';
+import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from './runtime-flags';
 import {
   computeModelUsageCostUsd,
   computeProviderCallCostUpperBoundUsd,
   getProviderToolFeeUsd,
   recordUnresolvedModelPricingAlert,
   type ModelCostResult,
-} from '../services/model-pricing';
-import { settleNexusPointOverageForUser } from '../services/nexus-points';
+} from './model-pricing';
+import { settleNexusPointOverageForUser } from './nexus-points';
 import {
   insertApiUsageFallback,
   recordApiUsageTimeoutEstimate,
   tripApiUsagePersistenceFailure,
-} from '../services/api-usage-fallback';
-import { resolveApiUsageAttribution } from '../services/api-usage-attribution';
-import { assertAiBudgetReservationForProvider } from '../services/cost-guardrail';
+} from './api-usage-fallback';
+import { resolveApiUsageAttribution } from './api-usage-attribution';
+import { assertAiBudgetReservationForProvider } from './cost-guardrail';
 
 // ─── Per-million-token pricing (update when Anthropic changes rates) ─
 
@@ -362,7 +362,7 @@ export async function trackedCreate(
 
   // Record per-user usage metering (non-critical — swallow errors)
   try {
-    const { recordUsage } = require('../services/usage-metering');
+    const { recordUsage } = require('./usage-metering');
     recordUsage(
       options?.userId ?? 0,
       usage.input_tokens,

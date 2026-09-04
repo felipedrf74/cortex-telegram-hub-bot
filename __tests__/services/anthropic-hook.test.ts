@@ -4,7 +4,7 @@
  * Anthropic kill-switch tests (April 9 2026).
  *
  * These tests lock in the behavior of the ANTHROPIC_ENABLED env var
- * gate in `src/portal/anthropic-hook.ts`. The gate is the single
+ * gate in `src/services/anthropic-hook.ts`. The gate is the single
  * chokepoint that guarantees zero Claude expenses — if a future
  * refactor accidentally removes or bypasses it, these tests fail
  * loudly.
@@ -62,7 +62,7 @@ vi.mock('../../src/portal/telemetry', () => ({
 }));
 
 // Import AFTER mocks are declared so the module picks them up.
-import { trackedCreate } from '../../src/portal/anthropic-hook';
+import { trackedCreate } from '../../src/services/anthropic-hook';
 
 const dummyParams = {
   model: 'claude-haiku-4-5-20251001',

@@ -56,7 +56,7 @@ vi.mock('../../src/services/cost-guardrail', () => ({
   withAiBudgetReservation: vi.fn(async (_request: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 

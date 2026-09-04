@@ -100,7 +100,7 @@
   --sidebar-width: 240px;
   --topbar-height: 56px;
 
-  /* Compatibility shims for legacy code that referenced the old vars */
+  /* Alias tokens kept for older render code */
   --bg: var(--bg-primary);
   --bg2: var(--bg-tertiary);
   --surface: var(--bg-secondary);
@@ -846,17 +846,17 @@ select {
 .data-table .text-muted { color: var(--text-secondary); }
 .data-table .num { font-family: var(--font-mono); }
 
-table.legacy {
+table.dense {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
-table.legacy th, table.legacy td {
+table.dense th, table.dense td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
-table.legacy th {
+table.dense th {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1384,6 +1384,32 @@ table.legacy th {
       </a>
     </nav>
 
+    <div class="nav-section-label" style="margin-top: var(--space-5)">Support</div>
+    <nav class="nav">
+      <a class="nav-item" data-nav="support">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span>
+        <span class="nav-label">Tickets</span>
+        <span class="nav-badge mono" id="nav-support-count"></span>
+      </a>
+    </nav>
+
+    <div class="nav-section-label" style="margin-top: var(--space-5)">Observe</div>
+    <nav class="nav">
+      <a class="nav-item" data-nav="logs">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h14"/></svg></span>
+        <span class="nav-label">Logs</span>
+      </a>
+      <a class="nav-item" data-nav="requests">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M12 4l8 8-8 8"/></svg></span>
+        <span class="nav-label">Requests</span>
+      </a>
+      <a class="nav-item" data-nav="issues">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg></span>
+        <span class="nav-label">Issues</span>
+        <span class="nav-badge mono" id="nav-issues-count"></span>
+      </a>
+    </nav>
+
     <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
     <nav class="nav">
       <a class="nav-item" data-nav="settings">
@@ -1426,6 +1452,35 @@ table.legacy th {
           <h1 class="section-title">Dashboard</h1>
           <div class="section-subtitle">System health, usage, and recent activity</div>
         </div>
+      </div>
+
+      <div class="card" id="release-card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">🚀 Release &amp; Environment</div>
+          <span class="card-subtitle" id="release-subtitle">Loading…</span>
+        </div>
+        <div class="grid grid-cols-4" id="release-grid" style="padding: var(--space-3) var(--space-4);">
+          <div>
+            <div class="kpi-label">Version</div>
+            <div class="mono" id="release-version">—</div>
+          </div>
+          <div>
+            <div class="kpi-label">Commit</div>
+            <div class="mono" id="release-commit">—</div>
+            <div class="text-muted" style="font-size:11px" id="release-branch"></div>
+          </div>
+          <div>
+            <div class="kpi-label">Deployed</div>
+            <div id="release-deployed">—</div>
+            <div class="text-muted" style="font-size:11px" id="release-booted"></div>
+          </div>
+          <div>
+            <div class="kpi-label">Migrations</div>
+            <div id="release-migrations">—</div>
+            <div class="text-muted" style="font-size:11px" id="release-migrations-sub"></div>
+          </div>
+        </div>
+        <div id="release-flags" style="display:flex;flex-wrap:wrap;gap:var(--space-2);padding:0 var(--space-4) var(--space-3)"></div>
       </div>
 
       <div class="grid grid-cols-4">
@@ -1492,6 +1547,12 @@ table.legacy th {
         </div>
       </div>
     </section>
+
+    <!-- ════════════════════ OBSERVE (ES modules in /portal/ui) ════════════════════ -->
+    <section class="section" data-section="logs"><div class="empty">Loading module…</div></section>
+    <section class="section" data-section="requests"><div class="empty">Loading module…</div></section>
+    <section class="section" data-section="issues"><div class="empty">Loading module…</div></section>
+    <section class="section" data-section="support"><div class="empty">Loading module…</div></section>
 
     <!-- ════════════════════ ALERTS ════════════════════ -->
     <section class="section" data-section="alerts">
@@ -1564,7 +1625,7 @@ table.legacy th {
       <div class="section-header">
         <div>
           <h1 class="section-title">Users</h1>
-          <div class="section-subtitle">Manage user accounts, legacy tier telemetry, and canonical entitlement</div>
+          <div class="section-subtitle">Manage user accounts, tiers, limits, and entitlement</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-ghost btn-sm" id="users-refresh-btn">
@@ -1574,11 +1635,18 @@ table.legacy th {
         </div>
       </div>
 
+      <div class="grid grid-cols-4" id="users-funnel" style="margin-bottom:var(--space-4)">
+        <div class="kpi-card"><div class="kpi-label">Users</div><div class="kpi-value" id="funnel-total">—</div><div class="kpi-sub" id="funnel-status">—</div></div>
+        <div class="kpi-card"><div class="kpi-label">Active 7d / 30d</div><div class="kpi-value" id="funnel-active">—</div><div class="kpi-sub" id="funnel-signups">—</div></div>
+        <div class="kpi-card"><div class="kpi-label">With device / push</div><div class="kpi-value" id="funnel-device">—</div><div class="kpi-sub" id="funnel-oauth">—</div></div>
+        <div class="kpi-card"><div class="kpi-label">Onboarding</div><div class="kpi-value" id="funnel-onboarding">—</div><div class="kpi-sub" id="funnel-invites">—</div></div>
+      </div>
+
       <div class="card">
         <div class="table-toolbar">
           <input class="input" type="search" placeholder="Search by name, username, or ID…" id="users-search">
           <select class="input" id="users-filter-tier" style="max-width:140px">
-            <option value="">All legacy tiers</option>
+            <option value="">All tiers</option>
             <option value="owner">Owner</option>
             <option value="pro">Pro</option>
             <option value="free">Free</option>
@@ -1595,7 +1663,7 @@ table.legacy th {
             <thead>
               <tr>
                 <th class="sortable" data-sort="name">User <span class="sort-arrow">↕</span></th>
-                <th class="sortable" data-sort="tier">Legacy tier <span class="sort-arrow">↕</span></th>
+                <th class="sortable" data-sort="tier">Tier <span class="sort-arrow">↕</span></th>
                 <th class="sortable" data-sort="status">Status <span class="sort-arrow">↕</span></th>
                 <th class="sortable text-right" data-sort="limit">Message telemetry <span class="sort-arrow">↕</span></th>
                 <th class="sortable" data-sort="lastActive">Last active <span class="sort-arrow">↕</span></th>
@@ -1642,7 +1710,7 @@ table.legacy th {
           <div class="card-title">AI Plan Budgets</div>
           <span class="card-subtitle">Exact owner-only limits; customer apps receive percentages only</span>
         </div>
-        <table class="legacy" id="ai-plan-limits-table">
+        <table class="dense" id="ai-plan-limits-table">
           <thead>
             <tr>
               <th>Plan</th>
@@ -1710,7 +1778,7 @@ table.legacy th {
         </div>
 
         <!-- Routing table -->
-        <table class="legacy" id="domain-routing-table">
+        <table class="dense" id="domain-routing-table">
           <thead>
             <tr>
               <th>Domain</th>
@@ -1744,7 +1812,7 @@ table.legacy th {
       -->
       <div class="card mt-4">
         <div class="card-header">
-          <div class="card-title">⚡ Secretary Optimization (TASK-17)</div>
+          <div class="card-title">⚡ Secretary Optimization</div>
           <span class="card-subtitle" id="secretary-opt-summary">Loading…</span>
         </div>
 
@@ -1766,7 +1834,7 @@ table.legacy th {
           </div>
         </div>
 
-        <table class="legacy" id="secretary-opt-patterns">
+        <table class="dense" id="secretary-opt-patterns">
           <thead>
             <tr>
               <th>Pattern</th>
@@ -1813,7 +1881,7 @@ table.legacy th {
           <canvas id="cost-sparkline" width="180" height="32" style="opacity:0.9"></canvas>
         </div>
 
-        <table class="legacy" id="cost-by-domain-table">
+        <table class="dense" id="cost-by-domain-table">
           <thead>
             <tr>
               <th>Category</th>
@@ -1933,7 +2001,7 @@ table.legacy th {
         <div class="card-header">
           <div class="card-title">📊 Agent Quality Scores (30d)</div>
         </div>
-        <table class="legacy" id="quality-scores-table">
+        <table class="dense" id="quality-scores-table">
           <thead><tr><th>Agent</th><th class="text-right">Score</th><th class="text-right">Tasks</th><th class="text-right">Pass %</th></tr></thead>
           <tbody><tr><td colspan="4"><div class="empty">No quality data — run evals to populate</div></td></tr></tbody>
         </table>
@@ -1970,7 +2038,7 @@ table.legacy th {
         <div class="card-header">
           <div class="card-title">🚀 Next Scheduled Runs</div>
         </div>
-        <table class="legacy" id="next-runs-table">
+        <table class="dense" id="next-runs-table">
           <thead><tr><th>Job</th><th>Cron</th><th>Domain</th><th>Next run</th></tr></thead>
           <tbody><tr><td colspan="4"><div class="empty">Loading…</div></td></tr></tbody>
         </table>
@@ -2932,6 +3000,36 @@ table.legacy th {
     return res.json();
   }
 
+  // ────────── Bridge for ES-module sections (/portal/ui/*.js) ──────────
+  // Modules register {mount, onShow, onHide}; the router activates them.
+  window.NexusPortal = {
+    apiFetch, apiJson,
+    esc: (s) => esc(s),
+    shortDateTime: (iso) => shortDateTime(iso),
+    relativeTime: (iso) => relativeTime(iso),
+    navigateTo: (section) => navigateTo(section),
+    getToken: () => TOKEN,
+    sections: {},
+    registerSection(id, def) { this.sections[id] = Object.assign({ mounted: false }, def); },
+    activateSection(id) {
+      const s = this.sections[id];
+      if (!s) return;
+      if (!s.mounted) {
+        const container = document.querySelector('[data-section="' + id + '"]');
+        if (!container) return;
+        s.mount(container);
+        s.mounted = true;
+      }
+      if (s.onShow) s.onShow();
+    },
+    deactivateSections(except) {
+      Object.keys(this.sections).forEach((id) => {
+        const s = this.sections[id];
+        if (id !== except && s.mounted && s.onHide) s.onHide();
+      });
+    },
+  };
+
   function adminLoadErrorMessage(err) {
     const raw = err && err.message ? err.message : String(err || 'Request failed');
     if (raw === 'Unauthorized' || /token|session|unauthorized/i.test(raw)) {
@@ -3015,7 +3113,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'notifications', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'notifications', 'settings', 'invites', 'founders', 'waitlist', 'audit', 'logs', 'requests', 'issues', 'support'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -3043,6 +3141,9 @@ table.legacy th {
     if (section === 'content') loadContentDashboard();
     if (section === 'cooking') renderCookingPortal();
     if (section === 'notifications') loadNotificationPortal();
+    // Module-backed sections (src/portal/ui/*.js)
+    window.NexusPortal.deactivateSections(section);
+    window.NexusPortal.activateSection(section);
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -3195,7 +3296,7 @@ table.legacy th {
     // Topbar version + uptime + cost + bot status
     const ver = snap.version || '?';
     document.getElementById('app-version').textContent = 'v' + ver;
-    document.getElementById('footer-version').textContent = ver;
+    document.getElementById('footer-version').textContent = ver + (_releaseShortSha ? ' · ' + _releaseShortSha : '');
     document.getElementById('topbar-uptime').textContent = snap.uptime?.human || '—';
     document.getElementById('topbar-cost').textContent = fmtCost(snap.healthSummary?.apiCostToday);
 
@@ -3369,6 +3470,7 @@ table.legacy th {
       const resolveButton = a.status !== 'resolved'
         ? '<button class="btn btn-ghost btn-sm" onclick="resolveAlert(' + a.id + ')">Resolve</button>'
         : '';
+      const ticketButton = '<button class="btn btn-ghost btn-sm" onclick="ticketFromAlert(' + a.id + ')" title="Open a support ticket for this alert">Ticket</button>';
       return '<tr>' +
         '<td><div style="font-weight:600">' + esc(a.title) + '</div>' +
           '<div class="text-muted" style="font-size:11px;max-width:520px">' + esc(a.userImpact || a.detail || '—') + '</div>' +
@@ -3381,7 +3483,7 @@ table.legacy th {
           '</td>' +
         '<td>' + esc(a.owner || 'ops') + '</td>' +
         '<td class="text-muted">' + relativeTime(a.lastSeenAt || a.createdAt) + '<div class="mono text-tertiary" style="font-size:10px">' + fmtNum(a.occurrenceCount || 1) + 'x</div></td>' +
-        '<td><div class="flex gap-2" style="justify-content:flex-end">' + retryButton + ackButton + resolveButton + '</div></td>' +
+        '<td><div class="flex gap-2" style="justify-content:flex-end">' + retryButton + ackButton + resolveButton + ticketButton + '</div></td>' +
         '</tr>';
     }).join('');
   }
@@ -3421,6 +3523,17 @@ table.legacy th {
   window.ackAlert = function(id) {
     mutateAlert(id, 'ack', 'Alert acknowledged');
   };
+  window.ticketFromAlert = async function(id) {
+    try {
+      const r = await apiFetch('/api/operator-alerts/' + id + '/ticket', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (window.NexusPortal.refreshSupportBadge) window.NexusPortal.refreshSupportBadge();
+      navigateTo('support');
+      const support = window.NexusPortal.sections.support;
+      if (support && support.openTicket) support.openTicket(d.ticket.id);
+    } catch (_) { /* surfaced by apiFetch */ }
+  };
   window.resolveAlert = function(id) {
     mutateAlert(id, 'resolve', 'Alert resolved');
   };
@@ -3455,7 +3568,7 @@ table.legacy th {
 
   // Skills scope state. When _skillsScopeUserId is null we're in global
   // mode (the historical behavior) and toggles go to /api/skills/toggle.
-  // When it's a Telegram ID, we render the per-user override view and
+  // When it's a user id, we render the per-user override view and
   // toggles go to /api/users/:id/skills (which layers on top of the
   // global state). The scope is switched via the dropdown above the grid.
   let _skillsScopeUserId = null;
@@ -3692,6 +3805,28 @@ table.legacy th {
       allUsers = d.users || [];
       renderUsers();
     } catch { /* silent */ }
+    loadUserFunnel();
+  }
+
+  async function loadUserFunnel() {
+    try {
+      const r = await apiFetch('/api/users/funnel');
+      if (!r.ok) return;
+      const f = (await r.json()).funnel || {};
+      const status = f.usersByStatus || {};
+      document.getElementById('funnel-total').textContent = f.total ?? '—';
+      document.getElementById('funnel-status').textContent = Object.keys(status).map(k => k + ' ' + status[k]).join(' · ') || '—';
+      document.getElementById('funnel-active').textContent = (f.active7d ?? '—') + ' / ' + (f.active30d ?? '—');
+      const weeks = f.signupsByWeek || [];
+      document.getElementById('funnel-signups').textContent = weeks.length ? (weeks.slice(-4).reduce((a, w) => a + w.count, 0) + ' signups last 4 wk') : 'no recent signups';
+      document.getElementById('funnel-device').textContent = (f.withActiveDevice ?? '—') + ' / ' + (f.withActivePushToken ?? '—');
+      document.getElementById('funnel-oauth').textContent = (f.withAnyOauthProvider ?? 0) + ' with a connected provider';
+      const onboarding = f.onboarding || [];
+      const completed = onboarding.filter(o => o.status === 'completed').reduce((a, o) => a + o.count, 0);
+      const inProgress = onboarding.filter(o => o.status === 'in_progress').reduce((a, o) => a + o.count, 0);
+      document.getElementById('funnel-onboarding').textContent = completed + ' done · ' + inProgress + ' open';
+      document.getElementById('funnel-invites').textContent = (f.inviteCodesRedeemed ?? 0) + ' invite codes redeemed';
+    } catch { /* optional */ }
   }
 
   function renderUsers() {
@@ -3804,18 +3939,25 @@ table.legacy th {
     body.innerHTML = '<div class="empty">Loading…</div>';
 
     try {
-      const [skillsRes, summaryRes, pointsRes, budgetRes] = await Promise.all([
+      const [skillsRes, summaryRes, pointsRes, budgetRes, sessionsRes, lockoutRes, integrationsRes] = await Promise.all([
         apiFetch('/api/users/' + user.id + '/skills'),
         apiFetch('/api/users/' + user.id + '/data-summary'),
         apiFetch('/api/billing/nexus-points/packages').catch(() => null),
         apiFetch('/api/users/' + user.id + '/ai-budget').catch(() => null),
+        apiFetch('/api/users/' + user.id + '/sessions').catch(() => null),
+        apiFetch('/api/users/' + user.id + '/lockout').catch(() => null),
+        apiFetch('/api/users/' + user.id + '/integrations').catch(() => null),
       ]);
+      const sessions = sessionsRes && sessionsRes.ok ? await sessionsRes.json() : { devices: [], pushTokens: [] };
+      const lockout = lockoutRes && lockoutRes.ok ? await lockoutRes.json() : null;
+      const integrations = integrationsRes && integrationsRes.ok ? await integrationsRes.json() : null;
+      const lifecyclePanel = renderUserLifecyclePanel(user, sessions, lockout, integrations);
       const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
       const summary = summaryRes.ok ? await summaryRes.json() : {};
       const pointsData = pointsRes && pointsRes.ok ? await pointsRes.json() : { packages: [], stripeEnabled: false };
       const budgetData = budgetRes && budgetRes.ok ? await budgetRes.json() : null;
 
-      const tier = '<span class="tier-badge tier-' + (user.tier || 'free') + '" title="Legacy telemetry only">legacy:' + esc(user.tier || 'free') + '</span>';
+      const tier = '<span class="tier-badge tier-' + esc(user.tier || 'free') + '">' + esc(user.tier || 'free') + '</span>';
       const limit = user.daily_message_limit === 0 ? '∞' : (user.daily_message_limit || 0) + '/day';
 
       const skillIcons = { secretary: '📋', triathlon: '🏋️', content: '🎬', cooking: '🍳', finance: '💰' };
@@ -3932,11 +4074,71 @@ table.legacy th {
         '<div style="margin-bottom:var(--space-4)">' + dataRows + '</div>' +
         budgetPanel +
         pointsPanel +
+        lifecyclePanel +
         '<button class="btn btn-sm" onclick="openCookingManagerForUser(' + user.id + ')" style="width:100%">Open Cooking setup →</button>';
     } catch (err) {
       body.innerHTML = '<div class="empty">Failed to load user details</div>';
     }
   }
+
+  function renderUserLifecyclePanel(user, sessions, lockout, integrations) {
+    const devices = (sessions.devices || []).map(d =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">' +
+        '<div><div>' + esc(d.deviceName || 'Unnamed device') + '</div>' +
+        '<div class="text-muted mono" style="font-size:10px">' + esc(d.deviceId).slice(0, 18) + ' · active ' + (d.lastActiveAt ? relativeTime(d.lastActiveAt) : '—') + (d.hasRefreshToken ? '' : ' · no refresh token') + '</div></div>' +
+        '<button class="btn btn-ghost btn-sm" onclick="revokeUserSession(' + user.id + ',\'' + esc(d.deviceId) + '\')">Sign out</button></div>').join('') || '<div class="text-muted">No signed-in devices</div>';
+    const tokens = (sessions.pushTokens || []).filter(t => !t.revokedAt).map(t =>
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0">' +
+        '<span class="mono text-muted" style="font-size:11px">…' + esc(t.tokenSuffix) + ' · ' + esc(t.environment) + (t.appVersion ? ' · v' + esc(t.appVersion) : '') + ' · seen ' + relativeTime(t.lastSeenAt) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="revokeUserPushToken(' + user.id + ',\'' + esc(t.tokenId) + '\')">Revoke</button></div>').join('') || '<div class="text-muted">No active push tokens</div>';
+    const lockHtml = !lockout
+      ? '<span class="text-muted">unavailable</span>'
+      : lockout.state === 'locked'
+        ? '<span class="badge badge-error">locked until ' + esc(shortDateTime(lockout.lockedUntil)) + '</span> <span class="text-muted">' + lockout.attemptsInWindow + ' failed attempts</span> <button class="btn btn-ghost btn-sm" onclick="clearUserLockout(' + user.id + ')">Clear lockout</button>'
+        : '<span class="badge badge-success">unlocked</span> <span class="text-muted">' + (lockout.attemptsInWindow || 0) + ' failed attempts in window</span>' + (lockout.row ? ' <button class="btn btn-ghost btn-sm" onclick="clearUserLockout(' + user.id + ')">Reset counter</button>' : '');
+    const providers = integrations && integrations.summary ? (integrations.summary.providers || []) : [];
+    const connMap = {};
+    (integrations && integrations.connections || []).forEach(c => { connMap[c.provider] = c; });
+    const providersHtml = providers.length
+      ? providers.map(p => {
+          const tone = p.state === 'connected' ? 'success' : p.state === 'degraded' || p.state === 'pending' ? 'warning' : p.state === 'revoked' ? 'error' : 'neutral';
+          const c = connMap[p.provider];
+          return '<span class="badge badge-' + tone + '" title="' + esc(c && c.expiresAt ? 'expires ' + c.expiresAt : (p.reasonCode || '')) + '">' + esc(p.provider) + ' · ' + esc(p.state) + '</span>';
+        }).join(' ')
+      : '<span class="text-muted">unavailable</span>';
+    return '<div class="card-title" style="margin:var(--space-4) 0 var(--space-3)">Sessions &amp; devices</div>' +
+      '<div style="margin-bottom:var(--space-2)">' + devices + '</div>' +
+      '<div style="margin-bottom:var(--space-3)"><button class="btn btn-ghost btn-sm" onclick="revokeAllUserSessions(' + user.id + ')">Sign out all devices</button></div>' +
+      '<div class="card-title" style="margin-bottom:var(--space-3)">Push tokens</div><div style="margin-bottom:var(--space-4)">' + tokens + '</div>' +
+      '<div class="card-title" style="margin-bottom:var(--space-3)">Security</div><div style="margin-bottom:var(--space-4)">' + lockHtml + '</div>' +
+      '<div class="card-title" style="margin-bottom:var(--space-3)">Integrations</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--space-4)">' + providersHtml + '</div>' +
+      '<div style="margin-bottom:var(--space-4)"><a href="#support" class="btn btn-ghost btn-sm" onclick="openSupportForUser(' + user.id + '); return false;">Tickets for this user →</a></div>';
+  }
+
+  window.revokeUserSession = async function(userId, deviceId) {
+    if (!confirm('Sign out this device? The app will need to log in again.')) return;
+    const r = await apiFetch('/api/users/' + userId + '/sessions/' + encodeURIComponent(deviceId) + '/revoke', { method: 'POST' });
+    if (r.ok && currentSlideoutUser) openUserSlideout(currentSlideoutUser);
+  };
+  window.revokeAllUserSessions = async function(userId) {
+    if (!confirm('Sign out ALL devices for this user?')) return;
+    const r = await apiFetch('/api/users/' + userId + '/sessions/revoke-all', { method: 'POST' });
+    if (r.ok && currentSlideoutUser) openUserSlideout(currentSlideoutUser);
+  };
+  window.revokeUserPushToken = async function(userId, tokenId) {
+    const r = await apiFetch('/api/users/' + userId + '/push-tokens/' + encodeURIComponent(tokenId) + '/revoke', { method: 'POST' });
+    if (r.ok && currentSlideoutUser) openUserSlideout(currentSlideoutUser);
+  };
+  window.clearUserLockout = async function(userId) {
+    const r = await apiFetch('/api/users/' + userId + '/lockout/clear', { method: 'POST' });
+    if (r.ok && currentSlideoutUser) openUserSlideout(currentSlideoutUser);
+  };
+  window.openSupportForUser = function(userId) {
+    closeUserSlideout();
+    navigateTo('support');
+    const support = window.NexusPortal.sections.support;
+    if (support && support.showUser) support.showUser(userId);
+  };
 
   function closeUserSlideout() {
     document.getElementById('user-slideout').classList.remove('open');
@@ -6682,9 +6884,76 @@ table.legacy th {
   let pollTimer = null;
   let secondaryTimer = null;
 
+  // ── Release & environment card ──
+  let _releaseShortSha = null;
+  const BETA_SAFE_EXPOSURE_MODES = ['disabled', 'loopback_only', 'session_only', 'signed_static'];
+
+  function releaseChip(label, tone, title) {
+    return '<span class="badge badge-' + tone + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(label) + '</span>';
+  }
+
+  function renderReleaseInfo(r) {
+    document.getElementById('release-version').textContent = 'v' + (r.version || '—');
+    document.getElementById('release-commit').textContent = r.gitShortSha || (r.stampPresent ? '—' : 'no build stamp');
+    document.getElementById('release-branch').textContent = r.branch ? (r.branch + (r.dirty ? ' · dirty build' : '')) : '';
+    document.getElementById('release-deployed').textContent = r.deployedAt ? relativeTime(r.deployedAt) : '—';
+    document.getElementById('release-booted').textContent = r.bootedAt ? ('booted ' + relativeTime(r.bootedAt) + ' · pid ' + r.pid) : '';
+    const mig = r.migrations || { applied: 0, available: 0, pending: [] };
+    const pending = (mig.pending || []).length;
+    document.getElementById('release-migrations').innerHTML = pending === 0
+      ? '<span class="badge badge-success">' + mig.applied + ' applied</span>'
+      : '<span class="badge badge-error">' + pending + ' pending</span>';
+    document.getElementById('release-migrations-sub').textContent = pending === 0
+      ? ('latest ' + (mig.latestApplied || '—'))
+      : (mig.pending || []).slice(0, 3).join(', ');
+
+    const chips = [];
+    chips.push(releaseChip(r.env || 'development', 'info', 'NODE_ENV'));
+    chips.push(releaseChip('node ' + (r.node || '—'), 'neutral', r.platform || ''));
+    const betaSafe = BETA_SAFE_EXPOSURE_MODES.indexOf(r.adminExposureMode) !== -1;
+    chips.push(releaseChip('admin: ' + (r.adminExposureMode || 'unknown'), betaSafe ? 'success' : 'warning', 'Portal admin exposure mode'));
+    chips.push(releaseChip(r.betaHardened ? 'beta-hardened' : 'not beta-hardened', r.betaHardened ? 'success' : 'warning', 'PORTAL_BETA_HARDENED'));
+    const integ = r.integrations || {};
+    chips.push(releaseChip(integ.sentry ? 'Sentry on' : 'Sentry not configured', integ.sentry ? 'success' : 'error', 'SENTRY_DSN'));
+    chips.push(releaseChip(integ.operatorAlertWebhook ? 'Alert webhook on' : 'Alert webhook not configured', integ.operatorAlertWebhook ? 'success' : 'error', 'OPERATOR_ALERT_WEBHOOK_URL'));
+    chips.push(releaseChip('iOS API ' + (integ.iosApi ? 'on' : 'off'), integ.iosApi ? 'success' : 'neutral', 'IOS_API_ENABLED'));
+    chips.push(releaseChip('Anthropic ' + (integ.anthropic ? 'on' : 'off'), 'neutral', 'ANTHROPIC_ENABLED'));
+    chips.push(releaseChip('Ollama ' + (integ.ollama ? 'on' : 'off'), 'neutral', 'OLLAMA_ENABLED'));
+    if (r.db && r.db.sizeBytes != null) {
+      chips.push(releaseChip('db ' + (r.db.sizeBytes / 1024 / 1024).toFixed(1) + ' MB' + (r.db.walBytes ? ' · wal ' + (r.db.walBytes / 1024 / 1024).toFixed(1) + ' MB' : ''), 'neutral', 'SQLite file size'));
+    }
+    document.getElementById('release-flags').innerHTML = chips.join('');
+
+    const problems = [];
+    if (pending > 0) problems.push('pending migrations');
+    if (!betaSafe) problems.push('admin exposure');
+    if (!integ.sentry) problems.push('no Sentry');
+    if (!integ.operatorAlertWebhook) problems.push('no alert webhook');
+    document.getElementById('release-subtitle').textContent = problems.length
+      ? 'Attention: ' + problems.join(', ')
+      : 'Healthy · uptime ' + (r.uptimeSeconds != null ? Math.floor(r.uptimeSeconds / 3600) + 'h' : '—');
+
+    _releaseShortSha = r.gitShortSha || null;
+    const footer = document.getElementById('footer-version');
+    if (footer && r.version) footer.textContent = r.version + (r.gitShortSha ? ' · ' + r.gitShortSha : '');
+  }
+
+  async function loadReleaseInfo() {
+    try {
+      const res = await apiFetch('/api/release');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.release) renderReleaseInfo(data.release);
+    } catch (e) {
+      document.getElementById('release-subtitle').textContent = 'Release info unavailable';
+    }
+  }
+
   function startApp() {
     // Initial render
     pollAll();
+    loadReleaseInfo();
+    if (typeof window.NexusPortal.onAppStart === 'function') window.NexusPortal.onAppStart();
     loadModelConfig();
     loadDomainRouting();
     loadSecretaryOptimization();
@@ -6721,6 +6990,8 @@ table.legacy th {
       if (currentSection === 'content') loadContentDashboard();
       if (currentSection === 'notifications') loadNotificationPortal();
     }, 30000);
+    // Release identity changes only on deploy; refresh once a minute.
+    setInterval(loadReleaseInfo, 60000);
 
     // Initial section from URL hash
     const initialSection = location.hash.replace('#', '') || 'dashboard';
@@ -6728,12 +6999,11 @@ table.legacy th {
   }
 
   // ────────── Boot ──────────
-  if (TOKEN) {
-    startApp();
-  } else {
-    showLoginForm();
-  }
+  // The token is never persisted (no localStorage, no server injection), so
+  // every page load starts at the login form.
+  showLoginForm();
 })();
 </script>
+<script type="module" src="/portal/ui/app.js"></script>
 </body>
 </html>

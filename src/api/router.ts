@@ -23,6 +23,7 @@ import { wearableRoutes } from './routes/wearable';
 import { usageRoutes } from './routes/usage';
 import { clientErrorsRoutes } from './routes/client-errors';
 import { aiReportsRoutes } from './routes/ai-reports';
+import { supportRoutes } from './routes/support';
 import { auditTrailRoutes } from './routes/audit-trail';
 import { skillsRoutes } from './routes/skills';
 import { signalsRoutes } from './routes/signals';
@@ -124,6 +125,7 @@ export function createApiRouter(): Router {
         settings: 'GET/PATCH /api/v1/settings',
         clientErrors: 'POST /api/v1/client-errors',
         aiReports: 'POST /api/v1/ai-reports — report objectionable or inaccurate AI output',
+        supportFeedback: 'POST /api/v1/support/feedback',
         auditTrail: 'GET /api/v1/audit-trail/me',
         skills: 'GET /api/v1/skills/catalog, POST/DELETE /api/v1/skills/override (owner only)',
         signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
@@ -370,6 +372,7 @@ export function createApiRouter(): Router {
   // iOS / web crash reports. JWT + rate-limit protected via the middleware
   // chain above. Reads are admin-only and exposed via the portal, not here.
   router.use('/client-errors', clientErrorsRoutes());
+  router.use('/support', supportRoutes());
 
   // App Review guideline 1.2: in-app reporting for objectionable or
   // inaccurate AI output. Write-only from iOS; reads are an operator concern

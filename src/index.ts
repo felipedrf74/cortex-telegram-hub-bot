@@ -10,6 +10,9 @@ import { logger } from './utils/logger';
 import { closeDatabase, getDb } from './services/database';
 import { initDatabase } from './services/database-bootstrap';
 import { assertAiCreditActivationReady } from './services/ai-credit-admission';
+import { attachLogStoreDb } from './utils/log-store';
+import { attachHttpRequestLogDb } from './api/http-request-log';
+import { backfillIssues } from './services/issue-tracker';
 import { startScheduler } from './services/scheduler';
 import {
   beginContentScriptJobShutdown,
@@ -136,6 +139,18 @@ async function main(): Promise<void> {
   setBusPlanningInvalidator(invalidatePlanningCaches);
   setScopeAnomalyReporter(recordTenantScopeAnomaly);
   setErrorDbProvider(() => getDb());
+  // Portal observability stores (runtime_logs, http_request_log) buffer in
+  // memory until the DB exists; attach now so buffered boot lines flush.
+  attachLogStoreDb(() => getDb());
+  attachHttpRequestLogDb(() => getDb());
+  try {
+    const backfilled = backfillIssues();
+    if (backfilled.server || backfilled.client) {
+      logger.info(backfilled, 'Issue tracker backfilled historical error rows');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Issue tracker backfill skipped');
+  }
 
   // Hardening 2026-04-21: hydrate the in-memory per-plan cost-cap
   // overrides from the `plan_configs` DB table (migration 075).
