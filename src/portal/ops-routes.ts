@@ -57,6 +57,7 @@ import {
   type RuntimeLogFilter,
 } from '../utils/log-store';
 import { logPortalAdminMutation } from './admin-audit';
+import { getSupportSummary } from '../services/support-tickets';
 import { sendPortalInternalError } from './http';
 import { openSse } from './sse';
 
@@ -64,6 +65,14 @@ const LEVEL_NAMES: Record<string, number> = { trace: 10, debug: 20, info: 30, wa
 const SURFACES = new Set<HttpSurface>(['ios', 'portal', 'webhook', 'health', 'oauth', 'public', 'static']);
 const ISSUE_ACTIONS: Record<string, IssueStatus> = { ack: 'acked', resolve: 'resolved', mute: 'muted', reopen: 'open' };
 const ALERT_STREAM_POLL_MS = 5000;
+
+function readSupportSummary(): ReturnType<typeof getSupportSummary> | null {
+  try {
+    return getSupportSummary();
+  } catch {
+    return null;
+  }
+}
 
 function str(value: unknown, max = 200): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -323,7 +332,7 @@ export function registerPortalOpsRoutes(app: Express): void {
         const signature = JSON.stringify({ alerts: alerts.map((a) => [a.id, a.status, a.updatedAt, a.deliveryStatus]), delivery });
         if (signature !== lastSignature) {
           lastSignature = signature;
-          handle.send('alerts', { alerts, delivery, issues: getIssueSummary() });
+          handle.send('alerts', { alerts, delivery, issues: getIssueSummary(), support: readSupportSummary() });
         }
       } catch {
         // keep the stream alive; next tick retries

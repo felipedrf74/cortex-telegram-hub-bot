@@ -592,6 +592,21 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
   `format=csv` for a server-rendered export (spreadsheet-formula cells are
   neutralized).
 
+- **Cookie sessions and CSP** (`POST /api/auth/session`, `GET /api/auth/session`,
+  `POST /api/auth/session/logout`): with `PORTAL_SESSION_SECRET` set, the SPA
+  exchanges the portal token once for a signed `ps_` session in an HttpOnly,
+  SameSite=Strict `portal_session` cookie scoped to that token's rights
+  (read/write/admin) and capped at 8 h or `PORTAL_SESSION_MAX_AGE_MS`; the
+  session survives reloads and every mutating request must carry the
+  `x-portal-csrf` proof returned at sign-in (`rejectCookieSessionCsrf`).
+  Without the secret the routes answer 503 and the in-memory bearer flow
+  remains. The dashboard ships no inline script: the SPA lives in
+  `src/portal/ui/legacy.js` plus the ES modules and markup uses `data-act`
+  delegation, so the dashboard CSP is `script-src 'self'` (no
+  `'unsafe-inline'`); `__tests__/portal/portal-csp-no-inline.test.ts` keeps
+  it that way. Background tabs pause polling; badge counts ride the alerts
+  stream (`/api/ops/alerts/stream` now carries issues and support summaries).
+
 Triage loop: Issues → open the last request → read its log lines → fix →
 resolve the issue and let the regression alert say if it comes back. Quote the
 `x-request-id` from the app or the response headers when reporting.

@@ -13,7 +13,7 @@ export function applyPortalDashboardSecurityHeaders(res: Response): void {
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.set(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'",
   );
 }
 
@@ -48,6 +48,12 @@ export function createLandingPreviewHandler(portalDir = __dirname) {
     if (fs.existsSync(landingPath)) {
       // No edge caching on the preview — devs always want the latest.
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      // The marketing page still uses inline handlers; keep its own CSP now that
+      // the dashboard-wide policy no longer allows inline scripts.
+      res.set(
+        'Content-Security-Policy',
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.nexushub.me https://*.nexushub-landing.pages.dev; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      );
       res.type('html').send(fs.readFileSync(landingPath, 'utf-8'));
       return;
     }

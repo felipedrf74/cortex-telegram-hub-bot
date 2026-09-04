@@ -49,6 +49,12 @@ function applyAlertsPush(payload) {
     const issueBadge = document.getElementById('nav-issues-count');
     if (issueBadge) issueBadge.textContent = open > 0 ? String(open) : '';
   }
+  const support = payload.support;
+  if (support && support.byStatus) {
+    const fresh = support.byStatus.new || 0;
+    const supportBadge = document.getElementById('nav-support-count');
+    if (supportBadge) supportBadge.textContent = fresh > 0 ? String(fresh) : '';
+  }
   if (typeof P.onAlertsPush === 'function') P.onAlertsPush(payload);
 }
 
@@ -63,19 +69,26 @@ function startAlertsStream() {
   }, (state) => {
     if (state === 'open') {
       if (alertsPollTimer) { clearInterval(alertsPollTimer); alertsPollTimer = null; }
+      // Badge counts arrive on the stream; stop polling for them.
+      if (supportPollTimer) { clearInterval(supportPollTimer); supportPollTimer = null; }
       return;
     }
     alertsStreamStop = null;
-    if (!alertsPollTimer) alertsPollTimer = setInterval(refreshIssueBadge, 60000);
+    ensureSupportPoll();
+    if (!alertsPollTimer) alertsPollTimer = setInterval(() => { if (!document.hidden) refreshIssueBadge(); }, 60000);
     // Reconnect lazily; the poll keeps badges roughly fresh meanwhile.
     setTimeout(startAlertsStream, 30000);
   });
 }
 
+let supportPollTimer = null;
+function ensureSupportPoll() {
+  if (!supportPollTimer) supportPollTimer = setInterval(() => { if (!document.hidden) refreshSupportBadge(); }, 60000);
+}
 P.onAppStart = () => {
   refreshIssueBadge();
   refreshSupportBadge();
-  setInterval(refreshSupportBadge, 60000);
+  ensureSupportPoll();
   startAlertsStream();
 };
 P.refreshSupportBadge = refreshSupportBadge;

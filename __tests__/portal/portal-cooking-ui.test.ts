@@ -2,16 +2,21 @@ import fs from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 
-const portalHtml = fs.readFileSync(
+const portalMarkup = fs.readFileSync(
   path.join(process.cwd(), 'src', 'portal', 'portal.html'),
   'utf8',
 );
+const legacyScript = fs.readFileSync(
+  path.join(process.cwd(), 'src', 'portal', 'ui', 'legacy.js'),
+  'utf8',
+);
+// Markup plus the extracted SPA script (ui/legacy.js) — the inline <script> was removed for CSP.
+const portalHtml = portalMarkup + '\n' + legacyScript;
 
 describe('portal Cooking browser UI', () => {
   it('keeps the portal script syntactically valid', () => {
-    const match = portalHtml.match(/<script>\n([\s\S]*)\n<\/script>/);
-    expect(match?.[1]).toBeTruthy();
-    expect(() => new Function(match?.[1] ?? '')).not.toThrow();
+    expect(portalMarkup).toContain('<script src="/portal/ui/legacy.js"></script>');
+    expect(() => new Function(legacyScript)).not.toThrow();
   });
 
   it('exposes a dedicated Cooking management section in portal navigation', () => {
