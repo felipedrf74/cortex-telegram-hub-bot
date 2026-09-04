@@ -49,7 +49,7 @@ import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
 import { registerPortalOpsRoutes } from './ops-routes';
 import { registerPortalJobsRoutes } from './jobs-routes';
 import { registerPortalOperateRoutes } from './operate-routes';
-import { registerPortalSessionRoutes } from './session-routes';
+import { isPortalSessionAuthPath, registerPortalSessionRoutes } from './session-routes';
 import { registerPortalSupportRoutes } from './support-routes';
 import { registerPortalUserAdminRoutes } from './user-admin-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
@@ -475,6 +475,12 @@ export function createPortalServer(): http.Server {
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     // Skip portal auth for iOS API routes — they use their own JWT middleware
     if (req.path.startsWith('/v1/') || req.path.startsWith('/v1')) {
+      return next();
+    }
+    // The session sign-in/logout routes verify their own credential (the
+    // token travels in the POST body, so the generic guard would 401 every
+    // sign-in before the handler ran) and carry their own rate limiter.
+    if (isPortalSessionAuthPath(req.path)) {
       return next();
     }
     return requirePortalTokenByMethod(req, res, next);

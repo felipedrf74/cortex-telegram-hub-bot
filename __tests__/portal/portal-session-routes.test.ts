@@ -34,6 +34,7 @@ vi.mock('../../src/portal/http', () => ({ sendPortalInternalError: vi.fn() }));
 import { requirePortalAdminToken, requirePortalToken } from '../../src/api/secret-guards';
 import {
   buildSessionCookie,
+  isPortalSessionAuthPath,
   registerPortalSessionRoutes,
   resolveScopeForPortalToken,
 } from '../../src/portal/session-routes';
@@ -254,5 +255,19 @@ describe('portal session routes: pre-minted session tokens and session-only mode
     } finally {
       hoisted.portal.requireSessionAuth = false;
     }
+  });
+});
+
+describe('portal session auth paths bypass the generic /api guard', () => {
+  // The sign-in POST carries its credential in the body; if the generic portal
+  // token guard runs first it answers 401 before the handler and no cookie
+  // session can ever be created (production, 2026-09-04).
+  it('names exactly the sign-in and logout routes, relative to the /api mount', () => {
+    expect(isPortalSessionAuthPath('/auth/session')).toBe(true);
+    expect(isPortalSessionAuthPath('/auth/session/logout')).toBe(true);
+    expect(isPortalSessionAuthPath('/auth/session/anything-else')).toBe(false);
+    expect(isPortalSessionAuthPath('/snapshot')).toBe(false);
+    expect(isPortalSessionAuthPath('/users')).toBe(false);
+    expect(isPortalSessionAuthPath('/api/auth/session')).toBe(false);
   });
 });
