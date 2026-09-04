@@ -212,3 +212,47 @@ describe('portal session routes', () => {
     expect(out.payload.headers['set-cookie']).toBe('portal_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Secure');
   });
 });
+
+import { mintPortalSessionToken } from '../../src/services/portal-session-mint';
+import { verifyPresentedSessionToken } from '../../src/portal/session-routes';
+
+describe('portal session routes: pre-minted session tokens and session-only mode', () => {
+  function mint(scope: 'read' | 'write' | 'admin', ttlMs = 3_600_000) {
+    return mintPortalSessionToken({ secret: hoisted.portal.sessionSecret, actorHint: 'ops@nexushub.me', scope, ttlMs, maxAgeMs: hoisted.portal.sessionMaxAgeMs }).token;
+  }
+
+  it('adopts a valid ps_ token as the cookie session with its own scope and expiry', async () => {
+    const { routes } = makeApp();
+    const token = mint('write');
+    const created = await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token } }));
+    expect(created.payload.statusCode).toBe(200);
+    expect(created.payload.body).toMatchObject({ ok: true, scope: 'write', actor: 'ops@nexushub.me' });
+    expect(created.payload.headers['set-cookie']).toContain(`portal_session=${encodeURIComponent(token)}`);
+    expect(created.payload.headers['set-cookie']).toMatch(/Max-Age=(3599|3600)(;|$)/);
+    expect(created.payload.body.csrf).toMatch(/^[A-Za-z0-9_-]{20,}$/);
+    expect(verifyPresentedSessionToken(token, makeReq() as any)).toMatchObject({ scope: 'write', actor: 'ops@nexushub.me' });
+  });
+
+  it('rejects expired, foreign-secret and non-session tokens as presented sessions', () => {
+    const req = makeReq() as any;
+    expect(verifyPresentedSessionToken('admin.token.value.for.tests', req)).toBeNull();
+    const expired = mintPortalSessionToken({ secret: hoisted.portal.sessionSecret, actorHint: 'ops@nexushub.me', scope: 'admin', ttlMs: 1_000, maxAgeMs: 60_000, nowMs: Date.now() - 10_000 }).token;
+    expect(verifyPresentedSessionToken(expired, req)).toBeNull();
+    const foreign = mintPortalSessionToken({ secret: 'another.secret.value.for.tests', actorHint: 'ops@nexushub.me', scope: 'admin', ttlMs: 60_000, maxAgeMs: 60_000 }).token;
+    expect(verifyPresentedSessionToken(foreign, req)).toBeNull();
+  });
+
+  it('refuses static tokens when PORTAL_REQUIRE_SESSION_AUTH is on but still adopts ps_ tokens', async () => {
+    hoisted.portal.requireSessionAuth = true;
+    try {
+      const { routes } = makeApp();
+      const rejected = await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: 'admin.token.value.for.tests' } }));
+      expect(rejected.payload.statusCode).toBe(401);
+      const adopted = await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: mint('admin') } }));
+      expect(adopted.payload.statusCode).toBe(200);
+      expect(adopted.payload.body.scope).toBe('admin');
+    } finally {
+      hoisted.portal.requireSessionAuth = false;
+    }
+  });
+});
