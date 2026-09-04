@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "049c9e0f43879b8597637e104860517eccec9ab854674773c4c656586f90189f",
-    "baseCommit": "8762cbbdcaf04d875b50ca628177231f1c478ecc",
-    "baseCommitTimestamp": "2026-09-05T11:39:32+01:00",
-    "trackedFiles": 3692,
+    "sourceDigest": "34ae2a9487088d018df07feb34df67be2491de7896dfff0dab0479f32e69407a",
+    "baseCommit": "d9ab9fa8e84d08b3ea202ffa96ba7af11af5c532",
+    "baseCommitTimestamp": "2026-09-05T12:08:33+01:00",
+    "trackedFiles": 3693,
     "sourceFiles": 1279
   },
   "navigation": {
@@ -5612,10 +5612,10 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-08-22.1",
-    "count": 77,
-    "active": 77,
+    "count": 78,
+    "active": 78,
     "statusCounts": {
-      "canonical": 41,
+      "canonical": 42,
       "current": 2,
       "draft": 2,
       "generated": 1,
@@ -5829,6 +5829,15 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/engineering/runtime-and-observability-standard.md"
+      },
+      {
+        "path": "docs/engineering/scalability-and-optimistic-mutation-roadmap.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
+        "canonicalPath": "docs/engineering/scalability-and-optimistic-mutation-roadmap.md"
       },
       {
         "path": "docs/engineering/security-and-data-isolation-standard.md",

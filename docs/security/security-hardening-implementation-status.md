@@ -2,7 +2,7 @@
 
 Status: current
 Owner: Felipe Dominguez
-Last verified: 2026-08-30
+Last verified: 2026-09-04
 Update policy: update after each security-hardening wave, production ops window,
 or QA finding closure.
 
@@ -63,6 +63,41 @@ There are no intentionally hidden open tasks in this local pass.
 | SQLCipher or production DB-at-rest migration | BLOCKED_WITH_EXACT_REASON | Requires data migration design, backup compatibility testing, performance validation, and deployment sequencing. |
 | Real APNs payload privacy smoke | BLOCKED_WITH_EXACT_REASON | Requires TestFlight/device APNs token and approved safe delivery proof; simulator cannot prove production APNs payload behavior. |
 | Full iOS release-hardening suite | BLOCKED_WITH_EXACT_REASON | Existing dirty `.xcscheme` drift causes `test_sharedSchemeDoesNotAllowParallelUITestSimulatorFanout` to fail. This wave preserved unrelated scheme drift as instructed; the new security pins pass independently. |
+
+## Multi-User Hardening Backlog
+
+Source: the 2026-09-04 scalability audit recorded in
+`../engineering/scalability-and-optimistic-mutation-roadmap.md`. These items
+were verified against `origin/main` by reading the cited code; none is closed
+yet. Priority uses (impact + risk) × (6 − effort) on 1–5 scales. Items marked
+edge require live Cloudflare changes and inherit the existing
+BLOCKED_WITH_EXACT_REASON row for Cloudflare mutation until an operations
+window is approved.
+
+| Item | Where | Priority | Status | Mitigation that keeps engineering simple |
+|---|---|---|---|---|
+| Portal admin target-user check fails open when no operator scopes are configured, so any portal admin token can read any user | `src/portal/admin-target-user.ts` | 50 | OPEN | Return false when scopes are unconfigured; require an explicit single-owner setting for the legacy host and ship it in the same release. |
+| No edge rate-limiting rule on `/api/v1/auth/*`; only the in-process per-IP bucket applies | Cloudflare zone (edge) | 50 | OPEN (edge) | One rate-limiting rule scoped to the auth path prefix with a short window and Block action. |
+| Portal hostname publicly routed to the same origin as the API with no access layer in front | Cloudflare Tunnel ingress (edge) | 45 | OPEN (edge) | Put Cloudflare Access in front of the portal hostname, or remove its public route and reach the portal over an administrative tunnel only. |
+| Tool executor accepts a model-supplied `user_id` as the scope when the request context carries none | `resolveTenantToolUserId` in `src/services/tool-executor.ts` | 40 | OPEN | Return null whenever the context user is absent; never fall back to the explicit input value. |
+| Verification-email resend has no cooldown or daily cap, and the shared transactional-email quota can be exhausted by one account | `POST /auth/send-verification` in `src/api/routes/auth.ts` | 40 | OPEN | Reject resends inside a short cooldown and cap sends per user per day in the existing verification table. |
+| Global daily AI cap denies every user once exceeded, before per-user checks, so one heavy account can degrade all others | `checkGlobalCostGuardrail` and `checkAiBudget` in `src/services/cost-guardrail.ts` | 36 | OPEN | Before the global deny, exempt users under their own plan cap and throttle the top contributors first. |
+| No bot gate on registration or password-reset request | `src/api/routes/auth.ts` | 32 | OPEN | Apple App Attest for the native client; Turnstile only on web forms; verify before any database or email work. |
+| Disposable-email validator exists but is not applied at registration | `src/services/waitlist-email-validation.ts`, `src/api/routes/auth.ts` | 30 | OPEN | Call the existing validator from the email registration handler. |
+| `/legal` is mounted before both the rate limiter and auth | `src/api/router.ts` | 25 | OPEN | Mount `rateLimitMiddleware` in front of it, as for `/auth`. |
+| Verification-code attempt counter resets on every resend | `src/api/routes/auth.ts` | 24 | OPEN | Keep the counter across resends and add a daily cap. |
+| Account-deletion cascade is a hand-maintained list; tables with a `user_id` column can be missed | `ACCOUNT_DELETION_TABLES` in `src/services/user-data-export.ts` | 24 | OPEN | Add a reflective test over every table with a user-scoped column that fails when one is missing from the list. |
+| Auth routes are limited per IP only; no per-account or per-email bucket | `src/api/rate-limiter.ts` | 24 | OPEN | Add a second bucket keyed on the hashed normalized email for register, login, and reset. |
+| Field-encryption blob carries no key id, so the OAuth encryption key cannot rotate | `src/utils/encryption.ts` | 21 | OPEN | Prefix the packed blob with a key version and keep a small key map so reads accept old rows while writes use the new key; add a rotation runbook beside the JWT one. |
+| WebSocket per-IP connection cap keys on the socket address, which is the tunnel peer for every client | `src/api/websocket.ts` | 20 | OPEN | Resolve the client IP with the same `cf-connecting-ip` logic the REST rate limiter uses; add a per-user cap. |
+| No `helmet()` on the `/api/v1` router; headers are hand-set on the portal only | `src/portal/server.ts` | 20 | OPEN | Add `helmet()` once at app level. |
+| Google id-token has no consume-once replay guard (Apple does) | `src/api/routes/auth.ts`, `src/services/google-auth-session-store.ts` | 18 | OPEN | Mirror the Apple nonce table for the Google token identifier. |
+
+Already correct and not re-litigated: budget check before the provider call
+with reservations released in `finally`; enumeration and timing posture on
+registration and password reset; refresh-token rotation with reuse detection;
+StoreKit JWS verification; portal CSRF; pino redaction; `.env` handling in the
+deploy path.
 
 ## Original Plan Phase Coverage
 
