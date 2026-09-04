@@ -198,7 +198,12 @@ describe('portal-hardening: no localStorage or URL token', () => {
   const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
   const legacyPath = path.resolve(__dirname, '../../src/portal/ui/legacy.js');
   // The SPA script lives in ui/legacy.js (extracted from the inline block so the CSP can drop 'unsafe-inline').
-  const readSpaSource = () => fs.readFileSync(htmlPath, 'utf8') + '\n' + fs.readFileSync(legacyPath, 'utf8');
+  const uiDir = path.resolve(__dirname, '../../src/portal/ui');
+  const readSpaSource = () => [
+    fs.readFileSync(htmlPath, 'utf8'),
+    fs.readFileSync(legacyPath, 'utf8'),
+    ...fs.readdirSync(uiDir).filter((f) => f.endsWith('.js') && f !== 'legacy.js').map((f) => fs.readFileSync(path.join(uiDir, f), 'utf8')),
+  ].join('\n');
 
   // Skip if portal.html doesn't exist in the test environment
   const htmlExists = fs.existsSync(htmlPath);

@@ -198,6 +198,10 @@
     navigateTo: (section) => navigateTo(section),
     getToken: () => TOKEN,
     getSession: () => SESSION,
+    setCardError: (id, title, err) => setCardError(id, title, err),
+    setTableError: (tbodyId, colspan, title, err) => setTableError(tbodyId, colspan, title, err),
+    showToast: (msg, ok) => showToast(msg, ok),
+    adminLoadErrorMessage: (err) => adminLoadErrorMessage(err),
     sections: {},
     registerSection(id, def) { this.sections[id] = Object.assign({ mounted: false }, def); },
     activateSection(id) {
@@ -324,7 +328,6 @@
     if (section === 'invites') loadInviteCodes();
     if (section === 'founders') loadFounders();
     if (section === 'waitlist') loadWaitlist();
-    if (section === 'audit') loadAuditTrail();
     if (section === 'jobs') loadQuickActions();
     if (section === 'skills') loadSkillsUserSelector();
     if (section === 'ai') loadAiPlanLimits();
@@ -2572,137 +2575,7 @@
     } catch { showToast('Error adding founder', false); }
   });
 
-  // ════════════════════════════════════════════════════════════
-  // Audit Trail
-  // ════════════════════════════════════════════════════════════
-  let allAuditEntries = [];
-  let auditUsersPopulated = false;
-
-  // Populate the audit user dropdown from the shared /api/users endpoint.
-  // Runs once per session; subsequent entries to the Audit tab reuse the
-  // cached list (the main Users tab refresh will re-populate if stale).
-  async function populateAuditUserDropdown(force) {
-    if (auditUsersPopulated && !force) return;
-    try {
-      // Reuse allUsers if the Users tab has already loaded them
-      if (!allUsers || allUsers.length === 0) {
-        const d = await apiJson('/api/users');
-        allUsers = d.users || [];
-      }
-      const sel = document.getElementById('audit-filter');
-      const currentValue = sel.value;
-      // Sort: most recently active first
-      const sorted = [...allUsers].sort((a, b) => {
-        const at = a.last_active_at ? new Date(a.last_active_at).getTime() : 0;
-        const bt = b.last_active_at ? new Date(b.last_active_at).getTime() : 0;
-        return bt - at;
-      });
-      const options = ['<option value="">All users</option>'].concat(
-        sorted.map(u => {
-          const name = u.first_name || u.username || ('User #' + u.id);
-          const handle = u.username ? ' @' + u.username : '';
-          const label = esc(name + handle) + ' · ' + u.id;
-          return '<option value="' + u.id + '">' + label + '</option>';
-        })
-      );
-      sel.innerHTML = options.join('');
-      if (currentValue) sel.value = currentValue;
-      auditUsersPopulated = true;
-    } catch (err) {
-      throw err;
-    }
-  }
-
-  let auditNextBeforeId = null;
-  let auditFacetsLoaded = false;
-  function auditFilterParams() {
-    const params = new URLSearchParams();
-    const get = (id) => (document.getElementById(id) ? document.getElementById(id).value || '' : '').trim();
-    if (get('audit-filter')) params.set('userId', get('audit-filter'));
-    if (get('audit-action')) params.set('action', get('audit-action'));
-    if (get('audit-resource')) params.set('resource', get('audit-resource'));
-    if (get('audit-q')) params.set('q', get('audit-q'));
-    if (get('audit-since')) params.set('since', new Date(get('audit-since')).toISOString());
-    if (get('audit-until')) params.set('until', new Date(get('audit-until')).toISOString());
-    return params;
-  }
-  async function populateAuditFacets() {
-    if (auditFacetsLoaded) return;
-    try {
-      const d = await apiJson('/api/audit-trail/facets');
-      const sel = document.getElementById('audit-action');
-      if (!sel) return;
-      const current = sel.value;
-      sel.innerHTML = '<option value="">All actions</option>' + (d.actions || []).map(a => '<option value="' + esc(a.value) + '">' + esc(a.value) + ' (' + a.count + ')</option>').join('');
-      sel.value = current;
-      auditFacetsLoaded = true;
-    } catch (_) {
-      // facets are a convenience; the free-text filters still work
-    }
-  }
-  async function loadAuditTrail(append) {
-    try {
-      await populateAuditUserDropdown(false);
-      await populateAuditFacets();
-      const params = auditFilterParams();
-      params.set('limit', '200');
-      if (append && auditNextBeforeId) params.set('beforeId', String(auditNextBeforeId));
-      const d = await apiJson('/api/audit-trail?' + params.toString());
-      allAuditEntries = append ? allAuditEntries.concat(d.entries || []) : (d.entries || []);
-      auditNextBeforeId = d.nextBeforeId || null;
-      const more = document.getElementById('audit-more');
-      if (more) more.style.display = auditNextBeforeId ? '' : 'none';
-      renderAuditTrail();
-    } catch (err) {
-      allAuditEntries = [];
-      const count = document.getElementById('audit-count-label');
-      if (count) count.textContent = '0 entries';
-      setTableError('audit-tbody', 5, 'Could not load audit trail', err);
-    }
-  }
-  function renderAuditTrail() {
-    const tbody = document.getElementById('audit-tbody');
-    document.getElementById('audit-count-label').textContent = allAuditEntries.length + ' entries';
-    if (allAuditEntries.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5"><div class="empty">No audit entries</div></td></tr>';
-      return;
-    }
-    tbody.innerHTML = allAuditEntries.map(e => '<tr>' +
-      '<td class="mono text-muted" style="font-size:11px">' + shortDateTime(e.ts) + '</td>' +
-      '<td class="mono">' + (e.user_id || '—') + '</td>' +
-      '<td><span class="badge badge-info">' + esc(e.action) + '</span></td>' +
-      '<td class="text-muted">' + esc(e.resource || '—') + '</td>' +
-      '<td class="text-muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(e.details || '—') + '</td>' +
-    '</tr>').join('');
-  }
-  document.getElementById('audit-refresh-btn').addEventListener('click', () => {
-    // Force-refresh the user dropdown too on manual refresh
-    populateAuditUserDropdown(true).then(loadAuditTrail);
-  });
-  // Dropdown: immediate reload on change (no debounce needed)
-  document.getElementById('audit-filter').addEventListener('change', loadAuditTrail);
-  document.getElementById('audit-export-btn').addEventListener('click', async () => {
-    const params = auditFilterParams();
-    params.set('format', 'csv');
-    params.set('limit', '500');
-    try {
-      const res = await apiFetch('/api/audit-trail?' + params.toString());
-      if (!res.ok) { showToast('Export failed (HTTP ' + res.status + ')', false); return; }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'audit-trail-' + new Date().toISOString().slice(0, 10) + '.csv';
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast('Exported audit trail (current filters, up to 500 rows)');
-    } catch (err) {
-      showToast('Export failed: ' + adminLoadErrorMessage(err), false);
-    }
-  });
-  document.getElementById('audit-apply').addEventListener('click', () => loadAuditTrail(false));
-  document.getElementById('audit-more').addEventListener('click', () => loadAuditTrail(true));
-  ['audit-resource', 'audit-q'].forEach(id => document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') loadAuditTrail(false); }));
+  // Audit Trail moved to ui/audit.js (Phase 5 section extraction).
 
   // ════════════════════════════════════════════════════════════
   // Waitlist
@@ -4298,7 +4171,6 @@
       // Refresh users in background if user is on the Users tab
       if (currentSection === 'users') loadUsers();
       if (currentSection === 'alerts') loadOperatorAlerts();
-      if (currentSection === 'audit') loadAuditTrail();
       if (currentSection === 'invites') loadInviteCodes();
       if (currentSection === 'waitlist') loadWaitlist();
       if (currentSection === 'content') loadContentDashboard();

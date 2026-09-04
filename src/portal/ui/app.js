@@ -9,6 +9,7 @@ import './requests.js';
 import './issues.js';
 import './support.js';
 import './operate.js';
+import './audit.js';
 import { sseSubscribe } from './sse.js';
 
 const P = window.NexusPortal;

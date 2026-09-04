@@ -2804,52 +2804,7 @@ table.dense th {
     </section>
 
     <!-- ════════════════════ AUDIT TRAIL ════════════════════ -->
-    <section class="section" data-section="audit">
-      <div class="section-header">
-        <div>
-          <h1 class="section-title">Audit Trail</h1>
-          <div class="section-subtitle">GDPR-compliant action log</div>
-        </div>
-        <div class="section-actions">
-          <button class="btn btn-ghost btn-sm" id="audit-refresh-btn">Refresh</button>
-          <button class="btn btn-primary btn-sm" id="audit-export-btn">Export CSV</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="table-toolbar" style="flex-wrap:wrap;gap:8px">
-          <select class="input" id="audit-filter" style="max-width:220px">
-            <option value="">All users</option>
-          </select>
-          <select class="input" id="audit-action" style="max-width:200px">
-            <option value="">All actions</option>
-          </select>
-          <input class="input" id="audit-resource" placeholder="Resource prefix" style="max-width:180px">
-          <input class="input" id="audit-q" placeholder="Search details…" style="max-width:200px">
-          <input class="input" id="audit-since" type="datetime-local" title="Since" style="max-width:200px">
-          <input class="input" id="audit-until" type="datetime-local" title="Until" style="max-width:200px">
-          <button class="btn btn-ghost btn-sm" id="audit-apply">Apply</button>
-          <button class="btn btn-ghost btn-sm" id="audit-more" style="display:none">Load older</button>
-          <span class="text-muted mono" style="margin-left:auto;font-size:11px" id="audit-count-label"></span>
-        </div>
-        <div style="overflow-x:auto">
-          <table class="data-table" id="audit-table">
-            <thead>
-              <tr>
-                <th>Timestamp</th>
-                <th>User</th>
-                <th>Action</th>
-                <th>Resource</th>
-                <th>Details</th>
-              </tr>
-            </thead>
-            <tbody id="audit-tbody">
-              <tr><td colspan="5"><div class="empty">Loading…</div></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+    <section class="section" data-section="audit"><div class="empty">Loading module…</div></section>
 
   </main>
 </div>
