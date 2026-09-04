@@ -34,6 +34,7 @@ import {
   getPortalAuthContext,
   requirePortalToken,
   secureSecretMatches,
+  type PortalAuthContext,
 } from '../api/secret-guards';
 import { mintPortalSessionToken } from '../services/portal-session-mint';
 import { PORTAL_SESSION_PREFIX, sanitizePortalActorHint, type PortalTokenScope } from '../services/portal-session-token';
@@ -89,7 +90,7 @@ export function resolveScopeForPortalToken(provided: string, s: PortalSessionSet
  * PORTAL_REQUIRE_SESSION_AUTH is on) by running the portal read guard against
  * a synthetic bearer request, so verification stays in secret-guards.
  */
-export function verifyPresentedSessionToken(token: string, req: Request): { scope: PortalTokenScope; actor: string | null; expiresAt: number | null } | null {
+export function verifyPresentedSessionToken(token: string, req: Request): { scope: PortalTokenScope; actor: string | undefined; expiresAt: number } | null {
   if (!token.startsWith(PORTAL_SESSION_PREFIX)) return null;
   const headers: Record<string, string> = { authorization: `Bearer ${token}` };
   const synthetic = {
@@ -109,12 +110,13 @@ export function verifyPresentedSessionToken(token: string, req: Request): { scop
   } as unknown as Response;
   requirePortalToken(synthetic, sink, () => { passed = true; });
   if (!passed) return null;
-  const context = getPortalAuthContext(synthetic);
-  if (!context || context.matchedCredential !== 'session') return null;
+  // A ps_ bearer can only pass the guard as a session credential, and every
+  // session carries its scope, actor and expiry — the guard verified them.
+  const context = getPortalAuthContext(synthetic) as PortalAuthContext;
   return {
-    scope: context.sessionScope ?? context.requiredScope,
-    actor: context.actorHint ?? null,
-    expiresAt: context.sessionExpiresAt ?? null,
+    scope: context.sessionScope as PortalTokenScope,
+    actor: context.actorHint,
+    expiresAt: context.sessionExpiresAt as number,
   };
 }
 
@@ -174,7 +176,7 @@ export function registerPortalSessionRoutes(app: Express): void {
       // A pre-minted ps_ session token becomes the cookie session as-is.
       const presented = verifyPresentedSessionToken(provided, req);
       if (presented) {
-        const remainingMs = presented.expiresAt ? Math.max(0, presented.expiresAt - Date.now()) : Math.min(DEFAULT_SESSION_TTL_MS, s.sessionMaxAgeMs);
+        const remainingMs = Math.max(0, presented.expiresAt - Date.now());
         res.setHeader('Set-Cookie', buildSessionCookie(provided, remainingMs / 1000, requestIsSecure(req)));
         res.setHeader('Cache-Control', 'no-store');
         logger.info({ scope: presented.scope, actor: presented.actor, source: 'presented-session' }, 'Portal session adopted');
@@ -182,7 +184,7 @@ export function registerPortalSessionRoutes(app: Express): void {
           ok: true,
           scope: presented.scope,
           actor: presented.actor,
-          expiresAt: presented.expiresAt ? new Date(presented.expiresAt).toISOString() : null,
+          expiresAt: new Date(presented.expiresAt).toISOString(),
           csrf: computePortalCsrfToken(s.sessionSecret, provided),
         });
         return;
