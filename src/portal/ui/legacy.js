@@ -65,13 +65,14 @@
         startApp();
         return;
       }
-      if (sessionRes.status !== 503) {
-        errEl.textContent = sessionRes.status === 429 ? 'Too many attempts, wait a minute' : 'Invalid token';
+      if (sessionRes.status === 429) {
+        errEl.textContent = 'Too many attempts, wait a minute';
         btn.disabled = false;
         btn.textContent = 'Sign In';
         return;
       }
-      // 503: sessions are not configured on this deployment → bearer flow.
+      // 503 (sessions not configured) or a token the session route does not
+      // accept: fall back to the bearer probe that predates cookie sessions.
       const res = await fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + t } });
       if (res.ok) {
         TOKEN = t;  // In-memory only — no localStorage

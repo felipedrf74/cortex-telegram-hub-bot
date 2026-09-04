@@ -36,7 +36,7 @@ import {
   secureSecretMatches,
 } from '../api/secret-guards';
 import { mintPortalSessionToken } from '../services/portal-session-mint';
-import { sanitizePortalActorHint, type PortalTokenScope } from '../services/portal-session-token';
+import { PORTAL_SESSION_PREFIX, sanitizePortalActorHint, type PortalTokenScope } from '../services/portal-session-token';
 import { logger } from '../utils/logger';
 import { sendPortalInternalError } from './http';
 
@@ -47,6 +47,7 @@ const DEFAULT_ACTOR = 'portal-operator';
 export interface PortalSessionSettings {
   sessionSecret: string;
   sessionMaxAgeMs: number;
+  requireSessionAuth: boolean;
   legacyToken: string;
   readToken: string;
   writeToken: string;
@@ -58,6 +59,7 @@ function settings(): PortalSessionSettings {
   return {
     sessionSecret: config.portal.sessionSecret || '',
     sessionMaxAgeMs: Number.isFinite(config.portal.sessionMaxAgeMs) ? config.portal.sessionMaxAgeMs : DEFAULT_SESSION_TTL_MS,
+    requireSessionAuth: config.portal.requireSessionAuth === true,
     legacyToken: config.portal.token || '',
     readToken: config.portal.readToken || '',
     writeToken: config.portal.writeToken || '',
@@ -80,6 +82,40 @@ export function resolveScopeForPortalToken(provided: string, s: PortalSessionSet
   const scopedConfigured = Boolean(s.readToken || s.writeToken || s.adminToken);
   if (s.legacyToken && (!scopedConfigured || s.allowLegacyFallback) && secureSecretMatches(s.legacyToken, provided)) return 'admin';
   return null;
+}
+
+/**
+ * Verifies a pre-minted `ps_` session token (the credential operators use when
+ * PORTAL_REQUIRE_SESSION_AUTH is on) by running the portal read guard against
+ * a synthetic bearer request, so verification stays in secret-guards.
+ */
+export function verifyPresentedSessionToken(token: string, req: Request): { scope: PortalTokenScope; actor: string | null; expiresAt: number | null } | null {
+  if (!token.startsWith(PORTAL_SESSION_PREFIX)) return null;
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  const synthetic = {
+    method: 'GET',
+    path: req.path,
+    ip: req.ip,
+    headers,
+    header: (name: string) => headers[name.toLowerCase()],
+    get: (name: string) => headers[name.toLowerCase()],
+  } as unknown as Request;
+  let passed = false;
+  const sink = {
+    status() { return sink; },
+    json() { return sink; },
+    setHeader() { /* ignored */ },
+    set() { return sink; },
+  } as unknown as Response;
+  requirePortalToken(synthetic, sink, () => { passed = true; });
+  if (!passed) return null;
+  const context = getPortalAuthContext(synthetic);
+  if (!context || context.matchedCredential !== 'session') return null;
+  return {
+    scope: context.sessionScope ?? context.requiredScope,
+    actor: context.actorHint ?? null,
+    expiresAt: context.sessionExpiresAt ?? null,
+  };
 }
 
 function requestIsSecure(req: Request): boolean {
@@ -134,7 +170,25 @@ export function registerPortalSessionRoutes(app: Express): void {
       }
       const body = (req.body && typeof req.body === 'object' ? req.body : {}) as { token?: unknown; actor?: unknown };
       const provided = typeof body.token === 'string' ? body.token.trim() : '';
-      const scope = resolveScopeForPortalToken(provided, s);
+
+      // A pre-minted ps_ session token becomes the cookie session as-is.
+      const presented = verifyPresentedSessionToken(provided, req);
+      if (presented) {
+        const remainingMs = presented.expiresAt ? Math.max(0, presented.expiresAt - Date.now()) : Math.min(DEFAULT_SESSION_TTL_MS, s.sessionMaxAgeMs);
+        res.setHeader('Set-Cookie', buildSessionCookie(provided, remainingMs / 1000, requestIsSecure(req)));
+        res.setHeader('Cache-Control', 'no-store');
+        logger.info({ scope: presented.scope, actor: presented.actor, source: 'presented-session' }, 'Portal session adopted');
+        res.json({
+          ok: true,
+          scope: presented.scope,
+          actor: presented.actor,
+          expiresAt: presented.expiresAt ? new Date(presented.expiresAt).toISOString() : null,
+          csrf: computePortalCsrfToken(s.sessionSecret, provided),
+        });
+        return;
+      }
+      // Session-only deployments never accept static tokens, exactly like the guards.
+      const scope = s.requireSessionAuth ? null : resolveScopeForPortalToken(provided, s);
       if (!scope) {
         logger.warn({ ip: extractClientIp(req) }, 'Portal session sign-in rejected');
         res.status(401).json({ ok: false, message: 'Invalid portal token' });
