@@ -25,31 +25,91 @@ const hoisted = vi.hoisted(() => ({
   sendPortalInternalError: vi.fn(),
 }));
 
-vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db }));
+vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db,
+  applyMigrationFileForTest: vi.fn(),
+  closeDatabase: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn(),
+  initializeDatabaseCore: vi.fn(),
+  runMigrationsForTest: vi.fn(),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+  withReleaseMaintenanceDatabase: vi.fn(),
+}));
 vi.mock('../../src/config', () => ({ config: { app: { timezone: 'UTC' } } }));
 vi.mock('../../src/api/secret-guards', () => ({
   requirePortalAdminToken: (_req: unknown, _res: unknown, next: () => void) => next(),
+  allowLocalHealthBypass: vi.fn(),
+  allowLocalPortalBypass: vi.fn(),
+  bearerTokenMatches: vi.fn(),
+  computePortalActorSignature: vi.fn(),
+  computePortalCsrfToken: vi.fn(),
+  createPortalSessionToken: vi.fn(),
+  extractBearerToken: vi.fn(),
+  extractPortalActorHint: vi.fn(),
+  getPortalAuthContext: vi.fn(),
+  isLoopbackRequest: vi.fn(),
+  rejectCookieSessionCsrf: vi.fn(),
+  requirePortalToken: vi.fn(),
+  requirePortalTokenByMethod: vi.fn(),
+  requirePortalWriteToken: vi.fn(),
+  secureSecretMatches: vi.fn(),
+  verifyPortalActorSignature: vi.fn(),
 }));
-vi.mock('../../src/portal/admin-audit', () => ({ logPortalAdminMutation: hoisted.logPortalAdminMutation }));
+vi.mock('../../src/portal/admin-audit', () => ({ logPortalAdminMutation: hoisted.logPortalAdminMutation,
+  buildPortalAdminAuditDetails: vi.fn(),
+  insertPortalAdminMutationAuditStrict: vi.fn(),
+}));
 vi.mock('../../src/portal/http', () => ({ sendPortalInternalError: hoisted.sendPortalInternalError }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  LOGGER_REDACTION_PATHS: vi.fn(),
 }));
 vi.mock('../../src/portal/telemetry', () => ({
   getJobMap: () => hoisted.jobMap,
   getJobStatuses: () => [...hoisted.jobMap.values()].map(({ wrappedFn: _fn, ...rest }) => rest),
   isJobEnabled: (name: string) => !hoisted.disabled.has(name),
+  ScheduledJobLeaseLostError: vi.fn(),
+  ScheduledJobLeaseStoreUnavailableError: vi.fn(),
+  _resetTelemetryForTests: vi.fn(),
+  getGarminRefreshStatus: vi.fn(),
+  getLastMessageAt: vi.fn(),
+  getRecentEvents: vi.fn(),
+  isBotPollingActive: vi.fn(),
+  isRestarting: vi.fn(),
+  pushEvent: vi.fn(),
+  recordGarminRefresh: vi.fn(),
+  recordMessageProcessed: vi.fn(),
+  registerJob: vi.fn(),
+  seedJobLastRunFromHistory: vi.fn(),
+  setBotPollingActive: vi.fn(),
+  setDbProvider: vi.fn(),
+  setIsRestarting: vi.fn(),
+  setJobEnabledChecker: vi.fn(),
+  setJobFailureNotifier: vi.fn(),
+  wrapJob: vi.fn(),
 }));
 vi.mock('../../src/services/agent-job-manifest', () => ({
   loadAgentJobManifest: () => ({ jobs: hoisted.manifestJobs }),
+  assertAgentEventHandlerRuntimeParity: vi.fn(),
+  assertAgentJobRuntimeRegistration: vi.fn(),
+  assertAgentQueuedJobHandlerRuntimeParity: vi.fn(),
+  getAgentJobManifestEntry: vi.fn(),
+  resetAgentJobManifestForTests: vi.fn(),
 }));
 vi.mock('../../src/services/content-agent-lifecycle', () => ({
   isPausedContentAgent: (id: string) => hoisted.pausedAgents.has(id),
+  CONTENT_AGENT_LIFECYCLE_POLICY_VERSION: vi.fn(),
+  PAUSED_CONTENT_AGENT_IDS: vi.fn(),
+  filterActiveContentAgentSignals: vi.fn(),
+  isActiveContentAgentSignal: vi.fn(),
 }));
 vi.mock('../../src/portal/actions', () => ({
   PORTAL_ACTION_COOLDOWN_MS: 30_000,
   isPortalActionRateLimited: (action: string) => Date.now() - (hoisted.cooldowns.get(action) ?? 0) < 30_000,
   recordPortalAction: (action: string) => { hoisted.cooldowns.set(action, Date.now()); },
+  VALID_PORTAL_ACTIONS: vi.fn(),
+  handlePortalAction: vi.fn(),
+  resetPortalActionCooldownsForTests: vi.fn(),
 }));
 
 import { registerPortalJobsRoutes, resolveManualRunPolicy } from '../../src/portal/jobs-routes';
