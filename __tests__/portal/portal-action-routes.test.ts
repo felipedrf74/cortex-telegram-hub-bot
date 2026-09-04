@@ -12,6 +12,7 @@ const hoisted = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
 }));
 

@@ -45,6 +45,7 @@ vi.mock('../../src/services/user-service', () => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
   getPortalAuthContext: vi.fn(() => ({ actorHint: 'felipe', matchedCredential: 'admin' })),
 }));

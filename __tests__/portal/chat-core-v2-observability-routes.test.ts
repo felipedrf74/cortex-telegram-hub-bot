@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   allowLocalHealthBypass: vi.fn(),
   allowLocalPortalBypass: vi.fn(),
   bearerTokenMatches: vi.fn(),

@@ -23,6 +23,7 @@ vi.mock('../../src/services/user-service', () => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   getPortalAuthContext: (...args: unknown[]) => hoisted.getPortalAuthContext(...args),
 }));
 

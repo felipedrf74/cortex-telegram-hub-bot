@@ -22,6 +22,7 @@ vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db,
   withReleaseMaintenanceDatabase: vi.fn(),
 }));
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
   getPortalAuthContext: () => ({ actorHint: 'felipe' }),
   extractPortalActorHint: () => undefined,
