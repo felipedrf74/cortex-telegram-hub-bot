@@ -2346,6 +2346,26 @@
           }
         ],
         "reason": "The admin-data suite's two audit assertions moved from whole-payload toEqual to toMatchObject plus the new ordered, filterable SQL and the rate-limited middleware chain; the WHERE builder behavior is owned by the dedicated audit filter suite."
+      },
+      {
+        "test": "__tests__/portal/portal-static-ui-modules.test.ts",
+        "replacementTests": [
+          "__tests__/portal/portal-static-ui-modules.test.ts"
+        ],
+        "sources": [
+          "src/portal/static-routes.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/portal/static-routes.ts:218-226",
+            "anchor": "return Math.max(configured, PORTAL_ASSET_RATE_LIMIT_FLOOR);",
+            "behavior": "The UI asset ceiling comes from PORTAL_ASSET_RATE_LIMIT (default 1200 per minute), is never lowered below the 600 floor, never reads PORTAL_API_RATE_LIMIT, and the module limiter is built from exactly that value.",
+            "replacementTest": "__tests__/portal/portal-static-ui-modules.test.ts",
+            "ownerTestNamePattern": "sizes the asset ceiling from PORTAL_ASSET_RATE_LIMIT with a floor above the module count$",
+            "minimumMutants": 2
+          }
+        ],
+        "reason": "The limiter tests that sized the asset ceiling from PORTAL_API_RATE_LIMIT were replaced by a resolver unit test plus behavioural tests for the dedicated PORTAL_ASSET_RATE_LIMIT and its floor; the ceiling resolution is the retained owner evidence."
       }
     ],
     "ownerTestMappings": [],
