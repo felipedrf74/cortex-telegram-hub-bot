@@ -13,7 +13,12 @@ const legacyScript = fs.readFileSync(
 // The SPA script now ships as /portal/ui/legacy.js (no inline script under the strict CSP);
 // re-inline it here so the assertions below see the page exactly as the browser executes it.
 // (function replacer: a replacement string would expand the $-patterns the script contains)
-const portalHtml = portalMarkup.replace('<script src="/portal/ui/legacy.js"></script>', () => '<script>\n' + legacyScript + '\n</script>');
+const uiDir = path.join(process.cwd(), 'src', 'portal', 'ui');
+const sectionModules = fs.readdirSync(uiDir)
+  .filter((f) => f.endsWith('.js') && f !== 'legacy.js')
+  .map((f) => fs.readFileSync(path.join(uiDir, f), 'utf8'))
+  .join('\n');
+const portalHtml = portalMarkup.replace('<script src="/portal/ui/legacy.js"></script>', () => '<script>\n' + legacyScript + '\n</script>') + '\n' + sectionModules;
 
 describe('portal Cooking browser UI', () => {
   it('keeps the portal script syntactically valid', () => {
