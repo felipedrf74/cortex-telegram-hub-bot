@@ -166,7 +166,7 @@ export function registerPortalSessionRoutes(app: Express): void {
     }
   });
 
-  app.get('/api/auth/session', requirePortalToken, (req: Request, res: Response) => {
+  app.get('/api/auth/session', loginLimiter, requirePortalToken, (req: Request, res: Response) => {
     try {
       const s = settings();
       const context = getPortalAuthContext(req);
@@ -188,7 +188,7 @@ export function registerPortalSessionRoutes(app: Express): void {
     }
   });
 
-  app.post('/api/auth/session/logout', (req: Request, res: Response) => {
+  app.post('/api/auth/session/logout', loginLimiter, (req: Request, res: Response) => {
     res.setHeader('Set-Cookie', buildSessionCookie('', 0, requestIsSecure(req)));
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true });

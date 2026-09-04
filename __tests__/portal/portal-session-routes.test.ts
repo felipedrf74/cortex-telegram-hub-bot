@@ -131,8 +131,8 @@ describe('portal session routes', () => {
   it('registers the session family with a rate limiter on sign-in and the read guard on GET', () => {
     const { routes } = makeApp();
     expect(routes.get('POST /api/auth/session')).toHaveLength(2);
-    expect(routes.get('GET /api/auth/session')?.[0]).toBe(requirePortalToken);
-    expect(routes.get('POST /api/auth/session/logout')).toHaveLength(1);
+    expect(routes.get('GET /api/auth/session')?.[1]).toBe(requirePortalToken);
+    expect(routes.get('POST /api/auth/session/logout')).toHaveLength(2);
   });
 
   it('answers 503 without a session secret and 401 for an unknown token', async () => {

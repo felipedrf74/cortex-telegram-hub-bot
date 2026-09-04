@@ -202,10 +202,13 @@
     setTableError: (tbodyId, colspan, title, err) => setTableError(tbodyId, colspan, title, err),
     showToast: (msg, ok) => showToast(msg, ok),
     adminLoadErrorMessage: (err) => adminLoadErrorMessage(err),
-    sections: {},
-    registerSection(id, def) { this.sections[id] = Object.assign({ mounted: false }, def); },
+    sections: Object.create(null),
+    registerSection(id, def) {
+      if (typeof id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(id)) return;
+      this.sections[id] = Object.assign({ mounted: false }, def);
+    },
     activateSection(id) {
-      const s = this.sections[id];
+      const s = Object.prototype.hasOwnProperty.call(this.sections, id) ? this.sections[id] : undefined;
       if (!s) return;
       if (!s.mounted) {
         const container = document.querySelector('[data-section="' + id + '"]');
