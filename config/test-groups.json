@@ -1867,7 +1867,9 @@
         "src/services/support-tickets.ts",
         "src/services/queue-observability.ts",
         "src/services/runtime-flags-catalog.ts",
-        "__tests__/portal/helpers/**"
+        "__tests__/portal/helpers/**",
+        "src/services/portal-password.ts",
+        "src/tools/portal-password-hash.ts"
       ],
       "tests": [
         "__tests__/domains/**/*.test.ts",

@@ -45,6 +45,7 @@ export interface FakeElement {
   focus: () => void;
   click: () => void;
   closest: (selector: string) => FakeElement | null;
+  matches: (selector: string) => boolean;
 }
 
 export interface FakeResponse {
@@ -121,6 +122,7 @@ function makeElement(id: string, tagName = 'DIV', lookup: (selector: string) => 
     focus: () => {},
     click: () => { (element.listeners.click || []).forEach((fn) => fn({ target: element, preventDefault() {} })); },
     closest: () => null,
+    matches: () => false,
   } as FakeElement;
   return element;
 }
@@ -225,7 +227,14 @@ export function createPortalUiHarness(options: HarnessOptions = {}): Harness {
     URLSearchParams,
     Blob: class { constructor(public parts: unknown[]) {} },
     NexusPortal: bridge,
+    // The shell installs a MutationObserver for data-* driven styles; record it, never fire it.
+    MutationObserver: class { observe() {} disconnect() {} takeRecords() { return []; } },
   };
+  // window-level listeners the shell installs (hashchange, etc.) are recorded like document's.
+  const windowListeners: Record<string, Array<(event: unknown) => unknown>> = {};
+  sandbox.addEventListener = (type: string, fn: (event: unknown) => unknown) => { (windowListeners[type] = windowListeners[type] || []).push(fn); };
+  sandbox.removeEventListener = () => {};
+  sandbox.windowListeners = windowListeners;
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox);

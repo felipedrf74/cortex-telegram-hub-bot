@@ -607,7 +607,19 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
   session survives reloads and every mutating request must carry the
   `x-portal-csrf` proof returned at sign-in (`rejectCookieSessionCsrf`).
   Without the secret the routes answer 503 and the in-memory bearer flow
-  remains. `PORTAL_BETA_HARDENED` defaults to `true` when `NODE_ENV=production`
+  remains. **Operator password** (`GET /api/auth/session/methods`,
+  `POST /api/auth/session/password`): with `PORTAL_OPERATOR_USERNAME` and an
+  scrypt `PORTAL_OPERATOR_PASSWORD_HASH` (from
+  `node dist/tools/portal-password-hash.js`) the overlay shows a username and
+  password form; a correct pair mints the same signed cookie session a
+  pre-minted `ps_` token would, with `PORTAL_OPERATOR_ACTOR` (default the
+  username; it must be on `PORTAL_ADMIN_ACTORS` when that allowlist is set)
+  and `PORTAL_OPERATOR_SCOPE` (default admin), so guards, allowlist and audit
+  (`portal.auth` rows with `method: password`) are unchanged. Five failures per
+  IP and username lock that pair out for 15 minutes; the sign-in routes carry
+  their own limiter and sit outside the generic `/api` guard
+  (`isPortalSessionAuthPath`), which is also what lets the token sign-in POST
+  reach its handler in session-only mode. `PORTAL_BETA_HARDENED` defaults to `true` when `NODE_ENV=production`
   (an explicit value always wins), so a production boot refuses a
   non-beta-safe admin exposure mode unless deliberately overridden. The
   dashboard ships no inline script or stylesheet: `src/portal/ui/legacy.js` is

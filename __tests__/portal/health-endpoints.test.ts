@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import http from 'http';
 import { config as mockedConfig } from '../../src/config';
 import { mintPortalSessionToken } from '../../src/services/portal-session-mint';
+import { hashPortalPassword } from '../../src/services/portal-password';
 
 const RELEASE_SHA = 'a'.repeat(40);
 const RELEASE_ARTIFACT_DIGEST = 'b'.repeat(64);
@@ -1049,6 +1050,42 @@ describe('POST /api/auth/session through createPortalServer()', () => {
     // Everything else under /api stays behind the guard.
     const unauthenticated = await fetch(`http://127.0.0.1:${port}/api/users`);
     expect(unauthenticated.status).toBe(401);
+  });
+
+  it('signs the configured operator in with a username and password through the real chain', async () => {
+    const PASSWORD = 'operator password for the e2e test 42';
+    Object.assign(mockedConfig.portal as Record<string, unknown>, {
+      operatorUsername: 'operator@example.test',
+      operatorPasswordHash: hashPortalPassword(PASSWORD, { N: 1024 }),
+      operatorActor: '',
+      operatorScope: 'admin',
+    });
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const methods = await fetch(`http://127.0.0.1:${port}/api/auth/session/methods`);
+    expect(await methods.json()).toEqual({ ok: true, token: true, password: true });
+
+    const signIn = await fetch(`http://127.0.0.1:${port}/api/auth/session/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'operator@example.test', password: PASSWORD }),
+    });
+    expect(signIn.status).toBe(200);
+    expect(await signIn.json()).toMatchObject({ ok: true, method: 'password', scope: 'admin', actor: 'operator@example.test' });
+    const cookie = signIn.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain('portal_session=');
+
+    const resume = await fetch(`http://127.0.0.1:${port}/api/auth/session`, { headers: { Cookie: cookie.split(';')[0] } });
+    expect(resume.status).toBe(200);
+
+    const wrong = await fetch(`http://127.0.0.1:${port}/api/auth/session/password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'operator@example.test', password: 'not the password at all' }),
+    });
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.get('set-cookie')).toBeNull();
   });
 
   it('still rejects a sign-in that presents no valid session token', async () => {

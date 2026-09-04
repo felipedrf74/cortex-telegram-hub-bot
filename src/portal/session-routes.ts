@@ -50,7 +50,10 @@ export const PORTAL_SESSION_COOKIE = 'portal_session';
  * own limiter and verification. Everything else under /api stays guarded.
  */
 export function isPortalSessionAuthPath(path: string): boolean {
-  return path === '/auth/session' || path === '/auth/session/logout';
+  return path === '/auth/session'
+    || path === '/auth/session/logout'
+    || path === '/auth/session/password'
+    || path === '/auth/session/methods';
 }
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_ACTOR = 'portal-operator';
@@ -130,7 +133,7 @@ export function verifyPresentedSessionToken(token: string, req: Request): { scop
   };
 }
 
-function requestIsSecure(req: Request): boolean {
+export function requestIsSecure(req: Request): boolean {
   if (req.secure) return true;
   const forwarded = (req.header('x-forwarded-proto') || '').toLowerCase();
   return forwarded.split(',').map((part) => part.trim()).includes('https');

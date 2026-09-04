@@ -57,10 +57,80 @@
   let SESSION = null;  // { scope, actor, expiresAt, csrf }
 
   // ────────── Login flow ──────────
+  // Two sign-in methods share the overlay: an operator username + password
+  // (when the deployment configures PORTAL_OPERATOR_USERNAME) and a session
+  // token. Both end in the same cookie session.
+  let LOGIN_METHOD = 'token';
+  let LOGIN_METHODS_PROBED = false;
+  function setLoginMethod(method) {
+    LOGIN_METHOD = method === 'password' ? 'password' : 'token';
+    const passwordForm = document.getElementById('login-password-form');
+    const tokenForm = document.getElementById('login-token-form');
+    const sub = document.getElementById('login-sub');
+    const switchLink = document.getElementById('login-switch');
+    if (passwordForm) passwordForm.hidden = LOGIN_METHOD !== 'password';
+    if (tokenForm) tokenForm.hidden = LOGIN_METHOD === 'password';
+    if (sub) sub.textContent = LOGIN_METHOD === 'password' ? 'Sign in with your operator account' : 'Sign in with your portal access token';
+    if (switchLink) switchLink.textContent = LOGIN_METHOD === 'password' ? 'Use a session token instead' : 'Use username and password';
+    const focusId = LOGIN_METHOD === 'password' ? 'login-username' : 'login-token';
+    setTimeout(() => { const el = document.getElementById(focusId); if (el) el.focus(); }, 50);
+  }
+  async function probeLoginMethods() {
+    if (LOGIN_METHODS_PROBED) return;
+    LOGIN_METHODS_PROBED = true;
+    try {
+      const res = await fetch('/api/auth/session/methods', { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const methods = await res.json();
+      const switchLink = document.getElementById('login-switch');
+      if (switchLink) switchLink.hidden = !methods.password;
+      if (methods.password) setLoginMethod('password');
+    } catch (_) {
+      // token sign-in stays available
+    }
+  }
   function showLoginForm() {
     const overlay = document.getElementById('login-overlay');
     overlay.hidden = false;
-    setTimeout(() => document.getElementById('login-token').focus(), 50);
+    probeLoginMethods();
+    setLoginMethod(LOGIN_METHOD);
+  }
+  function setLoginError(message) {
+    document.getElementById('login-error').textContent = message || '';
+  }
+  async function doLoginPassword(event) {
+    if (event && event.preventDefault) event.preventDefault();
+    const usernameEl = document.getElementById('login-username');
+    const passwordEl = document.getElementById('login-password');
+    const btn = document.getElementById('login-password-btn');
+    const username = (usernameEl.value || '').trim();
+    const password = passwordEl.value || '';
+    if (!username || !password) return;
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    setLoginError('');
+    try {
+      const res = await fetch('/api/auth/session/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) {
+        SESSION = await res.json();
+        TOKEN = '';
+        passwordEl.value = '';
+        hideLoginForm();
+        startApp();
+        return;
+      }
+      if (res.status === 429) setLoginError('Too many attempts, try again later');
+      else if (res.status === 503) setLoginError('Password sign-in is not configured on this deployment');
+      else setLoginError('Invalid username or password');
+    } catch (_) {
+      setLoginError('Network error');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
   }
   function hideLoginForm() {
     document.getElementById('login-overlay').hidden = true;
@@ -116,6 +186,12 @@
   document.getElementById('login-btn').addEventListener('click', doLogin);
   document.getElementById('login-token').addEventListener('keydown', e => {
     if (e.key === 'Enter') doLogin();
+  });
+  document.getElementById('login-password-form').addEventListener('submit', doLoginPassword);
+  document.getElementById('login-switch').addEventListener('click', (e) => {
+    e.preventDefault();
+    setLoginError('');
+    setLoginMethod(LOGIN_METHOD === 'password' ? 'token' : 'password');
   });
   document.getElementById('logout-link').addEventListener('click', async () => {
     TOKEN = '';

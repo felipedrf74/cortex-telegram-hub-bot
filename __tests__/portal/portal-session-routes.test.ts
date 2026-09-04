@@ -16,6 +16,10 @@ const hoisted = vi.hoisted(() => ({
     adminActorSignatureToleranceMs: 300_000,
     betaHardened: false,
     bind: '127.0.0.1',
+    operatorUsername: '',
+    operatorPasswordHash: '',
+    operatorActor: '',
+    operatorScope: 'admin',
   },
 }));
 
@@ -38,6 +42,8 @@ import {
   registerPortalSessionRoutes,
   resolveScopeForPortalToken,
 } from '../../src/portal/session-routes';
+import { PASSWORD_LOCKOUT_WINDOW_MS, _resetPasswordLockoutsForTests, registerPortalSessionPasswordRoutes } from '../../src/portal/session-password-routes';
+import { hashPortalPassword } from '../../src/services/portal-password';
 
 type Handler = (req: any, res: any, next?: () => void) => void;
 
@@ -269,5 +275,103 @@ describe('portal session auth paths bypass the generic /api guard', () => {
     expect(isPortalSessionAuthPath('/snapshot')).toBe(false);
     expect(isPortalSessionAuthPath('/users')).toBe(false);
     expect(isPortalSessionAuthPath('/api/auth/session')).toBe(false);
+  });
+});
+
+describe('operator username + password sign-in', () => {
+  const PASSWORD = 'operator password for tests 42';
+  const HASH = hashPortalPassword(PASSWORD, { N: 1024 });
+
+  function makePasswordApp() {
+    const routes = new Map<string, Handler[]>();
+    const app = {
+      get: vi.fn((p: string, ...h: Handler[]) => { routes.set(`GET ${p}`, h); }),
+      post: vi.fn((p: string, ...h: Handler[]) => { routes.set(`POST ${p}`, h); }),
+    };
+    registerPortalSessionPasswordRoutes(app as any);
+    return routes;
+  }
+  const passwordReq = (username: string, password: string, ip = '203.0.113.7') =>
+    makeReq({ path: '/api/auth/session/password', body: { username, password }, ip, headers: { 'x-forwarded-proto': 'https' } });
+
+  beforeEach(() => {
+    _resetPasswordLockoutsForTests();
+    hoisted.portal.operatorUsername = 'felipe@example.test';
+    hoisted.portal.operatorPasswordHash = HASH;
+    hoisted.portal.operatorActor = '';
+    hoisted.portal.operatorScope = 'admin';
+  });
+
+  it('advertises password sign-in only when the credential and the session secret are configured', async () => {
+    const routes = makePasswordApp();
+    const configured = await run(routes.get('GET /api/auth/session/methods')!, makeReq({ method: 'GET', path: '/api/auth/session/methods' }));
+    expect(configured.payload.body).toEqual({ ok: true, token: true, password: true });
+    hoisted.portal.operatorUsername = '';
+    hoisted.portal.operatorPasswordHash = '';
+    const unconfigured = await run(routes.get('GET /api/auth/session/methods')!, makeReq({ method: 'GET', path: '/api/auth/session/methods' }));
+    expect(unconfigured.payload.body).toEqual({ ok: true, token: true, password: false });
+  });
+
+  it('mints an admin cookie session for the configured operator and returns the CSRF proof', async () => {
+    const routes = makePasswordApp();
+    const out = await run(routes.get('POST /api/auth/session/password')!, passwordReq('Felipe@Example.test', PASSWORD));
+    expect(out.payload.statusCode).toBe(200);
+    expect(out.payload.body).toMatchObject({ ok: true, method: 'password', scope: 'admin', actor: 'felipe@example.test' });
+    expect(out.payload.body.csrf).toBeTruthy();
+    const cookie = out.payload.headers['set-cookie'];
+    expect(cookie).toContain('portal_session=ps_');
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('Secure');
+  });
+
+  it('rejects a wrong username or password without setting a cookie', async () => {
+    const routes = makePasswordApp();
+    const wrongPassword = await run(routes.get('POST /api/auth/session/password')!, passwordReq('felipe@example.test', PASSWORD + 'x'));
+    expect(wrongPassword.payload.statusCode).toBe(401);
+    expect(wrongPassword.payload.headers['set-cookie']).toBeUndefined();
+    const wrongUser = await run(routes.get('POST /api/auth/session/password')!, passwordReq('someone@example.test', PASSWORD));
+    expect(wrongUser.payload.statusCode).toBe(401);
+    expect(wrongUser.payload.body.message).toBe('Invalid username or password');
+  });
+
+  it('locks the username out after five failures, even with the right password, until the window passes', async () => {
+    vi.useFakeTimers();
+    try {
+      const routes = makePasswordApp();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const out = await run(routes.get('POST /api/auth/session/password')!, passwordReq('felipe@example.test', 'wrong password attempt'));
+        expect(out.payload.statusCode).toBe(401);
+      }
+      const locked = await run(routes.get('POST /api/auth/session/password')!, passwordReq('felipe@example.test', PASSWORD));
+      expect(locked.payload.statusCode).toBe(429);
+      expect(locked.payload.headers['retry-after']).toBeTruthy();
+      // A different username on the same IP has its own counter.
+      const otherUser = await run(routes.get('POST /api/auth/session/password')!, passwordReq('someone-else@example.test', PASSWORD));
+      expect(otherUser.payload.statusCode).toBe(401);
+      // The lockout expires with the window.
+      vi.advanceTimersByTime(PASSWORD_LOCKOUT_WINDOW_MS + 1000);
+      const recovered = await run(routes.get('POST /api/auth/session/password')!, passwordReq('felipe@example.test', PASSWORD));
+      expect(recovered.payload.statusCode).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('answers 503 when the credential is not configured and never leaks the hash format in errors', async () => {
+    hoisted.portal.operatorUsername = '';
+    hoisted.portal.operatorPasswordHash = '';
+    const routes = makePasswordApp();
+    const out = await run(routes.get('POST /api/auth/session/password')!, passwordReq('felipe@example.test', PASSWORD));
+    expect(out.payload.statusCode).toBe(503);
+    expect(JSON.stringify(out.payload.body)).not.toContain('scrypt');
+  });
+
+  it('applies the configured actor and scope to the minted session', async () => {
+    hoisted.portal.operatorActor = 'ops@example.test';
+    hoisted.portal.operatorScope = 'read';
+    const routes = makePasswordApp();
+    const out = await run(routes.get('POST /api/auth/session/password')!, passwordReq('felipe@example.test', PASSWORD));
+    expect(out.payload.statusCode).toBe(200);
+    expect(out.payload.body).toMatchObject({ scope: 'read', actor: 'ops@example.test' });
   });
 });

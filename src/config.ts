@@ -636,6 +636,14 @@ export const config = {
     // static tokens remain available unless PORTAL_REQUIRE_SESSION_AUTH=true.
     sessionSecret: process.env.PORTAL_SESSION_SECRET || '',
     sessionMaxAgeMs: optionalInt('PORTAL_SESSION_MAX_AGE_MS', 28800000, { min: 60000 }),
+    // Optional operator username + scrypt password hash for the admin portal.
+    // A successful password sign-in mints the same signed cookie session a
+    // pre-minted token would (actor + scope below), so guards, the actor
+    // allowlist and the audit trail are unchanged. See src/services/portal-password.ts.
+    operatorUsername: (process.env.PORTAL_OPERATOR_USERNAME || '').trim(),
+    operatorPasswordHash: (process.env.PORTAL_OPERATOR_PASSWORD_HASH || '').trim(),
+    operatorActor: (process.env.PORTAL_OPERATOR_ACTOR || '').trim(),
+    operatorScope: (process.env.PORTAL_OPERATOR_SCOPE || 'admin').trim().toLowerCase(),
     requireSessionAuth:
       (process.env.PORTAL_REQUIRE_SESSION_AUTH || 'false') === 'true',
     // Beta readiness flag (Gap 5): when true, the boot preflight refuses to

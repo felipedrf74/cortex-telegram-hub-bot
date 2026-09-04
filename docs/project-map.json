@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "6d30ec0c065d8b2426887fa39245def746db5787303bc1ffd1566eb094f51d90",
-    "baseCommit": "22f76c2247f2b988476a054af9412f6bc9f74dbf",
-    "baseCommitTimestamp": "2026-09-04T19:29:07+01:00",
-    "trackedFiles": 3680,
-    "sourceFiles": 1276
+    "sourceDigest": "6f42294d781a3c991f5d8c5a2274ff3599cf3733dcd18fef84fb4f8760bc1721",
+    "baseCommit": "b8ca4cbb63acdbad9ebe22192f94cd778105311b",
+    "baseCommitTimestamp": "2026-09-04T20:25:27+01:00",
+    "trackedFiles": 3685,
+    "sourceFiles": 1279
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -74,7 +74,7 @@
     {
       "path": "src/portal",
       "owner": "backend",
-      "files": 50
+      "files": 51
     },
     {
       "path": "src/release",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 938
+      "files": 939
     },
     {
       "path": "src/skills",
@@ -124,7 +124,7 @@
     {
       "path": "src/tools",
       "owner": "backend",
-      "files": 29
+      "files": 30
     },
     {
       "path": "src/utils",
@@ -195,6 +195,22 @@
       "localPath": "/api/auth/session/logout",
       "mountPath": "/",
       "source": "src/portal/session-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/session/methods",
+      "localPath": "/api/auth/session/methods",
+      "mountPath": "/",
+      "source": "src/portal/session-password-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/session/password",
+      "localPath": "/api/auth/session/password",
+      "mountPath": "/",
+      "source": "src/portal/session-password-routes.ts",
       "owner": "backend"
     },
     {
@@ -5561,7 +5577,7 @@
     }
   ],
   "tests": {
-    "files": 1365,
+    "files": 1367,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5576,14 +5592,14 @@
       "integration": 4,
       "lib": 1,
       "migrations": 45,
-      "portal": 73,
+      "portal": 74,
       "regression": 1,
       "router": 8,
       "scope": 1,
       "scripts": 113,
       "sdk": 1,
       "security": 24,
-      "services": 846,
+      "services": 847,
       "skills": 12,
       "state": 17,
       "storage": 1,
