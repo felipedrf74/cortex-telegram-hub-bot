@@ -13,6 +13,7 @@ import './audit.js';
 import './invites.js';
 import './founders.js';
 import './waitlist.js';
+import './settings.js';
 import { sseSubscribe } from './sse.js';
 
 const P = window.NexusPortal;

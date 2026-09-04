@@ -173,8 +173,9 @@ describe('portal static routes', () => {
 
   it('keeps portal Stripe Nexus Points note fields bounded and alert rendering escaped', () => {
     const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
-    // Markup plus the SPA script (ui/legacy.js), which was extracted from the inline block for CSP.
-    const html = fs.readFileSync(htmlPath, 'utf8') + fs.readFileSync(path.resolve(__dirname, '../../src/portal/ui/legacy.js'), 'utf8');
+    // Markup plus every SPA script under ui/ (legacy.js and the section modules).
+    const uiDir = path.resolve(__dirname, '../../src/portal/ui');
+    const html = fs.readFileSync(htmlPath, 'utf8') + fs.readdirSync(uiDir).filter((f) => f.endsWith('.js')).map((f) => fs.readFileSync(path.join(uiDir, f), 'utf8')).join('\n');
 
     expect(html).toContain('id="slideout-points-note"');
     expect(html).toContain('maxlength="280"');
@@ -186,8 +187,9 @@ describe('portal static routes', () => {
 
   it('renders owner-only daily/monthly AI budgets, overrides, automation share, and deferrals', () => {
     const htmlPath = path.resolve(__dirname, '../../src/portal/portal.html');
-    // Markup plus the SPA script (ui/legacy.js), which was extracted from the inline block for CSP.
-    const html = fs.readFileSync(htmlPath, 'utf8') + fs.readFileSync(path.resolve(__dirname, '../../src/portal/ui/legacy.js'), 'utf8');
+    // Markup plus every SPA script under ui/ (legacy.js and the section modules).
+    const uiDir = path.resolve(__dirname, '../../src/portal/ui');
+    const html = fs.readFileSync(htmlPath, 'utf8') + fs.readdirSync(uiDir).filter((f) => f.endsWith('.js')).map((f) => fs.readFileSync(path.join(uiDir, f), 'utf8')).join('\n');
 
     expect(html).toContain('AI Plan Budgets');
     expect(html).toContain('Effective plan: ');

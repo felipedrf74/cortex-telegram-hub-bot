@@ -2364,95 +2364,7 @@
 	    }
 	  };
 
-  // ════════════════════════════════════════════════════════════
-  // Settings
-  // ════════════════════════════════════════════════════════════
-  async function loadSettings() {
-    try {
-      const d = await apiJson('/api/settings');
-      const el = document.getElementById('settings-content');
-      const settings = d.settings || [];
-      if (settings.length === 0) {
-        el.innerHTML = '<div class="empty">No settings available (DatabaseConfigProvider not active)</div>';
-        return;
-      }
-      const cats = {};
-      settings.forEach(s => {
-        const c = s.category || 'general';
-        if (!cats[c]) cats[c] = [];
-        cats[c].push(s);
-      });
-      const catIcons = { general: '⚙️', notifications: '🔔', skills: '🧩', ai: '🤖', limits: '🚦' };
-
-      el.innerHTML = Object.entries(cats).map(([cat, items]) => {
-        const icon = catIcons[cat] || '📋';
-        const rows = items.map(s => {
-          const srcBadge = s.locked
-            ? '<span class="badge badge-neutral">🔒 ENV</span>'
-            : s.source === 'database'
-              ? '<span class="badge badge-success">💾 DB</span>'
-              : '<span class="badge badge-neutral">⚙️ Default</span>';
-          let input;
-          if (s.locked) {
-            input = '<input type="text" value="' + esc(String(s.value)) + '" disabled style="opacity:0.6">';
-          } else if (s.options) {
-            const opts = s.options.map(o => '<option value="' + esc(o) + '"' + (o === String(s.value) ? ' selected' : '') + '>' + esc(o) + '</option>').join('');
-            input = '<select data-on="change" data-act="updateSetting" data-args="[&quot;' + s.id + '&quot;,&quot;$value&quot;]">' + opts + '</select>';
-          } else if (s.type === 'boolean') {
-            input = '<select data-on="change" data-act="updateSetting" data-args="[&quot;' + s.id + '&quot;,&quot;$valueBool&quot;]">' +
-              '<option value="true"' + (s.value ? ' selected' : '') + '>Enabled</option>' +
-              '<option value="false"' + (!s.value ? ' selected' : '') + '>Disabled</option>' +
-            '</select>';
-          } else if (s.type === 'number') {
-            input = '<input type="number" value="' + s.value + '" style="max-width:120px" data-on="change" data-act="updateSetting" data-args="[&quot;' + s.id + '&quot;,&quot;$valueNum&quot;]">';
-          } else {
-            input = '<input type="text" value="' + esc(String(s.value)) + '" data-on="change" data-act="updateSetting" data-args="[&quot;' + s.id + '&quot;,&quot;$value&quot;]">';
-          }
-          const resetBtn = (!s.locked && s.source === 'database')
-            ? '<button class="btn btn-xs" data-act="resetSetting" data-args="[&quot;' + s.id + '&quot;]">Reset</button>'
-            : '';
-          return '<div class="flex gap-3" style="align-items:center;margin-bottom:10px">' +
-            '<div style="min-width:200px"><div style="font-weight:500;font-size:12px">' + esc(s.label || s.id) + '</div>' +
-            (s.description ? '<div class="text-tertiary" style="font-size:10px">' + esc(s.description) + '</div>' : '') + '</div>' +
-            '<div style="flex:1;max-width:280px">' + input + '</div>' +
-            srcBadge + resetBtn +
-          '</div>';
-        }).join('');
-        return '<div style="margin-bottom:24px">' +
-          '<div class="card-title" style="margin-bottom:12px">' + icon + ' ' + cat.charAt(0).toUpperCase() + cat.slice(1) + '</div>' +
-          rows +
-        '</div>';
-      }).join('');
-    } catch (err) {
-      setCardError('settings-content', 'Could not load settings', err);
-    }
-  }
-
-  window.updateSetting = async function(id, value) {
-    try {
-      const r = await apiFetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, value }),
-      });
-      const d = await r.json();
-      if (d.ok) showToast(id + ' updated');
-      else showToast('Failed: ' + (d.error || 'unknown'), false);
-      loadSettings();
-    } catch { showToast('Error', false); }
-  };
-  window.resetSetting = async function(id) {
-    try {
-      const r = await apiFetch('/api/settings', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      });
-      const d = await r.json();
-      if (d.ok) showToast(id + ' reset to default');
-      loadSettings();
-    } catch { showToast('Error', false); }
-  };
+  // Settings moved to ui/settings.js (Phase 5 section extraction).
 
   // Invite codes, Founders, Audit Trail and Waitlist moved to ui/*.js (Phase 5 section extraction).
 
@@ -3828,7 +3740,6 @@
     loadErrorDist();
     loadModelIntelligence();
     loadCostByDomain();
-    loadSettings();
     // Load waitlist once on boot so the nav badge shows the pending count
     // even when the operator is on another tab. Subsequent refreshes are
     // driven by the 30s secondary timer below.
@@ -3848,7 +3759,6 @@
       loadErrorDist();
       loadModelIntelligence();
       loadCostByDomain();
-      loadSettings();
       // Refresh users in background if user is on the Users tab
       if (currentSection === 'users') loadUsers();
       if (currentSection === 'alerts') loadOperatorAlerts();
