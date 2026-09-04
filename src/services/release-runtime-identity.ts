@@ -31,9 +31,14 @@ export interface DeployedReleaseIdentity {
 export function readDeployedReleaseIdentity(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DeployedReleaseIdentity | null {
-  const runtimeSha = (env.NEXUS_RELEASE_SHA ?? '').trim();
-  const artifactDigest = (env.NEXUS_RELEASE_ARTIFACT_SHA256 ?? '').trim();
-  const role = (env.NEXUS_RELEASE_ROLE ?? '').trim();
+  // The PM2 release transaction exports NEXUS_RELEASE_SHA / _ARTIFACT_SHA256 /
+  // _ROLE; the continuous-deployment Compose projects export the same facts as
+  // NEXUS_RELEASE_SOURCE_SHA / _BACKEND_DIGEST ("sha256:<hex>") /
+  // _ENVIRONMENT. Either spelling must attest the process; validation is identical.
+  const runtimeSha = ((env.NEXUS_RELEASE_SHA ?? '').trim() || (env.NEXUS_RELEASE_SOURCE_SHA ?? '').trim());
+  const artifactDigest = ((env.NEXUS_RELEASE_ARTIFACT_SHA256 ?? '').trim()
+    || (env.NEXUS_RELEASE_BACKEND_DIGEST ?? '').trim().replace(/^sha256:/i, ''));
+  const role = ((env.NEXUS_RELEASE_ROLE ?? '').trim() || (env.NEXUS_RELEASE_ENVIRONMENT ?? '').trim());
 
   if (!FULL_RUNTIME_SHA.test(runtimeSha)) return null;
   if (!FULL_ARTIFACT_DIGEST.test(artifactDigest)) return null;

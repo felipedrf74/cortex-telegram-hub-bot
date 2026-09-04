@@ -63,3 +63,34 @@ describe('readDeployedReleaseIdentity', () => {
     expect(readDeployedReleaseIdentity({})).toBeNull();
   });
 });
+
+describe('readDeployedReleaseIdentity: Compose release environment', () => {
+  const sha = 'a'.repeat(40);
+  const digest = 'b'.repeat(64);
+
+  it('accepts the continuous-deployment container names as fallbacks', () => {
+    expect(readDeployedReleaseIdentity({
+      NEXUS_RELEASE_SOURCE_SHA: sha,
+      NEXUS_RELEASE_BACKEND_DIGEST: `sha256:${digest}`,
+      NEXUS_RELEASE_ENVIRONMENT: 'production',
+    })).toEqual({ runtimeSha: sha, artifactDigest: digest, role: 'production' });
+  });
+
+  it('prefers the PM2 transaction names when both spellings are present', () => {
+    const pm2Sha = 'c'.repeat(40);
+    expect(readDeployedReleaseIdentity({
+      NEXUS_RELEASE_SHA: pm2Sha,
+      NEXUS_RELEASE_ARTIFACT_SHA256: digest,
+      NEXUS_RELEASE_ROLE: 'staging',
+      NEXUS_RELEASE_SOURCE_SHA: sha,
+      NEXUS_RELEASE_BACKEND_DIGEST: `sha256:${'d'.repeat(64)}`,
+      NEXUS_RELEASE_ENVIRONMENT: 'production',
+    })).toEqual({ runtimeSha: pm2Sha, artifactDigest: digest, role: 'staging' });
+  });
+
+  it('still fails closed on malformed Compose values', () => {
+    expect(readDeployedReleaseIdentity({ NEXUS_RELEASE_SOURCE_SHA: sha.slice(0, 8), NEXUS_RELEASE_BACKEND_DIGEST: `sha256:${digest}`, NEXUS_RELEASE_ENVIRONMENT: 'production' })).toBeNull();
+    expect(readDeployedReleaseIdentity({ NEXUS_RELEASE_SOURCE_SHA: sha, NEXUS_RELEASE_BACKEND_DIGEST: digest.slice(0, 10), NEXUS_RELEASE_ENVIRONMENT: 'production' })).toBeNull();
+    expect(readDeployedReleaseIdentity({ NEXUS_RELEASE_SOURCE_SHA: sha, NEXUS_RELEASE_BACKEND_DIGEST: `sha256:${digest}`, NEXUS_RELEASE_ENVIRONMENT: 'preview' })).toBeNull();
+  });
+});
