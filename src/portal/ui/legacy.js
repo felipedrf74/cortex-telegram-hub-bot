@@ -4,6 +4,29 @@
 // under src/portal/ui/*.js one at a time.
 'use strict';
 (function() {
+
+  // The dashboard CSP serves style-src without 'unsafe-inline', so per-row
+  // dynamic styling (bar widths, provider colours) rides on data-* attributes
+  // and is applied through CSSOM, which the policy allows, as nodes land.
+  const SAFE_CSS_COLOR = /^(#[0-9a-fA-F]{3,8}|var\(--[a-zA-Z0-9-]+(?:,[^;{}]*)?\)|rgba?\([0-9.,\s%]+\)|color-mix\([^;{}]+\)|[a-z]+)$/;
+  const SAFE_CSS_NUMBER = /^-?\d+(\.\d+)?$/;
+  const DYNAMIC_STYLE_SELECTOR = '[data-w],[data-color],[data-bg],[data-opacity]';
+  function applyDynamicStyles(root) {
+    if (!root || root.nodeType !== 1) return;
+    const nodes = root.matches(DYNAMIC_STYLE_SELECTOR) ? [root] : [];
+    nodes.push(...root.querySelectorAll(DYNAMIC_STYLE_SELECTOR));
+    for (const el of nodes) {
+      const { w, color, bg, opacity } = el.dataset;
+      if (w !== undefined && SAFE_CSS_NUMBER.test(w)) el.style.width = w + '%';
+      if (color !== undefined && SAFE_CSS_COLOR.test(color)) el.style.color = color;
+      if (bg !== undefined && SAFE_CSS_COLOR.test(bg)) el.style.background = bg;
+      if (opacity !== undefined && SAFE_CSS_NUMBER.test(opacity)) el.style.opacity = opacity;
+    }
+  }
+  new MutationObserver((records) => {
+    for (const record of records) for (const node of record.addedNodes) applyDynamicStyles(node);
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  applyDynamicStyles(document.documentElement);
   // ════════════════════════════════════════════════════════════
   // Auth: per-tab in-memory token ONLY.
   //
@@ -36,11 +59,11 @@
   // ────────── Login flow ──────────
   function showLoginForm() {
     const overlay = document.getElementById('login-overlay');
-    overlay.style.display = 'flex';
+    overlay.hidden = false;
     setTimeout(() => document.getElementById('login-token').focus(), 50);
   }
   function hideLoginForm() {
-    document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('login-overlay').hidden = true;
   }
   async function doLogin() {
     const input = document.getElementById('login-token');
@@ -238,8 +261,8 @@
   }
 
   function cardErrorHtml(title, err) {
-    return '<div class="empty" style="text-align:left;max-width:620px;margin:0 auto">' +
-      '<div style="font-weight:700;color:var(--error);margin-bottom:6px">' + esc(title) + '</div>' +
+    return '<div class="u-ta-left u-maxw-620 u-m-0-auto empty">' +
+      '<div class="u-fw-700 u-c-error u-mb-6">' + esc(title) + '</div>' +
       '<div class="text-muted">' + esc(adminLoadErrorMessage(err)) + '</div>' +
     '</div>';
   }
@@ -390,10 +413,10 @@
       const messageLabel = plan.dailyMessageLimit == null ? 'messages: —' : 'messages: ' + fmtNum(plan.dailyMessageLimit);
       return '<tr>' +
         '<td><span class="tier-badge tier-' + esc(id) + '">' + esc(plan.displayName || id) + '</span></td>' +
-        '<td><input class="input mono" style="max-width:110px" type="number" min="0" step="0.001" id="plan-daily-' + esc(id) + '" value="' + Number(plan.dailyCostUsd || 0) + '"' + (fixedZero ? ' disabled title="Paid-only invariant"' : '') + '></td>' +
-        '<td><input class="input mono" style="max-width:110px" type="number" min="0" step="0.01" id="plan-monthly-' + esc(id) + '" value="' + Number(plan.monthlyCostUsd || 0) + '"' + (fixedZero ? ' disabled title="Paid-only invariant"' : '') + '></td>' +
+        '<td><input class="u-maxw-110 input mono" type="number" min="0" step="0.001" id="plan-daily-' + esc(id) + '" value="' + Number(plan.dailyCostUsd || 0) + '"' + (fixedZero ? ' disabled title="Paid-only invariant"' : '') + '></td>' +
+        '<td><input class="u-maxw-110 input mono" type="number" min="0" step="0.01" id="plan-monthly-' + esc(id) + '" value="' + Number(plan.monthlyCostUsd || 0) + '"' + (fixedZero ? ' disabled title="Paid-only invariant"' : '') + '></td>' +
         '<td class="mono">$' + backgroundDaily.toFixed(3) + '/day · $' + backgroundMonthly.toFixed(2) + '/month</td>' +
-        '<td class="text-muted" style="font-size:11px">' + tokenLabel + '<br>' + messageLabel + ' (telemetry)</td>' +
+        '<td class="u-fs-11 text-muted">' + tokenLabel + '<br>' + messageLabel + ' (telemetry)</td>' +
         '<td class="text-right"><button class="btn btn-xs" data-save-plan="' + esc(id) + '"' + (fixedZero ? ' disabled title="Free AI budget is fixed at zero"' : '') + '>Save</button></td>' +
       '</tr>';
     }).join('');
@@ -596,12 +619,12 @@
       const ok = i.tokenHealth === 'valid' || i.status === 'polling' || i.status === 'configured';
       const dot = ok ? 'online' : i.tokenHealth === 'warning' ? 'warning' : i.tokenHealth === 'expired' ? 'error' : 'offline';
       const sub = i.lastApiCall ? 'Last call: ' + relativeTime(i.lastApiCall) : i.status || '—';
-      return '<div class="flex-between" style="padding:var(--space-2) var(--space-1);border-bottom:1px solid var(--border)">' +
-        '<div class="flex gap-2" style="align-items:center">' +
+      return '<div class="u-p-space-2-space-1 u-bb-1-solid-border flex-between">' +
+        '<div class="u-ai-center flex gap-2">' +
           '<span class="status-dot ' + dot + '"></span>' +
-          '<span style="font-size:12px">' + esc(i.name) + '</span>' +
+          '<span class="u-fs-12">' + esc(i.name) + '</span>' +
         '</div>' +
-        '<span class="text-tertiary mono" style="font-size:10px">' + esc(sub) + '</span>' +
+        '<span class="u-fs-10 text-tertiary mono">' + esc(sub) + '</span>' +
         '</div>';
     }).join('');
   }
@@ -614,17 +637,17 @@
       el.innerHTML = '<div class="empty">No domain data</div>';
       return;
     }
-    el.innerHTML = '<div class="grid grid-cols-auto" style="gap:var(--space-3)">' + domains.map(d => {
+    el.innerHTML = '<div class="u-gap-space-3 grid grid-cols-auto">' + domains.map(d => {
       const dot = d.active ? 'online' : 'offline';
       return '<div class="provider-card">' +
         '<div class="provider-card-header">' +
-          '<div class="provider-name"><span class="status-dot ' + dot + '" style="margin-right:8px"></span>' + esc(d.label || d.domain) + '</div>' +
+          '<div class="provider-name"><span class="u-mr-8 status-dot ' + dot + '"></span>' + esc(d.label || d.domain) + '</div>' +
           '<span class="domain-tag domain-' + esc(d.domain) + '">' + esc(d.domain) + '</span>' +
         '</div>' +
         '<div class="provider-stats">' +
           '<div>Today: <b>' + (d.messagesToday || 0) + '</b></div>' +
           '<div>Total: <b>' + (d.totalMessages || 0) + '</b></div>' +
-          '<div style="grid-column:span 2">Last: <b>' + (d.lastMessageAt ? relativeTime(d.lastMessageAt) : '—') + '</b></div>' +
+          '<div class="u-col-span-2">Last: <b>' + (d.lastMessageAt ? relativeTime(d.lastMessageAt) : '—') + '</b></div>' +
         '</div>' +
         '</div>';
     }).join('') + '</div>';
@@ -666,10 +689,10 @@
       const subs = s.subSkills.map(sub => {
         const onChange = 'data-on="change" data-act="onSkillToggle" data-args="[&quot;' + esc(s.key) + '&quot;,&quot;' + esc(sub.key) + '&quot;,&quot;$checked&quot;]"';
         const overrideBadge = sub.source === 'override'
-          ? '<span class="badge badge-accent" style="font-size:9px;margin-left:4px">override</span>'
+          ? '<span class="u-fs-9 u-ml-4 badge badge-accent">override</span>'
           : '';
         const toolCount = sub.toolCount != null
-          ? '<span class="text-tertiary mono" style="margin-left:auto;font-size:10px">' + sub.toolCount + ' tools</span>'
+          ? '<span class="u-ml-auto u-fs-10 text-tertiary mono">' + sub.toolCount + ' tools</span>'
           : '';
         return '<div class="sub-skill">' +
           '<label class="toggle">' +
@@ -683,7 +706,7 @@
       }).join('');
       const masterChange = 'data-on="change" data-act="onSkillToggle" data-args="[&quot;' + esc(s.key) + '&quot;,null,&quot;$checked&quot;]"';
       const masterBadge = s.source === 'override'
-        ? '<span class="badge badge-accent" style="font-size:9px;margin-left:4px">override</span>'
+        ? '<span class="u-fs-9 u-ml-4 badge badge-accent">override</span>'
         : '';
       return '<div class="skill-card">' +
         '<div class="skill-header">' +
@@ -695,7 +718,7 @@
             '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
           '</label>' +
         '</div>' +
-        '<div class="text-muted" style="font-size:11px;margin-bottom:8px">' + esc(s.description) + '</div>' +
+        '<div class="u-fs-11 u-mb-8 text-muted">' + esc(s.description) + '</div>' +
         subs +
         '</div>';
     }).join('');
@@ -740,7 +763,7 @@
 
     if (val === 'global') {
       _skillsScopeUserId = null;
-      if (resetBtn) resetBtn.style.display = 'none';
+      if (resetBtn) resetBtn.hidden = true;
       if (hint) hint.textContent = 'Toggles here affect ALL users. Pick a user to set per-user overrides.';
       if (subtitle) subtitle.textContent = 'Skill packages and sub-skill toggles';
       // The snapshot poller picks up skillStatus, so we just force a
@@ -749,7 +772,7 @@
       pollAll();
     } else {
       _skillsScopeUserId = parseInt(val, 10);
-      if (resetBtn) resetBtn.style.display = '';
+      if (resetBtn) resetBtn.hidden = false;
       if (hint) hint.textContent = 'Showing per-user overrides. Toggles affect ONLY this user.';
       if (subtitle) subtitle.textContent = 'Per-user skill overrides — user ID ' + _skillsScopeUserId;
       loadUserSkills(_skillsScopeUserId);
@@ -826,7 +849,7 @@
     }
     tbody.innerHTML = nextRuns.slice(0, 12).map(r => '<tr>' +
       '<td>' + esc(r.label) + '</td>' +
-      '<td><code class="mono" style="font-size:10px">' + esc(r.cronExpression) + '</code></td>' +
+      '<td><code class="u-fs-10 mono">' + esc(r.cronExpression) + '</code></td>' +
       '<td><span class="domain-tag domain-' + esc(r.domain) + '">' + esc(r.domain) + '</span></td>' +
       '<td class="mono">' + esc(r.humanDelta) + '</td>' +
       '</tr>').join('');
@@ -874,7 +897,7 @@
     const needle = jobCtlFilter.trim().toLowerCase();
     const jobs = jobCtlJobs.filter(j => !needle || j.name.toLowerCase().includes(needle) || (j.label || '').toLowerCase().includes(needle) || (j.domain || '').includes(needle));
     if (jobs.length === 0) { el.innerHTML = '<div class="empty">No jobs match</div>'; return; }
-    el.innerHTML = '<div style="overflow-x:auto"><table class="data-table dense"><thead><tr><th>Job</th><th>Cron</th><th>Next run</th><th>Last</th><th class="text-right">24h</th><th>Governance</th><th></th></tr></thead><tbody>' +
+    el.innerHTML = '<div class="u-ovx-auto"><table class="data-table dense"><thead><tr><th>Job</th><th>Cron</th><th>Next run</th><th>Last</th><th class="text-right">24h</th><th>Governance</th><th></th></tr></thead><tbody>' +
       jobs.map(j => {
         const paused = j.lifecycle === 'paused';
         const state = j.running ? 'running' : paused ? 'paused' : !j.enabled ? 'disabled' : (j.lastResult || 'never');
@@ -884,13 +907,13 @@
         const title = denied ? (j.manual.reason || 'manual run denied') : j.running ? 'already running' : !j.runnerAvailable ? 'runner unavailable in this process' : j.cooldownRemainingMs > 0 ? 'cooldown active' : j.manual.policy === 'confirm' ? 'asks for confirmation: ' + j.manual.reason : 'run now';
         const gov = j.governance ? '<span class="text-muted">' + esc(j.governance.policyOwner) + '</span> · <span class="mono" title="provider usage">' + esc(j.governance.providerUsage === 'none' ? 'no provider' : 'provider-capable') + '</span>' : '<span class="text-muted">not in manifest</span>';
         return '<tr>' +
-          '<td><span class="domain-tag domain-' + esc(j.domain || 'system') + '">' + esc(j.domain || 'sys') + '</span> ' + esc(j.label || j.name) + '<div class="mono text-muted" style="font-size:11px">' + esc(j.name) + '</div></td>' +
+          '<td><span class="domain-tag domain-' + esc(j.domain || 'system') + '">' + esc(j.domain || 'sys') + '</span> ' + esc(j.label || j.name) + '<div class="u-fs-11 mono text-muted">' + esc(j.name) + '</div></td>' +
           '<td class="mono">' + esc(j.cronExpression || '—') + '</td>' +
           '<td class="text-muted">' + (j.nextRunAt ? esc(relativeTime(j.nextRunAt)) : '—') + '</td>' +
-          '<td><span class="badge badge-' + cls + '">' + esc(state) + '</span> <span class="text-muted">' + (j.lastRunAt ? esc(relativeTime(j.lastRunAt)) : '') + '</span>' + (j.lastError ? '<div class="mono text-muted" style="font-size:11px" title="' + esc(j.lastError) + '">' + esc(String(j.lastError).slice(0, 60)) + '</div>' : '') + '</td>' +
+          '<td><span class="badge badge-' + cls + '">' + esc(state) + '</span> <span class="text-muted">' + (j.lastRunAt ? esc(relativeTime(j.lastRunAt)) : '') + '</span>' + (j.lastError ? '<div class="u-fs-11 mono text-muted" title="' + esc(j.lastError) + '">' + esc(String(j.lastError).slice(0, 60)) + '</div>' : '') + '</td>' +
           '<td class="text-right mono">' + j.stats24h.runs + (j.stats24h.failed ? ' <span class="badge badge-error">' + j.stats24h.failed + ' failed</span>' : '') + '</td>' +
           '<td>' + gov + '</td>' +
-          '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" data-jobctl="run" data-job="' + esc(j.name) + '" title="' + esc(title) + '"' + (disabled ? ' disabled' : '') + '>' + (j.manual.policy === 'confirm' ? 'Run…' : 'Run') + '</button> ' +
+          '<td class="u-ws-nowrap"><button class="btn btn-ghost btn-sm" data-jobctl="run" data-job="' + esc(j.name) + '" title="' + esc(title) + '"' + (disabled ? ' disabled' : '') + '>' + (j.manual.policy === 'confirm' ? 'Run…' : 'Run') + '</button> ' +
           '<button class="btn btn-ghost btn-sm" data-jobctl="history" data-job="' + esc(j.name) + '">History</button></td></tr>';
       }).join('') + '</tbody></table></div>';
   }
@@ -914,7 +937,7 @@
   async function showJobHistory(name) {
     const box = document.getElementById('jobctl-history');
     if (!box) return;
-    box.style.display = 'block';
+    box.hidden = false;
     box.innerHTML = '<div class="empty">Loading history for ' + esc(name) + '…</div>';
     try {
       const d = await apiJson('/api/jobs/' + encodeURIComponent(name) + '/history' + '?limit=50');
@@ -925,7 +948,7 @@
         rows.map(r => '<tr><td class="text-muted">' + esc(shortDateTime(r.ts)) + '</td><td><span class="badge badge-' + (r.result === 'success' ? 'success' : 'error') + '">' + esc(r.result) + '</span></td><td class="text-right mono">' + (r.durationMs != null ? (r.durationMs / 1000).toFixed(1) + 's' : '—') + '</td><td class="mono text-muted" title="' + esc(r.errorMessage || '') + '">' + esc((r.errorMessage || '').slice(0, 120)) + '</td></tr>').join('') +
         '</tbody></table>');
       const close = document.getElementById('jobctl-history-close');
-      if (close) close.addEventListener('click', () => { box.style.display = 'none'; box.innerHTML = ''; });
+      if (close) close.addEventListener('click', () => { box.hidden = true; box.innerHTML = ''; });
     } catch (err) {
       box.innerHTML = '<div class="empty">' + esc('Could not load history: ' + adminLoadErrorMessage(err)) + '</div>';
     }
@@ -1079,8 +1102,8 @@
     document.getElementById('slideout-user-id').textContent = '@' + (user.username || user.email || '#' + user.id);
 
     // Show suspend or activate
-    document.getElementById('slideout-suspend-btn').style.display = user.status === 'active' && user.tier !== 'owner' ? '' : 'none';
-    document.getElementById('slideout-activate-btn').style.display = user.status !== 'active' ? '' : 'none';
+    document.getElementById('slideout-suspend-btn').hidden = !(user.status === 'active' && user.tier !== 'owner');
+    document.getElementById('slideout-activate-btn').hidden = user.status === 'active';
 
     document.getElementById('user-slideout').classList.add('open');
     document.getElementById('user-slideout-backdrop').classList.add('open');
@@ -1122,7 +1145,7 @@
           : '';
         const subRows = (s.subSkills || []).map(sub => {
           const onChange = 'data-on="change" data-act="toggleUserSkill" data-args="[' + user.id + ',&quot;' + esc(s.skill) + '&quot;,&quot;' + esc(sub.id) + '&quot;,&quot;$checked&quot;]"';
-          return '<div class="sub-skill" style="opacity:' + (s.enabled ? 1 : 0.4) + '">' +
+          return '<div class="sub-skill" data-opacity="' + (s.enabled ? 1 : 0.4) + '">' +
             '<label class="toggle">' +
               '<input type="checkbox" ' + (sub.enabled ? 'checked' : '') + (s.enabled ? '' : ' disabled') + ' ' + onChange + '>' +
               '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
@@ -1140,7 +1163,7 @@
               '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
             '</label>' +
           '</div>' +
-          (oauthBadge ? '<div style="margin-bottom:8px">' + oauthBadge + '</div>' : '') +
+          (oauthBadge ? '<div class="u-mb-8">' + oauthBadge + '</div>' : '') +
           subRows +
         '</div>';
       }).join('');
@@ -1152,9 +1175,9 @@
         ['Notes', summary.notes],
         ['Saved ideas', summary.savedIdeas],
         ['Finance txns', summary.financeTransactions],
-      ].map(([k, v]) => '<div class="flex-between" style="padding:6px 0;border-bottom:1px solid var(--border)">' +
-        '<span class="text-muted" style="font-size:12px">' + k + '</span>' +
-        '<span class="mono" style="font-size:12px">' + (v ?? 0) + '</span>' +
+      ].map(([k, v]) => '<div class="u-p-6-0 u-bb-1-solid-border flex-between">' +
+        '<span class="u-fs-12 text-muted">' + k + '</span>' +
+        '<span class="u-fs-12 mono">' + (v ?? 0) + '</span>' +
       '</div>').join('');
       const pointOptions = (pointsData.packages || []).map(pkg =>
         '<option value="' + esc(pkg.productId) + '">' +
@@ -1170,20 +1193,20 @@
       const pointsCheckoutEnabled = Boolean(pointsData.stripeEnabled && budgetEntitlement.nexusPointsAllowed);
       const budgetPct = value => Math.max(0, Math.min(100, Math.round(Number(value || 0) * 100)));
       const budgetRow = (label, used, cap, fraction, resetAt) =>
-        '<div style="padding:7px 0;border-bottom:1px solid var(--border)">' +
-          '<div class="flex-between"><span class="text-muted" style="font-size:12px">' + esc(label) + '</span>' +
-          '<span class="mono" style="font-size:11px">$' + Number(used || 0).toFixed(4) + ' / $' + Number(cap || 0).toFixed(2) + '</span></div>' +
-          '<div class="progress" style="margin:5px 0 3px"><div class="progress-fill" style="width:' + budgetPct(fraction) + '%"></div></div>' +
-          '<div class="text-muted" style="font-size:10px">' + budgetPct(fraction) + '% · resets ' + esc(resetAt || '—') + '</div>' +
+        '<div class="u-p-7-0 u-bb-1-solid-border">' +
+          '<div class="flex-between"><span class="u-fs-12 text-muted">' + esc(label) + '</span>' +
+          '<span class="u-fs-11 mono">$' + Number(used || 0).toFixed(4) + ' / $' + Number(cap || 0).toFixed(2) + '</span></div>' +
+          '<div class="u-m-5-0-3 progress"><div class="progress-fill" data-w="' + budgetPct(fraction) + '"></div></div>' +
+          '<div class="u-fs-10 text-muted">' + budgetPct(fraction) + '% · resets ' + esc(resetAt || '—') + '</div>' +
         '</div>';
       const deferrals = (budget.recentDeferrals || []).slice(0, 5).map(item =>
-        '<div class="flex-between" style="padding:5px 0;border-bottom:1px solid var(--border)">' +
-          '<span style="font-size:11px">' + esc(item.jobName || item.baseCategory || item.requestSource || 'AI work') + '</span>' +
+        '<div class="u-p-5-0 u-bb-1-solid-border flex-between">' +
+          '<span class="u-fs-11">' + esc(item.jobName || item.baseCategory || item.requestSource || 'AI work') + '</span>' +
           '<span class="badge badge-neutral" title="' + esc(item.createdAt || '') + '">' + esc(item.code || 'deferred') + '</span>' +
         '</div>'
-      ).join('') || '<div class="text-muted" style="font-size:11px">No recorded deferrals.</div>';
-      const budgetPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">AI budget and entitlement</div>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' +
+      ).join('') || '<div class="u-fs-11 text-muted">No recorded deferrals.</div>';
+      const budgetPanel = '<div class="u-mb-space-3 card-title">AI budget and entitlement</div>' +
+        '<div class="u-d-flex u-gap-6 u-flexwrap-wrap u-mb-8">' +
           '<span class="badge badge-neutral">Effective plan: ' + esc(budgetEntitlement.plan || 'free') + '</span>' +
           '<span class="badge badge-' + (budgetEntitlement.aiAccessAllowed ? 'success' : 'error') + '">' +
             (budgetEntitlement.aiAccessAllowed ? 'Interactive AI enabled' : 'AI blocked') + '</span>' +
@@ -1191,42 +1214,42 @@
             (budgetEntitlement.automationAllowed ? 'Automations enabled' : 'Automations disabled') + '</span>' +
           '<span class="badge badge-neutral">' + esc(budgetEntitlement.source || 'unknown') + ':' + esc(budgetEntitlement.status || 'none') + '</span>' +
         '</div>' +
-        (budgetEntitlement.blockReason ? '<div class="text-muted" style="font-size:11px;margin-bottom:8px">Block reason: <code>' + esc(budgetEntitlement.blockReason) + '</code></div>' : '') +
+        (budgetEntitlement.blockReason ? '<div class="u-fs-11 u-mb-8 text-muted">Block reason: <code>' + esc(budgetEntitlement.blockReason) + '</code></div>' : '') +
         budgetRow('Daily included', budgetUsage.dailyCostUsd, effectiveBudget.dailyCostUsd, budgetUsage.dailyFraction, budgetResets.dailyAt) +
         budgetRow('Monthly included', budgetUsage.monthlyCostUsd, effectiveBudget.monthlyCostUsd, budgetUsage.monthlyFraction, budgetResets.monthlyAt) +
         budgetRow('Automation · daily', budgetUsage.automationDailyCostUsd, effectiveBudget.automationDailyCostUsd, budgetUsage.automationDailyFraction, budgetResets.dailyAt) +
         budgetRow('Automation · monthly', budgetUsage.automationMonthlyCostUsd, effectiveBudget.automationMonthlyCostUsd, budgetUsage.automationMonthlyFraction, budgetResets.monthlyAt) +
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 8px">' +
-          '<label class="text-muted" style="font-size:11px">Daily override USD<input id="slideout-ai-daily" class="input" type="number" min="0" step="0.001" value="' + esc(budgetOverride.dailyCostUsd ?? '') + '" placeholder="Plan default"></label>' +
-          '<label class="text-muted" style="font-size:11px">Monthly override USD<input id="slideout-ai-monthly" class="input" type="number" min="0" step="0.01" value="' + esc(budgetOverride.monthlyCostUsd ?? '') + '" placeholder="Plan default"></label>' +
+        '<div class="u-d-grid u-cols-1fr-1fr u-gap-8 u-m-10-0-8">' +
+          '<label class="u-fs-11 text-muted">Daily override USD<input id="slideout-ai-daily" class="input" type="number" min="0" step="0.001" value="' + esc(budgetOverride.dailyCostUsd ?? '') + '" placeholder="Plan default"></label>' +
+          '<label class="u-fs-11 text-muted">Monthly override USD<input id="slideout-ai-monthly" class="input" type="number" min="0" step="0.01" value="' + esc(budgetOverride.monthlyCostUsd ?? '') + '" placeholder="Plan default"></label>' +
         '</div>' +
-        '<input id="slideout-ai-reason" class="input" maxlength="280" value="' + esc(budgetOverride.reason || '') + '" placeholder="Audit reason" style="margin-bottom:8px">' +
-        '<button class="btn btn-sm" data-act="saveUserAiBudget" data-args="[' + user.id + ']" style="width:100%;margin-bottom:10px">Save AI overrides</button>' +
-        '<div class="card-subtitle" style="font-size:11px;margin-bottom:4px">Recent skip reasons</div>' + deferrals +
-        '<div style="margin-bottom:var(--space-5)"></div>';
-      const pointsPanel = '<div class="card-title" style="margin-bottom:var(--space-3)">Nexus Points checkout</div>' +
-        '<div style="display:grid;gap:var(--space-2);margin-bottom:var(--space-5)">' +
+        '<input id="slideout-ai-reason" class="u-mb-8 input" maxlength="280" value="' + esc(budgetOverride.reason || '') + '" placeholder="Audit reason">' +
+        '<button class="u-w-100p u-mb-10 btn btn-sm" data-act="saveUserAiBudget" data-args="[' + user.id + ']">Save AI overrides</button>' +
+        '<div class="u-fs-11 u-mb-4 card-subtitle">Recent skip reasons</div>' + deferrals +
+        '<div class="u-mb-space-5"></div>';
+      const pointsPanel = '<div class="u-mb-space-3 card-title">Nexus Points checkout</div>' +
+        '<div class="u-d-grid u-gap-space-2 u-mb-space-5">' +
           '<select id="slideout-points-package" class="input" ' + (pointsCheckoutEnabled ? '' : 'disabled') + '>' + pointOptions + '</select>' +
           '<textarea id="slideout-points-note" class="input" rows="2" maxlength="280" placeholder="Required support note" ' + (pointsCheckoutEnabled ? '' : 'disabled') + '></textarea>' +
           '<button class="btn btn-sm" data-act="createPortalNexusPointsCheckout" data-args="[' + user.id + ']" ' + (pointsCheckoutEnabled ? '' : 'disabled') + '>Create Stripe checkout URL</button>' +
-          '<div id="slideout-points-result" class="text-muted" style="font-size:12px">' +
+          '<div id="slideout-points-result" class="u-fs-12 text-muted">' +
             (!budgetEntitlement.nexusPointsAllowed ? 'Available only for active paid/founder entitlements.' : '') + '</div>' +
         '</div>';
 
       body.innerHTML =
-        '<div style="display:flex;gap:var(--space-3);margin-bottom:var(--space-5)">' +
+        '<div class="u-d-flex u-gap-space-3 u-mb-space-5">' +
           tier +
           '<span class="badge badge-' + (user.status === 'active' ? 'success' : 'error') + '">' + esc(user.status) + '</span>' +
           '<span class="badge badge-neutral mono">' + limit + '</span>' +
         '</div>' +
-        '<div class="card-title" style="margin-bottom:var(--space-3)">Skill Access</div>' +
-        '<div class="grid" style="gap:var(--space-3);margin-bottom:var(--space-5)">' + skillsHtml + '</div>' +
-        '<div class="card-title" style="margin-bottom:var(--space-3)">Data Summary</div>' +
-        '<div style="margin-bottom:var(--space-4)">' + dataRows + '</div>' +
+        '<div class="u-mb-space-3 card-title">Skill Access</div>' +
+        '<div class="u-gap-space-3 u-mb-space-5 grid">' + skillsHtml + '</div>' +
+        '<div class="u-mb-space-3 card-title">Data Summary</div>' +
+        '<div class="u-mb-space-4">' + dataRows + '</div>' +
         budgetPanel +
         pointsPanel +
         lifecyclePanel +
-        '<button class="btn btn-sm" data-act="openCookingManagerForUser" data-args="[' + user.id + ']" style="width:100%">Open Cooking setup →</button>';
+        '<button class="u-w-100p btn btn-sm" data-act="openCookingManagerForUser" data-args="[' + user.id + ']">Open Cooking setup →</button>';
     } catch (err) {
       body.innerHTML = '<div class="empty">Failed to load user details</div>';
     }
@@ -1234,13 +1257,13 @@
 
   function renderUserLifecyclePanel(user, sessions, lockout, integrations) {
     const devices = (sessions.devices || []).map(d =>
-      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)">' +
+      '<div class="u-d-flex u-jc-space-between u-ai-center u-gap-8 u-p-4-0 u-bb-1-solid-border">' +
         '<div><div>' + esc(d.deviceName || 'Unnamed device') + '</div>' +
-        '<div class="text-muted mono" style="font-size:10px">' + esc(d.deviceId).slice(0, 18) + ' · active ' + (d.lastActiveAt ? relativeTime(d.lastActiveAt) : '—') + (d.hasRefreshToken ? '' : ' · no refresh token') + '</div></div>' +
+        '<div class="u-fs-10 text-muted mono">' + esc(d.deviceId).slice(0, 18) + ' · active ' + (d.lastActiveAt ? relativeTime(d.lastActiveAt) : '—') + (d.hasRefreshToken ? '' : ' · no refresh token') + '</div></div>' +
         '<button class="btn btn-ghost btn-sm" data-act="revokeUserSession" data-args="[' + user.id + ',&quot;' + esc(d.deviceId) + '&quot;]">Sign out</button></div>').join('') || '<div class="text-muted">No signed-in devices</div>';
     const tokens = (sessions.pushTokens || []).filter(t => !t.revokedAt).map(t =>
-      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0">' +
-        '<span class="mono text-muted" style="font-size:11px">…' + esc(t.tokenSuffix) + ' · ' + esc(t.environment) + (t.appVersion ? ' · v' + esc(t.appVersion) : '') + ' · seen ' + relativeTime(t.lastSeenAt) + '</span>' +
+      '<div class="u-d-flex u-jc-space-between u-ai-center u-gap-8 u-p-4-0">' +
+        '<span class="u-fs-11 mono text-muted">…' + esc(t.tokenSuffix) + ' · ' + esc(t.environment) + (t.appVersion ? ' · v' + esc(t.appVersion) : '') + ' · seen ' + relativeTime(t.lastSeenAt) + '</span>' +
         '<button class="btn btn-ghost btn-sm" data-act="revokeUserPushToken" data-args="[' + user.id + ',&quot;' + esc(t.tokenId) + '&quot;]">Revoke</button></div>').join('') || '<div class="text-muted">No active push tokens</div>';
     const lockHtml = !lockout
       ? '<span class="text-muted">unavailable</span>'
@@ -1257,13 +1280,13 @@
           return '<span class="badge badge-' + tone + '" title="' + esc(c && c.expiresAt ? 'expires ' + c.expiresAt : (p.reasonCode || '')) + '">' + esc(p.provider) + ' · ' + esc(p.state) + '</span>';
         }).join(' ')
       : '<span class="text-muted">unavailable</span>';
-    return '<div class="card-title" style="margin:var(--space-4) 0 var(--space-3)">Sessions &amp; devices</div>' +
-      '<div style="margin-bottom:var(--space-2)">' + devices + '</div>' +
-      '<div style="margin-bottom:var(--space-3)"><button class="btn btn-ghost btn-sm" data-act="revokeAllUserSessions" data-args="[' + user.id + ']">Sign out all devices</button></div>' +
-      '<div class="card-title" style="margin-bottom:var(--space-3)">Push tokens</div><div style="margin-bottom:var(--space-4)">' + tokens + '</div>' +
-      '<div class="card-title" style="margin-bottom:var(--space-3)">Security</div><div style="margin-bottom:var(--space-4)">' + lockHtml + '</div>' +
-      '<div class="card-title" style="margin-bottom:var(--space-3)">Integrations</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--space-4)">' + providersHtml + '</div>' +
-      '<div style="margin-bottom:var(--space-4)"><a href="#support" class="btn btn-ghost btn-sm" data-act="openSupportForUser" data-args="[' + user.id + ']">Tickets for this user →</a></div>';
+    return '<div class="u-m-space-4-0-space-3 card-title">Sessions &amp; devices</div>' +
+      '<div class="u-mb-space-2">' + devices + '</div>' +
+      '<div class="u-mb-space-3"><button class="btn btn-ghost btn-sm" data-act="revokeAllUserSessions" data-args="[' + user.id + ']">Sign out all devices</button></div>' +
+      '<div class="u-mb-space-3 card-title">Push tokens</div><div class="u-mb-space-4">' + tokens + '</div>' +
+      '<div class="u-mb-space-3 card-title">Security</div><div class="u-mb-space-4">' + lockHtml + '</div>' +
+      '<div class="u-mb-space-3 card-title">Integrations</div><div class="u-d-flex u-flexwrap-wrap u-gap-6 u-mb-space-4">' + providersHtml + '</div>' +
+      '<div class="u-mb-space-4"><a href="#support" class="btn btn-ghost btn-sm" data-act="openSupportForUser" data-args="[' + user.id + ']">Tickets for this user →</a></div>';
   }
 
   window.revokeUserSession = async function(userId, deviceId) {
@@ -1497,11 +1520,11 @@
             '<div>7d cost<br><b>$' + (p.weekCost).toFixed(3) + '</b></div>' +
           '</div>' +
           (p.failures + p.fallbacks + p.cbOpens > 0
-            ? '<div class="text-tertiary mono" style="font-size:10px;margin-top:6px">' +
+            ? '<div class="u-fs-10 u-mt-6 text-tertiary mono">' +
                 'Errors: ' + p.failures + ' · Fallbacks: ' + p.fallbacks + ' · CB opens: ' + p.cbOpens +
               '</div>'
             : '') +
-          '<div class="text-tertiary mono" style="font-size:10px;margin-top:4px">OK: ' + lastOk + ' · Fail: ' + lastFail + '</div>' +
+          '<div class="u-fs-10 u-mt-4 text-tertiary mono">OK: ' + lastOk + ' · Fail: ' + lastFail + '</div>' +
         '</div>';
       }).join('');
 
@@ -1535,24 +1558,24 @@
         const mkReset = (role, src) => src === 'override'
           ? '<button class="btn btn-xs" data-act="resetModel" data-args="[&quot;' + s.provider + '&quot;,&quot;' + role + '&quot;]">Reset</button>'
           : '';
-        const mkApplyBtn = role => '<span id="apply-' + s.provider + '-' + role + '" style="display:none">' +
+        const mkApplyBtn = role => '<span id="apply-' + s.provider + '-' + role + '" hidden>' +
           '<button class="btn btn-primary btn-xs" data-act="applyModelChange" data-args="[&quot;' + s.provider + '&quot;,&quot;' + role + '&quot;]">Apply</button>' +
         '</span>';
-        const mkRow = (label, role, model, src, opts) => '<div class="flex gap-2" style="align-items:center;margin-bottom:6px">' +
-          '<span class="text-muted" style="min-width:90px;font-size:11px">' + label + '</span>' +
-          '<div style="flex:1">' + mkSelect(role, model, opts) + '</div>' +
+        const mkRow = (label, role, model, src, opts) => '<div class="u-ai-center u-mb-6 flex gap-2">' +
+          '<span class="u-minw-90 u-fs-11 text-muted">' + label + '</span>' +
+          '<div class="u-flex-1">' + mkSelect(role, model, opts) + '</div>' +
           mkApplyBtn(role) + ' ' + mkBadge(src) + ' ' + mkReset(role, src) +
         '</div>';
         const domainRows = s.domains ? Object.entries(s.domains).map(([dom, dd]) => {
           const di = domainIcons[dom] || '⚙️';
           return mkRow(di + ' ' + dom, dom, dd.model, dd.source, allModels(s.provider));
         }).join('') : '';
-        return '<div style="margin-bottom:14px;padding:12px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-lg)">' +
-          '<div style="font-weight:600;margin-bottom:8px;text-transform:capitalize">' + icon + ' ' + esc(s.provider) + '</div>' +
-          '<div class="text-muted" style="font-size:10px;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em">Provider tiers</div>' +
+        return '<div class="u-mb-14 u-p-12 u-bg-bg-tertiary u-b-1-solid-border u-r-radius-lg">' +
+          '<div class="u-fw-600 u-mb-8 u-tt-capitalize">' + icon + ' ' + esc(s.provider) + '</div>' +
+          '<div class="u-fs-10 u-mb-4 u-tt-uppercase u-ls-0-06em text-muted">Provider tiers</div>' +
           mkRow('Chat', 'chat', s.chat.model, s.chat.source, options[s.provider]?.chat || []) +
           mkRow('Classifier', 'classifier', s.classifier.model, s.classifier.source, options[s.provider]?.classifier || []) +
-          (domainRows ? '<div class="text-muted" style="font-size:10px;margin:8px 0 4px;border-top:1px solid var(--border);padding-top:8px;text-transform:uppercase;letter-spacing:0.06em">Per-domain overrides</div>' + domainRows : '') +
+          (domainRows ? '<div class="u-fs-10 u-m-8-0-4 u-bt-1-solid-border u-pt-8 u-tt-uppercase u-ls-0-06em text-muted">Per-domain overrides</div>' + domainRows : '') +
         '</div>';
       }).join('');
     } catch { /* silent */ }
@@ -1562,7 +1585,7 @@
     const sel = document.getElementById('model-sel-' + provider + '-' + role);
     const btn = document.getElementById('apply-' + provider + '-' + role);
     if (!sel || !btn) return;
-    btn.style.display = sel.value !== sel.dataset.original ? '' : 'none';
+    btn.hidden = sel.value === sel.dataset.original;
   };
   window.applyModelChange = async function(provider, role) {
     const sel = document.getElementById('model-sel-' + provider + '-' + role);
@@ -1641,11 +1664,11 @@
       const statusEl = document.getElementById('domain-routing-status');
       if (statusEl) {
         if (!configured) {
-          statusEl.innerHTML = '<span style="color:var(--text-warning)">⚠ GEMINI_API_KEY not set</span>';
+          statusEl.innerHTML = '<span class="u-c-text-warning">⚠ GEMINI_API_KEY not set</span>';
         } else if (!enabled) {
-          statusEl.innerHTML = '<span style="color:var(--text-tertiary)">Gemini routes disabled · ' + openaiCount + ' → openai · ' + anthropicCount + ' → anthropic</span>';
+          statusEl.innerHTML = '<span class="u-c-text-tertiary">Gemini routes disabled · ' + openaiCount + ' → openai · ' + anthropicCount + ' → anthropic</span>';
         } else {
-          statusEl.innerHTML = '<span style="color:var(--text-secondary)">' + geminiCount + ' → gemini · ' + openaiCount + ' → openai · ' + anthropicCount + ' → anthropic</span>';
+          statusEl.innerHTML = '<span class="u-c-text-secondary">' + geminiCount + ' → gemini · ' + openaiCount + ' → openai · ' + anthropicCount + ' → anthropic</span>';
         }
       }
 
@@ -1678,9 +1701,9 @@
         // gemini_domains set on the backend.
         let toggle;
         if (row.isSecretary) {
-          toggle = '<span class="card-subtitle" style="font-size:11px">controlled by Secretary route ↑</span>';
+          toggle = '<span class="u-fs-11 card-subtitle">controlled by Secretary route ↑</span>';
         } else {
-          toggle = '<label class="flex items-center" style="gap:6px;justify-content:flex-end;cursor:pointer;font-size:11px">' +
+          toggle = '<label class="u-gap-6 u-jc-flex-end u-cur-pointer u-fs-11 flex items-center">' +
             '<input type="checkbox" data-domain="' + esc(row.domain) + '"' + (row.geminiEnabled ? ' checked' : '') + ' data-on="change" data-act="togglePerDomain" data-args="[&quot;$el&quot;]" />' +
             '<span>' + (row.geminiEnabled ? 'on Gemini' : 'on Anthropic') + '</span>' +
           '</label>';
@@ -1689,8 +1712,8 @@
         return '<tr>' +
           '<td><strong>' + dIcon + ' ' + esc(row.domain) + '</strong></td>' +
           '<td><span class="' + pillClass + '">' + pIcon + ' ' + esc(row.provider) + '</span>' +
-            (isOverride ? ' <span class="badge badge-accent" style="font-size:10px">override</span>' : '') + '</td>' +
-          '<td><code style="font-size:11px">' + esc(row.model || '—') + '</code></td>' +
+            (isOverride ? ' <span class="u-fs-10 badge badge-accent">override</span>' : '') + '</td>' +
+          '<td><code class="u-fs-11">' + esc(row.model || '—') + '</code></td>' +
           '<td><span class="card-subtitle">' + fIcon + ' ' + esc(row.fallback) + '</span></td>' +
           '<td><span class="card-subtitle">' + defIcon + ' ' + esc(row.defaultProvider) + '</span></td>' +
           '<td class="text-right">' + toggle + '</td>' +
@@ -1759,9 +1782,9 @@
       tbody.innerHTML = rows
         .map((row) => {
           const share = totalHits > 0 ? ((row.count / totalHits) * 100).toFixed(0) + '%' : '—';
-          const muted = row.count === 0 ? ' style="opacity:0.5"' : '';
+          const muted = row.count === 0 ? ' class="u-op-0-5"' : '';
           return '<tr' + muted + '>' +
-            '<td><code style="font-size:11px">' + esc(row.id) + '</code></td>' +
+            '<td><code class="u-fs-11">' + esc(row.id) + '</code></td>' +
             '<td class="text-right">' + row.count + '</td>' +
             '<td class="text-right card-subtitle">' + share + '</td>' +
           '</tr>';
@@ -1845,9 +1868,9 @@
         const pc = a.passRate >= 0.9 ? 'var(--success)' : a.passRate >= 0.6 ? 'var(--warning)' : 'var(--error)';
         return '<tr>' +
           '<td class="mono">' + esc(a.agent) + '</td>' +
-          '<td class="text-right mono" style="color:' + sc + '">' + a.avgScore.toFixed(0) + '</td>' +
+          '<td class="text-right mono" data-color="' + sc + '">' + a.avgScore.toFixed(0) + '</td>' +
           '<td class="text-right">' + a.totalTasks + '</td>' +
-          '<td class="text-right mono" style="color:' + pc + '">' + (a.passRate * 100).toFixed(0) + '%</td>' +
+          '<td class="text-right mono" data-color="' + pc + '">' + (a.passRate * 100).toFixed(0) + '%</td>' +
         '</tr>';
       }).join('') || '<tr><td colspan="4"><div class="empty">No quality scores yet</div></td></tr>';
     } catch { /* silent */ }
@@ -1868,13 +1891,13 @@
       el.innerHTML = insights.map(i => {
         const icon = i.type === 'cost' ? '💸' : i.type === 'summary' ? '📊' : 'ℹ️';
         const bg = i.type === 'cost' ? 'rgba(255,107,53,0.08)' : 'transparent';
-        return '<div style="padding:10px 14px;border-bottom:1px solid var(--border);background:' + bg + '">' +
-          '<div style="display:flex;gap:8px;align-items:start">' +
-            '<span style="font-size:16px">' + icon + '</span>' +
+        return '<div class="u-p-10-14 u-bb-1-solid-border" data-bg="' + bg + '">' +
+          '<div class="u-d-flex u-gap-8 u-ai-start">' +
+            '<span class="u-fs-16">' + icon + '</span>' +
             '<div>' +
-              '<div style="font-weight:600;font-size:13px;color:var(--text-primary)">' + esc(i.title) + '</div>' +
-              '<div style="font-size:12px;color:var(--text-secondary);margin-top:2px">' + esc(i.detail) + '</div>' +
-              (i.impact ? '<div style="font-size:11px;color:var(--accent);margin-top:4px;font-weight:600">' + esc(i.impact) + '</div>' : '') +
+              '<div class="u-fw-600 u-fs-13 u-c-text-primary">' + esc(i.title) + '</div>' +
+              '<div class="u-fs-12 u-c-text-secondary u-mt-2">' + esc(i.detail) + '</div>' +
+              (i.impact ? '<div class="u-fs-11 u-c-accent u-mt-4 u-fw-600">' + esc(i.impact) + '</div>' : '') +
             '</div>' +
           '</div>' +
         '</div>';
@@ -1900,12 +1923,12 @@
         const pct = ((count / total) * 100).toFixed(0);
         const colors = { syntax: '#FF6B35', test_failure: '#FFD60A', rate_limit: '#BF5AF2', timeout: '#5AC8FA', integration: '#34C759', context_overflow: '#FF9F0A', unknown: '#48484A' };
         const color = colors[cat] || '#48484A';
-        return '<div class="flex gap-3" style="align-items:center;margin:8px 0">' +
-          '<span class="mono" style="min-width:140px;color:' + color + ';font-size:11px">' + esc(cat) + '</span>' +
-          '<div style="flex:1;height:8px;background:var(--bg-tertiary);border-radius:var(--radius-full);overflow:hidden">' +
-            '<div style="width:' + pct + '%;height:100%;background:' + color + '"></div>' +
+        return '<div class="u-ai-center u-m-8-0 flex gap-3">' +
+          '<span class="u-minw-140 u-fs-11 mono" data-color="' + color + '">' + esc(cat) + '</span>' +
+          '<div class="u-flex-1 u-h-8 u-bg-bg-tertiary u-r-radius-full u-ov-hidden">' +
+            '<div class="u-h-100p" data-w="' + pct + '" data-bg="' + color + '"></div>' +
           '</div>' +
-          '<span class="mono" style="min-width:40px;text-align:right;font-size:11px">' + count + '</span>' +
+          '<span class="u-minw-40 u-ta-right u-fs-11 mono">' + count + '</span>' +
         '</div>';
       }).join('');
     } catch { /* silent */ }
@@ -1964,7 +1987,7 @@
         };
         splitEl.innerHTML = (d.providerSplit || []).map(p => {
           const color = providerColors[p.provider] || '#888';
-          return '<span><span style="color:' + color + '">●</span> ' +
+          return '<span><span data-color="' + color + '">●</span> ' +
             esc(p.provider) + ' <strong>$' + (p.cost || 0).toFixed(3) + '</strong>' +
             ' <span class="text-tertiary">(' + (p.percentOfCost || 0).toFixed(1) + '%)</span>' +
             '</span>';
@@ -2054,22 +2077,22 @@
         const p95Ms = Math.round(r.p95DurationMs || 0).toLocaleString();
         // Warn color if p95 is > 2× avg (wide distribution, long tail)
         const p95Color = (r.p95DurationMs > r.avgDurationMs * 2)
-          ? 'color:var(--warning, #f59e0b)'
+          ? 'var(--warning, #f59e0b)'
           : '';
         return '<tr>' +
-          '<td><span style="margin-right:6px">' + icon + '</span>' +
-            '<span class="mono" style="font-size:11px">' + esc(r.category) + '</span>' +
+          '<td><span class="u-mr-6">' + icon + '</span>' +
+            '<span class="u-fs-11 mono">' + esc(r.category) + '</span>' +
           '</td>' +
-          '<td><span class="mono" style="font-size:11px;color:' + pColor + '">● ' + esc(r.provider) + '</span></td>' +
-          '<td><span class="mono" style="font-size:10px;color:var(--text-tertiary)">' + esc(shortModel(r.model)) + '</span></td>' +
-          '<td class="text-right mono" style="font-size:11px">' + (r.calls || 0).toLocaleString() + '</td>' +
-          '<td class="text-right mono" style="font-size:11px">' + perCallFmt + '</td>' +
-          '<td class="text-right mono" style="font-size:11px">' + Math.round(r.tokens || 0).toLocaleString() + '</td>' +
-          '<td class="text-right mono" style="font-size:11px">' + avgMs + '</td>' +
-          '<td class="text-right mono" style="font-size:11px;' + p95Color + '">' + p95Ms + '</td>' +
-          '<td class="text-right mono" style="position:relative">' +
-            '<div style="position:absolute;left:0;top:50%;transform:translateY(-50%);width:' + barPct + '%;height:70%;background:var(--accent-bg,rgba(255,107,53,0.12));border-radius:3px;z-index:0"></div>' +
-            '<span style="position:relative;z-index:1;font-weight:600">' + costFmt + '</span>' +
+          '<td><span class="u-fs-11 mono" data-color="' + pColor + '">● ' + esc(r.provider) + '</span></td>' +
+          '<td><span class="u-fs-10 u-c-text-tertiary mono">' + esc(shortModel(r.model)) + '</span></td>' +
+          '<td class="u-fs-11 text-right mono">' + (r.calls || 0).toLocaleString() + '</td>' +
+          '<td class="u-fs-11 text-right mono">' + perCallFmt + '</td>' +
+          '<td class="u-fs-11 text-right mono">' + Math.round(r.tokens || 0).toLocaleString() + '</td>' +
+          '<td class="u-fs-11 text-right mono">' + avgMs + '</td>' +
+          '<td class="u-fs-11 text-right mono" data-color="' + p95Color + '">' + p95Ms + '</td>' +
+          '<td class="u-pos-relative text-right mono">' +
+            '<div class="cost-share-bar" data-w="' + barPct + '"></div>' +
+            '<span class="u-pos-relative u-z-1 u-fw-600">' + costFmt + '</span>' +
           '</td>' +
         '</tr>';
       }).join('');
@@ -2182,10 +2205,10 @@
     if (!card) return;
     if (!CONTENT_SCOPE.userId) {
       // No scope active — hide the performance card; it's tenant-only.
-      card.style.display = 'none';
+      card.hidden = true;
       return;
     }
-    card.style.display = '';
+    card.hidden = false;
     document.getElementById('content-performance-meta').textContent = 'Loading…';
     try {
       const params = new URLSearchParams({
@@ -2253,7 +2276,7 @@
     const acceptedHost = document.getElementById('content-perf-top-accepted');
     if (acceptedHost) {
       acceptedHost.innerHTML = accepted.length
-        ? '<ul style="margin:0;padding-left:var(--space-4);font-size:12px">'
+        ? '<ul class="u-m-0 u-pl-space-4 u-fs-12">'
           + accepted.map(t => '<li>' + esc(t.topic) + ' <span class="text-muted">×' + t.count + '</span></li>').join('')
           + '</ul>'
         : '<div class="empty">No accepts yet</div>';
@@ -2262,7 +2285,7 @@
     const rejectedHost = document.getElementById('content-perf-top-rejected');
     if (rejectedHost) {
       rejectedHost.innerHTML = rejected.length
-        ? '<ul style="margin:0;padding-left:var(--space-4);font-size:12px">'
+        ? '<ul class="u-m-0 u-pl-space-4 u-fs-12">'
           + rejected.map(t => '<li>' + esc(t.topic) + ' <span class="text-muted">×' + t.count + '</span></li>').join('')
           + '</ul>'
         : '<div class="empty">No rejects yet</div>';
@@ -2282,10 +2305,10 @@
     const card = document.getElementById('content-canonical-lifecycle-card');
     if (!card) return;
     if (!CONTENT_SCOPE.userId) {
-      card.style.display = 'none';
+      card.hidden = true;
       return;
     }
-    card.style.display = '';
+    card.hidden = false;
     setText('content-canonical-lifecycle-meta', 'Loading…');
     try {
       const params = new URLSearchParams({ userId: String(CONTENT_SCOPE.userId) });
@@ -2341,13 +2364,11 @@
         ? 'rgba(150,150,150,0.06)'
         : `color-mix(in srgb, ${tint} 14%, var(--bg-elevated))`;
       return `
-        <div style="min-width:74px;padding:6px 10px;border-radius:8px;
-                    background:${bg};opacity:${opacity};
-                    text-align:center;font-family:var(--font-mono,inherit)">
-          <div style="font-size:16px;font-weight:700;color:${dimmed ? 'var(--text-tertiary)' : tint}">
+        <div class="bucket-chip" data-bg="${bg}" data-opacity="${opacity}">
+          <div class="u-fs-16 u-fw-700" data-color="${dimmed ? 'var(--text-tertiary)' : tint}">
             ${b.count}
           </div>
-          <div style="font-size:9px;font-weight:600;color:var(--text-secondary);margin-top:2px">
+          <div class="u-fs-9 u-fw-600 u-c-text-secondary u-mt-2">
             ${esc(b.label)}
           </div>
         </div>
@@ -2425,9 +2446,9 @@
         || (tracking && tracking.tracking === 'not_modeled')
       );
       const count = unavailable ? '—' : ((p.stages && p.stages[s]) || 0);
-      return '<div class="kpi-card" style="padding:var(--space-3)">' +
+      return '<div class="u-p-space-3 kpi-card">' +
         '<div class="kpi-label">' + esc(CONTENT_PIPELINE_LABELS[s]) + '</div>' +
-        '<div class="kpi-value" style="font-size:24px">' + (unavailable ? count : fmtNum(count)) + '</div>' +
+        '<div class="u-fs-24 kpi-value">' + (unavailable ? count : fmtNum(count)) + '</div>' +
         '</div>';
     }).join('');
     stagesEl.innerHTML = stageBoxes;
@@ -2452,12 +2473,12 @@
       return;
     }
     recentEl.innerHTML =
-      '<div style="overflow-x:auto"><table class="data-table">' +
+      '<div class="u-ovx-auto"><table class="data-table">' +
       '<thead><tr><th>Topic</th><th>Niche</th><th>Stage</th><th>Updated</th><th>Published</th></tr></thead>' +
       '<tbody>' +
       rows.map(r => {
         const pubCell = r.publishedUrl
-          ? '<a href="' + esc(r.publishedUrl) + '" target="_blank" rel="noopener" style="color:var(--accent)">View</a>'
+          ? '<a href="' + esc(r.publishedUrl) + '" target="_blank" rel="noopener" class="u-c-accent">View</a>'
           : '—';
         return '<tr>' +
           '<td>' + esc(r.topicTitle) + '</td>' +
@@ -2550,10 +2571,10 @@
     // Build the legend
     const legend = document.getElementById('content-agent-legend');
     legend.innerHTML =
-      '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--domain-secretary);margin-right:6px"></span>last run OK</span>' +
-      '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#E25C5C;margin-right:6px"></span>last run failed</span>' +
-      '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--text-tertiary);margin-right:6px"></span>never run</span>' +
-      '<span style="margin-left:auto;font-family:ui-monospace,monospace">' +
+      '<span><span class="u-d-inline-block u-w-8 u-h-8 u-r-50p u-bg-domain-secretary u-mr-6"></span>last run OK</span>' +
+      '<span><span class="u-d-inline-block u-w-8 u-h-8 u-r-50p u-bg-e25c5c u-mr-6"></span>last run failed</span>' +
+      '<span><span class="u-d-inline-block u-w-8 u-h-8 u-r-50p u-bg-text-tertiary u-mr-6"></span>never run</span>' +
+      '<span class="u-ml-auto u-ff-ui-monospace-monospace">' +
       nodes.length + ' agents · ' + edges.length + ' signal routes</span>';
   }
 
@@ -2566,7 +2587,7 @@
     tbody.innerHTML = triggers.map(t => {
       const statusBadge = '<span class="badge badge-' + esc(triggerStatusClass(t.status)) + '">' + esc(t.lifecycle === 'paused' ? 'paused' : (t.lastResult || 'never')) + '</span>';
       return '<tr>' +
-        '<td><div>' + esc(t.label) + '</div><div class="text-muted mono" style="font-size:10px">' + esc(t.name) + '</div></td>' +
+        '<td><div>' + esc(t.label) + '</div><div class="u-fs-10 text-muted mono">' + esc(t.name) + '</div></td>' +
         '<td class="mono">' + esc(t.lifecycle === 'paused' ? 'Paused' : (t.cronHuman || t.cronExpression)) + '</td>' +
         '<td class="text-muted">' + (t.lastRunAt ? shortDateTime(t.lastRunAt) + ' · ' + relativeTime(t.lastRunAt) : '—') + '</td>' +
         '<td class="text-muted mono">' + (t.lastDurationMs != null ? t.lastDurationMs + 'ms' : '—') + '</td>' +
@@ -2593,25 +2614,25 @@
       return;
     }
     el.innerHTML = rows.slice(0, 20).map(b => {
-      const statusBadge = '<span class="badge badge-' +
+      const statusBadge = '<span class="u-fs-10 badge badge-' +
         (b.status === 'extracted' ? 'success' : b.status === 'pending' || b.status === 'extracting' ? 'warning' : 'neutral') +
-        '" style="font-size:10px">' + esc(b.status) + '</span>';
+        '">' + esc(b.status) + '</span>';
       const frameworksPreview = (b.frameworks && b.frameworks.length > 0)
-        ? '<div class="text-muted" style="font-size:11px;margin-top:4px">Frameworks: ' +
+        ? '<div class="u-fs-11 u-mt-4 text-muted">Frameworks: ' +
             esc(b.frameworks.slice(0, 3).join(', ')) + '</div>'
         : '';
       const thesis = b.thesis
-        ? '<div class="text-muted" style="font-size:11px;margin-top:4px;line-height:1.4">' + esc(b.thesis).slice(0, 220) + (b.thesis.length > 220 ? '…' : '') + '</div>'
+        ? '<div class="u-fs-11 u-mt-4 u-lh-1-4 text-muted">' + esc(b.thesis).slice(0, 220) + (b.thesis.length > 220 ? '…' : '') + '</div>'
         : '';
       const actions = b.status === 'failed'
-        ? '<button class="btn btn-ghost btn-sm" style="font-size:10px" data-act="retryBookExtraction" data-args="[' + b.id + ']">🔁 Retry</button>'
+        ? '<button class="u-fs-10 btn btn-ghost btn-sm" data-act="retryBookExtraction" data-args="[' + b.id + ']">🔁 Retry</button>'
         : '';
-      const deleteBtn = '<button class="btn btn-ghost btn-sm" style="font-size:10px;color:var(--error)" data-act="deleteBook" data-args="[' + b.id + ']">✕</button>';
-      return '<div style="padding:var(--space-3) 0;border-bottom:1px solid var(--border)">' +
-        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
-          '<div><div style="font-weight:600;font-size:13px">' + esc(b.title) + '</div>' +
-          '<div class="text-muted" style="font-size:11px">' + esc(b.author) + ' · ' + (b.timesReferenced || 0) + ' refs</div>' +
-          '</div><div style="display:flex;gap:4px;align-items:center">' + actions + deleteBtn + statusBadge + '</div></div>' +
+      const deleteBtn = '<button class="u-fs-10 u-c-error btn btn-ghost btn-sm" data-act="deleteBook" data-args="[' + b.id + ']">✕</button>';
+      return '<div class="u-p-space-3-0 u-bb-1-solid-border">' +
+        '<div class="u-d-flex u-jc-space-between u-ai-flex-start u-gap-space-2">' +
+          '<div><div class="u-fw-600 u-fs-13">' + esc(b.title) + '</div>' +
+          '<div class="u-fs-11 text-muted">' + esc(b.author) + ' · ' + (b.timesReferenced || 0) + ' refs</div>' +
+          '</div><div class="u-d-flex u-gap-4 u-ai-center">' + actions + deleteBtn + statusBadge + '</div></div>' +
         thesis + frameworksPreview +
         '</div>';
     }).join('');
@@ -2637,13 +2658,13 @@
     el.innerHTML = rows.slice(0, 12).map(s => {
       const pri = s.priority === 'urgent' ? 'badge-error' : s.priority === 'normal' ? 'badge-info' : 'badge-neutral';
       const dotColor = s.status === 'active' ? 'var(--domain-secretary)' : 'var(--text-tertiary)';
-      return '<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border);display:flex;gap:var(--space-3);align-items:flex-start">' +
-        '<span style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';margin-top:6px;flex-shrink:0"></span>' +
-        '<div style="flex:1;min-width:0">' +
-        '<div style="font-size:12px;font-weight:500">' + esc(s.summary) + '</div>' +
-        '<div class="text-muted" style="font-size:10px;margin-top:2px">' + esc(s.type) + ' · ' + relativeTime(s.createdAt) + '</div>' +
+      return '<div class="u-p-space-2-0 u-bb-1-solid-border u-d-flex u-gap-space-3 u-ai-flex-start">' +
+        '<span class="signal-dot" data-bg="' + dotColor + '"></span>' +
+        '<div class="u-flex-1 u-minw-0">' +
+        '<div class="u-fs-12 u-fw-500">' + esc(s.summary) + '</div>' +
+        '<div class="u-fs-10 u-mt-2 text-muted">' + esc(s.type) + ' · ' + relativeTime(s.createdAt) + '</div>' +
         '</div>' +
-        '<span class="badge ' + pri + '" style="font-size:10px">' + esc(s.priority) + '</span>' +
+        '<span class="u-fs-10 badge ' + pri + '">' + esc(s.priority) + '</span>' +
         '</div>';
     }).join('');
   }
@@ -2662,27 +2683,27 @@
       chEl.innerHTML = '<div class="empty">No reference channels yet</div>';
     } else {
       chEl.innerHTML = channels.slice(0, 15).map(c => {
-        const statusBadge = '<span class="badge badge-' +
+        const statusBadge = '<span class="u-fs-10 badge badge-' +
           (c.status === 'active' ? 'success' :
            c.status === 'pending' || c.status === 'analyzing' ? 'warning' :
            c.status === 'failed' ? 'error' : 'neutral') +
-          '" style="font-size:10px">' + esc(c.status) + '</span>';
+          '">' + esc(c.status) + '</span>';
         const nameLine = c.name ? esc(c.name) : c.url.slice(0, 48);
         const analyzed = c.videosAnalyzed || 0;
         const lastAt = c.lastAnalyzedAt ? relativeTime(c.lastAnalyzedAt) : 'never';
         const errorLine = c.errorMessage
-          ? '<div class="text-muted" style="font-size:10px;color:#E25C5C">' + esc(c.errorMessage).slice(0, 120) + '</div>'
+          ? '<div class="u-fs-10 u-c-e25c5c text-muted">' + esc(c.errorMessage).slice(0, 120) + '</div>'
           : '';
-        return '<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border)">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
-          '<div style="min-width:0;flex:1"><div style="font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(nameLine) + '</div>' +
-          '<div class="text-muted mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="' + esc(c.url) + '" target="_blank" rel="noopener" style="color:inherit">' + esc(c.url) + '</a></div></div>' +
-          '<div style="display:flex;gap:4px;align-items:center">' +
-            '<button class="btn btn-ghost btn-sm" style="font-size:10px" data-act="reanalyzeChannel" data-args="[' + c.id + ']" title="Re-analyze">🔄</button>' +
-            '<button class="btn btn-ghost btn-sm" style="font-size:10px;color:var(--error)" data-act="deleteChannel" data-args="[' + c.id + ']" title="Remove">✕</button>' +
+        return '<div class="u-p-space-2-0 u-bb-1-solid-border">' +
+          '<div class="u-d-flex u-jc-space-between u-ai-flex-start u-gap-space-2">' +
+          '<div class="u-minw-0 u-flex-1"><div class="u-fw-500 u-fs-12 u-ov-hidden u-to-ellipsis u-ws-nowrap">' + esc(nameLine) + '</div>' +
+          '<div class="u-fs-10 u-ov-hidden u-to-ellipsis u-ws-nowrap text-muted mono"><a href="' + esc(c.url) + '" target="_blank" rel="noopener" class="u-c-inherit">' + esc(c.url) + '</a></div></div>' +
+          '<div class="u-d-flex u-gap-4 u-ai-center">' +
+            '<button class="u-fs-10 btn btn-ghost btn-sm" data-act="reanalyzeChannel" data-args="[' + c.id + ']" title="Re-analyze">🔄</button>' +
+            '<button class="u-fs-10 u-c-error btn btn-ghost btn-sm" data-act="deleteChannel" data-args="[' + c.id + ']" title="Remove">✕</button>' +
             statusBadge +
           '</div></div>' +
-          '<div class="text-muted" style="font-size:10px;margin-top:4px">' + analyzed + ' videos · ' + lastAt + '</div>' +
+          '<div class="u-fs-10 u-mt-4 text-muted">' + analyzed + ' videos · ' + lastAt + '</div>' +
           errorLine +
           '</div>';
       }).join('');
@@ -2694,13 +2715,13 @@
     } else {
       vdEl.innerHTML = videos.slice(0, 15).map(v => {
         const badge = v.hasStudy
-          ? '<span class="badge badge-success" style="font-size:10px">' + esc(v.studyType || 'study') + '</span>'
-          : '<span class="badge badge-neutral" style="font-size:10px">transcript</span>';
+          ? '<span class="u-fs-10 badge badge-success">' + esc(v.studyType || 'study') + '</span>'
+          : '<span class="u-fs-10 badge badge-neutral">transcript</span>';
         const titleLine = v.title || v.videoId;
-        return '<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border)">' +
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
-          '<div style="min-width:0;flex:1"><div style="font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="' + esc(v.youtubeUrl) + '" target="_blank" rel="noopener" style="color:inherit">' + esc(titleLine) + '</a></div>' +
-          '<div class="text-muted" style="font-size:10px">' + esc(v.channelName || '—') + ' · ' + relativeTime(v.createdAt) + '</div></div>' +
+        return '<div class="u-p-space-2-0 u-bb-1-solid-border">' +
+          '<div class="u-d-flex u-jc-space-between u-ai-flex-start u-gap-space-2">' +
+          '<div class="u-minw-0 u-flex-1"><div class="u-fw-500 u-fs-12 u-ov-hidden u-to-ellipsis u-ws-nowrap"><a href="' + esc(v.youtubeUrl) + '" target="_blank" rel="noopener" class="u-c-inherit">' + esc(titleLine) + '</a></div>' +
+          '<div class="u-fs-10 text-muted">' + esc(v.channelName || '—') + ' · ' + relativeTime(v.createdAt) + '</div></div>' +
           badge + '</div></div>';
       }).join('');
     }
@@ -2716,17 +2737,17 @@
       const textPreview = (v.text || '').slice(0, 320);
       const hasMore = (v.text || '').length > 320;
       const id = 'voicedna-' + idx;
-      return '<div class="card" style="background:var(--bg-tertiary)">' +
-        '<div class="card-header" style="margin-bottom:var(--space-2)">' +
-        '<div class="card-title" style="font-size:11px">' + esc(v.label) + '</div>' +
+      return '<div class="u-bg-bg-tertiary card">' +
+        '<div class="u-mb-space-2 card-header">' +
+        '<div class="u-fs-11 card-title">' + esc(v.label) + '</div>' +
         '<span class="card-subtitle">v' + v.version + ' · ' + relativeTime(v.updatedAt) + '</span>' +
         '</div>' +
-        '<div id="' + id + '" style="font-size:12px;line-height:1.5;color:var(--text-primary);white-space:pre-wrap">' + esc(textPreview) + (hasMore ? '…' : '') + '</div>' +
+        '<div id="' + id + '" class="u-fs-12 u-lh-1-5 u-c-text-primary u-ws-pre-wrap">' + esc(textPreview) + (hasMore ? '…' : '') + '</div>' +
         (hasMore
-          ? '<button class="btn btn-sm btn-ghost" style="margin-top:var(--space-2)" data-act="expandVoiceDna" data-args="[' + idx + ']">Expand</button>'
+          ? '<button class="u-mt-space-2 btn btn-sm btn-ghost" data-act="expandVoiceDna" data-args="[' + idx + ']">Expand</button>'
           : '') +
         (v.sources && v.sources.length > 0
-          ? '<div class="text-muted" style="font-size:10px;margin-top:var(--space-2)">Sources: ' + esc(v.sources.slice(0, 4).join(', ')) + (v.sources.length > 4 ? ' +' + (v.sources.length - 4) : '') + '</div>'
+          ? '<div class="u-fs-10 u-mt-space-2 text-muted">Sources: ' + esc(v.sources.slice(0, 4).join(', ')) + (v.sources.length > 4 ? ' +' + (v.sources.length - 4) : '') + '</div>'
           : '') +
         '</div>';
     }).join('');
@@ -2770,10 +2791,10 @@
           '<td class="text-muted">' + (r.lastUsedAt ? relativeTime(r.lastUsedAt) : '—') + '</td>' +
           '</tr>';
       }).join('');
-      return '<div style="margin-bottom:var(--space-4)">' +
-        '<div class="card-title" style="font-size:11px;margin-bottom:var(--space-2)">' + esc(label) + '</div>' +
-        '<div style="overflow-x:auto"><table class="data-table">' +
-        '<thead><tr><th style="width:120px">Command</th><th>Description</th><th class="text-right" style="width:70px">7d</th><th class="text-right" style="width:110px">30d</th><th style="width:110px">Last used</th></tr></thead>' +
+      return '<div class="u-mb-space-4">' +
+        '<div class="u-fs-11 u-mb-space-2 card-title">' + esc(label) + '</div>' +
+        '<div class="u-ovx-auto"><table class="data-table">' +
+        '<thead><tr><th class="u-w-120">Command</th><th>Description</th><th class="u-w-70 text-right">7d</th><th class="u-w-110 text-right">30d</th><th class="u-w-110">Last used</th></tr></thead>' +
         '<tbody>' + rows + '</tbody></table></div></div>';
     }).join('');
   }
@@ -2904,8 +2925,8 @@
   // ── Reaction Radar pillars ────────────────────────────────
   window.togglePillarEditor = function() {
     const ed = document.getElementById('pillar-editor');
-    ed.style.display = ed.style.display === 'none' ? 'block' : 'none';
-    if (ed.style.display === 'block') loadPillars();
+    ed.hidden = !ed.hidden;
+    if (!ed.hidden) loadPillars();
   };
 
   async function loadPillars() {
@@ -2917,11 +2938,11 @@
       const el = document.getElementById('pillar-editor-rows');
       el.innerHTML = rows.map(p => {
         const kws = (p.keywords || []).join(', ');
-        return '<div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:var(--space-2)">' +
-          '<span style="font-size:12px;font-weight:600;min-width:80px">' + esc(p.name) + '</span>' +
-          '<input type="text" value="' + esc(kws) + '" style="flex:1;padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:11px" ' +
+        return '<div class="u-d-flex u-gap-space-2 u-ai-center u-mb-space-2">' +
+          '<span class="u-fs-12 u-fw-600 u-minw-80">' + esc(p.name) + '</span>' +
+          '<input type="text" value="' + esc(kws) + '" class="u-flex-1 u-p-4-8 u-r-radius-sm u-b-1-solid-border u-bg-bg-tertiary u-c-text-primary u-fs-11" ' +
           'onchange="updatePillarKeywords(' + p.id + ', this.value)">' +
-          '<button class="btn btn-ghost btn-sm" style="font-size:11px;color:var(--error)" data-act="deletePillar" data-args="[' + p.id + ']">✕</button>' +
+          '<button class="u-fs-11 u-c-error btn btn-ghost btn-sm" data-act="deletePillar" data-args="[' + p.id + ']">✕</button>' +
           '</div>';
       }).join('');
     } catch { /* silent */ }

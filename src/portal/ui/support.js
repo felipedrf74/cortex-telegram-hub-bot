@@ -39,7 +39,7 @@ async function loadTickets() {
   const tickets = data.tickets || [];
   if (tickets.length === 0) { tbody.innerHTML = '<tr><td colspan="7"><div class="empty">No tickets match</div></td></tr>'; setStatus(''); return; }
   tbody.innerHTML = tickets.map((t) =>
-    '<tr class="sup-row" data-id="' + t.id + '" style="cursor:pointer">' +
+    '<tr class="u-cur-pointer sup-row" data-id="' + t.id + '">' +
     '<td class="mono">' + P.esc(t.ref) + '</td>' +
     '<td><span class="badge badge-' + (PRIORITY_TONE[t.priority] || 'neutral') + '">' + P.esc(t.priority) + '</span></td>' +
     '<td><span class="badge badge-' + (STATUS_TONE[t.status] || 'neutral') + '">' + P.esc(t.status) + '</span></td>' +
@@ -70,13 +70,13 @@ async function link(id, links) {
 }
 
 function select(id, options, value) {
-  return '<select class="input" id="' + id + '" style="max-width:150px">' + options.map((o) => '<option value="' + o + '"' + (o === value ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
+  return '<select class="u-maxw-150 input" id="' + id + '">' + options.map((o) => '<option value="' + o + '"' + (o === value ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
 }
 
 async function openTicket(id) {
   openTicketId = id;
   const panel = root.querySelector('#sup-detail');
-  panel.style.display = 'block';
+  panel.hidden = false;
   panel.innerHTML = '<div class="empty">Loading ticket…</div>';
   const res = await P.apiFetch('/api/support/tickets/' + id);
   if (!res.ok) { panel.innerHTML = '<div class="empty">Ticket not found</div>'; return; }
@@ -84,11 +84,11 @@ async function openTicket(id) {
   const t = data.ticket;
   const events = (data.events || []).map((e) => {
     const meta = e.meta ? Object.entries(e.meta).map(([k, v]) => k + ': ' + (v == null ? '—' : String(v))).join(', ') : '';
-    return '<div style="padding:6px 0;border-bottom:1px solid var(--border)">' +
-      '<span class="text-muted mono" style="font-size:11px">' + P.esc(P.shortDateTime(e.ts)) + '</span> ' +
-      '<span class="badge badge-neutral">' + P.esc(e.type) + '</span> <span class="text-muted" style="font-size:11px">' + P.esc(e.actor) + '</span>' +
-      (e.body ? '<div style="white-space:pre-wrap;margin-top:4px">' + P.esc(e.body) + '</div>' : '') +
-      (meta ? '<div class="text-muted mono" style="font-size:11px;margin-top:2px">' + P.esc(meta) + '</div>' : '') + '</div>';
+    return '<div class="u-p-6-0 u-bb-1-solid-border">' +
+      '<span class="u-fs-11 text-muted mono">' + P.esc(P.shortDateTime(e.ts)) + '</span> ' +
+      '<span class="badge badge-neutral">' + P.esc(e.type) + '</span> <span class="u-fs-11 text-muted">' + P.esc(e.actor) + '</span>' +
+      (e.body ? '<div class="u-ws-pre-wrap u-mt-4">' + P.esc(e.body) + '</div>' : '') +
+      (meta ? '<div class="u-fs-11 u-mt-2 text-muted mono">' + P.esc(meta) + '</div>' : '') + '</div>';
   }).join('');
   const links = [];
   if (t.userId != null) links.push('<a href="#users" class="sup-link-user" data-user="' + t.userId + '">user #' + t.userId + '</a>');
@@ -100,22 +100,22 @@ async function openTicket(id) {
   panel.innerHTML =
     '<div class="card-header"><div class="card-title">🎫 ' + P.esc(t.ref) + ' · ' + P.esc(t.title) + '</div>' +
     '<button class="btn btn-ghost btn-sm" id="sup-close">Close</button></div>' +
-    '<div class="grid grid-cols-4" style="padding:var(--space-3) 0;gap:var(--space-3)">' +
+    '<div class="u-p-space-3-0 u-gap-space-3 grid grid-cols-4">' +
     '<div><div class="kpi-label">Status</div>' + select('sup-f-status', STATUSES, t.status) + '</div>' +
     '<div><div class="kpi-label">Priority</div>' + select('sup-f-priority', PRIORITIES, t.priority) + '</div>' +
     '<div><div class="kpi-label">Kind</div>' + select('sup-f-kind', KINDS, t.kind) + '</div>' +
-    '<div><div class="kpi-label">Assignee</div><input class="input" id="sup-f-assignee" value="' + P.esc(t.assignee || '') + '" placeholder="unassigned" style="max-width:150px"></div></div>' +
-    '<div class="text-muted" style="font-size:12px">source ' + P.esc(t.source) + ' · created ' + P.esc(P.shortDateTime(t.createdAt)) + ' by ' + P.esc(t.createdBy) +
+    '<div><div class="kpi-label">Assignee</div><input class="u-maxw-150 input" id="sup-f-assignee" value="' + P.esc(t.assignee || '') + '" placeholder="unassigned"></div></div>' +
+    '<div class="u-fs-12 text-muted">source ' + P.esc(t.source) + ' · created ' + P.esc(P.shortDateTime(t.createdAt)) + ' by ' + P.esc(t.createdBy) +
     (t.appVersion ? ' · app ' + P.esc(t.appVersion) : '') + (t.osVersion ? ' · ' + P.esc(t.osVersion) : '') + (t.screen ? ' · ' + P.esc(t.screen) : '') + '</div>' +
-    '<div style="margin:var(--space-2) 0;display:flex;flex-wrap:wrap;gap:var(--space-2)">' + (links.join(' · ') || '<span class="text-muted">no links</span>') +
-    ' <span class="text-muted">·</span> <input class="input" id="sup-link-value" placeholder="link issue #, alert #, user # or request id" style="max-width:280px">' +
+    '<div class="u-m-space-2-0 u-d-flex u-flexwrap-wrap u-gap-space-2">' + (links.join(' · ') || '<span class="text-muted">no links</span>') +
+    ' <span class="text-muted">·</span> <input class="u-maxw-280 input" id="sup-link-value" placeholder="link issue #, alert #, user # or request id">' +
     '<button class="btn btn-ghost btn-sm" id="sup-link-btn">Link</button></div>' +
-    (t.body ? '<div class="card-title" style="margin-top:var(--space-3)">Report</div><div style="white-space:pre-wrap">' + P.esc(t.body) + '</div>' : '') +
-    '<div class="card-title" style="margin-top:var(--space-3)">Timeline</div>' + (events || '<div class="text-muted">no events</div>') +
-    '<div style="margin-top:var(--space-3);display:flex;gap:var(--space-2)"><textarea class="input" id="sup-comment" rows="2" placeholder="Operator note (never shown to the user)"></textarea>' +
+    (t.body ? '<div class="u-mt-space-3 card-title">Report</div><div class="u-ws-pre-wrap">' + P.esc(t.body) + '</div>' : '') +
+    '<div class="u-mt-space-3 card-title">Timeline</div>' + (events || '<div class="text-muted">no events</div>') +
+    '<div class="u-mt-space-3 u-d-flex u-gap-space-2"><textarea class="input" id="sup-comment" rows="2" placeholder="Operator note (never shown to the user)"></textarea>' +
     '<button class="btn btn-ghost btn-sm" id="sup-comment-btn">Add note</button></div>';
 
-  panel.querySelector('#sup-close').addEventListener('click', () => { panel.style.display = 'none'; openTicketId = null; });
+  panel.querySelector('#sup-close').addEventListener('click', () => { panel.hidden = true; openTicketId = null; });
   panel.querySelector('#sup-f-status').addEventListener('change', (e) => patchTicket(t.id, { status: e.target.value }));
   panel.querySelector('#sup-f-priority').addEventListener('change', (e) => patchTicket(t.id, { priority: e.target.value }));
   panel.querySelector('#sup-f-kind').addEventListener('change', (e) => patchTicket(t.id, { kind: e.target.value }));
@@ -160,7 +160,7 @@ async function createTicket() {
   const data = await res.json();
   root.querySelector('#sup-new-title').value = '';
   root.querySelector('#sup-new-body').value = '';
-  root.querySelector('#sup-new').style.display = 'none';
+  root.querySelector('#sup-new').hidden = true;
   await loadTickets();
   openTicket(data.ticket.id);
 }
@@ -176,21 +176,21 @@ function mount(container) {
     '<div class="kpi-card"><div class="kpi-label">In progress</div><div class="kpi-value" id="sup-kpi-open">—</div></div>' +
     '<div class="kpi-card"><div class="kpi-label">P0 / P1 active</div><div class="kpi-value" id="sup-kpi-p1">—</div></div>' +
     '<div class="kpi-card"><div class="kpi-label">New &gt; 48h</div><div class="kpi-value" id="sup-kpi-stale">—</div></div></div>' +
-    '<div class="card mt-4" id="sup-new" style="display:none;padding:var(--space-3) var(--space-4)"><div class="card-title">New ticket</div>' +
-    '<div class="table-toolbar" style="padding:0;margin-top:var(--space-2)"><input class="input" id="sup-new-title" placeholder="Title">' +
+    '<div class="u-p-space-3-space-4 card mt-4" id="sup-new" hidden><div class="card-title">New ticket</div>' +
+    '<div class="u-p-0 u-mt-space-2 table-toolbar"><input class="input" id="sup-new-title" placeholder="Title">' +
     select('sup-new-kind', KINDS, 'task') + select('sup-new-priority', PRIORITIES, 'p3') + select('sup-new-source', ['operator', 'email', 'waitlist'], 'operator') +
-    '<input class="input" id="sup-new-user" placeholder="user id (optional)" style="max-width:150px"></div>' +
-    '<textarea class="input" id="sup-new-body" rows="3" placeholder="Details (sanitized; no chat content)" style="margin-top:var(--space-2)"></textarea>' +
-    '<div style="margin-top:var(--space-2)"><button class="btn btn-ghost btn-sm" id="sup-create">Create</button></div></div>' +
-    '<div class="card mt-4" id="sup-detail" style="display:none;padding:var(--space-3) var(--space-4)"></div>' +
+    '<input class="u-maxw-150 input" id="sup-new-user" placeholder="user id (optional)"></div>' +
+    '<textarea class="u-mt-space-2 input" id="sup-new-body" rows="3" placeholder="Details (sanitized; no chat content)"></textarea>' +
+    '<div class="u-mt-space-2"><button class="btn btn-ghost btn-sm" id="sup-create">Create</button></div></div>' +
+    '<div class="u-p-space-3-space-4 card mt-4" id="sup-detail" hidden></div>' +
     '<div class="card mt-4"><div class="table-toolbar" id="sup-filters">' +
     select('sup-f-list-status', ['active', 'new', 'open', 'waiting_user', 'resolved', 'closed', 'all'], 'active') +
-    '<select class="input" data-f="kind" style="max-width:150px"><option value="">any kind</option>' + KINDS.map((k) => '<option value="' + k + '">' + k + '</option>').join('') + '</select>' +
-    '<select class="input" data-f="priority" style="max-width:110px"><option value="">any priority</option>' + PRIORITIES.map((k) => '<option value="' + k + '">' + k + '</option>').join('') + '</select>' +
+    '<select class="u-maxw-150 input" data-f="kind"><option value="">any kind</option>' + KINDS.map((k) => '<option value="' + k + '">' + k + '</option>').join('') + '</select>' +
+    '<select class="u-maxw-110 input" data-f="priority"><option value="">any priority</option>' + PRIORITIES.map((k) => '<option value="' + k + '">' + k + '</option>').join('') + '</select>' +
     '<input class="input" type="search" data-f="q" placeholder="title or ref contains…">' +
     '<button class="btn btn-ghost btn-sm" id="sup-apply">Apply</button>' +
-    '<span class="text-muted" id="sup-status" style="margin-left:auto;font-size:11px"></span></div>' +
-    '<div style="overflow-x:auto"><table class="data-table dense"><thead><tr><th>Ref</th><th>Priority</th><th>Status</th><th>Kind / source</th><th>Title</th><th>User</th><th>Last event</th></tr></thead>' +
+    '<span class="u-ml-auto u-fs-11 text-muted" id="sup-status"></span></div>' +
+    '<div class="u-ovx-auto"><table class="data-table dense"><thead><tr><th>Ref</th><th>Priority</th><th>Status</th><th>Kind / source</th><th>Title</th><th>User</th><th>Last event</th></tr></thead>' +
     '<tbody id="sup-tbody"><tr><td colspan="7"><div class="empty">Loading…</div></td></tr></tbody></table></div></div>';
 
   root.querySelector('#sup-f-list-status').setAttribute('data-f', 'status');
@@ -202,7 +202,7 @@ function mount(container) {
   root.querySelector('#sup-apply').addEventListener('click', apply);
   root.querySelector('#sup-filters').addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
   root.querySelector('#sup-refresh').addEventListener('click', () => { loadTickets(); if (openTicketId) openTicket(openTicketId); });
-  root.querySelector('#sup-new-toggle').addEventListener('click', () => { const el = root.querySelector('#sup-new'); el.style.display = el.style.display === 'none' ? 'block' : 'none'; });
+  root.querySelector('#sup-new-toggle').addEventListener('click', () => { const el = root.querySelector('#sup-new'); el.hidden = !el.hidden; });
   root.querySelector('#sup-create').addEventListener('click', createTicket);
   root.querySelector('#sup-tbody').addEventListener('click', (e) => {
     const row = e.target.closest('.sup-row');

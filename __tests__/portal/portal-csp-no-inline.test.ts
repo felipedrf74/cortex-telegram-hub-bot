@@ -15,9 +15,18 @@ const portalDir = path.resolve(__dirname, '../../src/portal');
 const html = fs.readFileSync(path.join(portalDir, 'portal.html'), 'utf8');
 const legacy = fs.readFileSync(path.join(portalDir, 'ui', 'legacy.js'), 'utf8');
 
-function scriptSrcDirective(csp: string): string {
-  const directive = csp.split(';').map((part) => part.trim()).find((part) => part.startsWith('script-src'));
+function directiveOf(csp: string, name: string): string {
+  const directive = csp.split(';').map((part) => part.trim()).find((part) => part.startsWith(name));
   return directive ?? '';
+}
+
+function scriptSrcDirective(csp: string): string {
+  return directiveOf(csp, 'script-src');
+}
+
+function uiModuleSources(): Array<[string, string]> {
+  const uiDir = path.join(portalDir, 'ui');
+  return fs.readdirSync(uiDir).filter((file) => file.endsWith('.js')).map((file) => [file, fs.readFileSync(path.join(uiDir, file), 'utf8')]);
 }
 
 describe('portal dashboard CSP without inline scripts', () => {
@@ -62,6 +71,22 @@ describe('portal dashboard CSP without inline scripts', () => {
       expect(scriptSrc).toContain("'self'");
       expect(scriptSrc).not.toContain("'unsafe-inline'");
       expect(scriptSrc).not.toContain("'unsafe-eval'");
+      const styleSrc = directiveOf(csp, 'style-src');
+      expect(styleSrc).toContain("'self'");
+      expect(styleSrc).not.toContain("'unsafe-inline'");
     }
+  });
+
+  it('dashboard markup and UI modules carry no inline style attributes or style blocks', () => {
+    // style-src has no 'unsafe-inline' either: static styling lives in
+    // ui/portal.css utilities, dynamic per-row values ride on data-w /
+    // data-color / data-bg / data-opacity and are applied through CSSOM.
+    const sources: Array<[string, string]> = [['portal.html', html], ...uiModuleSources()];
+    const offenders = sources.flatMap(([name, source]) => (source.match(/\sstyle=["']/g) ?? []).map(() => name));
+    expect(offenders).toEqual([]);
+    expect(html).not.toMatch(/<style[\s>]/);
+    expect(sources.some(([, source]) => source.includes("createElement('style')"))).toBe(false);
+    expect(legacy).toContain('function applyDynamicStyles(root)');
+    expect(legacy).toContain('new MutationObserver(');
   });
 });

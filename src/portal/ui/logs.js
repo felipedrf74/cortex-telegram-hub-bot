@@ -112,20 +112,20 @@ function mount(container) {
     '<div class="section-subtitle">Runtime log store (redacted) with live tail. Click a request id to open it in Requests.</div></div>' +
     '<div class="section-actions"><span id="logs-store-status"></span></div></div>' +
     '<div class="card"><div class="table-toolbar" id="logs-filters">' +
-    '<select class="input" data-f="level" style="max-width:120px">' +
+    '<select class="u-maxw-120 input" data-f="level">' +
       '<option value="">all levels</option><option value="30" selected>info+</option><option value="40">warn+</option><option value="50">error+</option></select>' +
-    '<input class="input" data-f="src" placeholder="src (http, cron:…)" style="max-width:160px">' +
-    '<input class="input" data-f="reqId" placeholder="request id" style="max-width:190px">' +
-    '<input class="input" data-f="userId" placeholder="user id" style="max-width:100px">' +
+    '<input class="u-maxw-160 input" data-f="src" placeholder="src (http, cron:…)">' +
+    '<input class="u-maxw-190 input" data-f="reqId" placeholder="request id">' +
+    '<input class="u-maxw-100 input" data-f="userId" placeholder="user id">' +
     '<input class="input" type="search" data-f="q" placeholder="message contains…">' +
     '<button class="btn btn-ghost btn-sm" id="logs-apply">Apply</button>' +
     '<button class="btn btn-ghost btn-sm" id="logs-live">▶ Live</button>' +
-    '<span class="text-muted mono" id="logs-count" style="margin-left:auto;font-size:11px"></span></div>' +
-    '<div class="text-muted" id="logs-status" style="padding:0 var(--space-4);font-size:11px"></div>' +
-    '<div id="logs-table-wrap" style="overflow:auto;max-height:70vh"><table class="data-table dense" id="logs-table">' +
+    '<span class="u-ml-auto u-fs-11 text-muted mono" id="logs-count"></span></div>' +
+    '<div class="u-p-0-space-4 u-fs-11 text-muted" id="logs-status"></div>' +
+    '<div id="logs-table-wrap" class="u-ov-auto u-maxh-70vh"><table class="data-table dense" id="logs-table">' +
     '<thead><tr><th>Time</th><th>Level</th><th>Src</th><th>Request</th><th>User</th><th>Message</th></tr></thead>' +
     '<tbody id="logs-tbody"><tr><td colspan="6"><div class="empty">Loading…</div></td></tr></tbody></table></div>' +
-    '<div style="padding:var(--space-3) var(--space-4)"><button class="btn btn-ghost btn-sm" id="logs-older" disabled>Load older</button></div></div>';
+    '<div class="u-p-space-3-space-4"><button class="btn btn-ghost btn-sm" id="logs-older" disabled>Load older</button></div></div>';
 
   root.querySelector('#logs-apply').addEventListener('click', () => {
     root.querySelectorAll('[data-f]').forEach((el) => { filterState[el.dataset.f] = el.value.trim(); });

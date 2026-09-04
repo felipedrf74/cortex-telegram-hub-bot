@@ -8,7 +8,7 @@ const CATEGORY_ICONS = { general: '⚙️', notifications: '🔔', skills: '🧩
 
 function inputFor(s) {
   const id = P.esc(String(s.id));
-  if (s.locked) return '<input type="text" value="' + P.esc(String(s.value)) + '" disabled style="opacity:0.6">';
+  if (s.locked) return '<input type="text" value="' + P.esc(String(s.value)) + '" disabled class="u-op-0-6">';
   if (s.options) {
     const opts = s.options.map((o) => '<option value="' + P.esc(o) + '"' + (o === String(s.value) ? ' selected' : '') + '>' + P.esc(o) + '</option>').join('');
     return '<select data-op="update" data-kind="text" data-id="' + id + '">' + opts + '</select>';
@@ -19,7 +19,7 @@ function inputFor(s) {
       '<option value="false"' + (!s.value ? ' selected' : '') + '>Disabled</option>' +
     '</select>';
   }
-  if (s.type === 'number') return '<input type="number" value="' + P.esc(String(s.value)) + '" style="max-width:120px" data-op="update" data-kind="number" data-id="' + id + '">';
+  if (s.type === 'number') return '<input type="number" value="' + P.esc(String(s.value)) + '" class="u-maxw-120" data-op="update" data-kind="number" data-id="' + id + '">';
   return '<input type="text" value="' + P.esc(String(s.value)) + '" data-op="update" data-kind="text" data-id="' + id + '">';
 }
 
@@ -45,14 +45,14 @@ async function load() {
         const resetBtn = (!s.locked && s.source === 'database')
           ? '<button class="btn btn-xs" data-op="reset" data-id="' + P.esc(String(s.id)) + '">Reset</button>'
           : '';
-        return '<div class="flex gap-3" style="align-items:center;margin-bottom:10px">' +
-          '<div style="min-width:200px"><div style="font-weight:500;font-size:12px">' + P.esc(s.label || s.id) + '</div>' +
-          (s.description ? '<div class="text-tertiary" style="font-size:10px">' + P.esc(s.description) + '</div>' : '') + '</div>' +
-          '<div style="flex:1;max-width:280px">' + inputFor(s) + '</div>' +
+        return '<div class="u-ai-center u-mb-10 flex gap-3">' +
+          '<div class="u-minw-200"><div class="u-fw-500 u-fs-12">' + P.esc(s.label || s.id) + '</div>' +
+          (s.description ? '<div class="u-fs-10 text-tertiary">' + P.esc(s.description) + '</div>' : '') + '</div>' +
+          '<div class="u-flex-1 u-maxw-280">' + inputFor(s) + '</div>' +
           srcBadge + resetBtn +
         '</div>';
       }).join('');
-      return '<div style="margin-bottom:24px"><div class="card-title" style="margin-bottom:12px">' + icon + ' ' + cat.charAt(0).toUpperCase() + cat.slice(1) + '</div>' + rows + '</div>';
+      return '<div class="u-mb-24"><div class="u-mb-12 card-title">' + icon + ' ' + cat.charAt(0).toUpperCase() + cat.slice(1) + '</div>' + rows + '</div>';
     }).join('');
   } catch (err) {
     P.setCardError('settings-content', 'Could not load settings', err);

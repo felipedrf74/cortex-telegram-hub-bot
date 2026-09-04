@@ -67,11 +67,11 @@ function render() {
     return;
   }
   tbody.innerHTML = entries.map((e) => '<tr>' +
-    '<td class="mono text-muted" style="font-size:11px">' + P.shortDateTime(e.ts) + '</td>' +
+    '<td class="u-fs-11 mono text-muted">' + P.shortDateTime(e.ts) + '</td>' +
     '<td class="mono">' + (e.user_id || '—') + '</td>' +
     '<td><span class="badge badge-info">' + P.esc(e.action) + '</span></td>' +
     '<td class="text-muted">' + P.esc(e.resource || '—') + '</td>' +
-    '<td class="text-muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + P.esc(e.details || '—') + '</td>' +
+    '<td class="u-maxw-300 u-ov-hidden u-to-ellipsis u-ws-nowrap text-muted">' + P.esc(e.details || '—') + '</td>' +
   '</tr>').join('');
 }
 
@@ -85,7 +85,7 @@ async function load(append) {
     const d = await P.apiJson('/api/audit-trail?' + params.toString());
     entries = append ? entries.concat(d.entries || []) : (d.entries || []);
     nextBeforeId = d.nextBeforeId || null;
-    el('audit-more').style.display = nextBeforeId ? '' : 'none';
+    el('audit-more').hidden = !nextBeforeId;
     render();
   } catch (err) {
     entries = [];
@@ -121,17 +121,17 @@ function mount(container) {
     '<div class="section-subtitle">GDPR-compliant action log</div></div>' +
     '<div class="section-actions"><button class="btn btn-ghost btn-sm" id="audit-refresh-btn">Refresh</button>' +
     '<button class="btn btn-primary btn-sm" id="audit-export-btn">Export CSV</button></div></div>' +
-    '<div class="card"><div class="table-toolbar" style="flex-wrap:wrap;gap:8px">' +
-    '<select class="input" id="audit-filter" style="max-width:220px"><option value="">All users</option></select>' +
-    '<select class="input" id="audit-action" style="max-width:200px"><option value="">All actions</option></select>' +
-    '<input class="input" id="audit-resource" placeholder="Resource prefix" style="max-width:180px">' +
-    '<input class="input" id="audit-q" placeholder="Search details…" style="max-width:200px">' +
-    '<input class="input" id="audit-since" type="datetime-local" title="Since" style="max-width:200px">' +
-    '<input class="input" id="audit-until" type="datetime-local" title="Until" style="max-width:200px">' +
+    '<div class="card"><div class="u-flexwrap-wrap u-gap-8 table-toolbar">' +
+    '<select class="u-maxw-220 input" id="audit-filter"><option value="">All users</option></select>' +
+    '<select class="u-maxw-200 input" id="audit-action"><option value="">All actions</option></select>' +
+    '<input class="u-maxw-180 input" id="audit-resource" placeholder="Resource prefix">' +
+    '<input class="u-maxw-200 input" id="audit-q" placeholder="Search details…">' +
+    '<input class="u-maxw-200 input" id="audit-since" type="datetime-local" title="Since">' +
+    '<input class="u-maxw-200 input" id="audit-until" type="datetime-local" title="Until">' +
     '<button class="btn btn-ghost btn-sm" id="audit-apply">Apply</button>' +
-    '<button class="btn btn-ghost btn-sm" id="audit-more" style="display:none">Load older</button>' +
-    '<span class="text-muted mono" style="margin-left:auto;font-size:11px" id="audit-count-label"></span></div>' +
-    '<div style="overflow-x:auto"><table class="data-table" id="audit-table"><thead><tr>' +
+    '<button class="btn btn-ghost btn-sm" id="audit-more" hidden>Load older</button>' +
+    '<span class="u-ml-auto u-fs-11 text-muted mono" id="audit-count-label"></span></div>' +
+    '<div class="u-ovx-auto"><table class="data-table" id="audit-table"><thead><tr>' +
     '<th>Timestamp</th><th>User</th><th>Action</th><th>Resource</th><th>Details</th></tr></thead>' +
     '<tbody id="audit-tbody"><tr><td colspan="5"><div class="empty">Loading…</div></td></tr></tbody></table></div></div>';
 

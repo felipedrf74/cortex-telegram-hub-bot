@@ -15,7 +15,7 @@ export function applyPortalDashboardSecurityHeaders(res: Response): void {
   res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.set(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'",
+    "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'",
   );
 }
 
