@@ -112,6 +112,15 @@ closeout, and backup retention jobs are not release gates.
 - A failed health check or 60-second production soak restores the recorded
   predecessor automatically.
 
+## Running identity
+
+Every backend container exposes what it is running: `GET /health` returns
+`version` and `gitShortSha`, and the operator portal's `GET /api/release`
+returns the full picture (runtime SHA and artifact digest from the signed
+release plan, build stamp, boot time, migrations applied vs pending, admin
+exposure mode). Compare `gitShortSha` on staging and production with the
+protected-main SHA in the receipt before declaring a release done.
+
 ## Release checkpoint
 
 Dispatch `.github/workflows/release-candidate-evidence.yml` with the exact
