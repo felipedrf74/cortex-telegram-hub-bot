@@ -56,6 +56,9 @@ describe('portal UI module handler', () => {
     expect(imports.length).toBeGreaterThan(0);
     for (const file of imports) expect(fs.existsSync(path.join(uiDir, file))).toBe(true);
     const html = fs.readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8');
+    expect(html).toContain('<link rel="stylesheet" href="/portal/ui/portal.css">');
+    expect(fs.existsSync(path.join(uiDir, 'portal.css'))).toBe(true);
+    expect(html).not.toContain('<style>');
     expect(html).toContain('<script src="/portal/ui/legacy.js"></script>');
     expect(html).toContain('<script type="module" src="/portal/ui/app.js"></script>');
     expect(fs.readFileSync(path.join(uiDir, 'legacy.js'), 'utf8')).toContain('window.NexusPortal = {');

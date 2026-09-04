@@ -17,11 +17,11 @@ export function applyPortalDashboardSecurityHeaders(res: Response): void {
   );
 }
 
-const UI_MODULE_NAME = /^[a-z0-9-]+\.js$/;
+const UI_MODULE_NAME = /^[a-z0-9-]+\.(js|css)$/;
 
 /**
- * Serves the admin SPA's ES modules from `src/portal/ui/*.js` (copied to
- * `dist/portal/ui` at build time). Allowlisted basenames only — no
+ * Serves the admin SPA's ES modules and stylesheet from `src/portal/ui/*.{js,css}`
+ * (copied to `dist/portal/ui` at build time). Allowlisted basenames only — no
  * traversal, no directory listing.
  */
 export function createPortalUiModuleHandler(portalDir = __dirname) {
@@ -38,7 +38,7 @@ export function createPortalUiModuleHandler(portalDir = __dirname) {
     }
     res.set('Cache-Control', 'no-cache');
     res.set('X-Content-Type-Options', 'nosniff');
-    res.type('text/javascript; charset=utf-8').send(fs.readFileSync(modulePath, 'utf-8'));
+    res.type(file.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8').send(fs.readFileSync(modulePath, 'utf-8'));
   };
 }
 

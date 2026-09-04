@@ -203,6 +203,8 @@
     setTableError: (tbodyId, colspan, title, err) => setTableError(tbodyId, colspan, title, err),
     showToast: (msg, ok) => showToast(msg, ok),
     adminLoadErrorMessage: (err) => adminLoadErrorMessage(err),
+    fmtNum: (n) => fmtNum(n),
+    getContentScope: () => ({ userId: CONTENT_SCOPE.userId, tenantId: CONTENT_SCOPE.tenantId }),
     sections: Object.create(null),
     registerSection(id, def) {
       if (typeof id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(id)) return;
@@ -333,7 +335,6 @@
     if (section === 'ai') loadAiPlanLimits();
     if (section === 'content') loadContentDashboard();
     if (section === 'cooking') renderCookingPortal();
-    if (section === 'notifications') loadNotificationPortal();
     // Module-backed sections (src/portal/ui/*.js)
     window.NexusPortal.deactivateSections(section);
     window.NexusPortal.activateSection(section);
@@ -2075,167 +2076,7 @@
     } catch { /* silent */ }
   };
 
-  // ════════════════════════════════════════════════════════════
-  // Notification Decision Center
-  // ════════════════════════════════════════════════════════════
-	  async function loadNotificationPortal() {
-	    try {
-	      if (!CONTENT_SCOPE.userId) {
-	        document.getElementById('notification-kpi-unread').textContent = '—';
-	        document.getElementById('notification-kpi-decision').textContent = '—';
-	        document.getElementById('notification-kpi-profiles').textContent = '—';
-	        document.getElementById('notification-center-content').innerHTML =
-	          '<div class="empty">Select a user/tenant scope above to load Decision Center safely.</div>';
-	        document.getElementById('notification-reliability-content').innerHTML =
-	          '<div class="empty">Notification reliability is scoped to a selected user.</div>';
-	        document.getElementById('notification-preferences-content').innerHTML =
-	          '<div class="empty">Decision preferences are scoped to a selected user.</div>';
-	        return;
-	      }
-	      const userId = CONTENT_SCOPE.userId;
-	      const tenantId = CONTENT_SCOPE.tenantId || CONTENT_SCOPE.userId;
-	      const query = '?tenantId=' + encodeURIComponent(tenantId);
-	      const [summary, center, prefs, reliabilityResponse] = await Promise.all([
-	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/summary' + query),
-	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/decisions' + query + '&limit=100&status=all'),
-	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/preferences' + query),
-	        apiJson('/api/users/' + encodeURIComponent(userId) + '/decision-center/notification-reliability' + query),
-	      ]);
-	      const items = center.items || [];
-	      const openCount = summary.summary?.openCount ?? items.filter(i => ['unread', 'read', 'failed', 'snoozed'].includes(i.status)).length;
-	      const needsDecision = items.filter(i => ['decision_required', 'conflict_detected', 'approval_required', 'reflow_suggestion'].includes(i.type)).length;
-	      const decisionPrefs = prefs.preferences?.decisionPreferences || {};
-	      const profile = prefs.preferences?.profile || {};
-
-	      document.getElementById('notification-kpi-unread').textContent = fmtNum(openCount);
-	      document.getElementById('notification-kpi-decision').textContent = fmtNum(needsDecision);
-	      document.getElementById('notification-kpi-profiles').textContent = profile.pushEnabled ? 'push on' : 'push off';
-	      const navBadge = document.getElementById('nav-notifications-badge');
-	      if (navBadge) navBadge.textContent = openCount ? String(openCount) : '';
-
-	      const grouped = {
-	        all: items,
-	        decision: items.filter(i => ['decision_required', 'reflow_suggestion'].includes(i.type)),
-	        conflicts: items.filter(i => i.type === 'conflict_detected'),
-	        approvals: items.filter(i => i.type === 'approval_required'),
-        training: items.filter(i => i.sourceSkill === 'training'),
-        finance: items.filter(i => i.sourceSkill === 'finance'),
-        security: items.filter(i => i.sourceSkill === 'security' || i.type === 'security_account'),
-      };
-
-      const chips = Object.entries(grouped).map(([key, rows]) =>
-        '<span class="badge ' + (rows.length ? 'badge-accent' : 'badge-neutral') + '" style="margin-right:6px;margin-bottom:6px">' +
-          esc(key) + ' · ' + rows.length +
-        '</span>'
-      ).join('');
-
-	      const rows = items.map(i => '<tr>' +
-	        '<td><span class="badge badge-neutral">' + esc(i.sourceSkill || 'system') + '</span></td>' +
-	        '<td>' +
-	          '<div style="font-weight:600">' + esc(i.title) + '</div>' +
-	          '<div class="text-muted" style="font-size:12px;line-height:1.4">' + esc(i.summary || '') + '</div>' +
-	          (i.blockedByDecisionIds && i.blockedByDecisionIds.length
-	            ? '<div class="badge badge-warning" style="margin-top:6px">blocked by ' + i.blockedByDecisionIds.length + '</div>'
-	            : '') +
-	        '</td>' +
-	        '<td><span class="badge badge-neutral">' + esc(i.type) + '</span></td>' +
-	        '<td><span class="badge ' + (i.urgency === 'urgent' ? 'badge-warning' : 'badge-neutral') + '">' + esc(i.urgency || 'optional') + '</span></td>' +
-	        '<td>' + esc(i.status) + '</td>' +
-	        '<td>' + ((i.actions || []).slice(0, 2).map(a =>
-	          '<button class="btn btn-xs" style="margin-right:4px" data-act="portalDecisionCenterAction" data-args="[&quot;' + esc(String(i.decisionId)) + '&quot;,&quot;' + esc(String(a.id)) + '&quot;]">' + esc(a.label || a.id) + '</button>'
-	        ).join('') || '<span class="text-muted">—</span>') + '</td>' +
-	        '<td class="mono" style="font-size:11px">' + esc(i.createdAt || '—') + '</td>' +
-	      '</tr>').join('');
-
-	      document.getElementById('notification-center-content').innerHTML =
-	        '<div style="margin-bottom:var(--space-3)">' + chips + '</div>' +
-	        '<div style="overflow-x:auto"><table class="data-table">' +
-	          '<thead><tr><th>Skill</th><th>Safe preview</th><th>Type</th><th>Urgency</th><th>Status</th><th>Actions</th><th>Created</th></tr></thead>' +
-	          '<tbody>' + (rows || '<tr><td colspan="7"><div class="empty">No Decision Center items</div></td></tr>') + '</tbody>' +
-	        '</table></div>';
-
-	      const reliability = reliabilityResponse.dashboard || {};
-	      const reliabilityRows = [
-	        ['Dedupe', 'Deduped', reliability.dedupe?.dedupedCount, 'Active keys', reliability.dedupe?.activeDedupeKeyCount],
-	        ['Digest', 'Pending', reliability.digest?.pendingCount, 'Due', reliability.digest?.dueCount],
-	        ['Push', 'Sent', reliability.pushOutcome?.sentCount, 'Blocked', reliability.pushOutcome?.blockedCount],
-	        ['Badge', 'Expected', reliability.badge?.expectedBadgeCount, 'Drift', reliability.badge?.drift],
-	        ['Read state', 'Client failures', reliability.readState?.clientReportedReadFailureCount, 'Server failures', reliability.readState?.serverReadFailureCount],
-	        ['Quality', 'Suppressed/gated', reliability.quality?.suppressedOrGatedCount, 'Dead links', reliability.quality?.deadDeeplinkCount],
-	        ['Actions', 'Unsupported', reliability.quality?.unsupportedActionBlockedCount, 'Failed', reliability.quality?.actionFailureCount],
-	      ].map(r =>
-	        '<tr><td><span class="badge badge-neutral">' + esc(r[0]) + '</span></td>' +
-	        '<td>' + esc(r[1]) + '</td><td class="mono">' + esc(String(r[2] ?? '—')) + '</td>' +
-	        '<td>' + esc(r[3]) + '</td><td class="mono">' + esc(String(r[4] ?? '—')) + '</td></tr>'
-	      ).join('');
-	      const topicRows = (reliability.quality?.byTopic || []).slice(0, 20).map(row => '<tr>' +
-	        '<td><span class="badge badge-neutral">' + esc(row.sourceSkill || 'unknown') + '</span></td>' +
-	        '<td>' + esc(row.type || '—') + '</td>' +
-	        '<td>' + esc(row.recipe || '—') + '</td>' +
-	        '<td class="mono">' + esc(String(row.suppressedOrGatedCount ?? 0)) + '</td>' +
-	        '<td class="mono">' + esc(String(row.dedupedCount ?? 0)) + '</td>' +
-	        '<td class="mono">' + esc(String(row.supersededCount ?? 0)) + '</td>' +
-	        '<td class="mono">' + esc(String(row.unsupportedActionBlockedCount ?? 0)) + '</td>' +
-	        '<td class="mono">' + esc(String(row.actionFailedCount ?? 0)) + '</td>' +
-	        '<td class="mono">' + esc(String(row.deadDeeplinkCount ?? 0)) + '</td>' +
-	      '</tr>').join('');
-	      document.getElementById('notification-reliability-content').innerHTML =
-	        '<div style="overflow-x:auto"><table class="data-table">' +
-	          '<thead><tr><th>Area</th><th>Metric</th><th>Value</th><th>Metric</th><th>Value</th></tr></thead>' +
-	          '<tbody>' + reliabilityRows + '</tbody>' +
-	        '</table></div>' +
-	        '<div style="overflow-x:auto;margin-top:var(--space-3)"><table class="data-table">' +
-	          '<thead><tr><th>Skill</th><th>Type</th><th>Recipe</th><th>Gated</th><th>Deduped</th><th>Superseded</th><th>Unsupported</th><th>Failed</th><th>Dead links</th></tr></thead>' +
-	          '<tbody>' + (topicRows || '<tr><td colspan="9"><div class="empty">No topic reliability events</div></td></tr>') + '</tbody>' +
-	        '</table></div>' +
-	        '<div class="text-muted" style="margin-top:var(--space-2);font-size:12px">Generated ' + esc(reliability.generatedAt || '—') + '</div>';
-
-	      document.getElementById('notification-preferences-content').innerHTML =
-	        '<div style="overflow-x:auto"><table class="data-table">' +
-	          '<thead><tr><th>User</th><th>Push</th><th>Urgent push</th><th>Time-sensitive</th><th>Auto-hide resolved</th><th>Digest</th><th>Updated</th></tr></thead>' +
-	          '<tbody><tr>' +
-	            '<td class="mono">' + esc(String(userId)) + '</td>' +
-	            '<td>' + (decisionPrefs.pushEnabled ? 'on' : 'off') + '</td>' +
-	            '<td>' + (decisionPrefs.urgentDecisionPushEnabled ? 'on' : 'off') + '</td>' +
-	            '<td>' + (decisionPrefs.timeSensitiveAllowed ? 'on' : 'off') + '</td>' +
-	            '<td>' + (decisionPrefs.autoHideResolved ? 'on' : 'off') + '</td>' +
-	            '<td>' + (profile.digestPassiveItems ? 'on' : 'off') + '</td>' +
-	            '<td class="mono" style="font-size:11px">' + esc(profile.updatedAt || '—') + '</td>' +
-	          '</tr></tbody>' +
-	        '</table></div>';
-	    } catch (err) {
-	      setCardError('notification-center-content', 'Could not load Notification Center', err);
-	      setCardError('notification-reliability-content', 'Could not load notification reliability', err);
-	      setCardError('notification-preferences-content', 'Could not load notification preferences', err);
-	    }
-	  }
-
-	  window.portalDecisionCenterAction = async function(decisionId, actionId) {
-	    try {
-	      if (!CONTENT_SCOPE.userId) {
-	        showToast('Select a user scope before acting on a decision', false);
-	        return;
-	      }
-	      const tenantId = CONTENT_SCOPE.tenantId || CONTENT_SCOPE.userId;
-	      const r = await apiFetch('/api/users/' + encodeURIComponent(CONTENT_SCOPE.userId) + '/decision-center/decisions/' + encodeURIComponent(decisionId) + '/actions?tenantId=' + encodeURIComponent(tenantId), {
-	        method: 'POST',
-	        headers: { 'Content-Type': 'application/json' },
-	        body: JSON.stringify({
-	          actionId,
-	          idempotencyKey: 'portal-' + decisionId + '-' + actionId + '-' + Date.now(),
-	        }),
-	      });
-	      const d = await r.json();
-	      if (d.ok) {
-	        showToast('Decision action verified');
-	        loadNotificationPortal();
-	      } else {
-	        showToast((d.error && d.error.message) || 'Decision action failed', false);
-	      }
-	    } catch (err) {
-	      showToast('Decision action failed', false);
-	    }
-	  };
+  // Notification Decision Center moved to ui/notifications.js (Phase 5 section extraction).
 
   // Settings moved to ui/settings.js (Phase 5 section extraction).
 
@@ -3634,7 +3475,6 @@
       // Refresh users in background if user is on the Users tab
       if (currentSection === 'users') loadUsers();
       if (currentSection === 'content') loadContentDashboard();
-      if (currentSection === 'notifications') loadNotificationPortal();
     }, 30000);
     // Release identity changes only on deploy; refresh once a minute.
     setInterval(() => { if (!document.hidden) loadReleaseInfo(); }, 60000);
