@@ -3,6 +3,8 @@
 import type { Express, Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
+import { extractClientIp } from '../api/rate-limiter';
 
 export function applyPortalDashboardSecurityHeaders(res: Response): void {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -201,9 +203,28 @@ export function createPortalBrandAssetHandler(portalDir = __dirname) {
   };
 }
 
+/**
+ * Per-IP ceiling for the module/stylesheet reads. The SPA loads at most a few
+ * dozen files per boot, so a generous minute window only trips on scanners.
+ */
+export function createPortalUiModuleRateLimiter() {
+  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
+  return rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 300,
+    keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
+    legacyHeaders: false,
+    standardHeaders: false,
+    handler: (_req, res, _next, options) => {
+      res.setHeader('Retry-After', Math.max(1, Math.ceil(options.windowMs / 1000)));
+      res.status(options.statusCode).type('text/plain').send('Too many portal asset requests from this IP. Slow down.');
+    },
+  });
+}
+
 export function registerPortalStaticRoutes(app: Express, portalDir = __dirname): void {
   app.get('/assets/nexus-mark.png', createPortalBrandAssetHandler(portalDir));
-  app.get('/portal/ui/:file', createPortalUiModuleHandler(portalDir));
+  app.get('/portal/ui/:file', createPortalUiModuleRateLimiter(), createPortalUiModuleHandler(portalDir));
 
   app.get('/landing-preview', createLandingPreviewHandler(portalDir));
 
