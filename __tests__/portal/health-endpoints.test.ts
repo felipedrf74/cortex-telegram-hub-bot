@@ -10,6 +10,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import http from 'http';
+import { config as mockedConfig } from '../../src/config';
+import { mintPortalSessionToken } from '../../src/services/portal-session-mint';
 
 const RELEASE_SHA = 'a'.repeat(40);
 const RELEASE_ARTIFACT_DIGEST = 'b'.repeat(64);
@@ -988,5 +990,76 @@ describe('GET /public-status', () => {
 
     const res = await fetch(`http://127.0.0.1:${port}/public-status`);
     expect(res.status).toBe(200);
+  });
+});
+
+// ── Cookie sign-in through the real middleware chain ─────────────────
+//
+// The generic portal guard is mounted on /api before the route modules. The
+// sign-in POST carries its credential in the body, so when the guard ran
+// first it answered 401 and no cookie session could ever be created in
+// session-only deployments (production, 2026-09-04). This boots the real
+// server and signs in exactly like the SPA does.
+describe('POST /api/auth/session through createPortalServer()', () => {
+  const SESSION_SECRET = 'portal.session.secret.for.the.middleware.order.test.0123456789abcdef';
+  let previousPortal: Record<string, unknown>;
+
+  beforeEach(() => {
+    stubReleaseIdentity();
+    stubCapabilityFlags('true');
+    previousPortal = { ...(mockedConfig.portal as Record<string, unknown>) };
+    Object.assign(mockedConfig.portal as Record<string, unknown>, {
+      token: '', readToken: '', writeToken: '', adminToken: '',
+      sessionSecret: SESSION_SECRET, sessionMaxAgeMs: 28_800_000, requireSessionAuth: true,
+      adminRequireActor: false, adminActorAllowlist: [], adminActorSignatureSecret: '', adminActorSignatureToleranceMs: 300_000,
+      allowLegacyFallback: false, allowLocalBypass: false, betaHardened: false, operatorUserScopes: {},
+    });
+  });
+
+  afterEach(() => {
+    const portal = mockedConfig.portal as Record<string, unknown>;
+    for (const key of Object.keys(portal)) delete portal[key];
+    Object.assign(portal, previousPortal);
+  });
+
+  it('adopts a body-only ps_ token as a cookie session and resumes it from the cookie', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+    const minted = mintPortalSessionToken({ secret: SESSION_SECRET, actorHint: 'operator@example.test', scope: 'admin', ttlMs: 600_000, maxAgeMs: 28_800_000 });
+
+    const signIn = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: minted.token }),
+    });
+    expect(signIn.status).toBe(200);
+    const body = await signIn.json() as { ok: boolean; scope: string; actor: string; csrf: string };
+    expect(body).toMatchObject({ ok: true, scope: 'admin', actor: 'operator@example.test' });
+    expect(body.csrf).toBeTruthy();
+    const cookie = signIn.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain('portal_session=');
+    expect(cookie).toContain('HttpOnly');
+
+    const resume = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+      headers: { Cookie: cookie.split(';')[0] },
+    });
+    expect(resume.status).toBe(200);
+    expect(await resume.json()).toMatchObject({ ok: true, scope: 'admin' });
+
+    // Everything else under /api stays behind the guard.
+    const unauthenticated = await fetch(`http://127.0.0.1:${port}/api/users`);
+    expect(unauthenticated.status).toBe(401);
+  });
+
+  it('still rejects a sign-in that presents no valid session token', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+    const rejected = await fetch(`http://127.0.0.1:${port}/api/auth/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'not.a.session.token' }),
+    });
+    expect(rejected.status).toBe(401);
+    expect(rejected.headers.get('set-cookie')).toBeNull();
   });
 });

@@ -42,6 +42,16 @@ import { logger } from '../utils/logger';
 import { sendPortalInternalError } from './http';
 
 export const PORTAL_SESSION_COOKIE = 'portal_session';
+
+/**
+ * Paths (relative to the `/api` mount) that establish or end a session and
+ * therefore must not sit behind the generic portal token guard: the sign-in
+ * POST carries its credential in the body, and every route here enforces its
+ * own limiter and verification. Everything else under /api stays guarded.
+ */
+export function isPortalSessionAuthPath(path: string): boolean {
+  return path === '/auth/session' || path === '/auth/session/logout';
+}
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_ACTOR = 'portal-operator';
 
