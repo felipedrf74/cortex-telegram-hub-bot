@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const hoisted = vi.hoisted(() => ({
   portal: {
     token: '',
-    readToken: 'read-token-value-0123456789',
-    writeToken: 'write-token-value-0123456789',
-    adminToken: 'admin-token-value-0123456789',
-    sessionSecret: 'session-secret-0123456789abcdef',
+    readToken: 'read.token.value.for.tests',
+    writeToken: 'write.token.value.for.tests',
+    adminToken: 'admin.token.value.for.tests',
+    sessionSecret: 'session.secret.value.for.tests.abcdef',
     sessionMaxAgeMs: 28_800_000,
     requireSessionAuth: false,
     allowLegacyFallback: false,
@@ -96,27 +96,27 @@ function cookieValue(setCookie: string): string {
 }
 
 beforeEach(() => {
-  hoisted.portal.sessionSecret = 'session-secret-0123456789abcdef';
+  hoisted.portal.sessionSecret = 'session.secret.value.for.tests.abcdef';
   hoisted.portal.token = '';
   hoisted.portal.allowLegacyFallback = false;
 });
 
 describe('resolveScopeForPortalToken', () => {
   const s = {
-    sessionSecret: 'x', sessionMaxAgeMs: 1000, legacyToken: 'legacy-token-value-0123456789',
+    sessionSecret: 'x', sessionMaxAgeMs: 1000, legacyToken: 'legacy.token.value.for.tests',
     readToken: 'read-1234567890', writeToken: 'write-1234567890', adminToken: 'admin-1234567890', allowLegacyFallback: false,
   };
   it('maps dedicated tokens to their scope and refuses unknown or legacy tokens when scoped tokens exist', () => {
     expect(resolveScopeForPortalToken('admin-1234567890', s)).toBe('admin');
     expect(resolveScopeForPortalToken('write-1234567890', s)).toBe('write');
     expect(resolveScopeForPortalToken('read-1234567890', s)).toBe('read');
-    expect(resolveScopeForPortalToken('legacy-token-value-0123456789', s)).toBeNull();
+    expect(resolveScopeForPortalToken('legacy.token.value.for.tests', s)).toBeNull();
     expect(resolveScopeForPortalToken('nope', s)).toBeNull();
     expect(resolveScopeForPortalToken('', s)).toBeNull();
   });
   it('treats the legacy token as admin only without scoped tokens or with explicit fallback', () => {
-    expect(resolveScopeForPortalToken('legacy-token-value-0123456789', { ...s, allowLegacyFallback: true })).toBe('admin');
-    expect(resolveScopeForPortalToken('legacy-token-value-0123456789', { ...s, readToken: '', writeToken: '', adminToken: '' })).toBe('admin');
+    expect(resolveScopeForPortalToken('legacy.token.value.for.tests', { ...s, allowLegacyFallback: true })).toBe('admin');
+    expect(resolveScopeForPortalToken('legacy.token.value.for.tests', { ...s, readToken: '', writeToken: '', adminToken: '' })).toBe('admin');
   });
 });
 
@@ -138,8 +138,8 @@ describe('portal session routes', () => {
   it('answers 503 without a session secret and 401 for an unknown token', async () => {
     const { routes } = makeApp();
     hoisted.portal.sessionSecret = '';
-    expect((await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: 'admin-token-value-0123456789' } }))).payload.statusCode).toBe(503);
-    hoisted.portal.sessionSecret = 'session-secret-0123456789abcdef';
+    expect((await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: 'admin.token.value.for.tests' } }))).payload.statusCode).toBe(503);
+    hoisted.portal.sessionSecret = 'session.secret.value.for.tests.abcdef';
     const bad = await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: 'wrong' } }));
     expect(bad.payload.statusCode).toBe(401);
     expect(bad.payload.headers['set-cookie']).toBeUndefined();
@@ -148,7 +148,7 @@ describe('portal session routes', () => {
   it('mints a cookie session whose scope matches the token and whose csrf proof unlocks mutations', async () => {
     const { routes } = makeApp();
     const created = await run(routes.get('POST /api/auth/session')!, makeReq({
-      body: { token: 'admin-token-value-0123456789', actor: 'ops@nexushub.me' },
+      body: { token: 'admin.token.value.for.tests', actor: 'ops@nexushub.me' },
       headers: { 'x-forwarded-proto': 'https' },
     }));
     expect(created.payload.statusCode).toBe(200);
@@ -188,7 +188,7 @@ describe('portal session routes', () => {
 
   it('scopes read tokens to read-only sessions and omits Secure on plain http', async () => {
     const { routes } = makeApp();
-    const created = await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: 'read-token-value-0123456789' } }));
+    const created = await run(routes.get('POST /api/auth/session')!, makeReq({ body: { token: 'read.token.value.for.tests' } }));
     expect(created.payload.body.scope).toBe('read');
     expect(created.payload.body.actor).toBe('portal-operator');
     expect(created.payload.headers['set-cookie']).not.toContain('Secure');
@@ -203,7 +203,7 @@ describe('portal session routes', () => {
 
   it('reports no cookie session for bearer-authenticated requests and clears the cookie on logout', async () => {
     const { routes } = makeApp();
-    const bearer = makeReq({ method: 'GET', path: '/api/auth/session', headers: { authorization: 'Bearer admin-token-value-0123456789' } });
+    const bearer = makeReq({ method: 'GET', path: '/api/auth/session', headers: { authorization: 'Bearer admin.token.value.for.tests' } });
     const read = await run(routes.get('GET /api/auth/session')!, bearer);
     expect(read.payload.statusCode).toBe(404);
 
