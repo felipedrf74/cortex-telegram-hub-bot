@@ -10,6 +10,9 @@ import './issues.js';
 import './support.js';
 import './operate.js';
 import './audit.js';
+import './invites.js';
+import './founders.js';
+import './waitlist.js';
 import { sseSubscribe } from './sse.js';
 
 const P = window.NexusPortal;
@@ -91,6 +94,10 @@ P.onAppStart = () => {
   refreshSupportBadge();
   ensureSupportPoll();
   startAlertsStream();
+  // Sections that own a nav badge refresh it without being opened.
+  Object.values(P.sections).forEach((section) => {
+    if (typeof section.refreshBadge === 'function') section.refreshBadge();
+  });
 };
 P.refreshSupportBadge = refreshSupportBadge;
 P.refreshIssueBadge = refreshIssueBadge;
