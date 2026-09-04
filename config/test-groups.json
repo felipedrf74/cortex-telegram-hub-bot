@@ -338,9 +338,15 @@
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/services/signal-ranking.test.ts",
-      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts"],
-      "requiredChangedPaths": ["src/portal/server.ts"],
-      "replacementTests": ["__tests__/services/signal-ranking.test.ts"],
+      "requiredRemovedPaths": [
+        "src/portal/intelligence-routes.ts"
+      ],
+      "requiredChangedPaths": [
+        "src/portal/server.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/signal-ranking.test.ts"
+      ],
       "reason": "Two structural checks that read src/portal/intelligence-routes.ts were replaced by a check that the module is retired; ranked-signal, schema and pipeline-metric behavior assertions in the same file are unchanged. Supersedes the earlier pipeline-agent retirement mapping for this suite."
     },
     {
@@ -750,7 +756,9 @@
         "scripts/quality-sonar-cloudformation-*",
         "scripts/quality-sonar-stack.sh"
       ],
-      "replacementTests": ["__tests__/scripts/continuous-deployment-workflows.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
       "reason": "SonarQube is decommissioned by the 2026-08-07 continuous-deployment refactor; the workflow contract test asserts its absence."
     },
     {
@@ -777,7 +785,9 @@
         "scripts/remote-promotion-*",
         "scripts/trusted-release-*"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The prevention-first signing, shadow-evidence, and root-promotion controls are retired in favor of signed OCI publication, root VPS reconciliation, immutable receipts, and exact image-pair recovery. The retained lean-path regression covers only the 14-day PM2 first-cutover fallback."
     },
     {
@@ -795,8 +805,12 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-artifact-manifest.test.ts",
-      "baselineOwnerPaths": ["scripts/release-evidence.mjs"],
-      "requiredRemovedPaths": ["scripts/release-evidence.mjs"],
+      "baselineOwnerPaths": [
+        "scripts/release-evidence.mjs"
+      ],
+      "requiredRemovedPaths": [
+        "scripts/release-evidence.mjs"
+      ],
       "replacementTests": [
         "__tests__/scripts/release-artifact-manifest.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
@@ -823,22 +837,34 @@
         "scripts/rollback-drill-*",
         "scripts/remote-rollback-drill-*"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "KVM and legacy-layout rollback drills are retired; recovery-first container CD proves the predecessor payload, Compose topology, health, and exact running image pair on every rollback. The retained lean-path regression covers only the first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/exact-promotion-operational-safety.test.ts",
-      "requiredRemovedPaths": ["scripts/env-parity-check.sh"],
-      "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/env-parity-check.sh"
+      ],
+      "requiredChangedPaths": [
+        "scripts/promote-exact-release.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The old parity wrapper is retired. Signed container CD now binds staging, production, and rollback to digest-pinned OCI identities and immutable host receipts; the retained lean promotion coverage is first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/quality-sonar-install-transaction.test.ts",
-      "requiredRemovedPaths": ["scripts/quality-sonar-install-transaction.py"],
-      "replacementTests": ["__tests__/scripts/continuous-deployment-workflows.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/quality-sonar-install-transaction.py"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/continuous-deployment-workflows.test.ts"
+      ],
       "reason": "SonarQube is decommissioned; the workflow contract test asserts no Sonar tooling, npm script, or release-path gate remains."
     },
     {
@@ -861,7 +887,9 @@
         "scripts/release-installed-tree-attestation.mjs",
         "scripts/release-staging-attestation.mjs"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "Separate installed-tree and staging attestations are retired in favor of signed OCI identity, an exact container staging rehearsal, and immutable VPS receipts. Exact checksum parity remains only in the PM2 first-cutover fallback."
     },
     {
@@ -880,15 +908,23 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-gates.test.ts",
-      "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredChangedPaths": [
+        "scripts/lib/release-gates.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The legacy multi-lock gate suite is replaced by the container poller's kernel release flock plus the shared root maintenance mutex. The lean transaction regression now covers only the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-layout-activation.test.ts",
-      "requiredRemovedPaths": ["scripts/remote-release-layout-activation-control.sh"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/remote-release-layout-activation-control.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The legacy layout activation controller and current-selector authority are retired from ordinary releases. Container CD restores digest-pinned image-pair and Compose identity; atomic current selection is retained only for the PM2 first-cutover fallback."
     },
     {
@@ -899,7 +935,9 @@
         "scripts/release-layout-fault-drill-guest.mjs",
         "scripts/release-layout-fault-drill.mjs"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The layout fault producer chain is retired. Recovery-first container CD covers exact predecessor payload, Compose, health, and image-pair restoration; the lean transaction remains only as first-cutover fallback coverage."
     },
     {
@@ -910,7 +948,9 @@
         "scripts/release-quality-evidence.mjs",
         "scripts/request-release-quality-evidence.sh"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The separate release quality evidence request is replaced by selected CI evidence, signed OCI identities, and authoritative VPS receipts."
     },
     {
@@ -921,14 +961,20 @@
         "scripts/remote-release-preflight.sh",
         "scripts/remote-release-readiness.sh"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The old distributed readiness wrappers are replaced by signed container staging, root-host policy validation, and immutable completion evidence. The bounded lean transaction remains only for the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-sequence.test.ts",
-      "requiredRemovedPaths": ["scripts/release-sequence.mjs"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/release-sequence.mjs"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The multi-workflow sequence coordinator is replaced by protected-main selected CI, hosted signed publication, and VPS reconciliation."
     },
     {
@@ -939,13 +985,17 @@
         "scripts/request-release-manifest-signature.sh",
         "scripts/request-staging-attestation.sh"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The old signing-resume helpers are retired. Current releases use one Ed25519-signed OCI release manifest; the compact unsigned checksum manifest is retained only for the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-sonar-mutex.test.ts",
-      "requiredChangedPaths": ["scripts/lib/release-gates.sh"],
+      "requiredChangedPaths": [
+        "scripts/lib/release-gates.sh"
+      ],
       "replacementTests": [
         "__tests__/scripts/lean-release-path.test.ts",
         "__tests__/scripts/continuous-deployment-workflows.test.ts"
@@ -955,28 +1005,42 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-staging-resume.test.ts",
-      "requiredRemovedPaths": ["scripts/remote-release-selector-switch.py"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/remote-release-selector-switch.py"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The old staging selector resume helper is retired from ordinary releases; the root poller resumes exact accepted OCI evidence and reruns isolated container staging. The user-owned selector transaction remains first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/release-staging-transfer-integrity.test.ts",
-      "requiredChangedPaths": ["scripts/release-operator.sh"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredChangedPaths": [
+        "scripts/release-operator.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The old transfer verifier is retired from ordinary releases, which pull and verify digest-pinned OCI payloads. The checksum-bound upload and offline staging installation remain only in the PM2 first-cutover fallback."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/remote-release-capacity.test.ts",
-      "requiredRemovedPaths": ["scripts/remote-release-capacity.sh"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/remote-release-capacity.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The standalone capacity wrapper is retired; current container prerequisites and bounded subprocess budgets are governed by the release policy and root poller. Lean preflight coverage remains first-cutover fallback only."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/restore-runtime-artifact.test.ts",
-      "requiredRemovedPaths": ["scripts/restore.sh"],
+      "requiredRemovedPaths": [
+        "scripts/restore.sh"
+      ],
       "replacementTests": [
         "__tests__/scripts/lean-release-path.test.ts",
         "__tests__/scripts/local-backup.test.ts"
@@ -986,8 +1050,12 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/rollback-versioned-runtime.test.ts",
-      "requiredRemovedPaths": ["scripts/rollback.sh"],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "requiredRemovedPaths": [
+        "scripts/rollback.sh"
+      ],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The standalone versioned rollback wrapper is replaced by recovery-first container restoration of the predecessor payload, Compose topology, and exact image pair. Lean rollback coverage remains first-cutover fallback only."
     },
     {
@@ -997,7 +1065,9 @@
         "scripts/remote-v2-normalization-attestor-install.sh",
         "scripts/trusted-release-runtime-attestation-v2-bridge.mjs"
       ],
-      "replacementTests": ["__tests__/scripts/lean-release-path.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/lean-release-path.test.ts"
+      ],
       "reason": "The V2 normalization bridge is retired; signed OCI identity, exact container staging, and immutable VPS receipts replace its attestation path. Checksum-bound staging remains only in the PM2 first-cutover fallback."
     },
     {
@@ -1016,7 +1086,9 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/services/content-live-evaluation-runtime.test.ts",
-      "requiredChangedPaths": ["src/services/content-live-evaluation-runtime.ts"],
+      "requiredChangedPaths": [
+        "src/services/content-live-evaluation-runtime.ts"
+      ],
       "replacementTests": [
         "__tests__/services/content-live-evaluation-runtime.test.ts",
         "__tests__/scripts/local-backup.test.ts"
@@ -1026,8 +1098,12 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/local-full-vitest-receipt.test.ts",
-      "requiredRemovedPaths": ["scripts/local-full-vitest-receipt.mjs"],
-      "requiredChangedPaths": [".husky/pre-push"],
+      "requiredRemovedPaths": [
+        "scripts/local-full-vitest-receipt.mjs"
+      ],
+      "requiredChangedPaths": [
+        ".husky/pre-push"
+      ],
       "replacementTests": [
         "__tests__/scripts/local-release-hooks.test.ts",
         "__tests__/scripts/risk-gate.test.ts"
@@ -1037,8 +1113,12 @@
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/local-release-hooks.test.ts",
-      "requiredRemovedPaths": ["scripts/local-full-vitest-receipt.mjs"],
-      "requiredChangedPaths": [".husky/pre-push"],
+      "requiredRemovedPaths": [
+        "scripts/local-full-vitest-receipt.mjs"
+      ],
+      "requiredChangedPaths": [
+        ".husky/pre-push"
+      ],
       "replacementTests": [
         "__tests__/scripts/local-release-hooks.test.ts",
         "__tests__/scripts/risk-gate.test.ts"
@@ -1110,14 +1190,20 @@
         "scripts/cannot-skip-gate-dashboard.mjs",
         "scripts/cannot-skip-gate-dashboard.sh"
       ],
-      "replacementTests": ["__tests__/services/science-policy-gate-wiring.test.ts"],
+      "replacementTests": [
+        "__tests__/services/science-policy-gate-wiring.test.ts"
+      ],
       "reason": "The 42-gate dashboard contract is retired while the retained test continues to pin science-policy enforcement in CI and pre-commit."
     },
     {
       "baseSha": "7b724f185580b18ce722a396b6e01d5ae268d3c1",
       "test": "__tests__/scripts/chat-eval-local.test.ts",
-      "requiredRemovedPaths": ["scripts/remote-promotion-*"],
-      "requiredChangedPaths": ["scripts/promote-exact-release.sh"],
+      "requiredRemovedPaths": [
+        "scripts/remote-promotion-*"
+      ],
+      "requiredChangedPaths": [
+        "scripts/promote-exact-release.sh"
+      ],
       "replacementTests": [
         "__tests__/scripts/chat-eval-local.test.ts",
         "__tests__/scripts/lean-release-path.test.ts"
@@ -1135,7 +1221,9 @@
         "scripts/ollama-zero-swap-transition.mjs",
         "scripts/systemd/nexus-ollama-observation@.service"
       ],
-      "replacementTests": ["__tests__/scripts/ollama-lean-finalize.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/ollama-lean-finalize.test.ts"
+      ],
       "reason": "The multi-window Ollama observation, cleanup, and zero-swap chain is retired in favor of one exact-release-bound, dry-run-first finalization transaction."
     },
     {
@@ -1149,7 +1237,9 @@
         "scripts/ollama-zero-swap-transition.mjs",
         "scripts/systemd/nexus-ollama-observation@.service"
       ],
-      "replacementTests": ["__tests__/scripts/ollama-lean-finalize.test.ts"],
+      "replacementTests": [
+        "__tests__/scripts/ollama-lean-finalize.test.ts"
+      ],
       "reason": "The large-model cleanup contract is replaced by the exact-release-bound, dry-run-first Ollama finalization transaction."
     },
     {
@@ -1231,54 +1321,100 @@
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/portal/intelligence-routes.test.ts",
-      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts"],
-      "requiredChangedPaths": ["src/portal/server.ts", "__tests__/portal/portal-route-registration.test.ts"],
-      "replacementTests": ["__tests__/portal/portal-route-registration.test.ts", "__tests__/services/signal-ranking.test.ts"],
+      "requiredRemovedPaths": [
+        "src/portal/intelligence-routes.ts"
+      ],
+      "requiredChangedPaths": [
+        "src/portal/server.ts",
+        "__tests__/portal/portal-route-registration.test.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-route-registration.test.ts",
+        "__tests__/services/signal-ranking.test.ts"
+      ],
       "reason": "The legacy /api/agents, /api/signals and /api/pipeline portal routes had no SPA consumer and were deleted with their module. The retained route-registration hygiene suite proves every mounted portal route has a consumer or an explicit allowlist entry, and signal-ranking keeps the intelligence-bus contract coverage."
     },
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/portal/portal-intelligence-routes.test.ts",
-      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts"],
-      "requiredChangedPaths": ["src/portal/server.ts", "__tests__/portal/portal-route-registration.test.ts"],
-      "replacementTests": ["__tests__/portal/portal-route-registration.test.ts", "__tests__/portal/portal-admin-scope.test.ts"],
+      "requiredRemovedPaths": [
+        "src/portal/intelligence-routes.ts"
+      ],
+      "requiredChangedPaths": [
+        "src/portal/server.ts",
+        "__tests__/portal/portal-route-registration.test.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-route-registration.test.ts",
+        "__tests__/portal/portal-admin-scope.test.ts"
+      ],
       "reason": "Retired together with src/portal/intelligence-routes.ts, which no portal surface or script called. Route wiring is now guarded by the registration hygiene suite and admin-scope assertions cover the remaining mutation routes."
     },
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/portal/anthropic-hook.test.ts",
-      "requiredChangedPaths": ["src/services/anthropic-hook.ts", "__tests__/services/anthropic-hook.test.ts"],
-      "replacementTests": ["__tests__/services/anthropic-hook.test.ts"],
+      "requiredChangedPaths": [
+        "src/services/anthropic-hook.ts",
+        "__tests__/services/anthropic-hook.test.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/anthropic-hook.test.ts"
+      ],
       "reason": "The Anthropic tracked-create hook moved from src/portal to src/services with its unit suite renamed in place; the retained suite is the same file at the new path with unchanged assertions."
     },
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/portal/portal-admin-scope.test.ts",
-      "requiredRemovedPaths": ["src/portal/intelligence-routes.ts", "src/portal/content-routes.ts"],
-      "requiredChangedPaths": ["src/portal/user-routes.ts", "__tests__/portal/portal-route-registration.test.ts"],
-      "replacementTests": ["__tests__/portal/portal-admin-scope.test.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "requiredRemovedPaths": [
+        "src/portal/intelligence-routes.ts",
+        "src/portal/content-routes.ts"
+      ],
+      "requiredChangedPaths": [
+        "src/portal/user-routes.ts",
+        "__tests__/portal/portal-route-registration.test.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-admin-scope.test.ts",
+        "__tests__/portal/portal-route-registration.test.ts"
+      ],
       "reason": "Assertions for the deleted intelligence and legacy content mutation routes were removed with those modules; the retained suite adds the admin guard assertion for GET /api/users and the registration hygiene suite proves no unguarded route survived."
     },
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/portal/portal-document-routes.test.ts",
-      "requiredChangedPaths": ["src/portal/document-routes.ts"],
-      "replacementTests": ["__tests__/portal/portal-document-routes.test.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "requiredChangedPaths": [
+        "src/portal/document-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-document-routes.test.ts",
+        "__tests__/portal/portal-route-registration.test.ts"
+      ],
       "reason": "GET /api/reports had no SPA consumer and was removed from document-routes; the retained suite now exercises the sanitized-error path through the notifications route, and the registration hygiene suite proves the remaining document routes are consumed."
     },
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/portal/portal-operations-routes.test.ts",
-      "requiredChangedPaths": ["src/portal/operations-routes.ts"],
-      "replacementTests": ["__tests__/portal/portal-operations-routes.test.ts", "__tests__/portal/portal-route-registration.test.ts"],
+      "requiredChangedPaths": [
+        "src/portal/operations-routes.ts"
+      ],
+      "replacementTests": [
+        "__tests__/portal/portal-operations-routes.test.ts",
+        "__tests__/portal/portal-route-registration.test.ts"
+      ],
       "reason": "The unconsumed /api/spend-by-provider, /api/task-metrics and /api/training-generation-metrics routes were deleted from operations-routes; the retained suite keeps the route family list, quality-score and operator-alert coverage, and the registration hygiene suite guards consumers."
     },
     {
       "baseSha": "0ec25946530db6359d341ef193de2504f15f8af4",
       "test": "__tests__/services/content-dashboard-service.test.ts",
-      "requiredRemovedPaths": ["src/portal/content-routes.ts"],
-      "requiredChangedPaths": ["src/portal/server.ts"],
-      "replacementTests": ["__tests__/services/content-dashboard-service.test.ts"],
+      "requiredRemovedPaths": [
+        "src/portal/content-routes.ts"
+      ],
+      "requiredChangedPaths": [
+        "src/portal/server.ts"
+      ],
+      "replacementTests": [
+        "__tests__/services/content-dashboard-service.test.ts"
+      ],
       "reason": "The structural checks that read src/portal/content-routes.ts were replaced by a check that the legacy portal content routes are retired in favor of /api/v1/admin/content; the service-layer behavior assertions in the same file are unchanged."
     }
   ],
@@ -1728,7 +1864,9 @@
         "src/services/waitlist-*.ts",
         "src/services/release-info.ts",
         "src/services/issue-tracker.ts",
-        "src/services/support-tickets.ts"
+        "src/services/support-tickets.ts",
+        "src/services/queue-observability.ts",
+        "src/services/runtime-flags-catalog.ts"
       ],
       "tests": [
         "__tests__/domains/**/*.test.ts",
@@ -1740,7 +1878,9 @@
         "__tests__/skills/**/*.test.ts",
         "__tests__/services/release-info.test.ts",
         "__tests__/services/issue-tracker.test.ts",
-        "__tests__/services/support-tickets.test.ts"
+        "__tests__/services/support-tickets.test.ts",
+        "__tests__/services/queue-observability.test.ts",
+        "__tests__/services/runtime-flags-catalog.test.ts"
       ],
       "contracts": [
         "__tests__/domains/domain-handler.test.ts",
@@ -1809,7 +1949,10 @@
       ]
     },
     "content-engine": {
-      "paths": ["content-engine/**", "tests/**/*.py"],
+      "paths": [
+        "content-engine/**",
+        "tests/**/*.py"
+      ],
       "tests": [],
       "contracts": []
     },
@@ -1828,7 +1971,9 @@
         "__tests__/services/migration-runner-functions.test.ts",
         "__tests__/services/paid-ai-cost-controls-migration-runner.test.ts"
       ],
-      "contracts": ["__tests__/migrations/migration-115-event-outbox-canceled-status.test.ts"]
+      "contracts": [
+        "__tests__/migrations/migration-115-event-outbox-canceled-status.test.ts"
+      ]
     }
   }
 }

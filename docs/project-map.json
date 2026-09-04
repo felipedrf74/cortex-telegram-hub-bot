@@ -5,11 +5,11 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "9bfbcae34e9bb0f6915f45b0b1c8c69d184965ab6e7f7dd096d364a1014dfe89",
-    "baseCommit": "0084e1b5724b1bbb3bf6134932807398b5484e2c",
-    "baseCommitTimestamp": "2026-09-04T09:41:56+01:00",
-    "trackedFiles": 3639,
-    "sourceFiles": 1271
+    "sourceDigest": "9a79c321b8943bdea7472665c1b9703e0d1c7d03a76397e6903c2b2f19c1dfb9",
+    "baseCommit": "677b25f877b86244a9d33df2d58efeaa3150a15d",
+    "baseCommitTimestamp": "2026-09-04T11:19:30+01:00",
+    "trackedFiles": 3649,
+    "sourceFiles": 1275
   },
   "navigation": {
     "agentBootloader": "AGENTS.md",
@@ -74,7 +74,7 @@
     {
       "path": "src/portal",
       "owner": "backend",
-      "files": 47
+      "files": 49
     },
     {
       "path": "src/release",
@@ -99,7 +99,7 @@
     {
       "path": "src/services",
       "owner": "backend",
-      "files": 936
+      "files": 938
     },
     {
       "path": "src/skills",
@@ -161,6 +161,14 @@
       "method": "GET",
       "path": "/api/audit-trail",
       "localPath": "/api/audit-trail",
+      "mountPath": "/",
+      "source": "src/portal/admin-data-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/audit-trail/facets",
+      "localPath": "/api/audit-trail/facets",
       "mountPath": "/",
       "source": "src/portal/admin-data-routes.ts",
       "owner": "backend"
@@ -318,6 +326,30 @@
       "owner": "backend"
     },
     {
+      "method": "GET",
+      "path": "/api/jobs",
+      "localPath": "/api/jobs",
+      "mountPath": "/",
+      "source": "src/portal/jobs-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/jobs/:name/history",
+      "localPath": "/api/jobs/:name/history",
+      "mountPath": "/",
+      "source": "src/portal/jobs-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/jobs/:name/run",
+      "localPath": "/api/jobs/:name/run",
+      "mountPath": "/",
+      "source": "src/portal/jobs-routes.ts",
+      "owner": "backend"
+    },
+    {
       "method": "DELETE",
       "path": "/api/model-config",
       "localPath": "/api/model-config",
@@ -423,6 +455,22 @@
     },
     {
       "method": "GET",
+      "path": "/api/ops/flags",
+      "localPath": "/api/ops/flags",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/flags/kill-switches/:key",
+      "localPath": "/api/ops/flags/kill-switches/:key",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
       "path": "/api/ops/issues",
       "localPath": "/api/ops/issues",
       "mountPath": "/",
@@ -515,6 +563,54 @@
       "localPath": "/api/ops/logs/stream",
       "mountPath": "/",
       "source": "src/portal/ops-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/notification-delivery",
+      "localPath": "/api/ops/notification-delivery",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/provider-health-history",
+      "localPath": "/api/ops/provider-health-history",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/queues",
+      "localPath": "/api/ops/queues",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/queues/:kind/:id/cancel",
+      "localPath": "/api/ops/queues/:kind/:id/cancel",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/queues/:kind/:id/replay",
+      "localPath": "/api/ops/queues/:kind/:id/replay",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
+      "owner": "backend"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/queues/dead-letter",
+      "localPath": "/api/ops/queues/dead-letter",
+      "mountPath": "/",
+      "source": "src/portal/operate-routes.ts",
       "owner": "backend"
     },
     {
@@ -5441,7 +5537,7 @@
     }
   ],
   "tests": {
-    "files": 1353,
+    "files": 1358,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5456,14 +5552,14 @@
       "integration": 4,
       "lib": 1,
       "migrations": 45,
-      "portal": 63,
+      "portal": 66,
       "regression": 1,
       "router": 8,
       "scope": 1,
       "scripts": 113,
       "sdk": 1,
       "security": 24,
-      "services": 844,
+      "services": 846,
       "skills": 12,
       "state": 17,
       "storage": 1,
@@ -6254,7 +6350,7 @@
     },
     {
       "path": "src/portal/portal.html",
-      "bytes": 332558,
+      "bytes": 343468,
       "generated": false
     },
     {

@@ -126,9 +126,9 @@ describe('portal admin data routes', () => {
 
     handler({ query: { limit: 'bad' } }, res);
 
-    expect(payload.body).toEqual({ entries: [{ id: 1, action: 'login' }] });
+    expect(payload.body).toMatchObject({ entries: [{ id: 1, action: 'login' }], nextBeforeId: null });
     expect(recorder.calls).toEqual([{
-      sql: 'SELECT * FROM audit_trail ORDER BY ts DESC LIMIT ?',
+      sql: 'SELECT * FROM audit_trail  ORDER BY ts DESC, id DESC LIMIT ?',
       args: [50],
     }]);
   });
@@ -143,9 +143,10 @@ describe('portal admin data routes', () => {
 
     handler({ query: { userId: '42', limit: '9999' } }, res);
 
-    expect(payload.body).toEqual({ entries: [{ id: 2, user_id: 42 }] });
+    expect(payload.body).toMatchObject({ entries: [{ id: 2, user_id: 42 }], nextBeforeId: null });
+    expect(payload.body.filters).toMatchObject({ userId: 42, limit: 500 });
     expect(recorder.calls).toEqual([{
-      sql: 'SELECT * FROM audit_trail WHERE user_id = ? ORDER BY ts DESC LIMIT ?',
+      sql: 'SELECT * FROM audit_trail WHERE user_id = ? ORDER BY ts DESC, id DESC LIMIT ?',
       args: [42, 500],
     }]);
   });

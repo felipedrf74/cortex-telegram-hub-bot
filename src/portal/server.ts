@@ -47,6 +47,8 @@ import { registerPortalDocumentRoutes } from './document-routes';
 import { registerPortalEnvironmentRoutes } from './environment-routes';
 import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
 import { registerPortalOpsRoutes } from './ops-routes';
+import { registerPortalJobsRoutes } from './jobs-routes';
+import { registerPortalOperateRoutes } from './operate-routes';
 import { registerPortalSupportRoutes } from './support-routes';
 import { registerPortalUserAdminRoutes } from './user-admin-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
@@ -486,6 +488,8 @@ export function createPortalServer(): http.Server {
   registerPortalEnvironmentRoutes(app, { startedAt });
 
   registerPortalOpsRoutes(app);
+  registerPortalJobsRoutes(app);
+  registerPortalOperateRoutes(app);
 
   registerPortalSupportRoutes(app);
 
