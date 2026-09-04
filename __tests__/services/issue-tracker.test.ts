@@ -11,10 +11,27 @@ vi.mock('../../src/services/database', () => ({
     if (!hoisted.db) throw new Error('db not ready');
     return hoisted.db;
   },
+  applyMigrationFileForTest: vi.fn(),
+  closeDatabase: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn(),
+  initializeDatabaseCore: vi.fn(),
+  runMigrationsForTest: vi.fn(),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+  withReleaseMaintenanceDatabase: vi.fn(),
 }));
 
 vi.mock('../../src/services/operator-alerts', () => ({
   recordOperatorAlert: hoisted.recordOperatorAlert,
+  _setOperatorAlertDeliveryConfigForTests: vi.fn(),
+  _setOperatorAlertDeliverySenderForTests: vi.fn(),
+  acknowledgeOperatorAlert: vi.fn(),
+  deliverOperatorAlert: vi.fn(),
+  getOperatorAlertDeliverySummary: vi.fn(),
+  listOperatorAlerts: vi.fn(),
+  processDueOperatorAlertDeliveries: vi.fn(),
+  resolveOperatorAlert: vi.fn(),
+  retryOperatorAlertDelivery: vi.fn(),
 }));
 
 import {

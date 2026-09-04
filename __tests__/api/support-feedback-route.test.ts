@@ -9,9 +9,28 @@ const hoisted = vi.hoisted(() => ({
   recordOperatorAlert: vi.fn(() => ({ ok: true })),
 }));
 
-vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db }));
+vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db,
+  applyMigrationFileForTest: vi.fn(),
+  closeDatabase: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn(),
+  initializeDatabaseCore: vi.fn(),
+  runMigrationsForTest: vi.fn(),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+  withReleaseMaintenanceDatabase: vi.fn(),
+}));
 vi.mock('../../src/api/tenant-route-scope', () => ({ ensureValidTenantRouteScope: () => true }));
-vi.mock('../../src/services/operator-alerts', () => ({ recordOperatorAlert: hoisted.recordOperatorAlert }));
+vi.mock('../../src/services/operator-alerts', () => ({ recordOperatorAlert: hoisted.recordOperatorAlert,
+  _setOperatorAlertDeliveryConfigForTests: vi.fn(),
+  _setOperatorAlertDeliverySenderForTests: vi.fn(),
+  acknowledgeOperatorAlert: vi.fn(),
+  deliverOperatorAlert: vi.fn(),
+  getOperatorAlertDeliverySummary: vi.fn(),
+  listOperatorAlerts: vi.fn(),
+  processDueOperatorAlertDeliveries: vi.fn(),
+  resolveOperatorAlert: vi.fn(),
+  retryOperatorAlertDelivery: vi.fn(),
+}));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   LOGGER_REDACTION_PATHS: [],

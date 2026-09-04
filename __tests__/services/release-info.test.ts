@@ -34,10 +34,24 @@ vi.mock('../../src/services/database', () => ({
     if (!hoisted.db) throw new Error('db not ready');
     return hoisted.db;
   },
+  applyMigrationFileForTest: vi.fn(),
+  closeDatabase: vi.fn(),
+  filterAlreadyAppliedAddColumnStatements: vi.fn(),
+  initializeDatabaseCore: vi.fn(),
+  runMigrationsForTest: vi.fn(),
+  withDatabaseForTest: vi.fn(),
+  withDatabaseForTestAsync: vi.fn(),
+  withReleaseMaintenanceDatabase: vi.fn(),
 }));
 
 vi.mock('../../src/services/error-tracker', () => ({
   isEnabled: () => hoisted.sentryEnabled,
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  flush: vi.fn(),
+  getStatus: vi.fn(),
+  init: vi.fn(),
+  sanitizeSentryEvent: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

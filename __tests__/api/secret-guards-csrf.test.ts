@@ -38,6 +38,7 @@ vi.mock('../../src/config', () => ({
 const auditRows: unknown[] = [];
 vi.mock('../../src/services/audit-trail', () => ({
   logAudit: (row: unknown) => { auditRows.push(row); },
+  getAuditTrail: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({

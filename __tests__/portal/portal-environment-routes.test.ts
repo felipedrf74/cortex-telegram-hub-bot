@@ -7,6 +7,10 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock('../../src/services/release-info', () => ({
   getReleaseInfo: hoisted.getReleaseInfo,
+  getMigrationStatus: vi.fn(),
+  readReleaseStamp: vi.fn(),
+  resolveMigrationsDir: vi.fn(),
+  resolveReleaseStampPath: vi.fn(),
 }));
 
 vi.mock('../../src/portal/http', () => ({
