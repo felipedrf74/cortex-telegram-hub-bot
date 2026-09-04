@@ -105,12 +105,12 @@ function renderSkillsGrid(skills) {
 // /api/users). Called when the Skills section becomes visible.
 async function loadSkillsUserSelector() {
   try {
-    if (!allUsers || allUsers.length === 0) {
-      const r = await apiFetch('/api/users');
-      if (r.ok) {
-        const d = await r.json();
-        allUsers = d.users || [];
-      }
+    // Refresh on every show so users registered after the first visit appear;
+    // a failed refresh keeps the last list.
+    const r = await apiFetch('/api/users');
+    if (r.ok) {
+      const d = await r.json();
+      allUsers = d.users || [];
     }
     const sel = document.getElementById('skills-user-select');
     if (!sel) return;

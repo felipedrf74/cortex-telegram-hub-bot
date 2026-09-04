@@ -73,3 +73,4 @@ button.point-buy { width:auto; margin:0; padding:10px 12px; border-radius:10px; 
 /* Former inline styles (CSP: no unsafe-inline). */
 .signed-in-title { margin: 0 0 8px; }
 #provider-panel[hidden] { display: none; }
+#email-form[hidden] { display: none; }

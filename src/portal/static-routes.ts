@@ -141,10 +141,11 @@ export function createPasswordResetPageHandler(portalDir = __dirname) {
     }
 
     // Restrictive CSP suitable for a static, single-form HTML page that
-    // posts JSON back to the same origin. We allow inline script+style
-    // because the page intentionally ships zero external assets — every
-    // byte is in the file so a stressed user resetting their password
-    // never sees a "could not load fonts.googleapis.com" failure.
+    // posts JSON back to the same origin. The page depends on exactly two
+    // same-origin assets (/portal/ui/auth-password-reset.js and .css, served
+    // by the allowlisted UI asset route) and nothing external, so a stressed
+    // user resetting their password never sees a "could not load
+    // fonts.googleapis.com" failure; script-src and style-src stay 'self'.
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
@@ -207,11 +208,22 @@ export function createPortalBrandAssetHandler(portalDir = __dirname) {
  * Per-IP ceiling for the module/stylesheet reads. The SPA loads at most a few
  * dozen files per boot, so a generous minute window only trips on scanners.
  */
+// The SPA pulls every module and stylesheet with Cache-Control: no-cache on each
+// boot, so this ceiling is sized independently of the admin API limit
+// (PORTAL_API_RATE_LIMIT): a tightened API limit must never 429 the module
+// graph and leave the shell waiting for app.js. The floor stays well above the
+// module count so a misconfigured value cannot brick sign-in either.
+export const PORTAL_ASSET_RATE_LIMIT_DEFAULT = 1200;
+export const PORTAL_ASSET_RATE_LIMIT_FLOOR = 600;
+export function resolvePortalAssetRateLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number.parseInt(env.PORTAL_ASSET_RATE_LIMIT ?? '', 10);
+  if (!Number.isFinite(configured) || configured <= 0) return PORTAL_ASSET_RATE_LIMIT_DEFAULT;
+  return Math.max(configured, PORTAL_ASSET_RATE_LIMIT_FLOOR);
+}
 export function createPortalUiModuleRateLimiter() {
-  const configuredLimit = Number.parseInt(process.env.PORTAL_API_RATE_LIMIT ?? '', 10);
   return rateLimit({
     windowMs: 60 * 1000,
-    limit: Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 300,
+    limit: resolvePortalAssetRateLimit(),
     keyGenerator: (req: Request) => `ip:${ipKeyGenerator(extractClientIp(req))}`,
     legacyHeaders: false,
     standardHeaders: false,

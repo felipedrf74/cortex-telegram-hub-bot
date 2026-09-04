@@ -39,7 +39,9 @@ async function pollSnapshot() {
     const snap = await r.json();
     lastSnapshot = snap;
     renderSnapshot(snap);
-  } catch (err) { /* silent */ }
+  } catch (err) {
+    console.warn('[portal] dashboard snapshot poll failed', err);
+  }
 }
 
 async function pollUsageSummary() {
@@ -48,38 +50,43 @@ async function pollUsageSummary() {
     if (!r.ok) return;
     const d = await r.json();
     renderUsageSummary(d);
-  } catch (err) { /* silent */ }
+  } catch (err) {
+    console.warn('[portal] dashboard usage summary failed', err);
+  }
 }
 
 function renderSnapshot(snap) {
-  // Topbar version + uptime + cost + bot status
-  const ver = snap.version || '?';
-  document.getElementById('app-version').textContent = 'v' + ver;
-  document.getElementById('footer-version').textContent = ver + (_releaseShortSha ? ' · ' + _releaseShortSha : '');
-  document.getElementById('topbar-uptime').textContent = snap.uptime?.human || '—';
-  document.getElementById('topbar-cost').textContent = fmtCost(snap.healthSummary?.apiCostToday);
+  // Other sections render from this same payload; the fan-out must survive a
+  // dashboard paint failure (one missing element must not starve the rest).
+  try {
+    // Topbar version + uptime + cost + bot status
+    const ver = snap.version || '?';
+    document.getElementById('app-version').textContent = 'v' + ver;
+    document.getElementById('footer-version').textContent = ver + (_releaseShortSha ? ' · ' + _releaseShortSha : '');
+    document.getElementById('topbar-uptime').textContent = snap.uptime?.human || '—';
+    document.getElementById('topbar-cost').textContent = fmtCost(snap.healthSummary?.apiCostToday);
 
-  const serverStatus = snap.server?.status || 'offline';
-  const botPolling = snap.bot?.polling;
-  const botRestarting = snap.bot?.restarting;
-  const botStatus = botPolling ? 'online' : botRestarting ? 'restarting' : 'offline';
-  const dot = document.getElementById('bot-status-dot');
-  const text = document.getElementById('bot-status-text');
-  dot.className = 'status-dot ' + (serverStatus === 'online' ? 'online' : 'error');
-  text.textContent = serverStatus === 'online' ? 'Online' : 'Offline';
+    const serverStatus = snap.server?.status || 'offline';
+    const botPolling = snap.bot?.polling;
+    const botRestarting = snap.bot?.restarting;
+    const botStatus = botPolling ? 'online' : botRestarting ? 'restarting' : 'offline';
+    const dot = document.getElementById('bot-status-dot');
+    const text = document.getElementById('bot-status-text');
+    dot.className = 'status-dot ' + (serverStatus === 'online' ? 'online' : 'error');
+    text.textContent = serverStatus === 'online' ? 'Online' : 'Offline';
 
-  // Dashboard KPIs (uptime cell — others come from /api/usage/summary)
-  document.getElementById('kpi-uptime').textContent = snap.uptime?.human || '—';
-  document.getElementById('kpi-uptime-sub').textContent = 'Server: ' + serverStatus + ' · Bot: ' + botStatus;
+    // Dashboard KPIs (uptime cell — others come from /api/usage/summary)
+    document.getElementById('kpi-uptime').textContent = snap.uptime?.human || '—';
+    document.getElementById('kpi-uptime-sub').textContent = 'Server: ' + serverStatus + ' · Bot: ' + botStatus;
 
-  // Dashboard: recent activity
-  renderActivity(snap.recentEvents || []);
+    // Dashboard: recent activity
+    renderActivity(snap.recentEvents || []);
 
-  // Dashboard: integrations summary
-  renderDashIntegrations(snap.integrations || []);
-
-  // Skills, jobs and AI KPIs render from the same snapshot in their modules.
-  P.emit('snapshot', snap);
+    // Dashboard: integrations summary
+    renderDashIntegrations(snap.integrations || []);
+  } finally {
+    P.emit('snapshot', snap);
+  }
 }
 
 function renderUsageSummary(d) {
@@ -220,10 +227,15 @@ async function pollAll() {
 }
 let pollTimer = null;
 P.on('refresh', pollAll);
+let started = false;
 P.on('app:start', () => {
   pollAll();
   loadReleaseInfo();
-  if (!pollTimer) pollTimer = setInterval(() => { if (!document.hidden) pollAll(); }, 15000);
+  // Timers and listeners are installed once; a repeated app:start (re-login in
+  // the same tab) only refreshes.
+  if (started) return;
+  started = true;
+  pollTimer = setInterval(() => { if (!document.hidden) pollAll(); }, 15000);
   setInterval(() => { if (!document.hidden) loadReleaseInfo(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollAll(); });
 });

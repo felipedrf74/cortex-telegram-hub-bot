@@ -329,10 +329,14 @@ export function registerPortalOpsRoutes(app: Express): void {
       try {
         const alerts = listOperatorAlerts({ status: 'open', limit: 50 });
         const delivery = getOperatorAlertDeliverySummary();
-        const signature = JSON.stringify({ alerts: alerts.map((a) => [a.id, a.status, a.updatedAt, a.deliveryStatus]), delivery });
+        const issues = getIssueSummary();
+        const support = readSupportSummary();
+        // The client stops polling badges once this stream is open, so a change
+        // in issues or tickets must push even when the alert queue is unchanged.
+        const signature = JSON.stringify({ alerts: alerts.map((a) => [a.id, a.status, a.updatedAt, a.deliveryStatus]), delivery, issues, support });
         if (signature !== lastSignature) {
           lastSignature = signature;
-          handle.send('alerts', { alerts, delivery, issues: getIssueSummary(), support: readSupportSummary() });
+          handle.send('alerts', { alerts, delivery, issues, support });
         }
       } catch {
         // keep the stream alive; next tick retries

@@ -143,15 +143,15 @@ async function buyNexusPoints(packageId, button) {
 document.getElementById('tab-email').addEventListener('click', () => {
   document.getElementById('tab-email').classList.add('active');
   document.getElementById('tab-provider').classList.remove('active');
-  emailForm.style.display = '';
-  providerPanel.style.display = 'none';
+  emailForm.hidden = false;
+  providerPanel.hidden = true;
   setMessage('');
 });
 document.getElementById('tab-provider').addEventListener('click', () => {
   document.getElementById('tab-provider').classList.add('active');
   document.getElementById('tab-email').classList.remove('active');
-  emailForm.style.display = 'none';
-  providerPanel.style.display = '';
+  emailForm.hidden = true;
+  providerPanel.hidden = false;
   setMessage('');
 });
 

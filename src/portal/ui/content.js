@@ -57,10 +57,14 @@ function refreshContentScopeUI() {
     status.textContent = 'Scoped panels/actions: user=' + (CONTENT_SCOPE.userId || '—')
       + ' / tenant=' + (CONTENT_SCOPE.tenantId || '—')
       + ' · mixed overview remains owner-bootstrap/platform';
-    status.style.color = 'var(--accent)';
+    // The element carries the u-c-text-tertiary utility (!important), which an
+    // inline colour cannot beat; swap utilities instead.
+    status.classList.add('u-c-accent');
+    status.classList.remove('u-c-text-tertiary');
   } else {
     status.textContent = 'Operator/platform scope (no x-nexus-* headers)';
-    status.style.color = 'var(--text-tertiary)';
+    status.classList.add('u-c-text-tertiary');
+    status.classList.remove('u-c-accent');
   }
 }
 function saveContentScope() {

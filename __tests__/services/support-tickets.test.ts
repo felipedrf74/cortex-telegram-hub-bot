@@ -197,3 +197,21 @@ describe('support tickets: validation and filter branches', () => {
     expect(countUserTicketsSince(1, 60_000)).toBe(1);
   });
 });
+
+describe('support tickets: external reference idempotency', () => {
+  it('returns the ticket already filed for a repeated externalRef instead of creating a duplicate', () => {
+    const first = createTicket({ kind: 'access_request', source: 'waitlist', title: 'Access request: waitlist #5', externalRef: 'waitlist:5', createdBy: 'operator:felipe', quiet: true });
+    const second = createTicket({ kind: 'access_request', source: 'waitlist', title: 'Access request: waitlist #5', externalRef: 'waitlist:5', createdBy: 'operator:felipe', quiet: true });
+    expect(second.id).toBe(first.id);
+    expect(second.ref).toBe(first.ref);
+    const count = hoisted.db!.prepare("SELECT COUNT(*) AS c FROM support_tickets WHERE external_ref = 'waitlist:5'").get() as { c: number };
+    expect(count.c).toBe(1);
+    expect(getTicket(first.id)!.events).toHaveLength(1);
+  });
+
+  it('keeps tickets without an external reference unconstrained', () => {
+    const a = createTicket({ kind: 'task', source: 'operator', title: 'Rotate tokens', createdBy: 'operator:felipe', quiet: true });
+    const b = createTicket({ kind: 'task', source: 'operator', title: 'Rotate tokens', createdBy: 'operator:felipe', quiet: true });
+    expect(b.id).not.toBe(a.id);
+  });
+});

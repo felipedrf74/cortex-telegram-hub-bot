@@ -78,8 +78,10 @@ describe('portal legacy shell after section extraction', () => {
       for (const match of source.matchAll(/data-act=\\?"([A-Za-z_$][\w$]*)\\?"/g)) names.add(match[1]);
     }
     expect(names.size).toBeGreaterThan(20);
+    // The dispatcher resolves PORTAL_ACTIONS[name] || window[name]; a module-local
+    // function declaration is invisible to it, so only an assignment counts.
     const declared = (name: string) => sources.some((source) =>
-      new RegExp(`window\\.${name}\\s*=|function\\s+${name}\\s*\\(|PORTAL_ACTIONS\\.${name}\\s*=`).test(source));
+      new RegExp(`window\\.${name}\\s*=|PORTAL_ACTIONS\\.${name}\\s*=`).test(source));
     const missing = [...names].filter((name) => !declared(name));
     expect(missing).toEqual([]);
   });

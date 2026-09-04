@@ -157,9 +157,15 @@ async function copyCode(code) {
 
 // Track a pending signup as an access_request ticket so the beta queue and the
 // support queue share one record (source: waitlist, externalRef waitlist:<id>).
-async function createAccessTicket(id) {
+const ticketsInFlight = new Set();
+async function createAccessTicket(id, button) {
   const entry = entries.find((r) => String(r.id) === String(id));
   if (!entry) return;
+  // One ticket per signup: ignore repeat clicks while the POST is in flight and
+  // keep the button disabled until the row re-renders.
+  if (ticketsInFlight.has(String(id))) return;
+  ticketsInFlight.add(String(id));
+  if (button) button.disabled = true;
   const lines = [
     'Intent: ' + (entry.intent || 'general'),
     'Source: ' + (entry.source || '—'),
@@ -174,7 +180,9 @@ async function createAccessTicket(id) {
         kind: 'access_request',
         source: 'waitlist',
         priority: entry.intent === 'founder' ? 'p1' : 'p2',
-        title: 'Access request: ' + (entry.email || ('waitlist #' + entry.id)),
+        // Ticket text is redacted server-side (emails become [RedactedEmail]),
+        // so the title keys on the stable waitlist id instead of the address.
+        title: 'Access request: waitlist #' + entry.id,
         body: lines.join('\n'),
         externalRef: 'waitlist:' + entry.id,
       }),
@@ -188,6 +196,9 @@ async function createAccessTicket(id) {
     if (support && support.openTicket) support.openTicket(d.ticket.id);
   } catch (_) {
     P.showToast('Ticket creation failed', false);
+  } finally {
+    ticketsInFlight.delete(String(id));
+    if (button) button.disabled = false;
   }
 }
 
@@ -261,7 +272,7 @@ function mount(container) {
     else if (op === 'reject') reject(btn.dataset.id);
     else if (op === 'invited') markInvited(btn.dataset.id);
     else if (op === 'copy') copyCode(btn.dataset.code);
-    else if (op === 'ticket') createAccessTicket(btn.dataset.id);
+    else if (op === 'ticket') createAccessTicket(btn.dataset.id, btn);
   });
 }
 
