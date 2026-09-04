@@ -642,8 +642,11 @@ export const config = {
     // start if the resolved admin exposure mode is not beta-safe (disabled,
     // loopback_only, session_only, signed_static). This is the single flag
     // the beta runbook points at before exposing the admin surface.
+    // Default: on when NODE_ENV=production (cookie sessions exist and both
+    // deployed environments already run hardened), off elsewhere so local
+    // sandboxes with a static token keep booting. An explicit value always wins.
     betaHardened:
-      (process.env.PORTAL_BETA_HARDENED || 'false') === 'true',
+      (process.env.PORTAL_BETA_HARDENED || (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true',
     // Optional per-operator user scope (Gap 5): JSON object mapping actor hint
     // (lowercased) to the list of user ids that operator is allowed to admin.
     // When unset, admin credentials have god-mode access across all users

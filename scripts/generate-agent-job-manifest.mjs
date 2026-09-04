@@ -147,6 +147,8 @@ export const JOB_POLICIES = Object.freeze({
   chat_quality_weekly_digest: noProvider('ai-quality', 'platform-quality-metrics', { retryPolicy: 'next-scheduled-run', outputPolicy: 'deduped-info-operator-alert' }),
   chat_v2_gate_check: noProvider('chat-core-v2', 'platform-shadow-metrics'),
   classify_shadow_prune: noProvider('chat-core-v2', 'platform-retention'),
+  runtime_logs_prune: noProvider('operations', 'platform-retention'),
+  http_request_log_prune: noProvider('operations', 'platform-retention'),
   commitment_start_reminder: noProvider('secretary', 'active-tenant-user-secretary-agenda', {
     retryPolicy: 'next-five-minute-sweep-with-dedupe-and-start-expiry',
     outputPolicy: 'tenant-scoped-deduped-expiring-commitment-reminder',

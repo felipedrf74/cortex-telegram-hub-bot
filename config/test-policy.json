@@ -2208,7 +2208,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/scheduler.ts:4276-4276",
+            "pattern": "src/services/scheduler.ts:4301-4301",
             "anchor": "if (!isCronJobEnabled('daily_briefing')) return false;",
             "behavior": "Manual daily briefing callbacks honor the same Secretary parent and briefings sub-skill gate as scheduled and recovery callbacks.",
             "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",
@@ -2216,7 +2216,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/scheduler.ts:4244-4244",
+            "pattern": "src/services/scheduler.ts:4269-4269",
             "anchor": "projectSecretaryScheduledReport(snapshot, 'morning_briefing')",
             "behavior": "Scheduled morning reports project from the same canonical scoped Secretary snapshot used by the other report surfaces.",
             "replacementTest": "__tests__/services/scheduler-user-scope.test.ts",

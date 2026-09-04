@@ -279,6 +279,19 @@
         </div>
       </div>
 
+      <div class="card mt-4" id="dash-triage-card">
+        <div class="card-header">
+          <div class="card-title">🎫 Support &amp; Issues</div>
+          <div class="section-actions"><a class="btn btn-ghost btn-sm" data-jump-to="support">Tickets →</a><a class="btn btn-ghost btn-sm" data-jump-to="issues">Issues →</a></div>
+        </div>
+        <div class="grid grid-cols-4" id="dash-triage">
+          <div class="kpi-card"><div class="kpi-label">Open tickets</div><div class="kpi-value" id="dash-tickets-open">—</div><div class="kpi-sub" id="dash-tickets-priority">by priority —</div></div>
+          <div class="kpi-card"><div class="kpi-label">New &gt; 48h</div><div class="kpi-value" id="dash-tickets-stale">—</div><div class="kpi-sub" id="dash-tickets-week">— created this week</div></div>
+          <div class="kpi-card"><div class="kpi-label">Open issues</div><div class="kpi-value" id="dash-issues-open">—</div><div class="kpi-sub" id="dash-issues-kind">server — · iOS —</div></div>
+          <div class="kpi-card"><div class="kpi-label">Seen last 24h</div><div class="kpi-value" id="dash-issues-24h">—</div><div class="kpi-sub" id="dash-issues-acked">— acknowledged</div></div>
+        </div>
+      </div>
+
       <div class="card mt-4">
         <div class="card-header">
           <div class="card-title">📋 Recent Activity <span class="card-subtitle" id="event-count"></span></div>

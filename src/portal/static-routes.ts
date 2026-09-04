@@ -79,8 +79,8 @@ export function createUserLoginHandler(portalDir = __dirname) {
     res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.set(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-      + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+      "default-src 'self'; script-src 'self'; "
+      + "style-src 'self'; img-src 'self' data:; "
       + "connect-src 'self' https://api.nexushub.me https://*.nexushub-landing.pages.dev; "
       + "form-action 'self'; frame-ancestors 'none'; "
       + "base-uri 'none'",
@@ -153,8 +153,8 @@ export function createPasswordResetPageHandler(portalDir = __dirname) {
     res.set('Referrer-Policy', 'no-referrer');
     res.set(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-      + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+      "default-src 'self'; script-src 'self'; "
+      + "style-src 'self'; img-src 'self' data:; "
       + "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
       + "base-uri 'none'",
     );
@@ -179,8 +179,8 @@ export function createForgotPasswordPageHandler(portalDir = __dirname) {
     res.set('Referrer-Policy', 'no-referrer');
     res.set(
       'Content-Security-Policy',
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-      + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+      "default-src 'self'; script-src 'self'; "
+      + "style-src 'self'; img-src 'self' data:; "
       + "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
       + "base-uri 'none'",
     );

@@ -54,9 +54,13 @@ describe('portal dashboard CSP without inline scripts', () => {
       for (const match of source.matchAll(/data-act="([A-Za-z_$][\w$]*)"/g)) names.add(match[1]);
     }
     expect(names.size).toBeGreaterThan(0);
+    // Sections live in ui/*.js modules that expose their actions on window.
+    const moduleSources = fs.readdirSync(path.join(portalDir, 'ui'))
+      .filter((f) => f.endsWith('.js'))
+      .map((f) => fs.readFileSync(path.join(portalDir, 'ui', f), 'utf8'));
     const missing = [...names].filter((name) => {
-      const declared = new RegExp(`(?:function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=|window\\.${name}\\s*=)`).test(legacy);
-      return !declared;
+      const pattern = new RegExp(`(?:function\\s+${name}\\s*\\(|(?:const|let|var)\\s+${name}\\s*=|window\\.${name}\\s*=)`);
+      return ![legacy, ...moduleSources].some((source) => pattern.test(source));
     });
     expect(missing).toEqual([]);
   });
