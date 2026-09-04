@@ -23,6 +23,7 @@ import { getDb } from '../../services/database';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { sanitizeLogText, stringifySanitizedLogContext } from '../../utils/log-sanitizer';
+import { upsertIssue } from '../../services/issue-tracker';
 
 // Hard size caps — keep in sync with the iOS reporter so it can pre-truncate.
 const MAX_MESSAGE = 2_000;
@@ -41,6 +42,7 @@ interface ClientErrorBody {
   osVersion?: unknown;
   userAgent?: unknown;
   context?: unknown;
+  requestId?: unknown;
 }
 
 function asString(v: unknown, max: number): string | null {
@@ -102,6 +104,9 @@ export function clientErrorsRoutes(): Router {
     const appVersion = asString(body.appVersion, 64);
     const osVersion = asString(body.osVersion, 64);
     const userAgent = asString(body.userAgent, 512);
+    // The x-request-id the app saw on the failing call (optional) links this
+    // report to the portal Requests explorer.
+    const requestId = asString(body.requestId, 64);
 
     let contextJson: string | null = null;
     if (body.context && typeof body.context === 'object') {
@@ -114,6 +119,17 @@ export function clientErrorsRoutes(): Router {
           (user_id, device_id, source, level, message, stack, context, app_version, os_version, user_agent)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(userId, deviceId, source, level, message, stack, contextJson, appVersion, osVersion, userAgent);
+
+      // Group into the portal Issues panel (columns land with migration 315).
+      try {
+        const issue = upsertIssue({
+          kind: 'client', source, level, message, stack, reqId: requestId, userId, appVersion,
+        });
+        getDb().prepare('UPDATE client_errors SET req_id = ?, issue_id = ? WHERE id = ?')
+          .run(requestId, issue?.issueId ?? null, result.lastInsertRowid);
+      } catch {
+        // pre-migration schema — the raw row is still persisted
+      }
 
       // Mirror critical errors to pino so the operator can spot trends in
       // logs even before opening the portal. Stack is omitted at info level

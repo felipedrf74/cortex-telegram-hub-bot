@@ -27,6 +27,7 @@ import {
   stringifySanitizedLogContext,
 } from '../utils/log-sanitizer';
 import { getCurrentContext } from '../utils/request-context';
+import { linkIssueAlert, upsertIssue } from './issue-tracker';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -103,9 +104,42 @@ export function setDbProvider(fn: DbProvider): void {
 }
 
 /** Internal: write a record to error_log. Caller guarantees _getDb is set. */
-function persistToDb(record: ErrorRecord): void {
-  if (!_getDb) return;
+let _errorLogHasIssueColumns: boolean | null = null;
+
+/** Insert the error row, then link it to its grouped issue (migration 315). */
+function persistToDb(record: ErrorRecord): { errorId: number | null; issueId: number | null } {
+  if (!_getDb) return { errorId: null, issueId: null };
   const db = _getDb();
+  if (_errorLogHasIssueColumns == null) {
+    try {
+      const columns = db.prepare("PRAGMA table_info('error_log')").all() as Array<{ name: string }>;
+      _errorLogHasIssueColumns = columns.some((column) => column.name === 'issue_id') &&
+        columns.some((column) => column.name === 'req_id');
+    } catch {
+      _errorLogHasIssueColumns = false;
+    }
+  }
+  const inserted = insertErrorRow(db, record);
+  if (!_errorLogHasIssueColumns || inserted == null) return { errorId: inserted, issueId: null };
+  try {
+    const reqId = getCurrentContext()?.requestId ?? null;
+    const issue = upsertIssue({
+      kind: 'server',
+      source: record.source,
+      level: record.level,
+      message: record.message,
+      stack: record.stack ?? null,
+      reqId,
+      userId: getCurrentContext()?.userId ?? null,
+    });
+    db.prepare('UPDATE error_log SET req_id = ?, issue_id = ? WHERE id = ?').run(reqId, issue?.issueId ?? null, inserted);
+    return { errorId: inserted, issueId: issue?.issueId ?? null };
+  } catch {
+    return { errorId: inserted, issueId: null };
+  }
+}
+
+function insertErrorRow(db: any, record: ErrorRecord): number | null {
   if (_errorLogHasScopeColumns == null) {
     try {
       const columns = db.prepare("PRAGMA table_info('error_log')").all() as Array<{ name: string }>;
@@ -121,7 +155,7 @@ function persistToDb(record: ErrorRecord): void {
   const shouldAlertFlag = record.level !== 'warning';
   const ctx = getCurrentContext();
   if (_errorLogHasScopeColumns) {
-    db.prepare(`
+    const scoped = db.prepare(`
       INSERT INTO error_log (level, source, message, stack, context, alerted, user_id, tenant_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -134,9 +168,9 @@ function persistToDb(record: ErrorRecord): void {
       ctx?.userId ?? null,
       ctx?.tenantId ?? ctx?.userId ?? null,
     );
-    return;
+    return scoped?.lastInsertRowid != null ? Number(scoped.lastInsertRowid) : null;
   }
-  db.prepare(`
+  const plain = db.prepare(`
     INSERT INTO error_log (level, source, message, stack, context, alerted)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(
@@ -147,6 +181,7 @@ function persistToDb(record: ErrorRecord): void {
     contextJson,
     shouldAlertFlag && _alertFn ? 1 : 0,
   );
+  return plain?.lastInsertRowid != null ? Number(plain.lastInsertRowid) : null;
 }
 
 // ── In-Process Alert Callback ────────────────────────────────────
@@ -201,9 +236,10 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
 
   // Persist to SQLite — or buffer if DB isn't ready yet (boot-time errors)
   let alerted = 0;
+  let issueId: number | null = null;
   if (_getDb) {
     try {
-      persistToDb(record);
+      issueId = persistToDb(record).issueId;
       alerted = shouldSendAlert ? 1 : 0;
     } catch (err) {
       logger.warn({ err }, 'Error monitor: failed to persist error');
@@ -226,7 +262,7 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
   logger.error({ source: record.source, level: record.level }, safeMessage);
 
   if (shouldSendAlert) {
-    recordOperatorAlert({
+    const alertResult = recordOperatorAlert({
       severity: record.level === 'fatal' ? 'critical' : 'warning',
       source: `error_monitor:${record.source}`,
       dedupeKey: `error:${record.source}:${safeMessage.slice(0, 160)}`,
@@ -242,8 +278,10 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
         source: record.source,
         level: record.level,
         context: safeContext,
+        issueId,
       },
     });
+    if (issueId && alertResult?.alert?.id) linkIssueAlert(issueId, alertResult.alert.id);
   }
 
   // Invoke the in-process alert callback (rate-limited)

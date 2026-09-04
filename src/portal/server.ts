@@ -29,6 +29,7 @@ import { generateRequestId, runWithContext } from '../utils/request-context';
 import { requirePortalTokenByMethod } from '../api/secret-guards';
 import { rateLimitMiddleware } from '../api/rate-limiter';
 import { createAdminPreBodyGuard } from '../api/admin-pre-body-guard';
+import { classifySurface, hashClientIp, normalizeRoute, recordHttpRequest, shouldStoreRequest } from '../api/http-request-log';
 import {
   getConfiguredPortalCredentials,
   validatePortalAdminBetaReadiness,
@@ -45,6 +46,7 @@ import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
 import { registerPortalDocumentRoutes } from './document-routes';
 import { registerPortalEnvironmentRoutes } from './environment-routes';
 import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
+import { registerPortalOpsRoutes } from './ops-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
 import { registerPortalHealthRoutes } from './health-routes';
 import { registerPortalInviteRoutes } from './invite-routes';
@@ -132,6 +134,8 @@ export function createResponseCompressionMiddleware() {
     level: 6,
     filter(req: Request, res: Response) {
       const contentType = String(res.getHeader('Content-Type') ?? '').toLowerCase();
+      // SSE must stream unbuffered (portal live logs / alerts).
+      if (contentType.startsWith('text/event-stream')) return false;
       if (/^(image|video|audio)\//.test(contentType)) return false;
       if (/application\/(zip|gzip|x-gzip|pdf)/.test(contentType)) return false;
       return compression.filter(req, res);
@@ -174,6 +178,8 @@ export function createPortalServer(): http.Server {
     const requestId = incomingId || generateRequestId();
     // Echo the ID back so the client can quote it in bug reports.
     res.setHeader('x-request-id', requestId);
+    // Share the id with the iOS router so it does not mint a second one.
+    (req as Request & { requestId?: string }).requestId = requestId;
 
     runWithContext({ requestId, source: 'http' }, () => {
       const start = process.hrtime.bigint();
@@ -198,6 +204,31 @@ export function createPortalServer(): http.Server {
           },
           'http',
         );
+        // Portal Requests explorer: sampled ledger, batched off the request path.
+        try {
+          const surface = classifySurface(path);
+          const decision = shouldStoreRequest({ path, surface, method: req.method, status: res.statusCode, durationMs });
+          if (decision.store) {
+            const lengthHeader = res.getHeader('content-length');
+            recordHttpRequest({
+              ts: new Date().toISOString(),
+              reqId: requestId,
+              surface,
+              method: req.method,
+              path,
+              route: normalizeRoute(path),
+              status: res.statusCode,
+              durationMs,
+              userId: typeof userId === 'number' ? userId : null,
+              ipHash: hashClientIp(req.ip || req.socket?.remoteAddress),
+              userAgent: req.header('user-agent') ?? null,
+              bytesOut: lengthHeader ? Number(lengthHeader) || null : null,
+              sampled: decision.sampled,
+            });
+          }
+        } catch {
+          // Observability must never affect the response.
+        }
       });
       next();
     });
@@ -451,6 +482,8 @@ export function createPortalServer(): http.Server {
   });
 
   registerPortalEnvironmentRoutes(app, { startedAt });
+
+  registerPortalOpsRoutes(app);
 
   registerPortalSkillRoutes(app);
 

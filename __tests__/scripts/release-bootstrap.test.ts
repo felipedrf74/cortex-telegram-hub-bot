@@ -266,6 +266,34 @@ function createLegacyDatabase(
       attempts INTEGER NOT NULL DEFAULT 0,
       completed_at TEXT
     );
+    -- Error tables predate the fixture ledger; migration 315 adds nullable
+    -- issue_id/req_id columns and plain indexes to both.
+    CREATE TABLE error_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL DEFAULT (datetime('now')),
+      level TEXT NOT NULL DEFAULT 'error',
+      source TEXT NOT NULL DEFAULT 'unknown',
+      message TEXT NOT NULL,
+      stack TEXT,
+      context TEXT,
+      alerted INTEGER NOT NULL DEFAULT 0,
+      user_id INTEGER,
+      tenant_id INTEGER
+    );
+    CREATE TABLE client_errors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL DEFAULT (datetime('now')),
+      user_id INTEGER NOT NULL,
+      device_id TEXT,
+      source TEXT NOT NULL DEFAULT 'ios',
+      level TEXT NOT NULL DEFAULT 'error',
+      message TEXT NOT NULL,
+      stack TEXT,
+      context TEXT,
+      app_version TEXT,
+      os_version TEXT,
+      user_agent TEXT
+    );
   `);
   // The fixture records the pre-283 migration ledger without replaying the
   // full prefix. Materialize the legacy Content seed tables because migration
@@ -512,6 +540,9 @@ describe('first-container bootstrap baseline', () => {
         expect.objectContaining({ file: '310_retire_fossa_email_metadata.sql' }),
         expect.objectContaining({ file: '311_activate_secretary_2_2_skill_version.sql' }),
         expect.objectContaining({ file: '312_content_neutral_legacy_defaults.sql' }),
+        expect.objectContaining({ file: '313_runtime_logs.sql' }),
+        expect.objectContaining({ file: '314_http_request_log.sql' }),
+        expect.objectContaining({ file: '315_issues.sql' }),
       ]);
     expect(baseline.databases.production.sha256)
       .not.toBe(baseline.databases.staging.sha256);

@@ -1384,6 +1384,23 @@ table.dense th {
       </a>
     </nav>
 
+    <div class="nav-section-label" style="margin-top: var(--space-5)">Observe</div>
+    <nav class="nav">
+      <a class="nav-item" data-nav="logs">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h14"/></svg></span>
+        <span class="nav-label">Logs</span>
+      </a>
+      <a class="nav-item" data-nav="requests">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M12 4l8 8-8 8"/></svg></span>
+        <span class="nav-label">Requests</span>
+      </a>
+      <a class="nav-item" data-nav="issues">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg></span>
+        <span class="nav-label">Issues</span>
+        <span class="nav-badge mono" id="nav-issues-count"></span>
+      </a>
+    </nav>
+
     <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
     <nav class="nav">
       <a class="nav-item" data-nav="settings">
@@ -1521,6 +1538,11 @@ table.dense th {
         </div>
       </div>
     </section>
+
+    <!-- ════════════════════ OBSERVE (ES modules in /portal/ui) ════════════════════ -->
+    <section class="section" data-section="logs"><div class="empty">Loading module…</div></section>
+    <section class="section" data-section="requests"><div class="empty">Loading module…</div></section>
+    <section class="section" data-section="issues"><div class="empty">Loading module…</div></section>
 
     <!-- ════════════════════ ALERTS ════════════════════ -->
     <section class="section" data-section="alerts">
@@ -2961,6 +2983,36 @@ table.dense th {
     return res.json();
   }
 
+  // ────────── Bridge for ES-module sections (/portal/ui/*.js) ──────────
+  // Modules register {mount, onShow, onHide}; the router activates them.
+  window.NexusPortal = {
+    apiFetch, apiJson,
+    esc: (s) => esc(s),
+    shortDateTime: (iso) => shortDateTime(iso),
+    relativeTime: (iso) => relativeTime(iso),
+    navigateTo: (section) => navigateTo(section),
+    getToken: () => TOKEN,
+    sections: {},
+    registerSection(id, def) { this.sections[id] = Object.assign({ mounted: false }, def); },
+    activateSection(id) {
+      const s = this.sections[id];
+      if (!s) return;
+      if (!s.mounted) {
+        const container = document.querySelector('[data-section="' + id + '"]');
+        if (!container) return;
+        s.mount(container);
+        s.mounted = true;
+      }
+      if (s.onShow) s.onShow();
+    },
+    deactivateSections(except) {
+      Object.keys(this.sections).forEach((id) => {
+        const s = this.sections[id];
+        if (id !== except && s.mounted && s.onHide) s.onHide();
+      });
+    },
+  };
+
   function adminLoadErrorMessage(err) {
     const raw = err && err.message ? err.message : String(err || 'Request failed');
     if (raw === 'Unauthorized' || /token|session|unauthorized/i.test(raw)) {
@@ -3044,7 +3096,7 @@ table.dense th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'notifications', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'cooking', 'notifications', 'settings', 'invites', 'founders', 'waitlist', 'audit', 'logs', 'requests', 'issues'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -3072,6 +3124,9 @@ table.dense th {
     if (section === 'content') loadContentDashboard();
     if (section === 'cooking') renderCookingPortal();
     if (section === 'notifications') loadNotificationPortal();
+    // Module-backed sections (src/portal/ui/*.js)
+    window.NexusPortal.deactivateSections(section);
+    window.NexusPortal.activateSection(section);
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -6780,6 +6835,7 @@ table.dense th {
     // Initial render
     pollAll();
     loadReleaseInfo();
+    if (typeof window.NexusPortal.onAppStart === 'function') window.NexusPortal.onAppStart();
     loadModelConfig();
     loadDomainRouting();
     loadSecretaryOptimization();
@@ -6830,5 +6886,6 @@ table.dense th {
   showLoginForm();
 })();
 </script>
+<script type="module" src="/portal/ui/app.js"></script>
 </body>
 </html>

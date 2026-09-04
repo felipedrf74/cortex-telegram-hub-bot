@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "prebuild": "npm run clean",
-    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html && cp src/portal/user-login.html dist/portal/user-login.html && mkdir -p dist/portal/auth && cp src/portal/auth/password-reset.html dist/portal/auth/password-reset.html && cp src/portal/auth/forgot-password.html dist/portal/auth/forgot-password.html && mkdir -p dist/portal/assets && cp src/portal/assets/nexus-mark.png dist/portal/assets/nexus-mark.png && rm -rf dist/services/coach-kernel/knowledge && mkdir -p dist/services/coach-kernel/knowledge && cp -R src/services/coach-kernel/knowledge/* dist/services/coach-kernel/knowledge/ && node scripts/write-release-stamp.mjs --quiet",
+    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html && mkdir -p dist/portal/ui && cp src/portal/ui/*.js dist/portal/ui/ && cp src/portal/landing.html dist/portal/landing.html && cp src/portal/user-login.html dist/portal/user-login.html && mkdir -p dist/portal/auth && cp src/portal/auth/password-reset.html dist/portal/auth/password-reset.html && cp src/portal/auth/forgot-password.html dist/portal/auth/forgot-password.html && mkdir -p dist/portal/assets && cp src/portal/assets/nexus-mark.png dist/portal/assets/nexus-mark.png && rm -rf dist/services/coach-kernel/knowledge && mkdir -p dist/services/coach-kernel/knowledge && cp -R src/services/coach-kernel/knowledge/* dist/services/coach-kernel/knowledge/ && node scripts/write-release-stamp.mjs --quiet",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",

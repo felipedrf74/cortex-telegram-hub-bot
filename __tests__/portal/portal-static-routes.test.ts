@@ -83,6 +83,7 @@ describe('portal static routes', () => {
     // no-store headers.
     expect(Array.from(routes.keys())).toEqual([
       '/assets/nexus-mark.png',
+      '/portal/ui/:file',
       '/landing-preview',
       '/auth/forgot-password',
       '/auth/password-reset',

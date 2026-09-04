@@ -17,6 +17,31 @@ export function applyPortalDashboardSecurityHeaders(res: Response): void {
   );
 }
 
+const UI_MODULE_NAME = /^[a-z0-9-]+\.js$/;
+
+/**
+ * Serves the admin SPA's ES modules from `src/portal/ui/*.js` (copied to
+ * `dist/portal/ui` at build time). Allowlisted basenames only — no
+ * traversal, no directory listing.
+ */
+export function createPortalUiModuleHandler(portalDir = __dirname) {
+  return (req: Request, res: Response): void => {
+    const file = String(req.params.file || '');
+    if (!UI_MODULE_NAME.test(file)) {
+      res.status(404).type('text').send('Not found');
+      return;
+    }
+    const modulePath = path.join(portalDir, 'ui', file);
+    if (!fs.existsSync(modulePath)) {
+      res.status(404).type('text').send('Not found');
+      return;
+    }
+    res.set('Cache-Control', 'no-cache');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.type('text/javascript; charset=utf-8').send(fs.readFileSync(modulePath, 'utf-8'));
+  };
+}
+
 export function createLandingPreviewHandler(portalDir = __dirname) {
   return (_req: Request, res: Response): void => {
     const landingPath = path.join(portalDir, 'landing.html');
@@ -172,6 +197,7 @@ export function createPortalBrandAssetHandler(portalDir = __dirname) {
 
 export function registerPortalStaticRoutes(app: Express, portalDir = __dirname): void {
   app.get('/assets/nexus-mark.png', createPortalBrandAssetHandler(portalDir));
+  app.get('/portal/ui/:file', createPortalUiModuleHandler(portalDir));
 
   app.get('/landing-preview', createLandingPreviewHandler(portalDir));
 

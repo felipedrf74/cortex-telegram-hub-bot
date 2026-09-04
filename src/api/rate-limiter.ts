@@ -44,6 +44,62 @@ const internalAiRequestLog = new Map<string, number[]>();
 
 const WINDOW_MS = 60 * 1000; // 1 minute
 
+// ── Throttle observability (portal Requests panel) ─────────────────
+// Counts 429s per bucket in two rolling windows; no persistence, no IPs.
+const throttleEvents = new Map<string, number[]>();
+const THROTTLE_HISTORY_MS = 60 * 60 * 1000;
+
+function noteThrottle(bucketName: string): void {
+  const now = Date.now();
+  const events = (throttleEvents.get(bucketName) || []).filter((ts) => now - ts < THROTTLE_HISTORY_MS);
+  events.push(now);
+  throttleEvents.set(bucketName, events);
+}
+
+export interface RateLimitStats {
+  windowMs: number;
+  throttled: { last5m: number; last1h: number; byBucket: Record<string, { last5m: number; last1h: number }> };
+  buckets: Array<{ name: string; limit: number; activeKeys: number; hottestCount: number }>;
+}
+
+export function getRateLimitStats(): RateLimitStats {
+  const now = Date.now();
+  const byBucket: RateLimitStats['throttled']['byBucket'] = {};
+  let last5m = 0;
+  let last1h = 0;
+  for (const [name, events] of throttleEvents.entries()) {
+    const recent = events.filter((ts) => now - ts < THROTTLE_HISTORY_MS);
+    const five = recent.filter((ts) => now - ts < 5 * 60 * 1000).length;
+    byBucket[name] = { last5m: five, last1h: recent.length };
+    last5m += five;
+    last1h += recent.length;
+  }
+  const describe = (name: string, limit: number, bucket: Map<unknown, number[]>) => {
+    let activeKeys = 0;
+    let hottestCount = 0;
+    for (const requests of bucket.values()) {
+      const inWindow = requests.filter((ts) => now - ts < WINDOW_MS).length;
+      if (inWindow > 0) activeKeys += 1;
+      if (inWindow > hottestCount) hottestCount = inWindow;
+    }
+    return { name, limit, activeKeys, hottestCount };
+  };
+  return {
+    windowMs: WINDOW_MS,
+    throttled: { last5m, last1h, byBucket },
+    buckets: [
+      describe('user', USER_MAX_REQUESTS, userRequestLog),
+      describe('user-read', USER_READ_MAX_REQUESTS, userReadRequestLog),
+      describe('ip', UNAUTH_MAX_REQUESTS, ipRequestLog),
+      describe('ip-auth', UNAUTH_AUTH_MAX_REQUESTS, ipAuthRequestLog),
+      describe('ip-portal', PORTAL_API_MAX_REQUESTS, ipPortalRequestLog),
+      describe('internal', INTERNAL_MAX_REQUESTS, internalRequestLog),
+      describe('internal-ai', INTERNAL_AI_MAX_REQUESTS, internalAiRequestLog),
+      describe('webhook', WEBHOOK_MAX_REQUESTS, webhookRequestLog),
+    ],
+  };
+}
+
 // Authenticated users get the configured per-user quota.
 const USER_MAX_REQUESTS = config.ios?.rateLimit || 60;
 // Navigation/read-heavy iOS screens can legitimately make many GETs while
@@ -281,6 +337,7 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
 
     if (inWindow.length > maxRequests) {
       const retryAfter = Math.ceil(WINDOW_MS / 1000);
+      noteThrottle(bucketName);
       res.setHeader('Retry-After', retryAfter);
       res.status(429).json({
         error: { code: 'RATE_LIMITED', message: 'Too many requests. Slow down.', retryAfter },
@@ -406,6 +463,7 @@ export function webhookRateLimitMiddleware(req: Request, res: Response, next: Ne
 
   if (inWindow.length > WEBHOOK_MAX_REQUESTS) {
     const retryAfter = Math.ceil(WINDOW_MS / 1000);
+    noteThrottle('webhook');
     res.setHeader('Retry-After', retryAfter);
     res.status(429).json({
       error: { code: 'RATE_LIMITED', message: 'Too many webhook deliveries from this IP.' },
@@ -439,6 +497,7 @@ function applyIpBucketLimit(
 
   if (inWindow.length > limit) {
     const retryAfter = Math.ceil(WINDOW_MS / 1000);
+    noteThrottle(bucketName);
     res.setHeader('Retry-After', retryAfter);
     res.status(429).json({
       error: {
@@ -479,6 +538,7 @@ export function internalAiCompleteRateLimitMiddleware(req: Request, res: Respons
 
 /** Test-only: clear both buckets between test cases. */
 export function _resetRateLimiterForTests(): void {
+  throttleEvents.clear();
   userReadRequestLog.clear();
   userRequestLog.clear();
   routingSyntheticQaRequestLog.clear();

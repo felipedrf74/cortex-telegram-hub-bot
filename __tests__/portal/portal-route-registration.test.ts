@@ -29,6 +29,12 @@ const INTENTIONALLY_UNMOUNTED: string[] = [
 ];
 
 /**
+ * Routes registered through exported path constants (not string literals in
+ * `app.get(...)`), so the literal scan cannot see them. Prefixes only.
+ */
+const CONSTANT_ROUTE_PREFIXES = ['/api/chat-core-v2/'];
+
+/**
  * Registered portal routes with no SPA consumer. Each entry needs a reason;
  * routes here are reachable only through direct API calls (curl, scripts,
  * webhook providers) or are scheduled to get a UI in a later portal phase.
@@ -58,6 +64,7 @@ const API_ONLY_ROUTES: Record<string, string> = {
   'GET /api/training-coach-v2-soak': 'Coach v2 soak metrics for the training release gate scripts',
   'POST /api/training-coach-v2-soak/reviews': 'Coach v2 rule review recording (release gate scripts)',
   'GET /api/content-workspace-metrics': 'Content workspace observability (runtime-and-observability standard)',
+  'GET /api/ops/client-errors': 'Raw iOS error rows for scripts; the SPA shows them grouped under Issues (user drawer tab in portal phase 3)',
   'GET /api/users/:userId/decision-center/dashboard': 'Flag-gated (DECISION_DASHBOARD_ENABLED) operator snapshot, curl/scripts only',
   'PUT /api/users/:userId/tier': 'Tier changes are driven by plan entitlement; kept for operator scripts',
   'POST /api/skills/:name/subskills/:sub/enable': 'Sub-skill toggles use POST /api/skills/toggle from the SPA; kept for scripts',
@@ -71,6 +78,10 @@ const API_ONLY_ROUTES: Record<string, string> = {
  * that proves the family is consumed.
  */
 const SPA_DYNAMIC_ROUTES: Record<string, string> = {
+  'POST /api/ops/issues/:id/ack': "'/api/ops/issues/' + id + '/' + action",
+  'POST /api/ops/issues/:id/resolve': "'/api/ops/issues/' + id + '/' + action",
+  'POST /api/ops/issues/:id/mute': "'/api/ops/issues/' + id + '/' + action",
+  'POST /api/ops/issues/:id/reopen': "'/api/ops/issues/' + id + '/' + action",
   'POST /api/operator-alerts/:id/ack': "'/api/operator-alerts/' + id + '/' + action",
   'POST /api/operator-alerts/:id/resolve': "'/api/operator-alerts/' + id + '/' + action",
   'POST /api/operator-alerts/:id/retry-delivery': "'/api/operator-alerts/' + id + '/' + action",
@@ -137,6 +148,7 @@ describe('portal route registration hygiene', () => {
     const unresolved: string[] = [];
     for (const literal of literals) {
       if (literal.startsWith('/api/v1/admin/') || literal === '/api/v1') continue;
+      if (CONSTANT_ROUTE_PREFIXES.some((prefix) => literal.startsWith(prefix))) continue;
       const resolves = routes.some((route) => route.path === literal || route.path.startsWith(`${literal}/`));
       if (!resolves) unresolved.push(literal);
     }
