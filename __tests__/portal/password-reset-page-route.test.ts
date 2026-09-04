@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
 import path from 'path';
 import {
   createPasswordResetPageHandler,
@@ -77,10 +78,13 @@ describe('password reset page route', () => {
     expect(snap.statusCode).toBe(200);
     expect(snap.body).toBeDefined();
     expect(snap.body!).toContain('Reset your password');
-    // Token is stripped client-side via history.replaceState — pin
-    // that the script comment is present so a future copy-paste
-    // mistake doesn't ship the page without that protection.
-    expect(snap.body!).toContain('history.replaceState');
+    // The token is stripped client-side via history.replaceState in the
+    // page script, which the strict CSP serves from /portal/ui. Pin the
+    // served asset (not the HTML, whose comment would keep a gutted script
+    // green) so a copy-paste mistake cannot ship the page without it.
+    expect(snap.body!).toContain('<script src="/portal/ui/auth-password-reset.js"></script>');
+    const pageScript = fs.readFileSync(path.join(portalDir, 'ui', 'auth-password-reset.js'), 'utf8');
+    expect(pageScript).toContain('history.replaceState');
   });
 
   it('returns 503 when the page file is missing (operator-visible build drift)', () => {

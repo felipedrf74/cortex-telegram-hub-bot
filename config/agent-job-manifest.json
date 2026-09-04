@@ -1100,6 +1100,30 @@
       }
     },
     {
+      "id": "http_request_log_prune",
+      "name": "HTTP Request Log Retention Prune",
+      "schedule": "23 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "operations",
+      "jobVersion": "1.0.0",
+      "tenantScope": "platform-retention",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
       "id": "integration_health",
       "name": "Integration Health Probes",
       "schedule": "*/15 * * * *",
@@ -1350,6 +1374,30 @@
       "tenantScope": "due-reminder-tenant-user",
       "overlapPolicy": "durable-database-lease",
       "retryPolicy": "next-minute-until-delivery-succeeds",
+      "providerUsage": "none",
+      "providerRouting": "not-applicable-no-model-provider",
+      "costPolicy": "no-model-provider-cost",
+      "latencyPolicy": "callback-owned-no-model-budget",
+      "outputPolicy": "job-specific-validated-write",
+      "notificationPolicy": "job-specific",
+      "inputFingerprint": {
+        "enforcement": "not-applicable-no-provider",
+        "unchangedInputProviderCalls": 0,
+        "evidence": "source-audit:no-model-provider-boundary",
+        "tests": []
+      }
+    },
+    {
+      "id": "runtime_logs_prune",
+      "name": "Runtime Log Retention Prune",
+      "schedule": "7 * * * *",
+      "domain": "system",
+      "lifecycle": "active",
+      "policyOwner": "operations",
+      "jobVersion": "1.0.0",
+      "tenantScope": "platform-retention",
+      "overlapPolicy": "durable-database-lease",
+      "retryPolicy": "next-scheduled-run",
       "providerUsage": "none",
       "providerRouting": "not-applicable-no-model-provider",
       "costPolicy": "no-model-provider-cost",

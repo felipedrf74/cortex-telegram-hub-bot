@@ -528,7 +528,8 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
 
 - **Logs** (`/admin#logs`, `GET /api/ops/logs`, SSE `GET /api/ops/logs/stream`):
   a second pino stream fills an in-memory ring and the bounded `runtime_logs`
-  table (info and above, already redacted; 72 h / 500k rows). Filters: level,
+  table (info and above, already redacted; 72 h / 500k rows, enforced hourly by the `runtime_logs_prune`
+  job). Filters: level,
   `src`, `reqId`, `userId`, text. `LOG_STORE_ENABLED=false` disables capture;
   stdout for the container is unchanged either way.
 - **Requests** (`/admin#requests`, `GET /api/ops/requests`, `/api/ops/requests/:reqId`,
@@ -536,7 +537,8 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
   ledger keeps every non-2xx, every request ≥ 500 ms, and every portal
   mutation; polling paths are sampled 1-in-50 and fast 2xx at
   `HTTP_LOG_SAMPLE_RATE` (default 0.1). IPs are salted hashes
-  (`HTTP_LOG_IP_SALT`). Retention 7 d / 500k rows. A row opens the correlated
+  (`HTTP_LOG_IP_SALT`). Retention 7 d / 500k rows, enforced hourly by
+  `http_request_log_prune`. A row opens the correlated
   runtime log lines and error rows for the same `reqId`.
 - **Issues** (`/admin#issues`, `GET /api/ops/issues`): `error_log` and iOS
   `client_errors` grouped by fingerprint (kind + source + normalised message +
@@ -546,11 +548,16 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
 - **Support** (`/admin#support`, `GET /api/support/tickets`): tickets from
   in-app feedback (`POST /api/v1/support/feedback`, 5 per user per hour,
   allowlisted diagnostics only, never chat content), from an Issue or an
-  Operator Alert ("Ticket" buttons), email intake, and operator tasks. States
+  Operator Alert ("Ticket" buttons), email intake, operator tasks, and the
+  waitlist ("Access ticket" files an `access_request` ticket with source
+  `waitlist` and `externalRef waitlist:<id>`, then opens it). States
   `new → open → waiting_user → resolved → closed`, priorities `p0..p3`, one
   timeline event per change; new tickets raise an `info` alert from source
   `support` (`critical` for `p0`). The app can list its own tickets' status
-  only (`GET /api/v1/support/feedback/mine`).
+  only (`GET /api/v1/support/feedback/mine`). The overview's **Support &
+  Issues** card shows open tickets by priority, tickets new for more than
+  48 h, open issues by kind and issues seen in the last 24 h; the same counts
+  ride `/api/snapshot.healthSummary.openIssues` / `.openTickets`.
 - **Users drawer**: sign out one or all devices, revoke a push token, inspect
   or clear the login lockout, and see the provider connection matrix. All are
   admin mutations audited as `user.*`. There is no impersonation and no
@@ -600,14 +607,33 @@ surface; `ssh … pm2 logs` is the fallback, not the default.
   session survives reloads and every mutating request must carry the
   `x-portal-csrf` proof returned at sign-in (`rejectCookieSessionCsrf`).
   Without the secret the routes answer 503 and the in-memory bearer flow
-  remains. The dashboard ships no inline script or stylesheet: the SPA lives in
-  `src/portal/ui/legacy.js` plus the ES modules (audit, invites, founders,
-  waitlist, settings, alerts, notifications, cooking, logs, requests, issues,
-  support, operate), styles in `/portal/ui/portal.css`, and markup uses
-  `data-act` delegation, so the dashboard CSP is `script-src 'self'` (no
-  `'unsafe-inline'`; `style-src` keeps it for inline style attributes);
-  `__tests__/portal/portal-csp-no-inline.test.ts` keeps it that way. Background tabs pause polling; badge counts ride the alerts
-  stream (`/api/ops/alerts/stream` now carries issues and support summaries).
+  remains. `PORTAL_BETA_HARDENED` defaults to `true` when `NODE_ENV=production`
+  (an explicit value always wins), so a production boot refuses a
+  non-beta-safe admin exposure mode unless deliberately overridden. The
+  dashboard ships no inline script or stylesheet: `src/portal/ui/legacy.js` is
+  only the shell (auth, fetch wrapper with CSRF and scope headers, the
+  `window.NexusPortal` bridge with its event bus, hash router, delegated
+  `data-act` dispatcher, boot) and every section is an ES module under
+  `src/portal/ui/` (dashboard, users, skills, ai, jobs, content, audit, invites,
+  founders, waitlist, settings, alerts, notifications, cooking, logs,
+  requests, issues, support, operate; `app.js` imports them and signals the
+  shell when they have registered). Styles live in `/portal/ui/portal.css`:
+  former inline style attributes are `u-*` utility classes, dynamic per-row
+  values ride on `data-w` / `data-color` / `data-bg` / `data-opacity` and are
+  applied through CSSOM, and hidden elements use the `hidden` attribute. The
+  dashboard CSP is therefore `script-src 'self'` and `style-src 'self'` plus
+  the Google Fonts stylesheet origin, with no `'unsafe-inline'` either way;
+  the sign-in, forgot-password and password-reset pages load their script and
+  stylesheet from `/portal/ui/` too and serve `script-src 'self'; style-src
+  'self'`. Only the landing preview keeps a permissive policy because it
+  mirrors the marketing site's inline bundle.
+  `__tests__/portal/portal-csp-no-inline.test.ts`,
+  `portal-auth-pages-csp.test.ts` and `portal-legacy-split.test.ts` keep it
+  that way. Polling is per section: the dashboard shell polls the snapshot
+  every 15 s while the tab is visible and each section refreshes only while it
+  is on screen; badge counts and the overview's Support & Issues card ride the
+  alerts stream (`/api/ops/alerts/stream` carries issue and support summaries)
+  with a 60 s poll fallback.
 
 Triage loop: Issues → open the last request → read its log lines → fix →
 resolve the issue and let the regression alert say if it comes back. Quote the

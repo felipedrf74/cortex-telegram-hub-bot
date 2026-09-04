@@ -79,7 +79,8 @@ function render() {
     if (r.status === 'pending') {
       actionsHtml =
         '<button class="btn btn-primary btn-xs" data-op="approve" data-id="' + r.id + '">Approve → invite</button> ' +
-        '<button class="btn btn-danger btn-xs" data-op="reject" data-id="' + r.id + '">Reject</button>';
+        '<button class="btn btn-danger btn-xs" data-op="reject" data-id="' + r.id + '">Reject</button> ' +
+        '<button class="btn btn-xs" data-op="ticket" data-id="' + r.id + '" title="Track this request as a support ticket">Access ticket</button>';
     } else if (r.status === 'approved' && r.invite_code) {
       actionsHtml =
         '<button class="btn btn-xs" data-op="copy" data-code="' + P.esc(r.invite_code) + '">Copy code</button> ' +
@@ -154,6 +155,53 @@ async function copyCode(code) {
   }
 }
 
+// Track a pending signup as an access_request ticket so the beta queue and the
+// support queue share one record (source: waitlist, externalRef waitlist:<id>).
+const ticketsInFlight = new Set();
+async function createAccessTicket(id, button) {
+  const entry = entries.find((r) => String(r.id) === String(id));
+  if (!entry) return;
+  // One ticket per signup: ignore repeat clicks while the POST is in flight and
+  // keep the button disabled until the row re-renders.
+  if (ticketsInFlight.has(String(id))) return;
+  ticketsInFlight.add(String(id));
+  if (button) button.disabled = true;
+  const lines = [
+    'Intent: ' + (entry.intent || 'general'),
+    'Source: ' + (entry.source || '—'),
+    'Signed up: ' + (entry.created_at || '—'),
+    entry.use_case ? 'Use case: ' + entry.use_case : null,
+  ].filter(Boolean);
+  try {
+    const r = await P.apiFetch('/api/support/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'access_request',
+        source: 'waitlist',
+        priority: entry.intent === 'founder' ? 'p1' : 'p2',
+        // Ticket text is redacted server-side (emails become [RedactedEmail]),
+        // so the title keys on the stable waitlist id instead of the address.
+        title: 'Access request: waitlist #' + entry.id,
+        body: lines.join('\n'),
+        externalRef: 'waitlist:' + entry.id,
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ticket) { P.showToast('Ticket creation failed: ' + (d.message || 'HTTP ' + r.status), false); return; }
+    P.showToast('Ticket ' + d.ticket.ref + ' created');
+    if (P.refreshSupportBadge) P.refreshSupportBadge();
+    P.navigateTo('support');
+    const support = P.sections.support;
+    if (support && support.openTicket) support.openTicket(d.ticket.id);
+  } catch (_) {
+    P.showToast('Ticket creation failed', false);
+  } finally {
+    ticketsInFlight.delete(String(id));
+    if (button) button.disabled = false;
+  }
+}
+
 function exportCsv() {
   if (entries.length === 0) { P.showToast('No data to export', false); return; }
   const headers = ['email', 'intent', 'source', 'status', 'founder_slot', 'use_case', 'utm_source', 'utm_campaign', 'created_at', 'approved_at', 'invite_code'];
@@ -224,6 +272,7 @@ function mount(container) {
     else if (op === 'reject') reject(btn.dataset.id);
     else if (op === 'invited') markInvited(btn.dataset.id);
     else if (op === 'copy') copyCode(btn.dataset.code);
+    else if (op === 'ticket') createAccessTicket(btn.dataset.id, btn);
   });
 }
 

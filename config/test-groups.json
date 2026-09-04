@@ -1866,7 +1866,8 @@
         "src/services/issue-tracker.ts",
         "src/services/support-tickets.ts",
         "src/services/queue-observability.ts",
-        "src/services/runtime-flags-catalog.ts"
+        "src/services/runtime-flags-catalog.ts",
+        "__tests__/portal/helpers/**"
       ],
       "tests": [
         "__tests__/domains/**/*.test.ts",

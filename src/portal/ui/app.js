@@ -17,9 +17,42 @@ import './settings.js';
 import './alerts.js';
 import './notifications.js';
 import './cooking.js';
+import './dashboard.js';
+import './users.js';
+import './skills.js';
+import './ai.js';
+import './jobs.js';
+import './content.js';
 import { sseSubscribe } from './sse.js';
 
 const P = window.NexusPortal;
+
+// Dashboard "Support & Issues" card: painted from the same summaries that feed
+// the nav badges (poll or alerts stream), so the overview shows open tickets by
+// priority and open issues without opening either tab.
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+function paintTriage(summary) {
+  const support = summary.support;
+  if (support && support.byStatus) {
+    const s = support.byStatus;
+    const p = support.byPriority || {};
+    setText('dash-tickets-open', String((s.new || 0) + (s.open || 0) + (s.waiting_user || 0)));
+    setText('dash-tickets-priority', ['p0', 'p1', 'p2', 'p3'].map((k) => k + ' ' + (p[k] || 0)).join(' · '));
+    setText('dash-tickets-stale', String(support.newOlderThan48h || 0));
+    setText('dash-tickets-week', (support.createdLast7d || 0) + ' created this week');
+  }
+  const issues = summary.issues;
+  if (issues && issues.byStatus) {
+    const k = issues.byKind || {};
+    setText('dash-issues-open', String(issues.byStatus.open || 0));
+    setText('dash-issues-kind', 'server ' + (k.server || 0) + ' · iOS ' + (k.client || 0));
+    setText('dash-issues-24h', String(issues.openLast24h || 0));
+    setText('dash-issues-acked', (issues.byStatus.acked || 0) + ' acknowledged');
+  }
+}
 
 async function refreshSupportBadge() {
   try {
@@ -29,6 +62,7 @@ async function refreshSupportBadge() {
     const fresh = (data.byStatus && data.byStatus.new) || 0;
     const badge = document.getElementById('nav-support-count');
     if (badge) badge.textContent = fresh > 0 ? String(fresh) : '';
+    paintTriage({ support: data });
   } catch (_) {
     // badge is best-effort
   }
@@ -42,6 +76,7 @@ async function refreshIssueBadge() {
     const open = (data.byStatus && data.byStatus.open) || 0;
     const badge = document.getElementById('nav-issues-count');
     if (badge) badge.textContent = open > 0 ? String(open) : '';
+    paintTriage({ issues: data });
   } catch (_) {
     // badge is best-effort
   }
@@ -63,6 +98,7 @@ function applyAlertsPush(payload) {
     const supportBadge = document.getElementById('nav-support-count');
     if (supportBadge) supportBadge.textContent = fresh > 0 ? String(fresh) : '';
   }
+  paintTriage({ support: payload.support, issues: payload.issues });
   if (typeof P.onAlertsPush === 'function') P.onAlertsPush(payload);
 }
 
@@ -105,3 +141,6 @@ P.onAppStart = () => {
 };
 P.refreshSupportBadge = refreshSupportBadge;
 P.refreshIssueBadge = refreshIssueBadge;
+
+// Every section module above has registered; the shell may navigate.
+P.signalModulesReady();

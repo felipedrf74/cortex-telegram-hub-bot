@@ -99,8 +99,11 @@ function listUiSources(): string {
   const parts = [fs.readFileSync(path.join(portalDir, 'portal.html'), 'utf8')];
   const uiDir = path.join(portalDir, 'ui');
   if (fs.existsSync(uiDir)) {
+    // The sign-in and password pages ship their own scripts from ui/ too; they
+    // talk to the iOS /api/v1 auth routes, not to portal routes.
+    const standalonePageScripts = new Set(['user-login.js', 'auth-forgot-password.js', 'auth-password-reset.js']);
     for (const file of fs.readdirSync(uiDir)) {
-      if (file.endsWith('.js')) parts.push(fs.readFileSync(path.join(uiDir, file), 'utf8'));
+      if (file.endsWith('.js') && !standalonePageScripts.has(file)) parts.push(fs.readFileSync(path.join(uiDir, file), 'utf8'));
     }
   }
   return parts.join('\n');

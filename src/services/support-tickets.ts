@@ -208,6 +208,16 @@ export function createTicket(input: CreateTicketInput): SupportTicket {
   const db = getDb();
   const now = new Date().toISOString();
   const createdBy = short(input.createdBy, 128) || 'system';
+  const externalRef = short(input.externalRef, 512) ?? null;
+  if (externalRef) {
+    // One ticket per external reference (waitlist:<id>, email message id): a
+    // repeated request returns the ticket already filed instead of a duplicate.
+    // The lookup and insert run in one synchronous better-sqlite3 turn, so two
+    // concurrent requests cannot interleave between them.
+    const existing = db.prepare('SELECT * FROM support_tickets WHERE external_ref = ? ORDER BY id ASC LIMIT 1')
+      .get(externalRef) as Record<string, unknown> | undefined;
+    if (existing) return rowToTicket(existing);
+  }
 
   const result = db.prepare(`
     INSERT INTO support_tickets (
@@ -220,7 +230,7 @@ export function createTicket(input: CreateTicketInput): SupportTicket {
     input.userId ?? null, input.tenantId ?? input.userId ?? null,
     short(input.deviceId, 256), short(input.appVersion, 64), short(input.osVersion, 64), short(input.screen, 128),
     input.issueId ?? null, input.alertId ?? null, short(input.reqId, 64), input.clientErrorId ?? null,
-    short(input.externalRef, 512), createdBy, short(input.assignee, 128),
+    externalRef, createdBy, short(input.assignee, 128),
     now, now, now,
   );
   const id = Number(result.lastInsertRowid);

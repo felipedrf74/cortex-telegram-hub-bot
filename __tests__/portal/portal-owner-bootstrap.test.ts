@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+
+
+function readSpaSources(): string {
+  const portalDir = path.resolve(__dirname, '../../src/portal');
+  const uiDir = path.join(portalDir, 'ui');
+  return [
+    readFileSync(path.join(portalDir, 'portal.html'), 'utf8'),
+    ...readdirSync(uiDir).filter((f) => f.endsWith('.js')).map((f) => readFileSync(path.join(uiDir, f), 'utf8')),
+  ].join('\n');
+}
 
 const mockGetDb = vi.fn();
 const mockIsGarminConfigured = vi.fn();
@@ -251,8 +261,8 @@ describe('portal owner bootstrap hardening', () => {
   });
 
   it('does not expose paused Content agent manual actions in the portal', async () => {
-    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/portal.html'), 'utf8')
-      + readFileSync(path.resolve(__dirname, '../../src/portal/ui/legacy.js'), 'utf8');
+    // The SPA is portal.html + ui/legacy.js (shell) + one ES module per section.
+    const portalHtml = readSpaSources();
 
     expect(portalHtml).not.toContain("name: 'run-performance-agent'");
     expect(portalHtml).not.toContain("name: 'run-reaction-radar'");
@@ -273,7 +283,7 @@ describe('portal owner bootstrap hardening', () => {
   });
 
   it('keeps the mixed legacy Content overview outside the selected tenant scope', () => {
-    const portalHtml = readFileSync(path.resolve(__dirname, '../../src/portal/ui/legacy.js'), 'utf8');
+    const portalHtml = readSpaSources();
 
     expect(portalHtml).toContain("url === '/api/v1/admin/content'");
     expect(portalHtml).toContain("url.startsWith('/api/v1/admin/content/')");

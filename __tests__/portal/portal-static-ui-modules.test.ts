@@ -2,7 +2,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPortalUiModuleHandler, createPortalUiModuleRateLimiter } from '../../src/portal/static-routes';
+import {
+  PORTAL_ASSET_RATE_LIMIT_DEFAULT,
+  PORTAL_ASSET_RATE_LIMIT_FLOOR,
+  createPortalUiModuleHandler,
+  createPortalUiModuleRateLimiter,
+  resolvePortalAssetRateLimit,
+} from '../../src/portal/static-routes';
 
 let dir = '';
 
@@ -74,53 +80,70 @@ describe('portal UI module handler', () => {
 });
 
 describe('portal UI module rate limiter', () => {
-  it('caps asset reads per client IP using PORTAL_API_RATE_LIMIT', async () => {
-    const previousLimit = process.env.PORTAL_API_RATE_LIMIT;
-    process.env.PORTAL_API_RATE_LIMIT = '2';
+  const buildResponse = () => ({
+    statusCode: 200,
+    body: undefined as unknown,
+    headers: {} as Record<string, string | number>,
+    setHeader(name: string, value: string | number) { this.headers[name] = value; return this; },
+    status(code: number) { this.statusCode = code; return this; },
+    type(value: string) { this.headers['Content-Type'] = value; return this; },
+    send(body: unknown) { this.body = body; return this; },
+  });
+  const request = (ip: string) => ({ headers: {}, ip, socket: { remoteAddress: ip } });
+  const withEnv = async (overrides: Record<string, string | undefined>, run: () => Promise<void>) => {
+    const previous: Record<string, string | undefined> = {};
+    for (const key of Object.keys(overrides)) {
+      previous[key] = process.env[key];
+      if (overrides[key] === undefined) delete process.env[key];
+      else process.env[key] = overrides[key];
+    }
     try {
-      const limiter = createPortalUiModuleRateLimiter();
-      const buildResponse = () => ({
-        statusCode: 200,
-        body: undefined as unknown,
-        headers: {} as Record<string, string | number>,
-        setHeader(name: string, value: string | number) { this.headers[name] = value; return this; },
-        status(code: number) { this.statusCode = code; return this; },
-        type(value: string) { this.headers['Content-Type'] = value; return this; },
-        send(body: unknown) { this.body = body; return this; },
-      });
-      const request = { headers: {}, ip: '198.51.100.42', socket: { remoteAddress: '198.51.100.42' } };
+      await run();
+    } finally {
+      for (const key of Object.keys(overrides)) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  };
 
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+  it('sizes the asset ceiling from PORTAL_ASSET_RATE_LIMIT with a floor above the module count', () => {
+    expect(resolvePortalAssetRateLimit({})).toBe(PORTAL_ASSET_RATE_LIMIT_DEFAULT);
+    expect(resolvePortalAssetRateLimit({ PORTAL_ASSET_RATE_LIMIT: '5' })).toBe(PORTAL_ASSET_RATE_LIMIT_FLOOR);
+    expect(resolvePortalAssetRateLimit({ PORTAL_ASSET_RATE_LIMIT: '2000' })).toBe(2000);
+    expect(resolvePortalAssetRateLimit({ PORTAL_ASSET_RATE_LIMIT: 'lots' })).toBe(PORTAL_ASSET_RATE_LIMIT_DEFAULT);
+    expect(PORTAL_ASSET_RATE_LIMIT_FLOOR).toBeGreaterThan(100);
+  });
+
+  it('ignores PORTAL_API_RATE_LIMIT so a tightened admin API limit cannot starve the SPA of its modules', async () => {
+    await withEnv({ PORTAL_API_RATE_LIMIT: '2', PORTAL_ASSET_RATE_LIMIT: undefined }, async () => {
+      const limiter = createPortalUiModuleRateLimiter();
+      const ip = '198.51.100.44';
+      for (let attempt = 0; attempt < 40; attempt += 1) {
         const next = vi.fn();
-        await limiter(request as any, buildResponse() as any, next);
+        await limiter(request(ip) as any, buildResponse() as any, next);
+        expect(next).toHaveBeenCalledOnce();
+      }
+    });
+  });
+
+  it('answers 429 with Retry-After once a client passes the asset ceiling', async () => {
+    await withEnv({ PORTAL_ASSET_RATE_LIMIT: String(PORTAL_ASSET_RATE_LIMIT_FLOOR) }, async () => {
+      const limiter = createPortalUiModuleRateLimiter();
+      const ip = '198.51.100.45';
+      for (let attempt = 0; attempt < PORTAL_ASSET_RATE_LIMIT_FLOOR; attempt += 1) {
+        const next = vi.fn();
+        await limiter(request(ip) as any, buildResponse() as any, next);
         expect(next).toHaveBeenCalledOnce();
       }
       const blocked = buildResponse();
       const blockedNext = vi.fn();
-      await limiter(request as any, blocked as any, blockedNext);
+      await limiter(request(ip) as any, blocked as any, blockedNext);
       expect(blockedNext).not.toHaveBeenCalled();
       expect(blocked.statusCode).toBe(429);
       expect(blocked.headers['Retry-After']).toBe(60);
       expect(blocked.headers['Content-Type']).toBe('text/plain');
       expect(String(blocked.body)).toContain('Too many portal asset requests');
-    } finally {
-      if (previousLimit === undefined) delete process.env.PORTAL_API_RATE_LIMIT;
-      else process.env.PORTAL_API_RATE_LIMIT = previousLimit;
-    }
-  });
-
-  it('falls back to the built-in ceiling when PORTAL_API_RATE_LIMIT is unset', async () => {
-    const previousLimit = process.env.PORTAL_API_RATE_LIMIT;
-    delete process.env.PORTAL_API_RATE_LIMIT;
-    try {
-      const limiter = createPortalUiModuleRateLimiter();
-      const next = vi.fn();
-      const res: any = { setHeader: vi.fn(), status: vi.fn(), type: vi.fn(), send: vi.fn() };
-      await limiter({ headers: {}, ip: '198.51.100.43', socket: { remoteAddress: '198.51.100.43' } } as any, res, next);
-      expect(next).toHaveBeenCalledOnce();
-      expect(res.status).not.toHaveBeenCalled();
-    } finally {
-      if (previousLimit !== undefined) process.env.PORTAL_API_RATE_LIMIT = previousLimit;
-    }
+    });
   });
 });

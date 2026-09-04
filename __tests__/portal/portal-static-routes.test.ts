@@ -206,7 +206,10 @@ describe('portal static routes', () => {
 
   it('user login page includes live Apple and Google browser sign-in flows', () => {
     const htmlPath = path.resolve(__dirname, '../../src/portal/user-login.html');
-    const html = fs.readFileSync(htmlPath, 'utf8');
+    // The page script ships from /portal/ui/user-login.js (strict CSP, no inline
+    // script), so read the page the way the browser assembles it.
+    const scriptPath = path.resolve(__dirname, '../../src/portal/ui/user-login.js');
+    const html = fs.readFileSync(htmlPath, 'utf8') + '\n' + fs.readFileSync(scriptPath, 'utf8');
 
     expect(html).toContain('/api/v1/auth/register/google/start');
     expect(html).toContain('/api/v1/auth/register/google/finish');

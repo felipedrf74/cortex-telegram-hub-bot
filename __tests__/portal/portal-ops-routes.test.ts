@@ -65,6 +65,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { registerPortalOpsRoutes, parseLogLevel } from '../../src/portal/ops-routes';
+import { createTicket } from '../../src/services/support-tickets';
 import { _resetLogStoreForTests, attachLogStoreDb, flushLogStore, ingestLogObject } from '../../src/utils/log-store';
 import { _resetHttpRequestLogForTests, attachHttpRequestLogDb, flushHttpRequestLog, recordHttpRequest } from '../../src/api/http-request-log';
 import { upsertIssue } from '../../src/services/issue-tracker';
@@ -225,6 +226,32 @@ describe('portal ops routes', () => {
     expect(res.chunks[1]).toContain('event: alerts');
     expect(res.chunks[1]).toContain('"issues"');
     request.emit('close');
+  });
+
+  it('pushes a new alerts event when only the support or issue summary changes', () => {
+    // The SPA stops polling badges once this stream is open, so a ticket filed
+    // while the operator-alert queue is unchanged must still reach the client.
+    vi.useFakeTimers();
+    try {
+      hoisted.listOperatorAlerts.mockReturnValue([]);
+      const { routes } = makeApp();
+      const { res, request } = call(routes, 'GET /api/ops/alerts/stream');
+      const pushes = () => res.chunks.filter((chunk: string) => chunk.includes('event: alerts'));
+      expect(pushes()).toHaveLength(1);
+
+      vi.advanceTimersByTime(5000);
+      expect(pushes()).toHaveLength(1);
+
+      createTicket({ kind: 'access_request', source: 'waitlist', title: 'Access request: waitlist #1', externalRef: 'waitlist:1', createdBy: 'operator:test', quiet: true });
+      vi.advanceTimersByTime(5000);
+      const afterTicket = pushes();
+      expect(afterTicket).toHaveLength(2);
+      expect(afterTicket[1]).toContain('"support"');
+      expect(afterTicket[1]).toMatch(/"new":1/);
+      request.emit('close');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('routes failures through the shared sanitized error helper', () => {

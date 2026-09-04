@@ -74,6 +74,8 @@ import {
 import { getUserTimezoneById, isOwnerUserRef } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
+import { pruneRuntimeLogs } from '../utils/log-store';
+import { pruneHttpRequestLog } from '../api/http-request-log';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
 import { runWithContext, type RequestSource } from '../utils/request-context';
 import { getOwnerBootstrapTarget } from './user-service';
@@ -1878,6 +1880,8 @@ export function startScheduler(): void {
     registerJob('chat_v2_gate_check', 'Chat Core v2 Shadow Gate Check', '37 * * * *', 'system');
   }
   registerJob('classify_shadow_prune', 'Classify Shadow Retention Prune', '17 4 * * *', 'system');
+  registerJob('runtime_logs_prune', 'Runtime Log Retention Prune', '7 * * * *', 'system');
+  registerJob('http_request_log_prune', 'HTTP Request Log Retention Prune', '23 * * * *', 'system');
   registerJob('chat_quality_regression_monitor', 'Chat Quality Regression Monitor', '*/5 * * * *', 'system');
   registerJob('chat_quality_weekly_digest', 'Chat Quality Weekly Digest', '30 7 * * 1', 'system');
   registerJob('dst_watchdog', 'DST Watchdog', '2,17,32,47 * * * *', 'system');
@@ -3519,6 +3523,27 @@ export function startScheduler(): void {
         { err: err instanceof Error ? err.message : String(err), retentionDays: days },
         'classify_shadow_prune: skipped (table missing or query failed)',
       );
+    }
+  }), { timezone: 'UTC' });
+
+  // ── Observability ledgers: bounded retention ────────────────────────
+  // runtime_logs (portal Logs tab) keeps 72 h / 500k rows and http_request_log
+  // (Requests tab) keeps 7 d / 500k rows; both prune functions are
+  // idempotent and tolerate a missing table before their migration runs.
+  cron.schedule('7 * * * *', wrapJob('runtime_logs_prune', async () => {
+    try {
+      const result = pruneRuntimeLogs(getDb());
+      logger.info(result, 'runtime_logs pruned');
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'runtime_logs_prune: skipped (table missing or query failed)');
+    }
+  }), { timezone: 'UTC' });
+  cron.schedule('23 * * * *', wrapJob('http_request_log_prune', async () => {
+    try {
+      const result = pruneHttpRequestLog(getDb());
+      logger.info(result, 'http_request_log pruned');
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'http_request_log_prune: skipped (table missing or query failed)');
     }
   }), { timezone: 'UTC' });
 

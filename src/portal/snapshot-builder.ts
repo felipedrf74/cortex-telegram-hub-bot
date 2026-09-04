@@ -25,6 +25,8 @@ import {
 } from '../state/content-references';
 import { logger } from '../utils/logger';
 import { humanDelta, humanUptime } from './formatters';
+import { getIssueSummary } from '../services/issue-tracker';
+import { getSupportSummary } from '../services/support-tickets';
 import { getPortalSnapshotStatements as getStmts } from './snapshot-statements';
 import {
   getGarminRefreshStatus,
@@ -92,6 +94,10 @@ export interface PortalSnapshotResponse {
     apiCostToday: number;
     invoicesThisMonth: number;
     invoiceQueuePending: number;
+    /** Issues in status open (server + iOS), from the issue tracker. */
+    openIssues: number;
+    /** Support tickets in new, open, or waiting_user. */
+    openTickets: number;
   };
   calendarData: {
     days: string[];  // ISO date strings for the 7-day range
@@ -427,6 +433,17 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
 
   // ── Health summary ─────────────────────────────────────────────
   const jobsWithRuns = jobs.filter(j => j.lifecycle === 'active' && j.lastResult !== 'never');
+  // Open issue and ticket counts for the overview; both summaries tolerate a
+  // missing table, and a failure here must never blank the whole snapshot.
+  const triage = (() => {
+    try {
+      const issues = getIssueSummary().byStatus;
+      const tickets = getSupportSummary().byStatus;
+      return { openIssues: issues.open, openTickets: tickets.new + tickets.open + tickets.waiting_user };
+    } catch {
+      return { openIssues: 0, openTickets: 0 };
+    }
+  })();
   const healthSummary: PortalSnapshotResponse['healthSummary'] = {
     jobsOk: jobsWithRuns.filter(j => j.lastResult === 'success').length,
     jobsTotal: jobsWithRuns.length,
@@ -434,6 +451,8 @@ export function buildPortalSnapshot(startedAt: number): PortalSnapshotResponse {
     apiCostToday: apiUsage.today.cost,
     invoicesThisMonth: invoices.thisMonth,
     invoiceQueuePending: getInvoiceQueuePending(),
+    openIssues: triage.openIssues,
+    openTickets: triage.openTickets,
   };
 
   // ── Calendar data (monthly view) ──────────────────────────────────
