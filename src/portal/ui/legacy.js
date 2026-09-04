@@ -324,7 +324,6 @@
     }
     // On-demand section loaders
     if (section === 'users') loadUsers();
-    if (section === 'alerts') loadOperatorAlerts();
     if (section === 'jobs') loadQuickActions();
     if (section === 'skills') loadSkillsUserSelector();
     if (section === 'ai') loadAiPlanLimits();
@@ -602,137 +601,7 @@
     }).join('');
   }
 
-  let allOperatorAlerts = [];
-  let operatorAlertDeliverySummary = {};
-
-  async function loadOperatorAlerts() {
-    const status = document.getElementById('alerts-filter-status')?.value || 'open';
-    try {
-      const r = await apiFetch('/api/operator-alerts?status=' + encodeURIComponent(status) + '&limit=50');
-      if (!r.ok) throw new Error('alerts unavailable');
-      const d = await r.json();
-      allOperatorAlerts = d.alerts || [];
-      operatorAlertDeliverySummary = d.delivery || {};
-      renderOperatorAlerts();
-    } catch {
-      const tbody = document.getElementById('alerts-tbody');
-      if (tbody) tbody.innerHTML = '<tr><td colspan="7"><div class="empty">Unable to load operator alerts</div></td></tr>';
-      const dash = document.getElementById('dash-alerts');
-      if (dash) dash.innerHTML = '<div class="empty">Unable to load alerts</div>';
-    }
-  }
-
-  function renderOperatorAlerts() {
-    const openCount = allOperatorAlerts.filter(a => a.status === 'open').length;
-    const navBadge = document.getElementById('nav-alerts-count');
-    if (navBadge) navBadge.textContent = openCount > 0 ? String(openCount) : '';
-
-    document.getElementById('alerts-kpi-pending').textContent = fmtNum(operatorAlertDeliverySummary.pending || 0);
-    document.getElementById('alerts-kpi-delivered').textContent = fmtNum(operatorAlertDeliverySummary.delivered || 0);
-    document.getElementById('alerts-kpi-failed').textContent = fmtNum(operatorAlertDeliverySummary.failed || 0);
-    document.getElementById('alerts-kpi-dead').textContent = fmtNum(operatorAlertDeliverySummary.dead_letter || 0);
-
-    const countLabel = document.getElementById('alerts-count-label');
-    if (countLabel) countLabel.textContent = allOperatorAlerts.length + ' shown';
-
-    renderDashAlerts(allOperatorAlerts);
-
-    const tbody = document.getElementById('alerts-tbody');
-    if (!tbody) return;
-    if (allOperatorAlerts.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7"><div class="empty">No alerts in this state</div></td></tr>';
-      return;
-    }
-    tbody.innerHTML = allOperatorAlerts.map(a => {
-      const severityClass = a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warning' : 'info';
-      const statusClass = a.status === 'resolved' ? 'success' : a.status === 'acknowledged' ? 'info' : 'warning';
-      const deliveryClass =
-        a.deliveryStatus === 'delivered' ? 'success' :
-        a.deliveryStatus === 'dead_letter' ? 'error' :
-        a.deliveryStatus === 'failed' || a.deliveryStatus === 'not_configured' ? 'warning' :
-        'neutral';
-      const retryButton = (a.deliveryStatus === 'failed' || a.deliveryStatus === 'dead_letter' || a.deliveryStatus === 'not_configured')
-        ? '<button class="btn btn-ghost btn-sm" data-act="retryAlertDelivery" data-args="[' + a.id + ']">Retry</button>'
-        : '';
-      const ackButton = a.status === 'open'
-        ? '<button class="btn btn-ghost btn-sm" data-act="ackAlert" data-args="[' + a.id + ']">Ack</button>'
-        : '';
-      const resolveButton = a.status !== 'resolved'
-        ? '<button class="btn btn-ghost btn-sm" data-act="resolveAlert" data-args="[' + a.id + ']">Resolve</button>'
-        : '';
-      const ticketButton = '<button class="btn btn-ghost btn-sm" data-act="ticketFromAlert" data-args="[' + a.id + ']" title="Open a support ticket for this alert">Ticket</button>';
-      return '<tr>' +
-        '<td><div style="font-weight:600">' + esc(a.title) + '</div>' +
-          '<div class="text-muted" style="font-size:11px;max-width:520px">' + esc(a.userImpact || a.detail || '—') + '</div>' +
-          '<div class="text-tertiary mono" style="font-size:10px">' + esc(a.source) + ' · ' + esc(a.suspectedArea || 'unknown') + '</div></td>' +
-        '<td><span class="badge badge-' + severityClass + '">' + esc(a.severity) + '</span></td>' +
-        '<td><span class="badge badge-' + statusClass + '">' + esc(a.status) + '</span></td>' +
-        '<td><span class="badge badge-' + deliveryClass + '">' + esc(a.deliveryStatus || 'pending') + '</span>' +
-          (a.lastDeliveryError ? '<div class="text-tertiary" style="font-size:10px;margin-top:4px">' + esc(a.lastDeliveryError).slice(0, 90) + '</div>' : '') +
-          (a.nextDeliveryAttemptAt ? '<div class="text-tertiary" style="font-size:10px;margin-top:4px">next ' + relativeTime(a.nextDeliveryAttemptAt) + '</div>' : '') +
-          '</td>' +
-        '<td>' + esc(a.owner || 'ops') + '</td>' +
-        '<td class="text-muted">' + relativeTime(a.lastSeenAt || a.createdAt) + '<div class="mono text-tertiary" style="font-size:10px">' + fmtNum(a.occurrenceCount || 1) + 'x</div></td>' +
-        '<td><div class="flex gap-2" style="justify-content:flex-end">' + retryButton + ackButton + resolveButton + ticketButton + '</div></td>' +
-        '</tr>';
-    }).join('');
-  }
-
-  function renderDashAlerts(alerts) {
-    const el = document.getElementById('dash-alerts');
-    if (!el) return;
-    const active = (alerts || []).filter(a => a.status !== 'resolved').slice(0, 4);
-    if (active.length === 0) {
-      el.innerHTML = '<div class="empty">No active operator alerts</div>';
-      return;
-    }
-    el.innerHTML = active.map(a => {
-      const dot = a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warning' : 'online';
-      return '<div class="flex-between" style="padding:var(--space-2) var(--space-1);border-bottom:1px solid var(--border)">' +
-        '<div class="flex gap-2" style="align-items:center;min-width:0">' +
-          '<span class="status-dot ' + dot + '"></span>' +
-          '<span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(a.title) + '</span>' +
-        '</div>' +
-        '<span class="text-tertiary mono" style="font-size:10px">' + esc(a.deliveryStatus || 'pending') + '</span>' +
-        '</div>';
-    }).join('');
-  }
-
-  async function mutateAlert(id, action, successMessage) {
-    try {
-      const r = await apiFetch('/api/operator-alerts/' + id + '/' + action, { method: 'POST' });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok || d.ok === false) throw new Error('mutation failed');
-      showToast(successMessage);
-      await loadOperatorAlerts();
-    } catch {
-      showToast('Alert action failed', false);
-    }
-  }
-
-  window.ackAlert = function(id) {
-    mutateAlert(id, 'ack', 'Alert acknowledged');
-  };
-  window.ticketFromAlert = async function(id) {
-    try {
-      const r = await apiFetch('/api/operator-alerts/' + id + '/ticket', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      if (!r.ok) return;
-      const d = await r.json();
-      if (window.NexusPortal.refreshSupportBadge) window.NexusPortal.refreshSupportBadge();
-      navigateTo('support');
-      const support = window.NexusPortal.sections.support;
-      if (support && support.openTicket) support.openTicket(d.ticket.id);
-    } catch (_) { /* surfaced by apiFetch */ }
-  };
-  window.resolveAlert = function(id) {
-    mutateAlert(id, 'resolve', 'Alert resolved');
-  };
-  window.retryAlertDelivery = function(id) {
-    mutateAlert(id, 'retry-delivery', 'Delivery retry queued');
-  };
-
-  document.getElementById('alerts-refresh-btn').addEventListener('click', loadOperatorAlerts);
-  document.getElementById('alerts-filter-status').addEventListener('change', loadOperatorAlerts);
+  // Operator Alerts moved to ui/alerts.js (Phase 5 section extraction).
 
   function renderDomainStatus(domains) {
     const el = document.getElementById('domain-status-content');
@@ -3657,7 +3526,6 @@
     pollSnapshot();
     pollUsageSummary();
     loadProviderHealth();
-    loadOperatorAlerts();
   }
 
   let pollTimer = null;
@@ -3761,7 +3629,6 @@
       loadCostByDomain();
       // Refresh users in background if user is on the Users tab
       if (currentSection === 'users') loadUsers();
-      if (currentSection === 'alerts') loadOperatorAlerts();
       if (currentSection === 'content') loadContentDashboard();
       if (currentSection === 'notifications') loadNotificationPortal();
     }, 30000);

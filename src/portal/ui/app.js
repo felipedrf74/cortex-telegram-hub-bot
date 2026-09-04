@@ -14,6 +14,7 @@ import './invites.js';
 import './founders.js';
 import './waitlist.js';
 import './settings.js';
+import './alerts.js';
 import { sseSubscribe } from './sse.js';
 
 const P = window.NexusPortal;
