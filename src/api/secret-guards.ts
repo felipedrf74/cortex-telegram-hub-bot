@@ -100,6 +100,7 @@ export interface PortalAuthContext {
   sessionScope?: PortalTokenScope;
   sessionExpiresAt?: number;
   sessionSignatureVerified?: boolean;
+  sessionSource?: PortalSessionSource;
 }
 
 interface PortalSessionMatch {
@@ -268,14 +269,34 @@ function portalActorMatchesAllowlist(
   return allowlist.includes(actorHint.toLowerCase());
 }
 
-function extractPortalSessionToken(req: Request): string | undefined {
+export type PortalSessionSource = 'header' | 'bearer' | 'cookie';
+
+interface PortalSessionCandidate {
+  token: string;
+  source: PortalSessionSource;
+}
+
+const PORTAL_CSRF_HEADER = 'x-portal-csrf';
+const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * CSRF token bound to a signed portal session. Only sessions carried by the
+ * `portal_session` cookie need it: a browser attaches cookies to cross-site
+ * requests automatically, while header/bearer credentials must be set by
+ * page script and are therefore not forgeable from another origin.
+ */
+export function computePortalCsrfToken(sessionSecret: string, sessionToken: string): string {
+  return crypto.createHmac('sha256', sessionSecret).update(`csrf.${sessionToken}`).digest('base64url');
+}
+
+function extractPortalSessionToken(req: Request): PortalSessionCandidate | undefined {
   const headerToken = req.header('x-portal-session')
     ?? req.header('x-admin-session')
     ?? undefined;
-  if (headerToken?.trim()) return headerToken.trim();
+  if (headerToken?.trim()) return { token: headerToken.trim(), source: 'header' };
 
   const bearerToken = extractBearerToken(req.headers.authorization);
-  if (bearerToken?.startsWith(PORTAL_SESSION_PREFIX)) return bearerToken;
+  if (bearerToken?.startsWith(PORTAL_SESSION_PREFIX)) return { token: bearerToken, source: 'bearer' };
 
   const cookieHeader = req.header('cookie');
   if (!cookieHeader) return undefined;
@@ -287,10 +308,30 @@ function extractPortalSessionToken(req: Request): string | undefined {
 
   const rawValue = sessionCookie.slice('portal_session='.length);
   try {
-    return decodeURIComponent(rawValue);
+    return { token: decodeURIComponent(rawValue), source: 'cookie' };
   } catch {
-    return rawValue;
+    return { token: rawValue, source: 'cookie' };
   }
+}
+
+/**
+ * Returns a rejection reason when a cookie-carried session is used for a
+ * state-changing request without a valid CSRF proof; `null` when the request
+ * is allowed. Header/bearer sessions and safe methods always pass.
+ */
+export function rejectCookieSessionCsrf(
+  req: Request,
+  candidate: PortalSessionCandidate,
+  sessionSecret: string,
+): 'cross_site' | 'csrf_missing' | 'csrf_mismatch' | null {
+  if (candidate.source !== 'cookie') return null;
+  if (CSRF_SAFE_METHODS.has((req.method || 'GET').toUpperCase())) return null;
+  const fetchSite = (req.header('sec-fetch-site') || '').trim().toLowerCase();
+  if (fetchSite === 'cross-site') return 'cross_site';
+  const provided = (req.header(PORTAL_CSRF_HEADER) || '').trim();
+  if (!provided) return 'csrf_missing';
+  const expected = computePortalCsrfToken(sessionSecret, candidate.token);
+  return secureSecretMatches(expected, provided) ? null : 'csrf_mismatch';
 }
 
 function verifyPortalSessionToken(options: {
@@ -351,14 +392,22 @@ function matchPortalSession(
   req: Request,
   tokens: ReturnType<typeof normalizePortalTokenCandidates>,
   scope: PortalTokenScope,
-): PortalSessionMatch | null {
-  return verifyPortalSessionToken({
+): (PortalSessionMatch & { source: PortalSessionSource; csrfRejection: ReturnType<typeof rejectCookieSessionCsrf> }) | null {
+  const candidate = extractPortalSessionToken(req);
+  if (!candidate) return null;
+  const match = verifyPortalSessionToken({
     secret: tokens.sessionSecret,
-    token: extractPortalSessionToken(req),
+    token: candidate.token,
     requiredScope: scope,
     actorAllowlist: tokens.adminActorAllowlist,
     maxAgeMs: tokens.sessionMaxAgeMs,
   });
+  if (!match) return null;
+  return {
+    ...match,
+    source: candidate.source,
+    csrfRejection: rejectCookieSessionCsrf(req, candidate, tokens.sessionSecret),
+  };
 }
 
 function enforcePortalToken(req: Request, res: Response, next: NextFunction, scope: PortalTokenScope): void {
@@ -399,6 +448,20 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
   }
 
   const sessionMatch = matchPortalSession(req, tokens, scope);
+  if (sessionMatch?.csrfRejection) {
+    emitPortalAuditEvent(req, scope, 'failure', 'csrf_rejected', {
+      csrfReason: sessionMatch.csrfRejection,
+      sessionSource: sessionMatch.source,
+    });
+    res.status(403).json({
+      ok: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Portal session CSRF check failed',
+      },
+    });
+    return;
+  }
   if (sessionMatch) {
     attachPortalAuthContext(req, {
       requiredScope: scope,
@@ -413,8 +476,9 @@ function enforcePortalToken(req: Request, res: Response, next: NextFunction, sco
       sessionScope: sessionMatch.scope,
       sessionExpiresAt: sessionMatch.expiresAt,
       sessionSignatureVerified: true,
+      sessionSource: sessionMatch.source,
     });
-    emitPortalAuditEvent(req, scope, 'success', 'session', { sessionScope: sessionMatch.scope });
+    emitPortalAuditEvent(req, scope, 'success', 'session', { sessionScope: sessionMatch.scope, sessionSource: sessionMatch.source });
     next();
     return;
   }

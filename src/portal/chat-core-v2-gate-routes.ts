@@ -32,7 +32,9 @@ import {
 import { resolveChatCoreV2ActivationConfig } from '../services/chat-core-v2/activation-flags';
 import { sendPortalInternalError } from './http';
 
-export const CHAT_CORE_V2_GATE_READINESS_ROUTE = '/api/v1/internal/chat-core-v2/shadow-gate-readiness';
+// Mounted under the portal `/api/*` namespace (NOT `/api/v1/internal/*`, which
+// is owned by the iOS router and its shared-secret gate — see server.ts).
+export const CHAT_CORE_V2_GATE_READINESS_ROUTE = '/api/chat-core-v2/gate/readiness';
 
 /**
  * Registers the gate-readiness route, but ONLY when the orchestrator mode is

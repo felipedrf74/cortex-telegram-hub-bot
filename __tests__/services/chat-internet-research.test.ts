@@ -18,7 +18,7 @@ const { mockIsPaidAiCostControlsEnforcementEnabled } = vi.hoisted(() => ({
 vi.mock('../../src/services/gemini-provider', () => ({
   completeOneShotWithSearch: mockCompleteOneShotWithSearch,
 }));
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: mockTrackedCreate,
 }));
 vi.mock('../../src/services/anthropic-lazy-client', () => ({

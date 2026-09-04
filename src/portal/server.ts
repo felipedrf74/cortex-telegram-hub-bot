@@ -22,7 +22,7 @@ import {
   expireSubscriptions,
   setDbProvider as setWebhookDbProvider,
 } from '../services/webhook-registry';
-import { getOwnerBootstrapTarget } from '../services/user-service';
+import { getActiveUserTargets, getOwnerBootstrapTarget } from '../services/user-service';
 import { shouldStartContentLiveEvalBackgroundServices } from '../services/content-live-evaluation-runtime';
 import { logger } from '../utils/logger';
 import { generateRequestId, runWithContext } from '../utils/request-context';
@@ -38,14 +38,15 @@ import { registerPortalAdminDataRoutes } from './admin-data-routes';
 import { registerPortalActionRoutes } from './action-routes';
 import { registerPortalChatQualityRoutes } from './chat-quality-routes';
 import { registerPortalChatRoutes } from './chat-routes';
-import { registerPortalContentRoutes } from './content-routes';
+import { registerPortalChatCoreV2GateRoutes } from './chat-core-v2-gate-routes';
+import { registerPortalChatCoreV2ObservabilityRoutes } from './chat-core-v2-observability-routes';
 import { registerPortalCookingRoutes } from './cooking-routes';
 import { registerPortalDecisionCenterRoutes } from './decision-center-routes';
 import { registerPortalDocumentRoutes } from './document-routes';
+import { registerPortalEnvironmentRoutes } from './environment-routes';
 import { registerPortalEvalHistoryRoutes } from './eval-history-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
 import { registerPortalHealthRoutes } from './health-routes';
-import { registerPortalIntelligenceRoutes } from './intelligence-routes';
 import { registerPortalInviteRoutes } from './invite-routes';
 import { registerPortalOperationsRoutes } from './operations-routes';
 import { registerPortalOAuthRoutes } from './oauth-routes';
@@ -68,6 +69,36 @@ import {
 // ─── Uptime Helper ──────────────────────────────────────────────────
 
 const startedAt = Date.now();
+
+// ─── Cache warming targets ──────────────────────────────────────────
+
+const DASHBOARD_WARM_MAX_USERS = 20;
+const DASHBOARD_WARM_STAGGER_MS = 500;
+
+/**
+ * Users whose dashboard cache is warmed at boot and refreshed periodically.
+ * Bounded to the most recently active users so warming stays cheap; the
+ * owner bootstrap user is included only as a fallback when nothing else is
+ * active (fresh deployments).
+ */
+export function resolveDashboardWarmTargets(): number[] {
+  const seen = new Set<number>();
+  const targets: number[] = [];
+  const push = (tenantId: number | null | undefined) => {
+    if (typeof tenantId !== 'number' || !Number.isFinite(tenantId) || seen.has(tenantId)) return;
+    seen.add(tenantId);
+    targets.push(tenantId);
+  };
+  try {
+    getActiveUserTargets().forEach((target) => push(target?.tenantId));
+  } catch {
+    // Fall through to the owner fallback below.
+  }
+  if (targets.length === 0) {
+    push(getOwnerBootstrapTarget()?.tenantId);
+  }
+  return targets.slice(0, DASHBOARD_WARM_MAX_USERS);
+}
 
 // ─── Express App Factory ────────────────────────────────────────────
 
@@ -263,19 +294,21 @@ export function createPortalServer(): http.Server {
     app.use('/api/v1', express.json({ limit: '8mb' }), createApiRouter());
     logger.info('iOS API enabled on /api/v1');
 
-    // Warm ALL caches on startup so first app open is instant
+    // Warm caches on startup so first app open is instant. Warming used to
+    // target only the owner bootstrap user; it now covers the active user
+    // set (bounded) so no single tenant is privileged at runtime.
     if (shouldStartContentLiveEvalBackgroundServices()) try {
       const { warmTaskCache } = require('../api/routes/tasks');
       const { warmDashboardCache } = require('../api/routes/dashboard');
-      const ownerTarget = getOwnerBootstrapTarget();
-      const userId = ownerTarget?.tenantId ?? null;
+      const warmTargets = resolveDashboardWarmTargets();
 
       // Stagger startup warming: dashboard first (slowest), then tasks
-      if (userId) {
-        setTimeout(() => warmDashboardCache(userId).catch(() => {}), 3000);
+      warmTargets.forEach((userId, index) => {
+        const offsetMs = index * DASHBOARD_WARM_STAGGER_MS;
+        setTimeout(() => warmDashboardCache(userId).catch(() => {}), 3000 + offsetMs);
         // Periodic refresh: dashboard every 3 min, tasks every 2 min
-        setInterval(() => warmDashboardCache(userId).catch(() => {}), 3 * 60 * 1000);
-      }
+        setInterval(() => warmDashboardCache(userId).catch(() => {}), 3 * 60 * 1000 + offsetMs);
+      });
       setTimeout(() => warmTaskCache().catch(() => {}), 5000);
       setInterval(() => warmTaskCache().catch(() => {}), 2 * 60 * 1000);
     } catch (err) {
@@ -301,6 +334,7 @@ export function createPortalServer(): http.Server {
       logger.error({ err }, 'Failed to create ios_devices table');
     }
   }
+
 
   // Live-eval evidence can legitimately exceed Express's 100 KB default.
   // Mount this narrowly scoped route family before the global parser so its
@@ -416,17 +450,15 @@ export function createPortalServer(): http.Server {
     buildSnapshot: () => buildPortalSnapshot(startedAt),
   });
 
-  registerPortalSkillRoutes(app);
+  registerPortalEnvironmentRoutes(app, { startedAt });
 
-  registerPortalContentRoutes(app);
+  registerPortalSkillRoutes(app);
 
   registerPortalCookingRoutes(app);
 
   registerPortalDecisionCenterRoutes(app);
 
   registerPortalActionRoutes(app);
-
-  registerPortalIntelligenceRoutes(app);
 
   registerPortalDocumentRoutes(app);
 
@@ -457,6 +489,12 @@ export function createPortalServer(): http.Server {
   registerPortalSettingsRoutes(app);
 
   registerPortalWebhookManagementRoutes(app);
+
+  // Chat Core v2 operator observability + gate readiness (default-off: the
+  // register functions no-op unless CHAT_CORE_V2_ORCHESTRATOR_MODE != off).
+  registerPortalChatCoreV2ObservabilityRoutes(app);
+
+  registerPortalChatCoreV2GateRoutes(app);
 
   // ── Start HTTP server ──────────────────────────────────────────
   const server = http.createServer(app);

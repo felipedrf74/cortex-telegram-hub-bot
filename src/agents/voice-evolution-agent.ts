@@ -24,7 +24,7 @@ import {
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from '../services/anthropic-hook';
 import { completeOneShotWithFallback } from '../services/gemini-provider';
 import { runWithSkillInferenceAccountAdmission } from '../services/skill-inference-service';
 import {

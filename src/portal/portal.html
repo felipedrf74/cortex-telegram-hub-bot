@@ -100,7 +100,7 @@
   --sidebar-width: 240px;
   --topbar-height: 56px;
 
-  /* Compatibility shims for legacy code that referenced the old vars */
+  /* Alias tokens kept for older render code */
   --bg: var(--bg-primary);
   --bg2: var(--bg-tertiary);
   --surface: var(--bg-secondary);
@@ -846,17 +846,17 @@ select {
 .data-table .text-muted { color: var(--text-secondary); }
 .data-table .num { font-family: var(--font-mono); }
 
-table.legacy {
+table.dense {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
-table.legacy th, table.legacy td {
+table.dense th, table.dense td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
-table.legacy th {
+table.dense th {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1428,6 +1428,35 @@ table.legacy th {
         </div>
       </div>
 
+      <div class="card" id="release-card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">🚀 Release &amp; Environment</div>
+          <span class="card-subtitle" id="release-subtitle">Loading…</span>
+        </div>
+        <div class="grid grid-cols-4" id="release-grid" style="padding: var(--space-3) var(--space-4);">
+          <div>
+            <div class="kpi-label">Version</div>
+            <div class="mono" id="release-version">—</div>
+          </div>
+          <div>
+            <div class="kpi-label">Commit</div>
+            <div class="mono" id="release-commit">—</div>
+            <div class="text-muted" style="font-size:11px" id="release-branch"></div>
+          </div>
+          <div>
+            <div class="kpi-label">Deployed</div>
+            <div id="release-deployed">—</div>
+            <div class="text-muted" style="font-size:11px" id="release-booted"></div>
+          </div>
+          <div>
+            <div class="kpi-label">Migrations</div>
+            <div id="release-migrations">—</div>
+            <div class="text-muted" style="font-size:11px" id="release-migrations-sub"></div>
+          </div>
+        </div>
+        <div id="release-flags" style="display:flex;flex-wrap:wrap;gap:var(--space-2);padding:0 var(--space-4) var(--space-3)"></div>
+      </div>
+
       <div class="grid grid-cols-4">
         <div class="kpi-card featured">
           <div class="kpi-label">Active Users (24h)</div>
@@ -1564,7 +1593,7 @@ table.legacy th {
       <div class="section-header">
         <div>
           <h1 class="section-title">Users</h1>
-          <div class="section-subtitle">Manage user accounts, legacy tier telemetry, and canonical entitlement</div>
+          <div class="section-subtitle">Manage user accounts, tiers, limits, and entitlement</div>
         </div>
         <div class="section-actions">
           <button class="btn btn-ghost btn-sm" id="users-refresh-btn">
@@ -1578,7 +1607,7 @@ table.legacy th {
         <div class="table-toolbar">
           <input class="input" type="search" placeholder="Search by name, username, or ID…" id="users-search">
           <select class="input" id="users-filter-tier" style="max-width:140px">
-            <option value="">All legacy tiers</option>
+            <option value="">All tiers</option>
             <option value="owner">Owner</option>
             <option value="pro">Pro</option>
             <option value="free">Free</option>
@@ -1595,7 +1624,7 @@ table.legacy th {
             <thead>
               <tr>
                 <th class="sortable" data-sort="name">User <span class="sort-arrow">↕</span></th>
-                <th class="sortable" data-sort="tier">Legacy tier <span class="sort-arrow">↕</span></th>
+                <th class="sortable" data-sort="tier">Tier <span class="sort-arrow">↕</span></th>
                 <th class="sortable" data-sort="status">Status <span class="sort-arrow">↕</span></th>
                 <th class="sortable text-right" data-sort="limit">Message telemetry <span class="sort-arrow">↕</span></th>
                 <th class="sortable" data-sort="lastActive">Last active <span class="sort-arrow">↕</span></th>
@@ -1642,7 +1671,7 @@ table.legacy th {
           <div class="card-title">AI Plan Budgets</div>
           <span class="card-subtitle">Exact owner-only limits; customer apps receive percentages only</span>
         </div>
-        <table class="legacy" id="ai-plan-limits-table">
+        <table class="dense" id="ai-plan-limits-table">
           <thead>
             <tr>
               <th>Plan</th>
@@ -1710,7 +1739,7 @@ table.legacy th {
         </div>
 
         <!-- Routing table -->
-        <table class="legacy" id="domain-routing-table">
+        <table class="dense" id="domain-routing-table">
           <thead>
             <tr>
               <th>Domain</th>
@@ -1744,7 +1773,7 @@ table.legacy th {
       -->
       <div class="card mt-4">
         <div class="card-header">
-          <div class="card-title">⚡ Secretary Optimization (TASK-17)</div>
+          <div class="card-title">⚡ Secretary Optimization</div>
           <span class="card-subtitle" id="secretary-opt-summary">Loading…</span>
         </div>
 
@@ -1766,7 +1795,7 @@ table.legacy th {
           </div>
         </div>
 
-        <table class="legacy" id="secretary-opt-patterns">
+        <table class="dense" id="secretary-opt-patterns">
           <thead>
             <tr>
               <th>Pattern</th>
@@ -1813,7 +1842,7 @@ table.legacy th {
           <canvas id="cost-sparkline" width="180" height="32" style="opacity:0.9"></canvas>
         </div>
 
-        <table class="legacy" id="cost-by-domain-table">
+        <table class="dense" id="cost-by-domain-table">
           <thead>
             <tr>
               <th>Category</th>
@@ -1933,7 +1962,7 @@ table.legacy th {
         <div class="card-header">
           <div class="card-title">📊 Agent Quality Scores (30d)</div>
         </div>
-        <table class="legacy" id="quality-scores-table">
+        <table class="dense" id="quality-scores-table">
           <thead><tr><th>Agent</th><th class="text-right">Score</th><th class="text-right">Tasks</th><th class="text-right">Pass %</th></tr></thead>
           <tbody><tr><td colspan="4"><div class="empty">No quality data — run evals to populate</div></td></tr></tbody>
         </table>
@@ -1970,7 +1999,7 @@ table.legacy th {
         <div class="card-header">
           <div class="card-title">🚀 Next Scheduled Runs</div>
         </div>
-        <table class="legacy" id="next-runs-table">
+        <table class="dense" id="next-runs-table">
           <thead><tr><th>Job</th><th>Cron</th><th>Domain</th><th>Next run</th></tr></thead>
           <tbody><tr><td colspan="4"><div class="empty">Loading…</div></td></tr></tbody>
         </table>
@@ -3195,7 +3224,7 @@ table.legacy th {
     // Topbar version + uptime + cost + bot status
     const ver = snap.version || '?';
     document.getElementById('app-version').textContent = 'v' + ver;
-    document.getElementById('footer-version').textContent = ver;
+    document.getElementById('footer-version').textContent = ver + (_releaseShortSha ? ' · ' + _releaseShortSha : '');
     document.getElementById('topbar-uptime').textContent = snap.uptime?.human || '—';
     document.getElementById('topbar-cost').textContent = fmtCost(snap.healthSummary?.apiCostToday);
 
@@ -3455,7 +3484,7 @@ table.legacy th {
 
   // Skills scope state. When _skillsScopeUserId is null we're in global
   // mode (the historical behavior) and toggles go to /api/skills/toggle.
-  // When it's a Telegram ID, we render the per-user override view and
+  // When it's a user id, we render the per-user override view and
   // toggles go to /api/users/:id/skills (which layers on top of the
   // global state). The scope is switched via the dropdown above the grid.
   let _skillsScopeUserId = null;
@@ -3815,7 +3844,7 @@ table.legacy th {
       const pointsData = pointsRes && pointsRes.ok ? await pointsRes.json() : { packages: [], stripeEnabled: false };
       const budgetData = budgetRes && budgetRes.ok ? await budgetRes.json() : null;
 
-      const tier = '<span class="tier-badge tier-' + (user.tier || 'free') + '" title="Legacy telemetry only">legacy:' + esc(user.tier || 'free') + '</span>';
+      const tier = '<span class="tier-badge tier-' + esc(user.tier || 'free') + '">' + esc(user.tier || 'free') + '</span>';
       const limit = user.daily_message_limit === 0 ? '∞' : (user.daily_message_limit || 0) + '/day';
 
       const skillIcons = { secretary: '📋', triathlon: '🏋️', content: '🎬', cooking: '🍳', finance: '💰' };
@@ -6682,9 +6711,75 @@ table.legacy th {
   let pollTimer = null;
   let secondaryTimer = null;
 
+  // ── Release & environment card ──
+  let _releaseShortSha = null;
+  const BETA_SAFE_EXPOSURE_MODES = ['disabled', 'loopback_only', 'session_only', 'signed_static'];
+
+  function releaseChip(label, tone, title) {
+    return '<span class="badge badge-' + tone + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(label) + '</span>';
+  }
+
+  function renderReleaseInfo(r) {
+    document.getElementById('release-version').textContent = 'v' + (r.version || '—');
+    document.getElementById('release-commit').textContent = r.gitShortSha || (r.stampPresent ? '—' : 'no build stamp');
+    document.getElementById('release-branch').textContent = r.branch ? (r.branch + (r.dirty ? ' · dirty build' : '')) : '';
+    document.getElementById('release-deployed').textContent = r.deployedAt ? relativeTime(r.deployedAt) : '—';
+    document.getElementById('release-booted').textContent = r.bootedAt ? ('booted ' + relativeTime(r.bootedAt) + ' · pid ' + r.pid) : '';
+    const mig = r.migrations || { applied: 0, available: 0, pending: [] };
+    const pending = (mig.pending || []).length;
+    document.getElementById('release-migrations').innerHTML = pending === 0
+      ? '<span class="badge badge-success">' + mig.applied + ' applied</span>'
+      : '<span class="badge badge-error">' + pending + ' pending</span>';
+    document.getElementById('release-migrations-sub').textContent = pending === 0
+      ? ('latest ' + (mig.latestApplied || '—'))
+      : (mig.pending || []).slice(0, 3).join(', ');
+
+    const chips = [];
+    chips.push(releaseChip(r.env || 'development', 'info', 'NODE_ENV'));
+    chips.push(releaseChip('node ' + (r.node || '—'), 'neutral', r.platform || ''));
+    const betaSafe = BETA_SAFE_EXPOSURE_MODES.indexOf(r.adminExposureMode) !== -1;
+    chips.push(releaseChip('admin: ' + (r.adminExposureMode || 'unknown'), betaSafe ? 'success' : 'warning', 'Portal admin exposure mode'));
+    chips.push(releaseChip(r.betaHardened ? 'beta-hardened' : 'not beta-hardened', r.betaHardened ? 'success' : 'warning', 'PORTAL_BETA_HARDENED'));
+    const integ = r.integrations || {};
+    chips.push(releaseChip(integ.sentry ? 'Sentry on' : 'Sentry not configured', integ.sentry ? 'success' : 'error', 'SENTRY_DSN'));
+    chips.push(releaseChip(integ.operatorAlertWebhook ? 'Alert webhook on' : 'Alert webhook not configured', integ.operatorAlertWebhook ? 'success' : 'error', 'OPERATOR_ALERT_WEBHOOK_URL'));
+    chips.push(releaseChip('iOS API ' + (integ.iosApi ? 'on' : 'off'), integ.iosApi ? 'success' : 'neutral', 'IOS_API_ENABLED'));
+    chips.push(releaseChip('Anthropic ' + (integ.anthropic ? 'on' : 'off'), 'neutral', 'ANTHROPIC_ENABLED'));
+    chips.push(releaseChip('Ollama ' + (integ.ollama ? 'on' : 'off'), 'neutral', 'OLLAMA_ENABLED'));
+    if (r.db && r.db.sizeBytes != null) {
+      chips.push(releaseChip('db ' + (r.db.sizeBytes / 1024 / 1024).toFixed(1) + ' MB' + (r.db.walBytes ? ' · wal ' + (r.db.walBytes / 1024 / 1024).toFixed(1) + ' MB' : ''), 'neutral', 'SQLite file size'));
+    }
+    document.getElementById('release-flags').innerHTML = chips.join('');
+
+    const problems = [];
+    if (pending > 0) problems.push('pending migrations');
+    if (!betaSafe) problems.push('admin exposure');
+    if (!integ.sentry) problems.push('no Sentry');
+    if (!integ.operatorAlertWebhook) problems.push('no alert webhook');
+    document.getElementById('release-subtitle').textContent = problems.length
+      ? 'Attention: ' + problems.join(', ')
+      : 'Healthy · uptime ' + (r.uptimeSeconds != null ? Math.floor(r.uptimeSeconds / 3600) + 'h' : '—');
+
+    _releaseShortSha = r.gitShortSha || null;
+    const footer = document.getElementById('footer-version');
+    if (footer && r.version) footer.textContent = r.version + (r.gitShortSha ? ' · ' + r.gitShortSha : '');
+  }
+
+  async function loadReleaseInfo() {
+    try {
+      const res = await apiFetch('/api/release');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.release) renderReleaseInfo(data.release);
+    } catch (e) {
+      document.getElementById('release-subtitle').textContent = 'Release info unavailable';
+    }
+  }
+
   function startApp() {
     // Initial render
     pollAll();
+    loadReleaseInfo();
     loadModelConfig();
     loadDomainRouting();
     loadSecretaryOptimization();
@@ -6721,6 +6816,8 @@ table.legacy th {
       if (currentSection === 'content') loadContentDashboard();
       if (currentSection === 'notifications') loadNotificationPortal();
     }, 30000);
+    // Release identity changes only on deploy; refresh once a minute.
+    setInterval(loadReleaseInfo, 60000);
 
     // Initial section from URL hash
     const initialSection = location.hash.replace('#', '') || 'dashboard';
@@ -6728,11 +6825,9 @@ table.legacy th {
   }
 
   // ────────── Boot ──────────
-  if (TOKEN) {
-    startApp();
-  } else {
-    showLoginForm();
-  }
+  // The token is never persisted (no localStorage, no server injection), so
+  // every page load starts at the login form.
+  showLoginForm();
 })();
 </script>
 </body>

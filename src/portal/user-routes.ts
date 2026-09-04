@@ -79,7 +79,8 @@ export function registerPortalUserRoutes(app: express.Express): void {
       });
     },
   });
-  app.get('/api/users', (_req: Request, res: Response) => {
+  // Admin-only: the listing carries account identity (email, status, tier).
+  app.get('/api/users', authorizationRateLimitMiddleware, requirePortalAdminToken, (_req: Request, res: Response) => {
     try {
       res.json({ users: listUsers() });
     } catch (err) {

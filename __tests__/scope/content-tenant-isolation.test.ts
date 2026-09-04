@@ -38,7 +38,7 @@ vi.mock('../../src/services/gemini-provider', () => ({
   isGeminiProviderConfigured: vi.fn(() => true),
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 

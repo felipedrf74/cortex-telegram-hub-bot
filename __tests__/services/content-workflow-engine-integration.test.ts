@@ -54,7 +54,7 @@ vi.mock('../../src/services/openai-provider', async () => ({
   isOpenAIConfigured: vi.fn(() => false),
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 

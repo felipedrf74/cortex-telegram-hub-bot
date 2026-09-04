@@ -23,7 +23,7 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { loadPrompt, writePrompt, getPromptPath } from '../utils/prompt-loader';
 import { getEvalTarget, getAllTargets, EvalTarget, TestInput } from './eval-criteria';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { sanitizeForPromptInterpolation } from '../utils/prompt-sanitizer';
 import { withAiBudgetReservation } from './cost-guardrail';

@@ -37,7 +37,7 @@ vi.mock('@anthropic-ai/sdk', () => ({
   }),
 }));
 
-vi.mock('../../src/portal/anthropic-hook', () => ({
+vi.mock('../../src/services/anthropic-hook', () => ({
   trackedCreate: vi.fn(),
 }));
 

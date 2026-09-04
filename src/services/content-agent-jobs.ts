@@ -5,7 +5,7 @@ import { Buffer } from 'node:buffer';
 import type Anthropic from '@anthropic-ai/sdk';
 import type Database from 'better-sqlite3';
 import { config } from '../config';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import {
   CONTENT_AGENCY_PACKAGE_GENERATOR_CONTRACT_VERSION,
   computeContentAgencyArtifactHash,

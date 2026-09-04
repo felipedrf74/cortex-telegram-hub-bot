@@ -128,6 +128,8 @@ function releaseAttestation(env: NodeJS.ProcessEnv = process.env) {
   };
 }
 
+import { getReleaseInfo, type ReleaseInfo } from '../services/release-info';
+
 type HealthSnapshotIntegration = {
   name: string;
   configured: boolean;
@@ -204,6 +206,15 @@ function probeDatabaseHealth(): DatabaseProbe {
   }
 }
 
+function releaseInfoSnapshot(startedAt: number): ReleaseInfo | null {
+  try {
+    return getReleaseInfo({ startedAt });
+  } catch {
+    // Release identity is informational; never let it degrade /health.
+    return null;
+  }
+}
+
 function overallHealthStatus(
   runtime: ReturnType<typeof getRuntimeStatus>,
   databaseProbe: DatabaseProbe,
@@ -234,9 +245,12 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
     const runtime = getRuntimeStatus();
     const databaseProbe = probeDatabaseHealth();
     const status = overallHealthStatus(runtime, databaseProbe);
+    const release = releaseInfoSnapshot(options.startedAt);
 
     res.status(status === 'healthy' ? 200 : 503).json({
       status,
+      version: release?.version ?? null,
+      gitShortSha: release?.gitShortSha ?? null,
       uptime: uptimeSec,
       uptimeHuman: humanUptime(uptimeSec),
       server: {
@@ -367,6 +381,7 @@ export function registerPortalHealthRoutes(app: Express, options: HealthRoutesOp
       },
       sentry: getSentryStatus(config.sentry?.environment ?? 'unknown'),
       cache,
+      release: releaseInfoSnapshot(options.startedAt),
       errors: {
         total: errorCount,
         lastHour: errorsLast1h,

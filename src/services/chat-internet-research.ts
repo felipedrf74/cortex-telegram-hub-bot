@@ -2,7 +2,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeOneShotWithSearch } from './gemini-provider';
 import type {
   NexusChatExpectedResponseShape,

@@ -659,7 +659,7 @@ export function internalRoutes(): Router {
           // any provider dispatch and only when runtime fallback is enabled.
           async () => {
             throwIfInternalAiCompleteCancelled(activeAbortSignal);
-            const { trackedCreate } = require('../../portal/anthropic-hook');
+            const { trackedCreate } = require('../../services/anthropic-hook');
             const Anthropic = require('@anthropic-ai/sdk');
             const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 0 });
             const anthropicModel = getEffectiveDomainModel('anthropic', 'content');

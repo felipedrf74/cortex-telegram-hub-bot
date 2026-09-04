@@ -1677,7 +1677,10 @@
         "src/services/skill-*.ts",
         "src/services/skills/**",
         "src/services/swr-refresh-observability.ts",
-        "src/services/waitlist-*.ts"
+        "src/services/waitlist-*.ts",
+        "src/services/release-info.ts",
+        "src/services/issue-tracker.ts",
+        "src/services/support-tickets.ts"
       ],
       "tests": [
         "__tests__/domains/**/*.test.ts",
@@ -1686,7 +1689,10 @@
         "__tests__/portal/**/*.test.ts",
         "__tests__/router/**/*.test.ts",
         "__tests__/sdk/**/*.test.ts",
-        "__tests__/skills/**/*.test.ts"
+        "__tests__/skills/**/*.test.ts",
+        "__tests__/services/release-info.test.ts",
+        "__tests__/services/issue-tracker.test.ts",
+        "__tests__/services/support-tickets.test.ts"
       ],
       "contracts": [
         "__tests__/domains/domain-handler.test.ts",

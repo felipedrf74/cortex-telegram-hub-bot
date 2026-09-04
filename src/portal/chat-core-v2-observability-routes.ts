@@ -57,7 +57,9 @@ import { decideChatV2HumanReview } from '../services/chat-core-v2/human-review-q
 import type { HumanReviewDecision } from '../services/chat-core-v2/types';
 import { sendPortalInternalError } from './http';
 
-const ROUTE_PREFIX = '/api/v1/internal/chat-core-v2/observability';
+// Mounted under the portal `/api/*` namespace (NOT `/api/v1/internal/*`, which
+// is owned by the iOS router and its shared-secret gate — see server.ts).
+const ROUTE_PREFIX = '/api/chat-core-v2/observability';
 
 export const CHAT_CORE_V2_AUTO_REVERT_DECISIONS_ROUTE = `${ROUTE_PREFIX}/auto-revert-decisions`;
 export const CHAT_CORE_V2_FAILURE_EVENTS_ROUTE = `${ROUTE_PREFIX}/failure-events`;

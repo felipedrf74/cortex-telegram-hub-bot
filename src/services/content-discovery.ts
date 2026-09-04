@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../config';
 import { now } from '../utils/date-parser';
 import { logger } from '../utils/logger';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
 import { completeOneShotWithWebSearch, isOpenAIConfigured } from './openai-provider';
 import { isDuplicateIdea, isDuplicateIdeaInBatch } from './content-dedup';

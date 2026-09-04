@@ -8,7 +8,7 @@ import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate } from './anthropic-hook';
 import {
   completeOneShotWithFallback,
   completeOneShotWithSearch,
