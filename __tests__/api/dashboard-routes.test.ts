@@ -151,7 +151,8 @@ vi.mock('../../src/utils/logger', () => ({
   LOGGER_REDACTION_PATHS: [],
 }));
 
-import { dashboardRoutes } from '../../src/api/routes/dashboard';
+import { dashboardRoutes, warmDashboardCache } from '../../src/api/routes/dashboard';
+import { getCurrentContext, type RequestContext } from '../../src/utils/request-context';
 import {
   fetchTraining,
   mapDashboardTask,
@@ -1045,6 +1046,27 @@ describe('Dashboard API route', () => {
     expect(result.readinessScore).toBe(68);
     expect(result.bodyBattery).toBe(64);
     expect(result.bodyBatteryStatus).toBe('ready');
+  });
+
+  it('warms the dashboard cache under a silent Garmin startup context', async () => {
+    // Warming runs from boot timers with no request context. Without a
+    // garminSilent context every warm cycle could start a Garmin credentials
+    // login, which emails an MFA passcode nobody is there to answer.
+    // Every section fetch runs inside the same async context, so the timezone
+    // lookup made by the training fetcher observes exactly what the Garmin
+    // read path (garmin.ts getClient) sees via getCurrentContext().garminSilent.
+    let captured: RequestContext | undefined;
+    mockGetUserTimezone.mockImplementation(() => {
+      captured = captured ?? getCurrentContext();
+      return 'Europe/Lisbon';
+    });
+    expect(getCurrentContext()).toBeUndefined();
+
+    await warmDashboardCache(4);
+
+    expect(mockGetUserTimezone).toHaveBeenCalled();
+    expect(captured).toMatchObject({ source: 'startup', userId: 4, tenantId: 4, garminSilent: true });
+    expect(mockSetCacheSWR).toHaveBeenCalledTimes(1);
   });
 
   it('derives content counts from the canonical private tenant workspace', () => {
