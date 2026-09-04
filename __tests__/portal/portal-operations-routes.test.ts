@@ -80,6 +80,7 @@ const hoistedOps = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   extractPortalActorHint: (req: any) => req.headers?.['x-portal-actor'],
   getPortalAuthContext: (req: any) => req.portalAuthContext,
   requirePortalAdminToken: hoistedOps.mockRequirePortalAdminToken,

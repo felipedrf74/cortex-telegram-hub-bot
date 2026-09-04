@@ -19,11 +19,21 @@
   <div class="login-card">
     <div class="login-mark">N</div>
     <div class="login-title">Nexus Hub Admin</div>
-    <div class="login-sub">Sign in with your portal access token</div>
+    <div class="login-sub" id="login-sub">Sign in with your portal access token</div>
     <div class="login-form">
-      <input id="login-token" type="password" placeholder="Portal token" autofocus>
-      <button id="login-btn" class="btn btn-primary">Sign In</button>
+      <form id="login-password-form" class="login-fields" autocomplete="on" hidden>
+        <input id="login-username" type="text" placeholder="Username" autocomplete="username">
+        <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+        <button id="login-password-btn" class="btn btn-primary" type="submit">Sign In</button>
+      </form>
+      <div id="login-token-form" class="login-fields">
+        <input id="login-token" type="password" placeholder="Portal token" autofocus>
+        <button id="login-btn" class="btn btn-primary">Sign In</button>
+      </div>
       <div id="login-error" class="login-error"></div>
+      <div class="u-mt-14 u-fs-12 u-c-text-tertiary">
+        <a id="login-switch" href="#" class="u-c-accent u-fw-700" hidden>Use a session token instead</a>
+      </div>
       <div class="u-mt-14 u-fs-12 u-c-text-tertiary">
         User account? <a href="/user" class="u-c-accent u-fw-700">Sign in with email, Google, or Apple</a>
       </div>

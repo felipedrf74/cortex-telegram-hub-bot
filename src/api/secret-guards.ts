@@ -49,6 +49,17 @@ function emitPortalAuditEvent(
   }
 }
 
+/** Audit hook for sign-in routes that verify their own credential (password, presented session). */
+export function recordPortalAuthAudit(
+  req: Request,
+  scope: PortalTokenScope,
+  outcome: 'success' | 'failure',
+  reason?: string,
+  extra: Record<string, unknown> = {},
+): void {
+  emitPortalAuditEvent(req, scope, outcome, reason, extra);
+}
+
 export { createPortalSessionToken };
 
 const PORTAL_AUTH_CONTEXT_KEY = Symbol.for('nexushub.portalAuthContext');

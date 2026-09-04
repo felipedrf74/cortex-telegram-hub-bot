@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockSendPortalInternalError = vi.fn();
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 

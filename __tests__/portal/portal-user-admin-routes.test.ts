@@ -22,7 +22,8 @@ vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db,
   withDatabaseForTestAsync: vi.fn(),
   withReleaseMaintenanceDatabase: vi.fn(),
 }));
-vi.mock('../../src/api/secret-guards', () => ({ requirePortalAdminToken: hoisted.requirePortalAdminToken,
+vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(), requirePortalAdminToken: hoisted.requirePortalAdminToken,
   allowLocalHealthBypass: vi.fn(),
   allowLocalPortalBypass: vi.fn(),
   bearerTokenMatches: vi.fn(),

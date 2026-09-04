@@ -18,6 +18,7 @@ vi.mock('../../src/services/config-provider', () => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
 }));
 

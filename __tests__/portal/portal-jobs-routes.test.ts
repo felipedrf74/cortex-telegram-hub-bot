@@ -37,6 +37,7 @@ vi.mock('../../src/services/database', () => ({ getDb: () => hoisted.db,
 }));
 vi.mock('../../src/config', () => ({ config: { app: { timezone: 'UTC' } } }));
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: (_req: unknown, _res: unknown, next: () => void) => next(),
   allowLocalHealthBypass: vi.fn(),
   allowLocalPortalBypass: vi.fn(),

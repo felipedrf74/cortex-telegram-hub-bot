@@ -50,6 +50,7 @@ import { registerPortalOpsRoutes } from './ops-routes';
 import { registerPortalJobsRoutes } from './jobs-routes';
 import { registerPortalOperateRoutes } from './operate-routes';
 import { isPortalSessionAuthPath, registerPortalSessionRoutes } from './session-routes';
+import { registerPortalSessionPasswordRoutes, validatePortalOperatorCredentials } from './session-password-routes';
 import { registerPortalSupportRoutes } from './support-routes';
 import { registerPortalUserAdminRoutes } from './user-admin-routes';
 import { registerPortalFounderRoutes } from './founder-routes';
@@ -458,6 +459,9 @@ export function createPortalServer(): http.Server {
   // warning when admin is exposed in production without signed sessions or
   // actor signatures, so the on-call runbook has a single log line to check.
   validatePortalAdminBetaReadiness(config.portal);
+  // A half-configured operator password credential refuses to boot rather
+  // than silently disabling password sign-in.
+  validatePortalOperatorCredentials(config.portal);
 
   // AUTH-O10 (closed-beta-auth-hardening, 2026-05-04): mount the IP-bucket
   // rate limiter on portal `/api/*` (not `/api/v1/*` — iOS already mounts
@@ -498,6 +502,7 @@ export function createPortalServer(): http.Server {
   registerPortalJobsRoutes(app);
   registerPortalOperateRoutes(app);
   registerPortalSessionRoutes(app);
+  registerPortalSessionPasswordRoutes(app);
 
   registerPortalSupportRoutes(app);
 

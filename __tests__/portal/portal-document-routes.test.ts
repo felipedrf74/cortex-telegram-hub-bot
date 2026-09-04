@@ -29,6 +29,7 @@ vi.mock('../../src/portal/http', () => ({
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
+  recordPortalAuthAudit: vi.fn(),
   requirePortalAdminToken: vi.fn((req: any, res: any, next: () => void) => {
     if (req.headers?.authorization === 'Bearer admin-token') {
       next();
