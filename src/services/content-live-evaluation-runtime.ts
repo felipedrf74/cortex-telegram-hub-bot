@@ -34,7 +34,7 @@ export function contentLiveEvalDotenvOptions(env: NodeJS.ProcessEnv = process.en
   return isContentLiveEvalRuntime(env)
     || isContentLiveEvalVerifierRuntime(env)
     ? { quiet: true, override: false, path: '/dev/null' }
-    : { quiet: true, override: env.NODE_ENV !== 'test' };
+    : { quiet: true, override: env.NODE_ENV !== 'test' && env.VITEST !== 'true' };
 }
 
 export function shouldStartContentLiveEvalBackgroundServices(

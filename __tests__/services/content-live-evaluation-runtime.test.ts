@@ -63,6 +63,15 @@ describe('Content live-evaluation runtime isolation', () => {
     })).toEqual({ quiet: true, override: false, path: '/dev/null' });
   });
 
+  it('never lets a local .env override values while Vitest is running, even when NODE_ENV is stubbed', () => {
+    expect(contentLiveEvalDotenvOptions({ VITEST: 'true', NODE_ENV: 'production' }))
+      .toEqual({ quiet: true, override: false });
+    expect(contentLiveEvalDotenvOptions({ NODE_ENV: 'test' }))
+      .toEqual({ quiet: true, override: false });
+    expect(contentLiveEvalDotenvOptions({ NODE_ENV: 'production' }))
+      .toEqual({ quiet: true, override: true });
+  });
+
   it.each([
     ['SENTRY_DSN', 'https://telemetry.invalid/1'],
     ['GOOGLE_REFRESH_TOKEN', 'calendar-token'],

@@ -202,6 +202,27 @@ new AI calls until UTC midnight. Raise the cap in your private
   `NEXUS_LOCAL_PORT_TS=8210 ./scripts/local-up.sh` and update
   `.env.local`'s `PORTAL_PORT` to match.
 
+### `MODULE_NOT_FOUND` for a dependency that is in `package.json`
+
+Symptom: the Node container crash-loops with something like
+`Cannot find module '@aws-sdk/client-s3'` right after a branch added a
+new npm dependency, and `local-up.sh` times out waiting for health.
+
+Cause: `node_modules` lives in the named volume
+`nexus_hub_local_node_modules` (see `docker-compose.local.yml`), not in
+the bind mount. The volume is populated once at first boot and then
+shadows the image's `node_modules`, so packages added to `package.json`
+later never land in it.
+
+Fix — drop the stale volume and let the next boot reinstall:
+
+```bash
+docker compose -f docker-compose.local.yml down && docker volume rm nexus_hub_local_node_modules && ./scripts/local-up.sh
+```
+
+`local-down.sh` alone does **not** clear the volume; only this command
+or `./scripts/local-reset.sh --yes` (which also wipes the DB) does.
+
 ### iOS app stays on the prod URL
 
 - Confirm the scheme has both launch args (Edit Scheme → Run → Arguments).
