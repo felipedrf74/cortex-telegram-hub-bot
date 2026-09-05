@@ -1,6 +1,6 @@
 ---
 name: verifiable-reward-check
-description: Run the Nexus Verifiable Reward Loop before ending non-trivial Codex backend work. Use when Felipe mentions rewards, RLVR-inspired checks, verifier-driven development, handoff quality, calibration, enforcement, reward summaries, or when a backend session produces code, docs, QA, research, release, or process deliverables.
+description: Run the Nexus Verifiable Reward Loop before ending non-trivial backend implementation. Use when Felipe mentions rewards, RLVR-inspired checks, verifier-driven development, handoff quality, calibration, enforcement, reward summaries, or when a backend session produces code, docs, QA, research, release, or process deliverables.
 ---
 
 # Verifiable Reward Check
@@ -8,7 +8,8 @@ description: Run the Nexus Verifiable Reward Loop before ending non-trivial Code
 Use the canonical backend policy at
 `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md`.
 
-Run before final handoff/final answer for non-trivial work:
+Run before final implementation closeout. Planning/read-only answers use
+source review; do not create a handoff or run artifacts just for a score:
 
 ```bash
 node scripts/reward-check.mjs --area auto --advisory

@@ -1,4 +1,4 @@
 interface:
   display_name: "Nexus Test Audit"
   short_description: "Profile and govern Nexus backend test tiers"
-  default_prompt: "Audit the Nexus Hub test selection, timing, migration setup, and disposition policy."
+  default_prompt: "Use $test-audit to Audit the Nexus Hub test selection, timing, migration setup, and disposition policy."

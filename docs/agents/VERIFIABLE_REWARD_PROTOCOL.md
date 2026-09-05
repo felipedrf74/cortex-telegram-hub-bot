@@ -14,7 +14,9 @@ inside the backend repository.
 Applies to backend code, backend docs, release scripts, smoke scripts,
 provider routing, auth/session/tenant safety, prompt/context/memory boundaries,
 calendar/training/cooking/content/finance/secretary behavior, and backend
-agent handoffs.
+agent handoffs. Development-process authority lives in
+[DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md). Read-only/planning answers
+require source review, not a tracked handoff or synthetic reward artifact.
 
 V1 is local and advisory by default. It is RLVR-inspired, but not provider-side
 fine-tuning.
@@ -117,3 +119,13 @@ Use `scripts/export-reward-dataset.mjs` only for reviewed, sanitized,
 export-eligible reward runs. The canonical export is provider-neutral Nexus
 JSONL. Provider-specific adapters may be added later. Fine-tuning/RFT remains
 disabled unless Felipe explicitly approves a later milestone.
+
+## Advisory Stop hook
+
+The hook uses the checker's `auto` area rather than an independent area list.
+Only completed PASS/WARN results with all mandatory checks passed are cached,
+for at most 30 minutes. Cache identity includes proposed tracked/untracked
+bytes, staged changes, verifier/configuration inputs and runtime version.
+Failures, timeouts, invalid output and missing mandatory evidence are not
+cached. Planning/read-only modes skip the hook. It never grants release or
+integration authority and does not replace the risk-selected test run.

@@ -5,10 +5,10 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "a9c17ed12145dbb35b39ebb1da3f2ac4c9a97046bd43e2fba66912ac9ff44646",
-    "baseCommit": "2a6ff5b926dfccf381fd3c4a0269d3a096b273c0",
-    "baseCommitTimestamp": "2026-09-04T20:57:32+01:00",
-    "trackedFiles": 3685,
+    "sourceDigest": "e2f93331894db822c2847a8de92e7cbfd379dbb096006663a03ca00217bc1baa",
+    "baseCommit": "c97c854a29443d697186bb9b0ac3c9370efa217a",
+    "baseCommitTimestamp": "2026-09-04T21:26:23+01:00",
+    "trackedFiles": 3690,
     "sourceFiles": 1279
   },
   "navigation": {
@@ -5577,7 +5577,7 @@
     }
   ],
   "tests": {
-    "files": 1367,
+    "files": 1368,
     "policy": "config/test-policy.json",
     "inventoryArtifact": ".local/test-inventory/test-inventory.json",
     "topLevelOwners": {
@@ -5596,7 +5596,7 @@
       "regression": 1,
       "router": 8,
       "scope": 1,
-      "scripts": 113,
+      "scripts": 114,
       "sdk": 1,
       "security": 24,
       "services": 847,
@@ -5612,14 +5612,13 @@
     "policy": "config/documentation-policy.json",
     "policySchema": "nexus.documentation-policy.v1",
     "policyVersion": "2026-08-22.1",
-    "count": 79,
-    "active": 79,
+    "count": 77,
+    "active": 77,
     "statusCounts": {
-      "canonical": 39,
+      "canonical": 41,
       "current": 2,
       "draft": 2,
       "generated": 1,
-      "mirror": 4,
       "runtime": 27,
       "supporting": 4
     },
@@ -5654,42 +5653,6 @@
       {
         "path": ".agents/skills/verifiable-reward-check/SKILL.md",
         "status": "canonical",
-        "active": true,
-        "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2027-01-18",
-        "canonicalPath": ".agents/skills/verifiable-reward-check/SKILL.md"
-      },
-      {
-        "path": ".claude/skills/product-sentinel/SKILL.md",
-        "status": "mirror",
-        "active": true,
-        "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2027-01-18",
-        "canonicalPath": ".agents/skills/product-sentinel/SKILL.md"
-      },
-      {
-        "path": ".claude/skills/release-operator/SKILL.md",
-        "status": "mirror",
-        "active": true,
-        "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2027-01-18",
-        "canonicalPath": ".agents/skills/release-operator/SKILL.md"
-      },
-      {
-        "path": ".claude/skills/test-audit/SKILL.md",
-        "status": "mirror",
-        "active": true,
-        "owner": "agent workflow lead",
-        "reviewedOn": "2026-07-22",
-        "reviewDueOn": "2027-01-18",
-        "canonicalPath": ".agents/skills/test-audit/SKILL.md"
-      },
-      {
-        "path": ".claude/skills/verifiable-reward-check/SKILL.md",
-        "status": "mirror",
         "active": true,
         "owner": "agent workflow lead",
         "reviewedOn": "2026-07-22",
@@ -5776,6 +5739,24 @@
         "reviewedOn": "2026-07-22",
         "reviewDueOn": "2027-01-18",
         "canonicalPath": "docs/TOKEN-QUOTA-CONTRACT.md"
+      },
+      {
+        "path": "docs/agents/DEVELOPMENT_PROCESS.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
+        "canonicalPath": "docs/agents/DEVELOPMENT_PROCESS.md"
+      },
+      {
+        "path": "docs/agents/MODEL_GUIDANCE.md",
+        "status": "canonical",
+        "active": true,
+        "owner": "backend architecture lead",
+        "reviewedOn": "2026-07-22",
+        "reviewDueOn": "2027-01-18",
+        "canonicalPath": "docs/agents/MODEL_GUIDANCE.md"
       },
       {
         "path": "docs/agents/VERIFIABLE_REWARD_PROTOCOL.md",

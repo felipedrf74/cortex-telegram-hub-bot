@@ -46,19 +46,10 @@ non-trivial changes.
 
 ## Related cross-repo standards
 
-| Standard | Path | Purpose |
-|---|---|---|
-| iOS architecture + SwiftUI performance | `ios/docs/engineering/ios-architecture-and-swiftui-performance-standard.md` | iOS state ownership, observation, navigation, frame budget. |
-| iOS frontend validation checklist | `ios/docs/engineering/ios-frontend-validation-checklist.md` | What "validated" means for iOS changes. |
-| Agent process standard | `docs/07-operations/AGENT_PROCESS.md` | How Claude/Codex should operate in the workspace. |
+Use [shared development policy](../agents/DEVELOPMENT_PROCESS.md) for planning,
+ownership, evidence reuse and closeout. Start from AGENTS.md; load only the
+standards relevant to the changed area. A cloud agent needs no home-directory
+workspace checkout to follow this process.
 
-## Reading order for new agents
-
-1. `docs/00-index.md` (workspace)
-2. `docs/07-operations/AGENT_PROCESS.md` (workspace)
-3. `docs/07-operations/RELEASE_TRUTH.md` (workspace)
-4. `docs/06-work/OPEN_ITEMS.md` (workspace)
-5. `docs/90-generated/REPOSITORY_STATE.md` (workspace)
-6. `CLAUDE.md` (backend)
-7. `docs/DOCS_INDEX.md` (backend)
-8. The standards relevant to the work area (this index).
+For native work, read the iOS repository's AGENTS.md and its engineering index.
+Use the canonical backend OpenAPI contract for cross-repository API changes.

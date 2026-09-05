@@ -16,10 +16,8 @@ logs/
 !.claude/
 !.claude/settings.json
 !.claude/skills/
-.claude/skills/*
-!.claude/skills/*/
-.claude/skills/*/*
-!.claude/skills/*/SKILL.md
+# Shared skill directories are tracked symlinks, not copied bodies.
+!.claude/skills/*
 # prompts/ — tracked (needed for autoresearch)
 content-engine/.venv/
 content-engine/__pycache__/

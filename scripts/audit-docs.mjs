@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkGuidance } from './development-guidance.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -230,11 +231,14 @@ for (const issue of releaseStateDocumentationIssues({ state, releaseSummary })) 
 }
 for (const skill of tracked.filter((file) => file.startsWith('.agents/skills/') && file.endsWith('/SKILL.md'))) {
   const name = skill.split('/')[2];
-  const claude = path.join(root, '.claude/skills', name, 'SKILL.md');
-  if (!fs.existsSync(claude) || !fs.lstatSync(claude).isSymbolicLink()) {
-    add('claude-skill-not-symlinked', skill, `Claude skill ${name} must symlink to the canonical body.`);
+  const claude = path.join(root, '.claude/skills', name);
+  if (!fs.existsSync(claude) || !fs.lstatSync(claude).isSymbolicLink()
+      || fs.realpathSync(claude) !== fs.realpathSync(path.join(root, '.agents/skills', name))) {
+    add('claude-skill-not-symlinked', skill, `Claude skill ${name} must directory-symlink to its canonical skill.`);
   }
 }
+
+for (const error of checkGuidance(root, root)) add('development-guidance', 'AGENTS.md', error);
 
 const result = { summary: { markdownFiles: markdown.length, markdownBytes, issueCount: issues.length }, issues };
 if (json) console.log(JSON.stringify(result, null, 2));
