@@ -185,3 +185,24 @@ describe('task ownership and safe closeout', () => {
   });
 
 });
+
+describe('mutation sandbox skill mirrors', () => {
+  it('restores equivalent directory links only in a sandbox and preserves conflicting files', async () => {
+    const m = await load('mutation-skill-links.mjs'), root = temp();
+    expect(() => m.restoreMutationSkillLinks(root)).toThrow('Stryker sandbox');
+    const sandbox = path.join(root, '.local/stryker-tmp/sandbox-fixture');
+    for (const name of ['product-sentinel', 'release-operator', 'test-audit', 'verifiable-reward-check']) {
+      const source = path.join(sandbox, '.agents/skills', name);
+      fs.mkdirSync(path.join(source, 'agents'), { recursive: true });
+      fs.writeFileSync(path.join(source, 'SKILL.md'), '# Fixture');
+      fs.writeFileSync(path.join(source, 'agents/openai.yaml'), 'fixture: true');
+    }
+    m.restoreMutationSkillLinks(sandbox); m.restoreMutationSkillLinks(sandbox);
+    expect(fs.realpathSync(path.join(sandbox, '.claude/skills/test-audit/agents/openai.yaml')))
+      .toBe(fs.realpathSync(path.join(sandbox, '.agents/skills/test-audit/agents/openai.yaml')));
+    fs.unlinkSync(path.join(sandbox, '.claude/skills/test-audit'));
+    fs.writeFileSync(path.join(sandbox, '.claude/skills/test-audit'), 'preserve');
+    expect(() => m.restoreMutationSkillLinks(sandbox)).toThrow('retained');
+    expect(fs.readFileSync(path.join(sandbox, '.claude/skills/test-audit'), 'utf8')).toBe('preserve');
+  });
+});
