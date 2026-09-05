@@ -6134,6 +6134,13 @@ expanded from the root poller environment. If a legacy source uses dotenv quote
 or inline-comment syntax, prepare an owner-reviewed normalized root-only source
 copy first rather than allowing raw mode to change its effective value.
 
+The backend application file may also contain the operator password-sign-in
+keys `PORTAL_OPERATOR_USERNAME` and `PORTAL_OPERATOR_PASSWORD_HASH`, with the
+optional actor and scope overrides `PORTAL_OPERATOR_ACTOR` and
+`PORTAL_OPERATOR_SCOPE`. Keep these as unquoted raw `KEY=value` lines; the
+scrypt hash's `$` bytes must remain literal, and no credential value belongs in
+the repository or release evidence.
+
 ```bash
 set -euo pipefail
 umask 077

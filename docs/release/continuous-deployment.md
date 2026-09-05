@@ -311,6 +311,26 @@ pair of digests is pinned for that release process, so an operator edit cannot
 change secrets between staging and production. Compose retains
 `NODE_ENV=production` for both while the registry supplies the immutable
 application isolation identity `STAGING=true` or `false` outside either file.
+
+### Application environment changes
+
+Application environment files are read only when the poller renders a release;
+editing one does not change running containers, and there is no re-render
+command. Edit the relevant root-owned file only while the poller is idle, then
+merge the release vehicle so the next release renders the new values. For
+operator password sign-in, the backend-file entries are
+`PORTAL_OPERATOR_USERNAME=<operator username>` and
+`PORTAL_OPERATOR_PASSWORD_HASH=<operator scrypt hash>`; keep both unquoted and
+never commit either value.
+
+After the edit, run the descriptor-safe gate from the root shell. It prints
+nothing on success:
+
+```bash
+/usr/bin/env -i PATH=/usr/bin:/bin HOME=/var/lib/nexus-release/home NODE_ENV=production \
+  /usr/bin/node --input-type=module -e 'import { loadContinuousDeploymentPolicy } from "/opt/nexus-release/checkout/scripts/lib/release-manifest.mjs"; import { createReleaseEnvironmentGate } from "/opt/nexus-release/checkout/scripts/lib/release-environment.mjs"; const policy = loadContinuousDeploymentPolicy("/opt/nexus-release/checkout"); const gate = createReleaseEnvironmentGate({ policy }); gate.verify("staging"); gate.verify("production");'
+```
+
 When `APNS_ENABLED=true`, `APNS_AUTH_KEY_P8` may name the host's private `.p8`
 file, but that host pathname is not assumed to exist inside the unprivileged
 container. The same descriptor-safe gate requires a normalized absolute path,
