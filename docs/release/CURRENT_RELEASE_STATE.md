@@ -4,6 +4,11 @@
 > Signed state observed 2026-09-03; superseded snapshots remain in Git history.
 > Authority: `sudo -n /usr/local/sbin/nexus-release-state-view`, backed by `/var/lib/nexus-release/state/release-state.json` and `/var/lib/nexus-release/receipts/`; `docs/release/release-state.json` is generated and non-authoritative.
 
+## 2026-09-05 deployment anchor
+
+- 2026-09-05 deploy: staging and production run source `c97c854a` / version
+  `4.14.233` from PR #443, release `31d2b4187c9165e732ae3991ad6a32e6`.
+
 ## Implementation anchor — 2026-09-03 (Decision Center, Content Creation, Secretary, Training)
 
 - The active completed, provable v3 receipt is `fbc8643aa600ada31c613fdbc9c2cd4f` for protected-main source `b75fd6911162cfd41925466db3bb5523f77114d4` (completed `2026-09-03T20:57:52.175Z`, payload `sha256:959133837132618a3f5e77db374fa2f3a5d73d2c6cd7018b6cd85faf167f87e2`). Post-switch `/health` and `/public-status` returned healthy/ok.
