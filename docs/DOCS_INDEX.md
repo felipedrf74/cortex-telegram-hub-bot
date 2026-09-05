@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-23
+Last verified: 2026-09-04
 Update policy: update only when a canonical path changes
 
 Start with `docs/project-map.json`; it provides structured module, route,
@@ -30,6 +30,7 @@ review cadence through compact path rules plus explicit exceptions.
 | Paid-AI and quota contract | `docs/TOKEN-QUOTA-CONTRACT.md` |
 | Hybrid AI, pricing, commerce, and production plan | `docs/release/hybrid-ai-commerce-production-plan.md` |
 | Local-primary inference architecture and rollout | `docs/engineering/local-primary-inference-standard.md` |
+| Scalability, multi-user readiness, and optimistic mutation roadmap | `docs/engineering/scalability-and-optimistic-mutation-roadmap.md` |
 | Reward verification | `docs/agents/VERIFIABLE_REWARD_PROTOCOL.md` |
 | Legal and retention | `docs/legal/` |
 | Local runtime | `docs/local-dev/README.md` |

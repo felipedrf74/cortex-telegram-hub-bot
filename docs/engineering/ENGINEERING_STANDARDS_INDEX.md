@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend architecture lead
-Last verified: 2026-08-10
+Last verified: 2026-09-04
 Update policy: update when a new canonical engineering standard is
 added under `docs/engineering/`. Removing a standard requires
 owner approval and a documented replacement.
@@ -21,6 +21,7 @@ non-trivial changes.
 | **Runtime, observability, ops** | `runtime-and-observability-standard.md` | Any change to logging, alerts, health checks, container deployment/rollback, or the temporary PM2 fallback model. |
 | **Testing and QA harness** | `testing-and-qa-harness-standard.md` | Any test addition, classifier change, smoke script change, or evidence-claim review. |
 | **Offline-first Tasks architecture** | `offline-first-tasks-architecture.md` | Any backend or iOS change to Tasks identity, sync state, mutation replay, provider mappings, or offline storage. |
+| **Scalability and optimistic mutation roadmap** | `scalability-and-optimistic-mutation-roadmap.md` | Any write route, mutation contract, outbox/delta-sync, cache, scheduler fan-out, WebSocket/APNs, provider client, retention, process-topology, or iOS optimistic-rendering change; any Redis/Postgres/replica proposal. |
 | **GenAI migration plan** | `genai-migration-plan.md` | Any migration of provider calls, model routing, prompt ownership, or generated-content runtime behavior. |
 | **Local-primary inference** | `local-primary-inference-standard.md` | Any local model, specialist profile, gateway, inference scheduler, fallback, script-job, bakeoff, or local pricing-gate change. |
 | **JWT rotation runbook** | `jwt-rotation-runbook.md` | Any JWT signing-key rotation or authentication incident. |
