@@ -1,3 +1,12 @@
+import { execFileSync } from 'node:child_process';
+
+// Match Stryker's Git inventory; omit only directory aliases its file copier
+// cannot handle. The sandbox build command restores each alias below.
+const skillAliases = new Set(['product-sentinel', 'release-operator', 'test-audit', 'verifiable-reward-check']
+  .map(name => `.claude/skills/${name}`));
+const sandboxFiles = [...new Set(execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' })
+  .split('\0').filter(file => file && !skillAliases.has(file)))];
+
 const mutate = JSON.parse(process.env.NEXUS_MUTATE_FILES ?? '[]');
 const thresholds = JSON.parse(process.env.NEXUS_MUTATION_THRESHOLDS ?? '{"high":80,"low":70,"break":70}');
 const mutationScope = process.env.NEXUS_MUTATION_SCOPE ?? 'changed-critical';
@@ -22,6 +31,8 @@ if (mutationScope === 'test-cleanup' && testFiles === undefined) {
 
 export default {
   testRunner: 'vitest',
+  files: sandboxFiles,
+  buildCommand: 'node scripts/mutation-skill-links.mjs',
   mutate,
   ...(testFiles === undefined ? {} : { testFiles }),
   vitest: {

@@ -1,4 +1,4 @@
 interface:
   display_name: "Nexus Release Operator"
   short_description: "Prepare and verify exact backend release artifacts"
-  default_prompt: "Prepare or inspect a Nexus Hub backend release without deploying unless explicitly authorized."
+  default_prompt: "Use $release-operator to Prepare or inspect a Nexus Hub backend release without deploying unless explicitly authorized."

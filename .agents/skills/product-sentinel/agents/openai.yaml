@@ -1,4 +1,4 @@
 interface:
   display_name: "Nexus Product Sentinel"
   short_description: "Check runtime capability and learning contracts"
-  default_prompt: "Inspect Nexus Hub capability, scheduled-job, and product-learning manifests for drift."
+  default_prompt: "Use $product-sentinel to Inspect Nexus Hub capability, scheduled-job, and product-learning manifests for drift."

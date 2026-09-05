@@ -12,6 +12,8 @@ review cadence through compact path rules plus explicit exceptions.
 
 | Need | Canonical source |
 | --- | --- |
+| Shared development policy and closeout | `docs/agents/DEVELOPMENT_PROCESS.md` |
+| Model-specific development prompts (optional) | `docs/agents/MODEL_GUIDANCE.md` |
 | Continuous-deployment architecture and lifecycle | `docs/release/continuous-deployment.md` |
 | VPS provisioning, bootstrap, recovery, and fallback operations | `../ops/nexus-release/README.md` |
 | Signed continuous-release evidence contract | `docs/release/release-evidence-contract.md` |

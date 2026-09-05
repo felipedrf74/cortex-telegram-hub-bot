@@ -2366,6 +2366,26 @@
           }
         ],
         "reason": "The limiter tests that sized the asset ceiling from PORTAL_API_RATE_LIMIT were replaced by a resolver unit test plus behavioural tests for the dedicated PORTAL_ASSET_RATE_LIMIT and its floor; the ceiling resolution is the retained owner evidence."
+      },
+      {
+        "test": "__tests__/scripts/project-map-generation.test.ts",
+        "replacementTests": [
+          "__tests__/scripts/documentation-mirror.test.ts"
+        ],
+        "sources": [
+          "scripts/lib/documentation-policy.mjs"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "scripts/lib/documentation-policy.mjs:199-199",
+            "anchor": "if (!stat.isSymbolicLink()) return file;",
+            "behavior": "Documentation inventory preserves regular-file identity and resolves file mirrors to their canonical source; directory skill mirrors expose canonical files without inventing tracked descendants.",
+            "replacementTest": "__tests__/scripts/documentation-mirror.test.ts",
+            "ownerTestNamePattern": "resolves canonical documentation for regular files and file mirrors$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "Whole-directory Claude skill links replace tracked per-file aliases. The old repository-shape assertion is replaced by canonical inventory and directory-link checks, while a direct fixture retains file-mirror resolution coverage under mutation protection."
       }
     ],
     "ownerTestMappings": [],

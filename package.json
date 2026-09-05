@@ -1,7 +1,7 @@
 {
   "name": "@nexushub/core",
   "version": "4.14.233",
-  "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
+  "description": "Nexus Hub \u2014 AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
     "prebuild": "npm run clean",
@@ -105,7 +105,11 @@
     "ci:pi-readiness": "node scripts/pi-runner-readiness.mjs",
     "release:chat-flags": "scripts/chat-capability-flag-operator.sh",
     "release:routing-calibration-export": "scripts/routing-calibration-export-operator.sh",
-    "precommit": "scripts/risk-gate.sh --staged"
+    "precommit": "scripts/risk-gate.sh --staged",
+    "agent:context": "node scripts/development-guidance.mjs --startup",
+    "agent:guidance:check": "node scripts/development-guidance.mjs",
+    "agent:task": "node scripts/agent-task.mjs",
+    "agent:test": "vitest run __tests__/scripts/development-process.test.ts"
   },
   "keywords": [
     "bot",

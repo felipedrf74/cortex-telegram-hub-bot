@@ -156,11 +156,17 @@ describe('project map generation', () => {
       && record.canonicalPath.length > 0
     ))).toBe(true);
     expect(map.documentation.files.find((record) => (
-      record.path === '.claude/skills/test-audit/SKILL.md'
+      record.path === '.agents/skills/test-audit/SKILL.md'
     ))).toMatchObject({
-      status: 'mirror',
+      status: 'canonical',
       canonicalPath: '.agents/skills/test-audit/SKILL.md',
     });
+    // Directory mirrors expose the canonical skill and supporting metadata without
+    // inventing additional tracked Markdown entries in the documentation inventory.
+    expect(fs.realpathSync('.claude/skills/test-audit/SKILL.md'))
+      .toBe(fs.realpathSync('.agents/skills/test-audit/SKILL.md'));
+    expect(fs.realpathSync('.claude/skills/test-audit/agents/openai.yaml'))
+      .toBe(fs.realpathSync('.agents/skills/test-audit/agents/openai.yaml'));
   });
 
   it('fails closed for unmatched, expired, and structurally invalid governance', () => {
