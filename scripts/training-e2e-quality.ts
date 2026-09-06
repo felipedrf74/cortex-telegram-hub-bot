@@ -239,6 +239,22 @@ function futureIsoDate(days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+/**
+ * Persisted `plan.endDate` is `start.plus({ weeks })`: the first day after the
+ * last inclusive training day. The plan linter allows that last inclusive day
+ * to equal race day, so exclusive end may be raceDate + 1 without overshooting.
+ */
+export function persistedPlanEndOvershootsRaceDate(
+  planEndDate: string,
+  raceDate: string,
+): boolean {
+  if (!planEndDate || !raceDate) return true;
+  const end = Date.parse(`${planEndDate}T00:00:00.000Z`);
+  const race = Date.parse(`${raceDate}T00:00:00.000Z`);
+  if (Number.isNaN(end) || Number.isNaN(race)) return true;
+  return end > race + 24 * 60 * 60 * 1000;
+}
+
 function personaRequest(personaId: string): Record<string, unknown> {
   switch (personaId) {
     case 'beginner_gym':
@@ -1078,7 +1094,7 @@ function personaOutputBlockers(
     if (!expectedRaceDate || persistedRaceDate !== expectedRaceDate) {
       blockers.push(`race output persisted race date ${persistedRaceDate || 'missing'}, expected ${expectedRaceDate || 'missing'}`);
     }
-    if (!planEndDate || (expectedRaceDate && planEndDate > expectedRaceDate)) {
+    if (!planEndDate || persistedPlanEndOvershootsRaceDate(planEndDate, expectedRaceDate)) {
       blockers.push(`race output end date ${planEndDate || 'missing'} overshoots race date ${expectedRaceDate || 'missing'}`);
     }
     if (!phases.some((phase) => /peak|taper/.test(phase))) {

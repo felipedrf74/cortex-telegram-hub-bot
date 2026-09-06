@@ -1699,6 +1699,27 @@
         "reason": "The retained billing route test replaces broad call-shape assertions with direct evidence that the narrow production Sandbox exception cannot admit an ordinary account."
       },
       {
+        "test": "__tests__/billing/pricing-display-contract.test.ts",
+        "replacementTests": [
+          "__tests__/billing/pricing-display-contract.test.ts",
+          "__tests__/services/stripe-service.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/stripe-service.ts:194-195",
+            "anchor": "const historicalMonthly = HISTORICAL_MONTHLY_SUBSCRIPTION_PRICES.get(priceId);",
+            "behavior": "Webhook reconciliation resolves frozen historical monthly Price IDs through the retained Map after env catalog matches miss, then returns that plan and period.",
+            "replacementTest": "__tests__/services/stripe-service.test.ts",
+            "ownerTestNamePattern": "retains historical monthly price price_1U55BS3kbWVFdS6025onefOr for webhook entitlement reconciliation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained pricing suite retargets portal HTML reads to the extracted UI modules and moves the owner-locked new-sale price lock from the product brief into TOKEN-QUOTA-CONTRACT, while still owning the frozen historical Price identity used for webhook-only Pro mapping."
+      },
+      {
         "test": "__tests__/portal/portal-webhooks.test.ts",
         "replacementTests": [
           "__tests__/portal/portal-webhooks.test.ts"
