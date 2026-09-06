@@ -5,9 +5,9 @@
     "generatorVersion": 4,
     "authoritativeFreshness": "sourceDigest",
     "sourceDigestAlgorithm": "sha256-path-git-mode-content-v2",
-    "sourceDigest": "bda3e34117d9ecbe9a31288c8972c3dcf82003f97d85e4bb25eab5aaf8ee1347",
-    "baseCommit": "6bb756dcb0018d1e9ed95ea67551b8ca8ce0babc",
-    "baseCommitTimestamp": "2026-09-06T17:41:24+01:00",
+    "sourceDigest": "29d54b2552dbf890e5e9c0826a077dbe1d8e0b3767e639ce2e407837f12aa21e",
+    "baseCommit": "e8efd01cd3f572e62af9cf15925ebd44ecfd654c",
+    "baseCommitTimestamp": "2026-09-06T20:34:45+01:00",
     "trackedFiles": 3695,
     "sourceFiles": 1280
   },
@@ -6375,7 +6375,7 @@
     },
     {
       "path": "__tests__/services/decision-center.test.ts",
-      "bytes": 364925,
+      "bytes": 367276,
       "generated": false
     },
     {
