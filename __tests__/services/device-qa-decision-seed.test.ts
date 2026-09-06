@@ -44,6 +44,7 @@ import {
   seedDeviceQaApproveGatedDecision,
 } from '../../src/services/device-qa-decision-seed';
 import {
+  dismissDecision,
   ensureDecisionCenterTables,
   getDecisionOverview,
   performDecisionAction,
@@ -170,6 +171,71 @@ describe('DeviceQA Decision Center seed', () => {
       proposalRequestFingerprint: 'b'.repeat(64),
     });
     expect(replay.item?.decisionId).toBe(created.item?.decisionId);
+    expect(getDecisionOverview(QA_USER_ID, QA_USER_ID).openCount).toBe(1);
+  });
+
+  it('keeps the approve-gated seed in overview after the source-freshness window', async () => {
+    const created = await seedDeviceQaApproveGatedDecision({
+      userId: QA_USER_ID,
+      tenantId: QA_USER_ID,
+      idempotencyKey: 'device-qa-seed-stale-window',
+      proposalRequestFingerprint: 'aa'.repeat(32),
+    });
+    expect(created.item).not.toBeNull();
+
+    vi.setSystemTime(new Date('2026-09-06T12:20:00.000Z'));
+
+    const overview = getDecisionOverview(QA_USER_ID, QA_USER_ID);
+    const visible = overview.items.find((item) => item.decisionId === created.item!.decisionId);
+    expect(visible).toBeDefined();
+    expect(visible?.recommendedAction).toMatchObject({ id: 'accept_reflow', label: 'Aprovar' });
+    expect(visible?.analysis.sourceFreshness).toBe('stale');
+    expect(overview.openCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('recreates the DeviceQA seed after dismiss and after handle', async () => {
+    const first = await seedDeviceQaApproveGatedDecision({
+      userId: QA_USER_ID,
+      tenantId: QA_USER_ID,
+      idempotencyKey: 'device-qa-seed-dismiss',
+      proposalRequestFingerprint: 'ab'.repeat(32),
+    });
+    expect(first.item).not.toBeNull();
+
+    dismissDecision(first.item!.decisionId, QA_USER_ID, QA_USER_ID, 'not_relevant', first.item!.recordVersion);
+    expect(getDecisionOverview(QA_USER_ID, QA_USER_ID).openCount).toBe(0);
+
+    const afterDismiss = await seedDeviceQaApproveGatedDecision({
+      userId: QA_USER_ID,
+      tenantId: QA_USER_ID,
+      idempotencyKey: 'device-qa-seed-dismiss-retry',
+      proposalRequestFingerprint: 'ac'.repeat(32),
+    });
+    expect(afterDismiss.item).not.toBeNull();
+    expect(afterDismiss.item?.decisionId).not.toBe(first.item?.decisionId);
+    expect(getDecisionOverview(QA_USER_ID, QA_USER_ID).openCount).toBe(1);
+
+    const handled = await performDecisionAction(
+      afterDismiss.item!.decisionId,
+      'accept_reflow',
+      QA_USER_ID,
+      QA_USER_ID,
+      {
+        idempotencyKey: 'device-qa-accept-reflow-retry',
+        expectedVersion: afterDismiss.item!.recordVersion,
+      },
+    );
+    expect(handled.status).toBe('succeeded');
+    expect(getDecisionOverview(QA_USER_ID, QA_USER_ID).openCount).toBe(0);
+
+    const afterHandle = await seedDeviceQaApproveGatedDecision({
+      userId: QA_USER_ID,
+      tenantId: QA_USER_ID,
+      idempotencyKey: 'device-qa-seed-handle-retry',
+      proposalRequestFingerprint: 'ad'.repeat(32),
+    });
+    expect(afterHandle.item).not.toBeNull();
+    expect(afterHandle.item?.decisionId).not.toBe(afterDismiss.item?.decisionId);
     expect(getDecisionOverview(QA_USER_ID, QA_USER_ID).openCount).toBe(1);
   });
 

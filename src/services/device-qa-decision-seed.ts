@@ -80,6 +80,7 @@ export async function seedDeviceQaApproveGatedDecision(
 
   const existing = findOpenDeviceQaSeed(input.userId, input.tenantId);
   if (existing) return existing;
+  releaseClosedDeviceQaSeedDedupe(input.userId, input.tenantId);
 
   const timezone = getUserTimezoneById(input.userId);
   const locale = getUserLanguageById(input.userId);
@@ -206,6 +207,31 @@ function findOpenDeviceQaSeed(
       urgency: item.urgency,
     },
   };
+}
+
+function releaseClosedDeviceQaSeedDedupe(userId: number, tenantId: number): void {
+  // notification_intents unique dedupe index excludes only expired rows. Dismiss/handle
+  // close the center item but leave the intent evaluated, which blocked DeviceQA re-seed.
+  const dedupeKey = `${DEVICE_QA_SEED_DEDUPE_PREFIX}${userId}`;
+  getDb().prepare(`
+    UPDATE notification_intents
+       SET status = 'expired'
+     WHERE user_id = ?
+       AND tenant_id = ?
+       AND source_skill = 'secretary'
+       AND dedupe_key = ?
+       AND status != 'expired'
+       AND NOT EXISTS (
+         SELECT 1
+           FROM notification_center_items items
+          WHERE items.intent_id = notification_intents.intent_id
+            AND items.user_id = notification_intents.user_id
+            AND items.tenant_id = notification_intents.tenant_id
+            AND items.source_skill = 'secretary'
+            AND items.dedupe_key = notification_intents.dedupe_key
+            AND items.status IN ('unread', 'read', 'failed', 'snoozed', 'open')
+       )
+  `).run(userId, tenantId, dedupeKey);
 }
 
 function persistProposedSecretaryAgenda(input: {

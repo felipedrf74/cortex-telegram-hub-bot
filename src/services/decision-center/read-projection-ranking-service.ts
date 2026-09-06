@@ -349,10 +349,13 @@ export function listDecisionItems(
   const shouldMaterializePriorityScore = opts.materializePriorityScore === true;
   params.push(maxLimit);
 
+  // Keep intents.context_observed_at aligned with getDecisionRecord. evaluateUserFacingDecision
+  // hides stale action-queue rows only when that timestamp is missing; omitting it here dropped
+  // observed DeviceQA/secretary seeds from overview while GET by id still returned needs_action.
   const rows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
            intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json,
-           intents.context_version
+           intents.context_version, intents.context_observed_at
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id
      WHERE ${clauses.join(' AND ')}
@@ -1309,7 +1312,7 @@ export function findDecisionByRelatedEntity(
   const row = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
            intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json,
-           intents.context_version
+           intents.context_version, intents.context_observed_at
       FROM notification_center_items items
       JOIN notification_intents intents
         ON intents.intent_id = items.intent_id
@@ -1796,7 +1799,7 @@ export function listHandledByNexusItems(userId: number, tenantId = userId, limit
   const actionedRows = getDb().prepare(`
     SELECT items.*, intents.related_entity_id, intents.related_entity_type, intents.requires_user_action,
            intents.decision_deadline, intents.privacy_policy, intents.delivery_policy, intents.decision_context_json,
-           intents.context_version,
+           intents.context_version, intents.context_observed_at,
            logs.action_taken AS decision_log_action_taken
       FROM notification_center_items items
       JOIN notification_intents intents ON intents.intent_id = items.intent_id

@@ -1189,6 +1189,63 @@ describe('Decision Center facade', () => {
     expect(reasonDelta('unsafe_quality')).toBeGreaterThanOrEqual(1);
   });
 
+  it('keeps observed stale action sources on list, overview, and GET by id', async () => {
+    const userId = 98;
+    const tenantId = 98;
+    const future = new Date('2026-05-10T11:00:00.000Z').toISOString();
+    const oldSync = new Date('2026-05-10T08:00:00.000Z').toISOString();
+    const object = createCanonicalContentDecisionFixture(testDb, {
+      userId,
+      tenantId,
+      objectType: 'script',
+      title: 'observed-stale draft',
+      editorialState: 'drafted',
+    });
+    const created = await createNotificationIntent(buildSkillNotificationFixtureIntent('content', userId, {
+      tenantId,
+      type: 'approval_required',
+      priority: 'time_sensitive',
+      title: 'observed-stale content review',
+      body: 'observed-stale content draft is ready for approval or rewrite feedback.',
+      relatedEntityId: object.id,
+      relatedEntityType: 'content_workflow_object',
+      actionButtons: [
+        { id: 'approve_script', label: 'Approve', style: 'primary' },
+        { id: 'request_rewrite', label: 'Rewrite', style: 'secondary' },
+      ],
+      requiresUserAction: true,
+      dedupeKey: 'filter:observed-stale',
+      visibilityScope: 'user_private',
+      deliveryPolicy: 'in_app_only',
+      privacyPolicy: 'private_content',
+      decisionDeadline: future,
+      decisionContext: {
+        entityTitle: 'observed-stale draft',
+        sourceState: 'awaiting_approval',
+      },
+    }));
+    testDb.prepare(`
+      UPDATE notification_intents
+         SET decision_context_json = ?, context_observed_at = ?
+       WHERE intent_id = ?
+    `).run(JSON.stringify({
+      entityTitle: 'observed-stale draft',
+      sourceState: 'awaiting_approval',
+      providerSyncState: 'not_synced',
+      providerSyncUpdatedAt: oldSync,
+      contextObservedAt: oldSync,
+    }), oldSync, created.intent.intentId);
+
+    expect(created.item).not.toBeNull();
+    const detail = getDecisionItem(created.item!.itemId, userId, tenantId);
+    expect(detail?.decisionId).toBe(created.item!.itemId);
+    expect(detail?.effectiveStatus).toBe('needs_action');
+    expect(listDecisionItems(userId, tenantId, { status: 'all', limit: 20 }).map((item) => item.decisionId))
+      .toContain(created.item!.itemId);
+    expect(getDecisionOverview(userId, tenantId).items.map((item) => item.decisionId))
+      .toContain(created.item!.itemId);
+  });
+
   it('cleans up only scoped Decision Center smoke rows with dry-run and confirm modes', async () => {
     const object = createCanonicalContentDecisionFixture(testDb, {
       userId: 94,
