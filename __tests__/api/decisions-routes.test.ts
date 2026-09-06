@@ -35,6 +35,8 @@ const mockSuppressDecisionType = vi.fn();
 const mockUnsuppressDecisionType = vi.fn();
 const mockMaterializeDecisionCenterDailyAttention = vi.fn();
 const mockReadDecisionRankSnapshotPage = vi.fn();
+const mockIsDeviceQaSeedPrincipal = vi.fn();
+const mockSeedDeviceQaApproveGatedDecision = vi.fn();
 const mockCaptureError = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/decision-center', () => ({
@@ -132,6 +134,19 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/services/error-monitor', () => ({
   captureError: (...args: unknown[]) => mockCaptureError(...args),
+}));
+
+vi.mock('../../src/services/device-qa-decision-seed', () => ({
+  DeviceQaDecisionSeedError: class DeviceQaDecisionSeedError extends Error {
+    code: string;
+    constructor(code: string, message: string) {
+      super(message);
+      this.code = code;
+      this.name = 'DeviceQaDecisionSeedError';
+    }
+  },
+  isDeviceQaSeedPrincipal: (...args: unknown[]) => mockIsDeviceQaSeedPrincipal(...args),
+  seedDeviceQaApproveGatedDecision: (...args: unknown[]) => mockSeedDeviceQaApproveGatedDecision(...args),
 }));
 
 import { decisionRoutes, deviceTokenRoutes } from '../../src/api/routes/decisions';
@@ -283,7 +298,10 @@ describe('Decision routes', () => {
     mockUnsuppressDecisionType.mockReset();
     mockMaterializeDecisionCenterDailyAttention.mockReset();
     mockReadDecisionRankSnapshotPage.mockReset();
+    mockIsDeviceQaSeedPrincipal.mockReset();
+    mockSeedDeviceQaApproveGatedDecision.mockReset();
     mockCaptureError.mockReset();
+    mockIsDeviceQaSeedPrincipal.mockReturnValue(false);
     mockNotificationCacheInvalidation.invalidateNotificationInboxCaches.mockReset();
     mockDecisionRefreshSupportedForDecision.mockReturnValue(true);
     mockRecordDecisionItemExposuresByIds.mockReturnValue({ recordedCount: 0 });
@@ -1093,6 +1111,63 @@ describe('Decision routes', () => {
       userId: 7,
       tenantId: 7,
     }));
+  });
+
+  it('lets a DeviceQA-shaped user seed the governed secretary fixture without an internal secret', async () => {
+    const router = decisionRoutes();
+    mockIsDeviceQaSeedPrincipal.mockReturnValue(true);
+    mockSeedDeviceQaApproveGatedDecision.mockResolvedValue({
+      item: { decisionId: 'nc_deviceqa', status: 'unread' },
+      eligibility: { classification: 'decision' },
+    });
+
+    const injected = await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {
+      title: 'forged',
+      userId: 999,
+      tenantId: 999,
+      actionButtons: [{ id: 'mark_paid', label: 'Pay' }],
+    });
+
+    expect(injected.statusCode).toBe(201);
+    expect(mockIsDeviceQaSeedPrincipal).toHaveBeenCalledWith({ userId: 7, tenantId: 7 });
+    expect(mockSeedDeviceQaApproveGatedDecision).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      tenantId: 7,
+      proposalRequestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(mockBuildSkillDecisionFixtureIntent).not.toHaveBeenCalled();
+    expect(mockCreateDecisionIntent).not.toHaveBeenCalled();
+    const firstFingerprint = mockSeedDeviceQaApproveGatedDecision.mock.calls[0]?.[0] as {
+      proposalRequestFingerprint: string;
+    };
+
+    mockSeedDeviceQaApproveGatedDecision.mockClear();
+    mockSeedDeviceQaApproveGatedDecision.mockResolvedValue({
+      item: { decisionId: 'nc_deviceqa', status: 'unread' },
+      eligibility: { classification: 'decision' },
+    });
+    await dispatch(router, 'POST', '/intents/fixtures/secretary', {}, {
+      title: 'different-forged-body',
+    });
+    expect(mockSeedDeviceQaApproveGatedDecision).toHaveBeenCalledWith(expect.objectContaining({
+      proposalRequestFingerprint: firstFingerprint.proposalRequestFingerprint,
+    }));
+  });
+
+  it('rejects DeviceQA fixture seeds for non-secretary skills and keeps ordinary callers forbidden', async () => {
+    const router = decisionRoutes();
+    mockIsDeviceQaSeedPrincipal.mockReturnValue(true);
+
+    const training = await dispatch(router, 'POST', '/intents/fixtures/training');
+    expect(training.statusCode).toBe(403);
+    expect(training.body.error.code).toBe('FORBIDDEN');
+    expect(mockSeedDeviceQaApproveGatedDecision).not.toHaveBeenCalled();
+
+    mockIsDeviceQaSeedPrincipal.mockReturnValue(false);
+    const stranger = await dispatch(router, 'POST', '/intents/fixtures/secretary');
+    expect(stranger.statusCode).toBe(403);
+    expect(mockSeedDeviceQaApproveGatedDecision).not.toHaveBeenCalled();
+    expect(mockCreateDecisionIntent).not.toHaveBeenCalled();
   });
 
   it('exposes /device-tokens aliases without raw token echo', async () => {

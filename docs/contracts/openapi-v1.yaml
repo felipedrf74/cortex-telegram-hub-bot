@@ -14109,11 +14109,11 @@ paths:
         - "decisions"
       summary: "Create a deterministic decision fixture intent for a source skill"
       description: |-
-        Source: src/api/routes/decisions.ts:280
+        Source: src/api/routes/decisions.ts:585
 
         Request body (evidenced fields): optional fixture overrides (spread into buildSkillDecisionFixtureIntent); sourceSkill param defaults to 'secretary' when empty
 
-        Notes: Unlike the notifications fixture route, this one IS internal-secret gated (x-internal-secret must match INTERNAL_API_SECRET)
+        Notes: Internal-secret callers (x-internal-secret must match INTERNAL_API_SECRET) keep the generic fixture builder. A DeviceQA-shaped non-owner personal user may POST secretary without that secret and receives only the governed approve-gated seed; untrusted body fields are ignored on that path. Other authenticated callers remain 403.
       x-nexus-kind: "deterministic"
       x-source: "src/api/routes/decisions.ts:280"
       parameters:

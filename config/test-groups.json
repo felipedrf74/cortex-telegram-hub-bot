@@ -1726,6 +1726,7 @@
         "src/services/daily-brief-orchestrator.ts",
         "src/services/decision-center/**",
         "src/services/decision-*.ts",
+        "src/services/device-qa-decision-seed.ts",
         "src/services/delta-sync.ts",
         "src/services/dashboard-home-view-state.ts",
         "src/services/event-*.ts",

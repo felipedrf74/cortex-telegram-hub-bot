@@ -61,6 +61,11 @@ import { invalidateNotificationInboxCaches } from '../../services/notification-c
 import { logger } from '../../utils/logger';
 import { normalizeDecisionCenterError } from '../../services/decision-center/errors';
 import {
+  DeviceQaDecisionSeedError,
+  isDeviceQaSeedPrincipal,
+  seedDeviceQaApproveGatedDecision,
+} from '../../services/device-qa-decision-seed';
+import {
   createDecisionMutationCommand,
   type DecisionMutationOperation,
 } from '../../services/decision-center/contracts';
@@ -570,29 +575,59 @@ export function decisionRoutes(): Router {
     }
   }));
 
+  /**
+   * POST /api/v1/decisions/intents/fixtures/:sourceSkill
+   *
+   * Internal-secret callers keep the generic fixture builder. A DeviceQA-shaped
+   * non-owner personal user may seed only the governed secretary approve-gated
+   * fixture without that secret, and never supplies arbitrary intent fields.
+   */
   router.post('/intents/fixtures/:sourceSkill', asyncHandler(async (req, res: Response) => {
     const authReq = req as unknown as AuthenticatedRequest;
     const { userId } = authReq;
     if (!ensureValidTenantRouteScope(res, userId, 'decisions_route_fixture_intent')) return;
-    if (!isInternalDecisionIntentRequest(authReq)) {
+    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_fixture_intent', 'notification_center_items');
+    if (tenantId == null) return;
+    const sourceSkill = String(req.params.sourceSkill || 'secretary');
+    const internal = isInternalDecisionIntentRequest(authReq);
+    const deviceQaSeed = !internal && isDeviceQaSeedPrincipal({ userId, tenantId });
+    if (!internal && !deviceQaSeed) {
       sendError(res, 'FORBIDDEN', 'Decision fixtures are internal service events', 403);
       return;
     }
-    const tenantId = routeTenantId(authReq, res, userId, 'decisions_route_fixture_intent', 'notification_center_items');
-    if (tenantId == null) return;
+    if (deviceQaSeed && sourceSkill !== 'secretary') {
+      sendError(res, 'FORBIDDEN', 'DeviceQA Decision Center seed is secretary-only', 403);
+      return;
+    }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const idempotencyKey = mutationIdempotencyKey(
       body,
       'create_fixture_intent',
-      String(req.params.sourceSkill || 'secretary'),
+      sourceSkill,
     );
     if (!idempotencyKey) {
       sendError(res, 'VALIDATION', 'idempotencyKey must be a non-empty string of at most 200 characters', 400);
       return;
     }
     try {
+      if (deviceQaSeed) {
+        const result = await seedDeviceQaApproveGatedDecision({
+          userId,
+          tenantId,
+          idempotencyKey,
+          proposalRequestFingerprint: decisionProposalRequestFingerprint(
+            {},
+            userId,
+            tenantId,
+            'secretary',
+          ),
+        });
+        if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
+        sendSuccess(res, result, { status: result.item ? 201 : 202 });
+        return;
+      }
       const fixture = buildSkillDecisionFixtureIntent(
-        String(req.params.sourceSkill || 'secretary') as NotificationSourceSkill,
+        sourceSkill as NotificationSourceSkill,
         userId,
         {
           ...body,
@@ -608,12 +643,16 @@ export function decisionRoutes(): Router {
           body,
           userId,
           tenantId,
-          String(req.params.sourceSkill || 'secretary'),
+          sourceSkill,
         ),
       });
       if (result.item) invalidateNotificationInboxCaches(userId, tenantId);
       sendSuccess(res, result, { status: result.item ? 201 : 202 });
     } catch (err) {
+      if (err instanceof DeviceQaDecisionSeedError) {
+        sendError(res, err.code === 'DEVICE_QA_SEED_FORBIDDEN' ? 'FORBIDDEN' : 'INVALID_DECISION_FIXTURE', err.message, err.code === 'DEVICE_QA_SEED_FORBIDDEN' ? 403 : 400);
+        return;
+      }
       decisionError(res, err, 'INVALID_DECISION_FIXTURE');
     }
   }));
