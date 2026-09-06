@@ -269,6 +269,31 @@ describe('Decision Center Logic v2', () => {
     expect(decision.title).toBe('Clear overdue tasks');
     expect(decision.primaryActionLabel).toBe('Open overdue tasks');
     expect(decision.recommendation).toContain('Open the overdue list');
+    const portuguese = buildDecisionLogicV2({
+      sourceSkill: 'secretary',
+      type: 'decision_required',
+      priority: 'active',
+      title: 'Clear overdue tasks',
+      body: '2 overdue tasks and 1 task due today need a short review.',
+      safeBody: '2 overdue tasks and 1 task due today need a short review.',
+      actions: [
+        { id: 'open_detail', label: 'Open overdue tasks', style: 'primary' },
+        { id: 'dismiss', label: 'Dismiss', style: 'secondary' },
+      ],
+      relatedEntityType: 'task_attention_day',
+      relatedEntityId: '2026-06-17',
+      privacyClassification: 'standard',
+      context: {
+        recipe: 'daily_task_attention',
+        sourceState: 'overdue_tasks',
+        reasonCodes: ['daily_attention', 'overdue_tasks', 'tasks_due_today'],
+        taskCounts: { pending: 3, overdue: 2, dueToday: 1, highPriority: 0 },
+        timezone: 'Europe/Lisbon',
+        locale: 'pt-PT',
+      },
+    });
+    expect(portuguese.title).toBe('Limpar tarefas atrasadas');
+    expect(portuguese.primaryActionLabel).toBe('Abrir tarefas atrasadas');
     expect(decision.expectedEffect).toContain('without completing or moving anything automatically');
     expect(decision.safePreviewBody).toBe('2 overdue tasks and 1 task due today need a short review.');
     const userFacingText = [

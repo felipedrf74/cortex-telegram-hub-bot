@@ -736,7 +736,7 @@ function dailyTaskAttentionRecipe(input: DecisionLogicInput): DecisionLogicRecip
     impactIfIgnored: hasOverdue
       ? (pt ? 'Tarefas atrasadas podem continuar competindo com decisões e compromissos novos.' : 'Overdue tasks can keep competing with new decisions and commitments.')
       : (pt ? 'Tarefas importantes podem ficar sem prioridade clara até mais tarde.' : 'Important tasks may stay without a clear priority until later.'),
-    primaryActionLabel: concreteActionLabel(primary, primaryFallback),
+    primaryActionLabel: primaryFallback,
     secondaryActionLabels: secondaryActionLabels(input.actions, primary),
     whySummary: safePreviewBody,
     urgencyReason: hasOverdue
