@@ -137,6 +137,10 @@ vi.mock('../../src/services/error-monitor', () => ({
 }));
 
 vi.mock('../../src/services/device-qa-decision-seed', () => ({
+  DEVICE_QA_DISPLAY_NAME: 'DeviceQA',
+  DEVICE_QA_EMAILS_ENV: 'NEXUS_DEVICE_QA_EMAILS',
+  DEVICE_QA_SEED_DEDUPE_PREFIX: 'device-qa:dc-seed:secretary:',
+  parseDeviceQaAllowedEmails: vi.fn(() => []),
   DeviceQaDecisionSeedError: class DeviceQaDecisionSeedError extends Error {
     code: string;
     constructor(code: string, message: string) {
