@@ -38,6 +38,7 @@ import {
 } from './stripe-managed-payments';
 import { STRIPE_HISTORICAL_MONTHLY_PRICE_IDS } from './stripe-price-identity';
 import { isAppleValueGrantEnvironmentAllowed } from './apple-value-grant-policy';
+import { emitPurchaseCompletedIfEntitled } from './product-analytics';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
@@ -938,6 +939,7 @@ export function handleCheckoutCompleted(session: any): void {
   }
 
   logger.info({ userId: resolvedUserId, subscriptionId, customerId }, 'Stripe checkout completed — subscription activated');
+  emitPurchaseCompletedIfEntitled(resolvedUserId, 'stripe');
 }
 
 function updatePublicCheckoutStatus(
@@ -1175,6 +1177,9 @@ export function handleSubscriptionUpdated(subscription: any): void {
   }
 
   logger.info({ userId, plan, period, status, subId: subscription.id }, 'Stripe subscription updated');
+  if (['active', 'trialing'].includes(status)) {
+    emitPurchaseCompletedIfEntitled(userId, 'stripe');
+  }
 }
 
 export function handleSubscriptionDeleted(subscription: any): void {
@@ -1403,6 +1408,7 @@ export function claimWebsiteStripeSubscriptionForUser(userId: number): boolean {
   if (!attached) return false;
 
   logger.info({ userId, emailHash: hashEmail(normalizedEmail, 16) }, 'Claimed website Stripe checkout for verified Nexus user');
+  emitPurchaseCompletedIfEntitled(userId, 'stripe');
   return true;
 }
 
@@ -1739,6 +1745,7 @@ export function handleAppleTransaction(
     { userId, productId, originalTransactionId, environment },
     'Apple IAP transaction verified — subscription active',
   );
+  emitPurchaseCompletedIfEntitled(userId, 'apple');
 
   return {
     plan,

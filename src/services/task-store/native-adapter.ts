@@ -17,6 +17,7 @@
 
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
+import { emitSkillFirstSuccess } from '../product-analytics';
 import { importanceToPriority, priorityToImportance } from './task-priority';
 import type { TaskProviderAdapter } from './adapter-interface';
 import type {
@@ -139,6 +140,7 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
 
     const id = Number(result.lastInsertRowid);
     logger.info({ userId, taskId: id, title: task.title }, 'Native task created');
+    emitSkillFirstSuccess(userId, 'secretary');
 
     return {
       ...task,
