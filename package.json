@@ -149,7 +149,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "garmin-connect": "^1.6.2",
-    "googleapis": "^171.4.0",
+    "googleapis": "^178.0.0",
     "jsonwebtoken": "^9.0.3",
     "luxon": "^3.7.2",
     "mammoth": "^1.12.0",
