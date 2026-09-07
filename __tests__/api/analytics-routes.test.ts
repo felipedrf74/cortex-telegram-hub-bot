@@ -61,7 +61,7 @@ function makeReq(userId: number, body?: unknown): Request {
     query: {},
     params: {},
     headers: {},
-    body: body ?? {},
+    body,
     userId,
   } as any;
 }
@@ -138,5 +138,38 @@ describe('POST /api/v1/analytics/events', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.body.error.message).toContain('PII');
+  });
+
+  it('treats a missing body as an unknown event', async () => {
+    const res = await dispatch(12);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(mockEmit).not.toHaveBeenCalled();
+  });
+
+  it('coerces non-object properties and maps persist misses', async () => {
+    mockEmit.mockReturnValue(null);
+    const res = await dispatch(12, {
+      event: 'paywall_viewed',
+      properties: 'not-an-object',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.eventId).toBeNull();
+    expect(mockEmit).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'paywall_viewed',
+      properties: {},
+    }));
+  });
+
+  it('maps unexpected persist failures to an internal error', async () => {
+    mockEmit.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const res = await dispatch(12, {
+      event: 'app_open',
+      properties: { app_version: '1.5.0', build: '1', surface: 'ios' },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(mockEmit).toHaveBeenCalled();
   });
 });
