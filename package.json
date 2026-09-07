@@ -165,7 +165,7 @@
   },
   "devDependencies": {
     "@stryker-mutator/core": "9.6.1",
-    "@stryker-mutator/vitest-runner": "9.6.1",
+    "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
