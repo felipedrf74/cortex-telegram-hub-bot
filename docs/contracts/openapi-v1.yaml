@@ -95,6 +95,8 @@ tags:
     description: "Cross-skill training signal observability (src/api/routes/signals.ts). Read-only."
   - name: "client-errors"
     description: "Write-only client crash/error ingestion (src/api/routes/client-errors.ts)."
+  - name: "analytics"
+    description: "Write-only v1.1 product analytics ingest for client-owned events (src/api/routes/analytics.ts). Server-owned events are rejected."
   - name: "ai-reports"
     description: "In-app reporting of objectionable or inaccurate AI output (src/api/routes/ai-reports.ts). Write-only."
   - name: "audit-trail"
@@ -5921,6 +5923,40 @@ paths:
       responses:
         "200":
           description: "{ ok:true, data:{ id:number, ts:ISO string } } (Standard success envelope unless noted.)"
+        "400":
+          description: "Error envelope. Stable code(s): BAD_REQUEST."
+        "401":
+          description: "Error envelope. Stable code(s): UNAUTHORIZED."
+        "500":
+          description: "Error envelope. Stable code(s): INTERNAL."
+        "4XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+        "5XX":
+          "$ref": "#/components/responses/ErrorEnvelope"
+  "/api/v1/analytics/events":
+    post:
+      operationId: "postAnalyticsEvents"
+      tags:
+        - "analytics"
+      summary: "Write-only ingest of locked v1.1 client-owned product analytics events (app_open, onboarding_completed, paywall_viewed)."
+      description: |-
+        Source: src/api/routes/analytics.ts
+
+        Request body (evidenced fields): event (required, one of app_open|onboarding_completed|paywall_viewed); properties (object, event-specific enums/ids/versions only). Server-owned events (skill_first_success, decision_center_acted, purchase_completed, model_access_denied, day7_retained) are rejected. PII keys are rejected.
+
+        Notes: JWT + tenant scope required. day7_retained is derived server-side from app_open, never client-fired.
+      x-nexus-kind: "deterministic"
+      x-source: "src/api/routes/analytics.ts"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              description: "Evidenced fields: event (required locked name); properties (object, allowlisted keys only). Route validation code is authoritative for exact shapes."
+      responses:
+        "200":
+          description: "{ ok:true, data:{ accepted:true, eventId:string|null } } (Standard success envelope unless noted.)"
         "400":
           description: "Error envelope. Stable code(s): BAD_REQUEST."
         "401":

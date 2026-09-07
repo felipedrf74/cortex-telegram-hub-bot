@@ -23,6 +23,7 @@ import {
   type CookingSubstitutionSuggestion,
 } from './cooking-intelligence';
 import { getUserTimezoneById } from './user-service';
+import { emitSkillFirstSuccess } from './product-analytics';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -608,6 +609,7 @@ export function setMealPlan(
     `SELECT * FROM meal_plans WHERE date = ? AND meal_type = ? AND ${cookingPrivateScopePredicate()}`,
   ).get(normalizedDate, normalizedMealType, ...cookingScopeParams(userId, opts?.tenantId)) as MealPlan;
 
+  emitSkillFirstSuccess(userId, 'cooking');
   return issues.length > 0 ? { ...persisted, issues } : persisted;
 }
 

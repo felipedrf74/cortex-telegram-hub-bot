@@ -77,6 +77,7 @@ import {
 } from '../chat-pending-confirmations';
 
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../tenant-scope-observability';
+import { emitDecisionCenterActed } from '../product-analytics';
 
 import { logger } from '../../utils/logger';
 
@@ -605,6 +606,7 @@ async function performDecisionActionLegacyCore(
       claimed.execution.action_execution_id,
     );
     completedExecution = execution;
+    emitDecisionCenterActed(userId, actionId, execution.readBackOk);
     // From this point onward the authoritative domain executor returned after its read-back.
     // Post-success projection/audit errors must never rewrite that completed effect as failed.
     sourceEffectCompleted = true;
@@ -1952,6 +1954,7 @@ async function performDecisionActionCore(
       claimed.execution.action_execution_id,
     );
     completedExecution = execution;
+    emitDecisionCenterActed(userId, actionId, execution.readBackOk);
     // From this point onward the authoritative domain executor returned after its read-back.
     // Post-success projection/audit errors must never rewrite that completed effect as failed.
     sourceEffectCompleted = true;

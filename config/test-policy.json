@@ -358,7 +358,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/decision-center/command-service.ts:3666-3666",
+            "pattern": "src/services/decision-center/command-service.ts:3669-3669",
             "anchor": "'DECISION_VERSION_CONFLICT',",
             "behavior": "The product-learning approval action rejects a stale record version before mutation while accepting the exact current record and context versions.",
             "replacementTest": "__tests__/services/product-learning.test.ts",
@@ -1571,7 +1571,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:737-737",
+            "pattern": "src/services/stripe-service.ts:738-738",
             "anchor": "reason === 'refund' && charge?.refunded !== true",
             "behavior": "A refund reversal revokes the originating credit lot only when the charge is fully refunded; a partial refund must not delete credits the user still paid for.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1579,7 +1579,7 @@
             "minimumMutants": 1
           },
           {
-            "pattern": "src/services/stripe-service.ts:746-746",
+            "pattern": "src/services/stripe-service.ts:747-747",
             "anchor": "return false",
             "behavior": "A partial refund exits without revoking, leaving the lot intact for reconciliation rather than reporting a successful reversal.",
             "replacementTest": "__tests__/services/stripe-pack-fulfillment.test.ts",
@@ -1699,6 +1699,27 @@
         "reason": "The retained billing route test replaces broad call-shape assertions with direct evidence that the narrow production Sandbox exception cannot admit an ordinary account."
       },
       {
+        "test": "__tests__/billing/pricing-display-contract.test.ts",
+        "replacementTests": [
+          "__tests__/billing/pricing-display-contract.test.ts",
+          "__tests__/services/stripe-service.test.ts"
+        ],
+        "sources": [
+          "src/services/stripe-service.ts"
+        ],
+        "mutationTargets": [
+          {
+            "pattern": "src/services/stripe-service.ts:194-195",
+            "anchor": "const historicalMonthly = HISTORICAL_MONTHLY_SUBSCRIPTION_PRICES.get(priceId);",
+            "behavior": "Webhook reconciliation resolves frozen historical monthly Price IDs through the retained Map after env catalog matches miss, then returns that plan and period.",
+            "replacementTest": "__tests__/services/stripe-service.test.ts",
+            "ownerTestNamePattern": "retains historical monthly price price_1U55BS3kbWVFdS6025onefOr for webhook entitlement reconciliation$",
+            "minimumMutants": 1
+          }
+        ],
+        "reason": "The retained pricing suite retargets portal HTML reads to the extracted UI modules and moves the owner-locked new-sale price lock from the product brief into TOKEN-QUOTA-CONTRACT, while still owning the frozen historical Price identity used for webhook-only Pro mapping."
+      },
+      {
         "test": "__tests__/portal/portal-webhooks.test.ts",
         "replacementTests": [
           "__tests__/portal/portal-webhooks.test.ts"
@@ -1768,7 +1789,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:2169-2169",
+            "pattern": "src/services/stripe-service.ts:2176-2176",
             "anchor": "transactionOwner.user_id !== userId",
             "behavior": "An active Apple notification updates only the account resolved from its signed account token, preventing cross-owner transaction replay.",
             "replacementTest": "__tests__/services/apple-subscription-lifecycle.test.ts",
@@ -1888,7 +1909,7 @@
         ],
         "mutationTargets": [
           {
-            "pattern": "src/services/stripe-service.ts:1654-1659",
+            "pattern": "src/services/stripe-service.ts:1660-1665",
             "anchor": "if (!resolveAppleAppAccountTokenForAuthenticatedScope({",
             "behavior": "An Apple value grant requires the signed account token to resolve to the authenticated tenant and user scope before any subscription write.",
             "replacementTest": "__tests__/services/stripe-service.test.ts",

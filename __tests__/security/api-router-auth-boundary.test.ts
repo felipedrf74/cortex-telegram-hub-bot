@@ -47,6 +47,7 @@ describe('API router authorization boundary', () => {
       '/settings',
       '/decisions',
       '/reports',
+      '/analytics',
     ]) {
       expect(publicSection).not.toMatch(mountPattern('use', scopedSurface));
       expect(protectedSection).toMatch(mountPattern('use', scopedSurface));

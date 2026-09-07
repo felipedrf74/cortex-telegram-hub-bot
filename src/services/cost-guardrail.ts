@@ -34,6 +34,7 @@ import {
 import { recordOperatorAlert } from './operator-alerts';
 import { getNexusPointBalance, listNexusPointPackages, usdToPoints } from './nexus-points';
 import { getActiveUserAiBudgetOverride } from './ai-budget-overrides';
+import { emitModelAccessDenied } from './product-analytics';
 import {
   getEffectiveEntitlement,
   isPaidAiCostControlsEnforcementEnabled,
@@ -57,7 +58,7 @@ import {
   getApiUsagePersistenceFailure,
   tryRecoverApiUsagePersistenceFailure,
 } from './api-usage-fallback';
-import { getCurrentRequestId } from '../utils/request-context';
+import { getCurrentContext, getCurrentRequestId } from '../utils/request-context';
 import {
   isContentLiveEvalProviderCategory,
   isContentLiveEvalRegisteredModel,
@@ -1408,6 +1409,21 @@ function deniedDecision(
     internalReason?: AiBudgetDecision['internalReason'];
   },
 ): AiBudgetDecision {
+  const userId = quota.entitlement?.userId
+    ?? getCurrentContext()?.userId
+    ?? null;
+  if (
+    typeof userId === 'number'
+    && userId > 0
+    && (
+      input.code === 'AI_PLAN_REQUIRED'
+      || input.code === 'AI_DAILY_LIMIT_REACHED'
+      || input.code === 'AI_MONTHLY_LIMIT_REACHED'
+      || input.code === 'SERVICE_DEGRADED'
+    )
+  ) {
+    emitModelAccessDenied(userId, input.code);
+  }
   return {
     allowed: false,
     status: input.status,

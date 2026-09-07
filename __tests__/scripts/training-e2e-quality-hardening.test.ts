@@ -10,6 +10,7 @@ import {
   classifyTrainingE2ESessionIntensity,
   comparePersistedSessionsToReadModel,
   hasPublicProfessionalGuidanceEvidence,
+  persistedPlanEndOvershootsRaceDate,
   publicSessionAdaptationReason,
   readPersonaAuthBindingFromFreshConnection,
   readPersonaUserFromFreshConnection,
@@ -62,6 +63,13 @@ const readModel = {
 };
 
 describe('Training E2E quality evidence hardening', () => {
+  it('treats exclusive plan end on the day after race as on-time, not an overshoot', () => {
+    expect(persistedPlanEndOvershootsRaceDate('2026-11-30', '2026-11-29')).toBe(false);
+    expect(persistedPlanEndOvershootsRaceDate('2026-11-29', '2026-11-29')).toBe(false);
+    expect(persistedPlanEndOvershootsRaceDate('2026-12-07', '2026-11-29')).toBe(true);
+    expect(persistedPlanEndOvershootsRaceDate('', '2026-11-29')).toBe(true);
+  });
+
   it('scores the public structured intensity target instead of inventing a hard ratio from titles', () => {
     const publicRows = [
       ['Tempo Progression Run', '15min tempo with warmup and cooldown.'],

@@ -76,8 +76,8 @@ describe('owner-confirmed subscription price display contract', () => {
   });
 
   it('renders credit-pack prices with cents on user and operator surfaces', () => {
-    expect(read('src/portal/user-login.html')).toContain("Number(pkg.priceUsd).toFixed(2)");
-    expect(read('src/portal/portal.html')).toContain("Number(pkg.priceUsd || 0).toFixed(2)");
+    expect(read('src/portal/ui/user-login.js')).toContain('Number(pkg.priceUsd).toFixed(2)');
+    expect(read('src/portal/ui/users.js')).toContain('Number(pkg.priceUsd || 0).toFixed(2)');
   });
 
   it('keeps the canonical quota contract aligned without rewriting release history', () => {
@@ -109,7 +109,9 @@ describe('owner-confirmed subscription price display contract', () => {
   it('marks owner-locked Pro and Max as current new-sale in canonical docs', () => {
     expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).not.toContain('not active pricing');
     expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain('The 600-credit pack remains `$19.99`.');
-    expect(read('docs/NEXUS_HUB_PRODUCT_BRIEF.md')).toContain('**RESOLVED — pricing (owner lock 2026-08-24).**');
+    expect(read('docs/TOKEN-QUOTA-CONTRACT.md')).toContain(
+      'Current new-sale subscription prices are Pro at `$9.99` and Max at `$14.99`.',
+    );
     expect(read('docs/NEXUS_HUB_PRODUCT_BRIEF.md')).not.toContain('**UNRESOLVED — pricing.**');
   });
 

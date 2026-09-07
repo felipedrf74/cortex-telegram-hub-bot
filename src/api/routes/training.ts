@@ -15,6 +15,7 @@ import { markKeepOriginalForToday } from '../../services/training-keep-original'
 import { recordTrainingSummaryDeprecationHit } from '../../services/training-route-deprecation-telemetry';
 import * as trainingPlans from '../../services/training-plans';
 import { sendAiBudgetError, sendSuccess, sendError, sendInternalError } from '../response-helpers';
+import { emitSkillFirstSuccess } from '../../services/product-analytics';
 import {
   applyCoachRecommendations,
   runWithCoachBriefingAccountAdmissions,
@@ -1038,6 +1039,10 @@ export function trainingRoutes(): Router {
 
       // Invalidate caches since training status changed
       invalidateTrainingScreenCaches(userId);
+
+      if (completionFeedback.completionState === 'completed') {
+        emitSkillFirstSuccess(userId, 'training');
+      }
 
       sendSuccess(res, {
         completed: completionFeedback.completionState === 'completed',

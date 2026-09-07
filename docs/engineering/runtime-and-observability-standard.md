@@ -2,7 +2,7 @@
 
 Status: canonical
 Owner: backend runtime + on-call lead
-Last verified: 2026-08-13
+Last verified: 2026-09-06
 Update policy: update when health-check shape changes, when alert
 producers change, when log/metric semantics change, or when the release
 process model changes. Incident response and recovery detail lives in
@@ -160,7 +160,19 @@ The current metric surfaces are:
    A gate may be removed only from observed zero deltas across two supported
    release windows, no kill-switch activation, successful migration/readiness
    rehearsal, and supported-client capability adoption.
-10. **Local-primary inference evidence**: the portal-admin-only
+10. **Product analytics (v1.1 locked events)**: `src/services/product-analytics.ts`
+    is the thin internal facade. Event names are a closed set:
+    `app_open`, `onboarding_completed`, `skill_first_success`,
+    `decision_center_acted`, `paywall_viewed`, `purchase_completed`,
+    `model_access_denied`, `day7_retained`. Properties are enums, ids, and
+    versions only. `api_usage` remains cost/enforcement truth and must not
+    be overloaded. Client ingest is `POST /api/v1/analytics/events` for
+    `app_open`, `onboarding_completed`, and `paywall_viewed` only.
+    `day7_retained` is derived server-side from `app_open`.
+    `model_access_denied` fires only from model-backed budget denials, never
+    token-zero calendar/tasks/dashboard/Decision Center GETs.
+    `skill_first_success` never uses `decision_center`.
+11. **Local-primary inference evidence**: the portal-admin-only
     `/api/v1/admin/local-inference/summary` surface provides aggregate
     provider/workload baseline, local/fallback share, schema quality, latency,
     capacity, script-job, and cost evidence. It exposes no prompts, generated

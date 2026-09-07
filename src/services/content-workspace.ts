@@ -10,6 +10,7 @@ import {
   startContentWorkspaceObservation,
 } from './content-workspace-observability';
 import { assertContentWorkspaceWriteEnabled } from './content-workspace-capabilities';
+import { emitSkillFirstSuccess } from './product-analytics';
 import {
   loadContentWorkScheduleSummaries,
   type ContentWorkScheduleSummary,
@@ -595,6 +596,7 @@ export function createContentWorkspaceItem(
   } else {
     observation.complete('success');
     recordContentWorkspaceProductSignal(itemType === 'project' ? 'project_created' : 'idea_captured');
+    emitSkillFirstSuccess(scope.userId, 'content');
   }
   return mutation;
   } catch (error) {

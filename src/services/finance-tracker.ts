@@ -14,6 +14,7 @@ import { encryptNumber, decryptNumber, encryptValue, decryptValue } from '../uti
 import { logAudit } from './audit-trail';
 import { calculatePortugueseMonthlyTaxEstimate, type PortugueseTaxOptions } from './finance-tax-pt';
 import { centsToNumber, parseUserAmount, toCents } from './money';
+import { emitSkillFirstSuccess } from './product-analytics';
 
 // ── Encryption Helpers ────────────────────────────────────────────
 
@@ -918,6 +919,7 @@ export function addTransaction(
     tenantId,
   );
   logger.info({ userId, tenantId, txId: row.id }, 'Finance transaction added');
+  emitSkillFirstSuccess(userId, 'finance');
   return tx;
 }
 

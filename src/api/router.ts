@@ -22,6 +22,7 @@ import { connectionRoutes } from './routes/connections';
 import { wearableRoutes } from './routes/wearable';
 import { usageRoutes } from './routes/usage';
 import { clientErrorsRoutes } from './routes/client-errors';
+import { analyticsRoutes } from './routes/analytics';
 import { aiReportsRoutes } from './routes/ai-reports';
 import { supportRoutes } from './routes/support';
 import { auditTrailRoutes } from './routes/audit-trail';
@@ -124,6 +125,7 @@ export function createApiRouter(): Router {
         onboarding: 'GET/POST /api/v1/onboarding',
         settings: 'GET/PATCH /api/v1/settings',
         clientErrors: 'POST /api/v1/client-errors',
+        analytics: 'POST /api/v1/analytics/events',
         aiReports: 'POST /api/v1/ai-reports — report objectionable or inaccurate AI output',
         supportFeedback: 'POST /api/v1/support/feedback',
         auditTrail: 'GET /api/v1/audit-trail/me',
@@ -372,6 +374,7 @@ export function createApiRouter(): Router {
   // iOS / web crash reports. JWT + rate-limit protected via the middleware
   // chain above. Reads are admin-only and exposed via the portal, not here.
   router.use('/client-errors', clientErrorsRoutes());
+  router.use('/analytics', analyticsRoutes());
   router.use('/support', supportRoutes());
 
   // App Review guideline 1.2: in-app reporting for objectionable or

@@ -1583,6 +1583,13 @@ describe('generateTrainingPlanForUser', () => {
       startDateIso: '2026-06-15',
       raceDateIso: '2026-06-18',
     })).toBe(16);
+    // Monday start + 12 weeks whose last inclusive day is race Sunday:
+    // 84 plan days fit the inclusive window, exclusive end is race+1.
+    expect(clampTrainingPlanDurationWeeksToRaceDate({
+      requestedDurationWeeks: 12,
+      startDateIso: '2026-09-07',
+      raceDateIso: '2026-11-29',
+    })).toBe(12);
   });
 
   it('generates an event-based plan with the clamped duration instead of lint-blocking (rerun-4 R3)', async () => {
